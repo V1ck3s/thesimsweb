@@ -8,7 +8,7 @@
       header for all subresource fetches from this page so the CDN serves us.
     -->
     <meta name="referrer" content="no-referrer" />
-    <title>thesimsweb spike — v86 + Windows 98</title>
+    <title>thesimsweb spike — v86 + Windows 98 + Sims</title>
     <style>
       body {
         font-family: ui-sans-serif, system-ui, sans-serif;
@@ -17,9 +17,12 @@
         color: #ddd;
         padding: 1rem;
       }
-      header {
+      header,
+      #controls,
+      #screen_container {
         max-width: 920px;
-        margin: 0 auto 1rem;
+        margin-left: auto;
+        margin-right: auto;
       }
       header h1 {
         margin: 0 0 0.25rem;
@@ -31,8 +34,7 @@
         font-size: 0.85rem;
       }
       #controls {
-        max-width: 920px;
-        margin: 0 auto 1rem;
+        margin: 0.75rem auto;
         display: flex;
         gap: 0.5rem;
         flex-wrap: wrap;
@@ -57,8 +59,6 @@
         opacity: 0.7;
       }
       #screen_container {
-        max-width: 920px;
-        margin: 0 auto;
         background: #000;
         position: relative;
       }
@@ -70,35 +70,51 @@
       #screen_container > canvas {
         display: block;
       }
+      .note {
+        max-width: 920px;
+        margin: 0.5rem auto;
+        font-size: 0.8rem;
+        opacity: 0.6;
+      }
     </style>
   </head>
   <body>
     <header>
-      <h1>thesimsweb spike — v86 emulating Windows 98</h1>
+      <h1>thesimsweb spike — v86 + Windows 98 + Sims</h1>
       <p>
-        Test 1 : boot Windows 98 vanilla (image &amp; state hosted on i.copy.sh).
-        If this runs smoothly, we&rsquo;ll add Sims via a secondary disk in test 2.
+        Two boot options: a fast snapshot (Win98 only, ~5 s) and a cold boot
+        (Win98 + Sims disk attached as D:, ~60 s).
       </p>
     </header>
 
     <div id="controls">
-      <button id="start">Start Windows 98</button>
+      <button id="quick">Quick boot (snapshot)</button>
+      <button id="cold">Cold boot + Sims disk</button>
       <button id="pause" disabled>Pause</button>
       <button id="resume" disabled>Resume</button>
+      <button id="cad" disabled>Send Ctrl+Alt+Del</button>
       <span id="stats">idle</span>
     </div>
+    <p class="note">
+      Sims layout in D:\ — run <code>D:\Sims.exe</code> directly (the no-CD
+      crack does not need an installer). If Win98 prompts for new-hardware
+      drivers, dismiss them. Music is omitted in this image; the rest of the
+      base game is included.
+    </p>
 
     <div id="screen_container">
       <div></div>
-      <canvas style="display:none"></canvas>
+      <canvas style="display: none"></canvas>
     </div>
 
     <script type="module">
       import { V86 } from "./node_modules/v86/build/libv86.mjs";
 
-      const startBtn = document.getElementById("start");
+      const quickBtn = document.getElementById("quick");
+      const coldBtn = document.getElementById("cold");
       const pauseBtn = document.getElementById("pause");
       const resumeBtn = document.getElementById("resume");
+      const cadBtn = document.getElementById("cad");
       const stats = document.getElementById("stats");
 
       let emulator = null;
@@ -111,72 +127,87 @@
       }
       requestAnimationFrame(rafLoop);
 
-      startBtn.addEventListener("click", async () => {
-        startBtn.disabled = true;
-        stats.textContent = "loading…";
+      const COMMON = {
+        wasm_path: "./node_modules/v86/build/v86.wasm",
+        memory_size: 128 * 1024 * 1024,
+        vga_memory_size: 16 * 1024 * 1024,
+        screen_container: document.getElementById("screen_container"),
+        bios: { url: "./bios/seabios.bin" },
+        vga_bios: { url: "./bios/vgabios.bin" },
+        hda: {
+          url: "https://i.copy.sh/windows98/.img",
+          size: 300 * 1024 * 1024,
+          async: true,
+          fixed_chunk_size: 256 * 1024,
+          use_parts: true,
+        },
+        mac_address_translation: true,
+        autostart: true,
+      };
 
-        emulator = new V86({
-          wasm_path: "./node_modules/v86/build/v86.wasm",
-          memory_size: 128 * 1024 * 1024,
-          vga_memory_size: 8 * 1024 * 1024,
-          screen_container: document.getElementById("screen_container"),
-          bios: { url: "./bios/seabios.bin" },
-          vga_bios: { url: "./bios/vgabios.bin" },
-          hda: {
-            url: "https://i.copy.sh/windows98/.img",
-            size: 300 * 1024 * 1024,
-            async: true,
-            fixed_chunk_size: 256 * 1024,
-            use_parts: true,
-          },
-          initial_state: { url: "https://i.copy.sh/windows98_state-v2.bin.zst" },
-          mac_address_translation: true,
-          autostart: true,
-        });
+      const SIMS_HDB = {
+        url: "./sims-disk/sims.img",
+        size: 500 * 1024 * 1024,
+        async: true,
+      };
+
+      const STATE = { url: "https://i.copy.sh/windows98_state-v2.bin.zst" };
+
+      function start(opts) {
+        if (emulator) {
+          emulator.stop();
+          emulator.destroy();
+          emulator = null;
+        }
+        quickBtn.disabled = true;
+        coldBtn.disabled = true;
+        stats.textContent = "loading…";
+        bytesDownloaded = 0;
+
+        const config = { ...COMMON, ...opts };
+        emulator = new V86(config);
 
         emulator.add_listener("emulator-loaded", () => {
-          stats.textContent = "loaded — booting state…";
+          stats.textContent = "loaded — booting…";
         });
-
         emulator.add_listener("emulator-started", () => {
           pauseBtn.disabled = false;
+          cadBtn.disabled = false;
         });
-
         emulator.add_listener("download-progress", (e) => {
-          if (e && typeof e.loaded === "number") {
-            bytesDownloaded += e.loaded;
-          }
+          if (e && typeof e.loaded === "number") bytesDownloaded += e.loaded;
         });
+      }
 
-        // No real FPS metric in v86 (no per-frame event for graphics mode),
-        // so we display: page rAF rate as a liveness proxy + total bytes
-        // streamed from the CDN. A frozen rAF means the tab is throttled.
-        setInterval(() => {
-          if (!emulator) return;
-          const now = performance.now();
-          const dt = (now - lastTick) / 1000;
-          const rafFps = rafCount / dt;
-          rafCount = 0;
-          lastTick = now;
-          const mib = (bytesDownloaded / 1024 / 1024).toFixed(1);
-          const state = emulator.is_running() ? "running" : "paused";
-          stats.textContent = `${state} · page ~${rafFps.toFixed(0)} fps · streamed ${mib} MiB`;
-        }, 1000);
-      });
+      quickBtn.addEventListener("click", () => start({ initial_state: STATE }));
+      coldBtn.addEventListener("click", () => start({ hdb: SIMS_HDB }));
 
       pauseBtn.addEventListener("click", () => {
         emulator?.stop();
         pauseBtn.disabled = true;
         resumeBtn.disabled = false;
-        stats.textContent = "paused";
       });
-
       resumeBtn.addEventListener("click", () => {
         emulator?.run();
         pauseBtn.disabled = false;
         resumeBtn.disabled = true;
-        stats.textContent = "running";
       });
+      cadBtn.addEventListener("click", () => {
+        emulator?.keyboard_send_keys([0x1d, 0x38, 0x53, 0xd3, 0xb8, 0x9d]);
+      });
+
+      // Stats: page rAF rate (liveness proxy) + bytes streamed.
+      setInterval(() => {
+        if (!emulator) return;
+        const now = performance.now();
+        const dt = (now - lastTick) / 1000;
+        const rafFps = rafCount / dt;
+        rafCount = 0;
+        lastTick = now;
+        const mib = (bytesDownloaded / 1024 / 1024).toFixed(1);
+        const state = emulator.is_running() ? "running" : "paused";
+        stats.textContent = `${state} · page ~${rafFps.toFixed(0)} fps · streamed ${mib} MiB`;
+      }, 1000);
     </script>
   </body>
 </html>
