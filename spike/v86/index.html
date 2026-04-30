@@ -2,6 +2,12 @@
 <html lang="en">
   <head>
     <meta charset="utf-8" />
+    <!--
+      i.copy.sh (BunnyCDN) blocks requests whose Referer is localhost or any
+      origin other than copy.sh — hotlink protection. Suppress the Referer
+      header for all subresource fetches from this page so the CDN serves us.
+    -->
+    <meta name="referrer" content="no-referrer" />
     <title>thesimsweb spike — v86 + Windows 98</title>
     <style>
       body {
