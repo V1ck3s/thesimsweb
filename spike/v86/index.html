@@ -90,7 +90,9 @@
 
     <div id="controls">
       <button id="quick">Quick boot (snapshot)</button>
+      <button id="coldNoCD">Cold boot (no CD)</button>
       <button id="cold">Cold boot + Sims disk</button>
+      <button id="stop" disabled>Stop</button>
       <button id="pause" disabled>Pause</button>
       <button id="resume" disabled>Resume</button>
       <button id="cad" disabled>Send Ctrl+Alt+Del</button>
@@ -111,7 +113,9 @@
       import { V86 } from "./node_modules/v86/build/libv86.mjs";
 
       const quickBtn = document.getElementById("quick");
+      const coldNoCDBtn = document.getElementById("coldNoCD");
       const coldBtn = document.getElementById("cold");
+      const stopBtn = document.getElementById("stop");
       const pauseBtn = document.getElementById("pause");
       const resumeBtn = document.getElementById("resume");
       const cadBtn = document.getElementById("cad");
@@ -164,14 +168,22 @@
 
       const STATE = { url: "https://i.copy.sh/windows98_state-v2.bin.zst" };
 
-      function start(opts) {
+      function teardown() {
         if (emulator) {
-          emulator.stop();
-          emulator.destroy();
+          try {
+            emulator.stop();
+            emulator.destroy();
+          } catch {}
           emulator = null;
         }
+      }
+
+      function start(opts) {
+        teardown();
         quickBtn.disabled = true;
+        coldNoCDBtn.disabled = true;
         coldBtn.disabled = true;
+        stopBtn.disabled = false;
         stats.textContent = "loading…";
         bytesDownloaded = 0;
 
@@ -195,8 +207,20 @@
       // "can't access property 0, a is null" — it tries to deserialise a
       // device that didn't exist in the snapshot). Quick boot stays Win98-only.
       quickBtn.addEventListener("click", () => start({ initial_state: STATE }));
+      coldNoCDBtn.addEventListener("click", () => start({}));
       coldBtn.addEventListener("click", () => start({ cdrom: SIMS_CDROM }));
 
+      stopBtn.addEventListener("click", () => {
+        teardown();
+        quickBtn.disabled = false;
+        coldNoCDBtn.disabled = false;
+        coldBtn.disabled = false;
+        stopBtn.disabled = true;
+        pauseBtn.disabled = true;
+        resumeBtn.disabled = true;
+        cadBtn.disabled = true;
+        stats.textContent = "stopped";
+      });
       pauseBtn.addEventListener("click", () => {
         emulator?.stop();
         pauseBtn.disabled = true;
