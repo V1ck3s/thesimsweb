@@ -82,9 +82,9 @@
     <header>
       <h1>thesimsweb spike — v86 + Windows 98 + Sims</h1>
       <p>
-        Sims is exposed as a CD-ROM (D: with label SIMS). Quick boot uses the
-        Win98 snapshot; cold boot starts Win98 from scratch. Both options
-        attach the same CD.
+        Quick boot: Win98 snapshot only (no CD — the snapshot can't be
+        restored with extra hardware). Cold boot: Win98 from scratch + Sims
+        CD attached on D:.
       </p>
     </header>
 
@@ -150,9 +150,16 @@
       // badly ("Invalid VxD dynamic link call from VMM" at boot). The cdrom
       // slot is on the secondary IDE channel and uses Win98's native ATAPI
       // driver — no conflict with the boot disk.
+      //
+      // fixed_chunk_size batches Range requests: without it v86 fetches one
+      // CD sector (2 KiB) per request, which floods Firefox and makes it
+      // abort connections (NS_BINDING_ABORTED). 256 KiB chunks cuts request
+      // count by ~128x.
       const SIMS_CDROM = {
         url: "./sims-disk/sims.iso",
+        size: 411662336,
         async: true,
+        fixed_chunk_size: 256 * 1024,
       };
 
       const STATE = { url: "https://i.copy.sh/windows98_state-v2.bin.zst" };
@@ -183,9 +190,11 @@
         });
       }
 
-      quickBtn.addEventListener("click", () =>
-        start({ initial_state: STATE, cdrom: SIMS_CDROM }),
-      );
+      // The Win98 snapshot was captured without a CD device in the v86 config,
+      // so we cannot attach the CD when restoring it (set_state explodes with
+      // "can't access property 0, a is null" — it tries to deserialise a
+      // device that didn't exist in the snapshot). Quick boot stays Win98-only.
+      quickBtn.addEventListener("click", () => start({ initial_state: STATE }));
       coldBtn.addEventListener("click", () => start({ cdrom: SIMS_CDROM }));
 
       pauseBtn.addEventListener("click", () => {
