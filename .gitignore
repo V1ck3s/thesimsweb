@@ -61,6 +61,7 @@ spike/v86/v86-source/
 spike/**/*.img
 spike/**/*.iso
 spike/**/*.bin
+spike/v86/sims-disk/staging/
 *.qcow2
 
 # Sauvegardes serveur de dev
