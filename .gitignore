@@ -1,0 +1,66 @@
+# Dépendances
+node_modules/
+.pnpm-store/
+target/
+dist/
+build/
+.cache/
+
+# Environnement
+.env
+.env.local
+.env.*.local
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Tests
+coverage/
+.nyc_output/
+
+# WSL / Windows
+*.lnk
+
+# IMPORTANT — assets du jeu (jamais commiter)
+# Ne jamais committer de fichier provenant de l'installation Maxis.
+samples/
+assets/raw/
+server/assets/
+*.iff
+*.far
+*.wll
+*.flr
+*.HIT
+*.hot
+*.hsm
+*.spx
+*.xa
+*.256
+Sims.exe
+gimex.dll
+ijl10.dll
+
+# Spike Boxedwine (images Win98, dumps)
+spike/boxedwine/image/
+spike/boxedwine/*.img
+spike/boxedwine/*.iso
+*.qcow2
+
+# Sauvegardes serveur de dev
+server/data/
+*.sqlite
+*.sqlite3
+*.db
