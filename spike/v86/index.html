@@ -82,8 +82,9 @@
     <header>
       <h1>thesimsweb spike — v86 + Windows 98 + Sims</h1>
       <p>
-        Two boot options: a fast snapshot (Win98 only, ~5 s) and a cold boot
-        (Win98 + Sims disk attached as D:, ~60 s).
+        Sims is exposed as a CD-ROM (D: with label SIMS). Quick boot uses the
+        Win98 snapshot; cold boot starts Win98 from scratch. Both options
+        attach the same CD.
       </p>
     </header>
 
@@ -96,10 +97,9 @@
       <span id="stats">idle</span>
     </div>
     <p class="note">
-      Sims layout in D:\ — run <code>D:\Sims.exe</code> directly (the no-CD
-      crack does not need an installer). If Win98 prompts for new-hardware
-      drivers, dismiss them. Music is omitted in this image; the rest of the
-      base game is included.
+      Sims layout on D:\ — run <code>D:\Sims.exe</code> directly (the no-CD
+      crack does not need an installer). Music is omitted in this image; the
+      rest of the base game is included.
     </p>
 
     <div id="screen_container">
@@ -145,9 +145,13 @@
         autostart: true,
       };
 
-      const SIMS_HDB = {
-        url: "./sims-disk/sims.img",
-        size: 500 * 1024 * 1024,
+      // Sims content is exposed as an ISO 9660 CD-ROM rather than a hard-disk
+      // slave: v86 wires `hdb` as primary IDE slave, which Win98 handles
+      // badly ("Invalid VxD dynamic link call from VMM" at boot). The cdrom
+      // slot is on the secondary IDE channel and uses Win98's native ATAPI
+      // driver — no conflict with the boot disk.
+      const SIMS_CDROM = {
+        url: "./sims-disk/sims.iso",
         async: true,
       };
 
@@ -179,8 +183,10 @@
         });
       }
 
-      quickBtn.addEventListener("click", () => start({ initial_state: STATE }));
-      coldBtn.addEventListener("click", () => start({ hdb: SIMS_HDB }));
+      quickBtn.addEventListener("click", () =>
+        start({ initial_state: STATE, cdrom: SIMS_CDROM }),
+      );
+      coldBtn.addEventListener("click", () => start({ cdrom: SIMS_CDROM }));
 
       pauseBtn.addEventListener("click", () => {
         emulator?.stop();
