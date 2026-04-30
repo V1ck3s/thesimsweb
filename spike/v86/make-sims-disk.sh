@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# Build a FAT32 disk image containing the minimal Sims footprint.
-# Output: sims-disk/sims.img (~500 MiB)
+# Build a partitioned disk image (MBR + single FAT32 partition) containing the
+# minimal Sims footprint. Win98 needs an MBR to recognise a secondary disk —
+# a bare FS on the raw image gives "device not ready".
 #
-# Win98 in v86 will mount this as D:. From there, Sims.exe can run directly
-# (the no-CD crack does not require an installer).
+# Output: sims-disk/sims.img (~500 MiB)
 
 set -euo pipefail
 
@@ -14,6 +14,11 @@ IMG_DIR="sims-disk"
 IMG="$IMG_DIR/sims.img"
 SIZE_MIB=500
 
+# Partition layout
+PART_START_SECTOR=2048              # 1 MiB alignment (standard)
+SECTOR_SIZE=512
+PART_OFFSET_BYTES=$((PART_START_SECTOR * SECTOR_SIZE))
+
 if [[ ! -d "$GAME_SRC" ]]; then
   echo "ERROR: game directory not found at $GAME_SRC" >&2
   exit 1
@@ -22,10 +27,16 @@ fi
 mkdir -p "$IMG_DIR"
 
 echo "==> creating $SIZE_MIB MiB blank image"
+rm -f "$IMG"
 truncate -s "${SIZE_MIB}M" "$IMG"
 
-echo "==> formatting FAT32 (label SIMS)"
-mkfs.vfat -F 32 -n SIMS "$IMG" >/dev/null
+echo "==> writing MBR + 1 FAT32 LBA partition (sfdisk)"
+# type=0c = FAT32 LBA (visible to Win98 SE)
+echo "label: dos
+start=${PART_START_SECTOR}, type=0c, bootable" | /usr/sbin/sfdisk "$IMG" >/dev/null
+
+echo "==> formatting partition as FAT32 (mformat @@offset)"
+mformat -i "${IMG}@@${PART_OFFSET_BYTES}" -F -v SIMS
 
 # Components — total ~400 MiB. Music omitted (~480 MiB, not required to boot).
 COMPONENTS=(
@@ -45,11 +56,17 @@ for c in "${COMPONENTS[@]}"; do
     continue
   fi
   echo "==> copying $c"
-  mcopy -i "$IMG" -s -Q -o "$src" "::/"
+  mcopy -i "${IMG}@@${PART_OFFSET_BYTES}" -s -Q -o "$src" "::/"
 done
 
+echo "==> verifying"
+echo -n "  MBR signature: "
+xxd -s 510 -l 2 "$IMG" | awk '{print $2 $3}'
+echo "  partition table:"
+/usr/sbin/sfdisk -d "$IMG" | sed 's/^/    /'
+echo "  top-level files:"
+mdir -i "${IMG}@@${PART_OFFSET_BYTES}" "::/" | sed 's/^/    /' | head -25
+
+echo
 echo "==> done"
 ls -lh "$IMG"
-echo
-echo "Top-level contents:"
-mdir -i "$IMG" "::/" | head -20
