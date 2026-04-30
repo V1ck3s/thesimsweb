@@ -102,8 +102,14 @@
       const stats = document.getElementById("stats");
 
       let emulator = null;
-      let frameCount = 0;
-      let lastFpsUpdate = performance.now();
+      let bytesDownloaded = 0;
+      let lastTick = performance.now();
+      let rafCount = 0;
+      function rafLoop() {
+        rafCount++;
+        requestAnimationFrame(rafLoop);
+      }
+      requestAnimationFrame(rafLoop);
 
       startBtn.addEventListener("click", async () => {
         startBtn.disabled = true;
@@ -133,26 +139,28 @@
         });
 
         emulator.add_listener("emulator-started", () => {
-          stats.textContent = "running";
           pauseBtn.disabled = false;
         });
 
-        emulator.add_listener("screen-put-pixel", () => {
-          frameCount++;
+        emulator.add_listener("download-progress", (e) => {
+          if (e && typeof e.loaded === "number") {
+            bytesDownloaded += e.loaded;
+          }
         });
 
-        // Approximate "frames per second" — v86 doesn't expose a real fps
-        // metric, so we count screen updates as a proxy. Useful for detecting
-        // freezes more than for absolute perf.
+        // No real FPS metric in v86 (no per-frame event for graphics mode),
+        // so we display: page rAF rate as a liveness proxy + total bytes
+        // streamed from the CDN. A frozen rAF means the tab is throttled.
         setInterval(() => {
+          if (!emulator) return;
           const now = performance.now();
-          const dt = (now - lastFpsUpdate) / 1000;
-          const fps = frameCount / dt;
-          frameCount = 0;
-          lastFpsUpdate = now;
-          if (emulator && emulator.is_running()) {
-            stats.textContent = `running ~ ${fps.toFixed(0)} screen updates/s`;
-          }
+          const dt = (now - lastTick) / 1000;
+          const rafFps = rafCount / dt;
+          rafCount = 0;
+          lastTick = now;
+          const mib = (bytesDownloaded / 1024 / 1024).toFixed(1);
+          const state = emulator.is_running() ? "running" : "paused";
+          stats.textContent = `${state} · page ~${rafFps.toFixed(0)} fps · streamed ${mib} MiB`;
         }, 1000);
       });
 
