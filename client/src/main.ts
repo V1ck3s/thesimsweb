@@ -85,9 +85,11 @@ async function runRealAssetSmokeTest(wasm: Awaited<ReturnType<typeof engine>>): 
     };
     drawSpriteToOverlay(decoded);
     const catalogLine = await tryDecodeAlarmClock(wasm, manifest);
+    const viewerLine = await tryRenderAlarmClockObject(wasm, manifest);
     setHud(
       `${floor.path} · ${chunks.length} chunks · sprite ${decoded.width}×${decoded.height} (${decoded.rgba.length}B RGBA)` +
-        (catalogLine ? ` · ${catalogLine}` : ""),
+        (catalogLine ? ` · ${catalogLine}` : "") +
+        (viewerLine ? ` · ${viewerLine}` : ""),
     );
   } catch (err) {
     setHud(`real-asset smoke test failed: ${(err as Error).message}`);
@@ -139,6 +141,137 @@ async function tryDecodeAlarmClock(
   } catch (err) {
     console.warn("[catalog] AlarmClock decode failed:", err);
     return null;
+  }
+}
+
+interface DgrpSprite {
+  sprChunkId: number;
+  sprFrameNumber: number;
+  spriteXOffset: number;
+  spriteYOffset: number;
+  objectZOffset: number;
+  flags: number;
+  objectXOffset: number;
+  objectYOffset: number;
+}
+
+interface DgrpImage {
+  directionFlags: number;
+  zoomLevel: number;
+  sprites: DgrpSprite[];
+}
+
+interface DecodedSprite {
+  width: number;
+  height: number;
+  rgba: Uint8Array;
+}
+
+/**
+ * Compose AlarmClock's `BASE_GRAPHIC_ID` DGRP into the object viewer canvas.
+ *
+ * Uses the south-facing image (direction 0x10) at maximum zoom (3). Composites
+ * each sprite at `(spriteXOffset, spriteYOffset)` relative to the canvas centre.
+ * Returns a one-line summary for the HUD.
+ */
+async function tryRenderAlarmClockObject(
+  wasm: Awaited<ReturnType<typeof engine>>,
+  manifest: Awaited<ReturnType<typeof fetchManifest>>,
+): Promise<string | null> {
+  const objectsFar = manifest.files.find((f) =>
+    f.path.toLowerCase().endsWith("objects/objects.far"),
+  );
+  if (!objectsFar) return null;
+  try {
+    const { data, chunks } = await readIffFromFar(objectsFar.path, "AlarmClock.iff");
+    const objdChunk = chunks.find((c) => c.kind === "OBJD");
+    if (!objdChunk) return null;
+    const objd = wasm.parseObjd(
+      data.subarray(objdChunk.dataStart, objdChunk.dataStart + objdChunk.dataLen),
+    ) as { fields: number[] };
+    const baseGraphicId = objd.fields[1] ?? 0;
+    const dgrpChunk = chunks.find((c) => c.kind === "DGRP" && c.id === baseGraphicId);
+    if (!dgrpChunk) return `no DGRP id=${baseGraphicId}`;
+
+    const dgrp = wasm.parseDgrp(
+      data.subarray(dgrpChunk.dataStart, dgrpChunk.dataStart + dgrpChunk.dataLen),
+    ) as { version: number; images: DgrpImage[] };
+    // Pick south-facing maximum zoom — the most face-on view.
+    const image =
+      dgrp.images.find((i) => i.directionFlags === 0x10 && i.zoomLevel === 3) ??
+      dgrp.images[0];
+    if (!image) return "DGRP empty";
+
+    // Decode each sprite frame.
+    const decoded: Array<{ sp: DgrpSprite; bmp: DecodedSprite }> = [];
+    for (const sp of image.sprites) {
+      const spr2Chunk = chunks.find((c) => c.kind === "SPR2" && c.id === sp.sprChunkId);
+      if (!spr2Chunk) continue;
+      const paltChunk = chunks.find((c) => c.kind === "PALT" && c.id === 0);
+      if (!paltChunk) continue;
+      try {
+        const bmp = wasm.decodeSpr2Frame(
+          data.subarray(spr2Chunk.dataStart, spr2Chunk.dataStart + spr2Chunk.dataLen),
+          data.subarray(paltChunk.dataStart, paltChunk.dataStart + paltChunk.dataLen),
+          sp.sprFrameNumber,
+        ) as DecodedSprite;
+        decoded.push({ sp, bmp });
+      } catch (err) {
+        console.warn(`[viewer] SPR2 ${sp.sprChunkId}#${sp.sprFrameNumber} decode failed:`, err);
+      }
+    }
+    if (decoded.length === 0) return "no decodable sprites";
+
+    composeObjectViewer(decoded);
+    setObjectLabel(
+      `AlarmClock · DGRP ${baseGraphicId} · dir=0x10 zoom=3 · ${decoded.length}/${image.sprites.length} sprites`,
+    );
+    return `viewer ${decoded.length} sprite(s)`;
+  } catch (err) {
+    console.warn("[viewer] AlarmClock render failed:", err);
+    return `viewer err: ${(err as Error).message}`;
+  }
+}
+
+const OBJECT_VIEWER_CANVAS = document.getElementById("object-viewer") as HTMLCanvasElement | null;
+const OBJECT_LABEL = document.getElementById("object-label");
+
+function setObjectLabel(text: string): void {
+  if (OBJECT_LABEL) OBJECT_LABEL.textContent = text;
+}
+
+/** Composite decoded sprites onto the viewer canvas with their DGRP offsets. */
+function composeObjectViewer(decoded: Array<{ sp: DgrpSprite; bmp: DecodedSprite }>): void {
+  if (!OBJECT_VIEWER_CANVAS) return;
+  const ctx = OBJECT_VIEWER_CANVAS.getContext("2d");
+  if (!ctx) return;
+
+  // Compute the bounding box of every sprite once positioned at its offset.
+  // SPR2 offsets reference the centre of the compiled image; the viewer canvas
+  // uses (W/2, H/2) as that centre. We size the canvas to fit, then clear.
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  for (const { sp, bmp } of decoded) {
+    const x0 = sp.spriteXOffset;
+    const y0 = sp.spriteYOffset;
+    if (x0 < minX) minX = x0;
+    if (y0 < minY) minY = y0;
+    if (x0 + bmp.width > maxX) maxX = x0 + bmp.width;
+    if (y0 + bmp.height > maxY) maxY = y0 + bmp.height;
+  }
+  if (!Number.isFinite(minX)) return;
+
+  const w = Math.max(64, Math.ceil(maxX - minX));
+  const h = Math.max(64, Math.ceil(maxY - minY));
+  OBJECT_VIEWER_CANVAS.width = w;
+  OBJECT_VIEWER_CANVAS.height = h;
+  ctx.clearRect(0, 0, w, h);
+  // Z-order: paint by DGRP order (later sprites on top — matches the original engine).
+  for (const { sp, bmp } of decoded) {
+    const img = ctx.createImageData(bmp.width, bmp.height);
+    img.data.set(bmp.rgba);
+    const dx = sp.spriteXOffset - minX;
+    const dy = sp.spriteYOffset - minY;
+    ctx.putImageData(img, dx, dy);
   }
 }
 
