@@ -209,6 +209,186 @@ pub fn parse_bcon(data: &[u8]) -> Result<Object, JsError> {
     Ok(obj)
 }
 
+/// Parse a STR# (or TTAs) chunk's data payload into
+/// `{ version: number, entries: Array<{kind, langCode?, data, comment?}> }`.
+///
+/// `data` and `comment` are exposed as `Uint8Array` — the caller decides which Windows-*
+/// code page to decode with based on `langCode`.
+///
+/// # Errors
+/// Returns a `JsError` if the buffer is malformed or the version is unsupported.
+#[wasm_bindgen(js_name = parseStrTable)]
+pub fn parse_str_table(data: &[u8]) -> Result<Object, JsError> {
+    let table = simantics::StrTable::parse(data).map_err(|e| JsError::new(&e.to_string()))?;
+    let obj = Object::new();
+    set_f64(&obj, "version", f64::from(table.version))?;
+    let entries = Array::new();
+    for e in &table.entries {
+        let entry_obj = Object::new();
+        match e {
+            simantics::StrEntry::Single { data } => {
+                Reflect::set(&entry_obj, &JsValue::from_str("kind"), &JsValue::from_str("single"))
+                    .map_err(|_| JsError::new("set kind"))?;
+                Reflect::set(
+                    &entry_obj,
+                    &JsValue::from_str("data"),
+                    &Uint8Array::from(&data[..]).into(),
+                )
+                .map_err(|_| JsError::new("set data"))?;
+            }
+            simantics::StrEntry::Pair { data, comment } => {
+                Reflect::set(&entry_obj, &JsValue::from_str("kind"), &JsValue::from_str("pair"))
+                    .map_err(|_| JsError::new("set kind"))?;
+                Reflect::set(
+                    &entry_obj,
+                    &JsValue::from_str("data"),
+                    &Uint8Array::from(&data[..]).into(),
+                )
+                .map_err(|_| JsError::new("set data"))?;
+                Reflect::set(
+                    &entry_obj,
+                    &JsValue::from_str("comment"),
+                    &Uint8Array::from(&comment[..]).into(),
+                )
+                .map_err(|_| JsError::new("set comment"))?;
+            }
+            simantics::StrEntry::PairWithLang {
+                lang_code,
+                data,
+                comment,
+            } => {
+                Reflect::set(&entry_obj, &JsValue::from_str("kind"), &JsValue::from_str("lang"))
+                    .map_err(|_| JsError::new("set kind"))?;
+                set_f64(&entry_obj, "langCode", f64::from(*lang_code))?;
+                Reflect::set(
+                    &entry_obj,
+                    &JsValue::from_str("data"),
+                    &Uint8Array::from(&data[..]).into(),
+                )
+                .map_err(|_| JsError::new("set data"))?;
+                Reflect::set(
+                    &entry_obj,
+                    &JsValue::from_str("comment"),
+                    &Uint8Array::from(&comment[..]).into(),
+                )
+                .map_err(|_| JsError::new("set comment"))?;
+            }
+        }
+        entries.push(&entry_obj);
+    }
+    Reflect::set(&obj, &JsValue::from_str("entries"), &entries.into())
+        .map_err(|_| JsError::new("set entries"))?;
+    Ok(obj)
+}
+
+/// Parse a TRCN chunk's data payload into
+/// `{ version, entries: Array<{isUsed, default, name, comment, range?: {enforced, min, max}}> }`.
+///
+/// # Errors
+/// Returns a `JsError` if the buffer is malformed or the version is unsupported.
+#[wasm_bindgen(js_name = parseTrcn)]
+pub fn parse_trcn(data: &[u8]) -> Result<Object, JsError> {
+    let trcn = simantics::Trcn::parse(data).map_err(|e| JsError::new(&e.to_string()))?;
+    let obj = Object::new();
+    set_f64(&obj, "version", f64::from(trcn.version))?;
+    let entries = Array::new();
+    for e in &trcn.entries {
+        let entry_obj = Object::new();
+        set_f64(&entry_obj, "isUsed", f64::from(e.is_used))?;
+        set_f64(&entry_obj, "default", f64::from(e.default))?;
+        Reflect::set(
+            &entry_obj,
+            &JsValue::from_str("name"),
+            &Uint8Array::from(&e.name[..]).into(),
+        )
+        .map_err(|_| JsError::new("set name"))?;
+        Reflect::set(
+            &entry_obj,
+            &JsValue::from_str("comment"),
+            &Uint8Array::from(&e.comment[..]).into(),
+        )
+        .map_err(|_| JsError::new("set comment"))?;
+        if let Some((enforced, min, max)) = e.range {
+            let range_obj = Object::new();
+            set_f64(&range_obj, "enforced", f64::from(enforced))?;
+            set_f64(&range_obj, "min", f64::from(min))?;
+            set_f64(&range_obj, "max", f64::from(max))?;
+            Reflect::set(&entry_obj, &JsValue::from_str("range"), &range_obj.into())
+                .map_err(|_| JsError::new("set range"))?;
+        }
+        entries.push(&entry_obj);
+    }
+    Reflect::set(&obj, &JsValue::from_str("entries"), &entries.into())
+        .map_err(|_| JsError::new("set entries"))?;
+    Ok(obj)
+}
+
+/// Parse an OBJD chunk's data payload into `{ version, fields: number[], guid }`.
+///
+/// `fields` is the raw u16 array; named accessors live on the JS side. The 32-bit `guid`
+/// is pre-assembled from `fields[12]` (lo) and `fields[13]` (hi).
+///
+/// # Errors
+/// Returns a `JsError` if the buffer is malformed.
+#[wasm_bindgen(js_name = parseObjd)]
+pub fn parse_objd(data: &[u8]) -> Result<Object, JsError> {
+    let objd = simantics::Objd::parse(data).map_err(|e| JsError::new(&e.to_string()))?;
+    let obj = Object::new();
+    set_f64(&obj, "version", f64::from(objd.version))?;
+    set_f64(&obj, "guid", f64::from(objd.guid()))?;
+    let fields = Array::new();
+    for f in &objd.fields {
+        fields.push(&JsValue::from_f64(f64::from(*f)));
+    }
+    Reflect::set(&obj, &JsValue::from_str("fields"), &fields.into())
+        .map_err(|_| JsError::new("set fields"))?;
+    Ok(obj)
+}
+
+/// Parse a TTAB chunk's data payload.
+///
+/// Returns `{ version, interactions: Array<{ actionFunction, guardFunction,
+/// motiveEntryCount, flags, ttasIndex, attenuationCode, attenuationValue,
+/// autonomyThreshold, joiningIndex, motives: Array<{effectMin, effectMax,
+/// personalityModifier}> }> }`.
+///
+/// # Errors
+/// Returns a `JsError` if the buffer is malformed or the version is unsupported (v9+
+/// uses field encoding compression, not yet implemented).
+#[wasm_bindgen(js_name = parseTtab)]
+pub fn parse_ttab(data: &[u8]) -> Result<Object, JsError> {
+    let ttab = simantics::Ttab::parse(data).map_err(|e| JsError::new(&e.to_string()))?;
+    let obj = Object::new();
+    set_f64(&obj, "version", f64::from(ttab.version))?;
+    let interactions = Array::new();
+    for i in &ttab.interactions {
+        let inter = Object::new();
+        set_f64(&inter, "actionFunction", f64::from(i.action_function))?;
+        set_f64(&inter, "guardFunction", f64::from(i.guard_function))?;
+        set_f64(&inter, "motiveEntryCount", f64::from(i.motive_entry_count))?;
+        set_f64(&inter, "flags", f64::from(i.flags))?;
+        set_f64(&inter, "ttasIndex", f64::from(i.ttas_index))?;
+        set_f64(&inter, "attenuationCode", f64::from(i.attenuation_code))?;
+        set_f64(&inter, "attenuationValue", f64::from(i.attenuation_value))?;
+        set_f64(&inter, "autonomyThreshold", f64::from(i.autonomy_threshold))?;
+        set_f64(&inter, "joiningIndex", f64::from(i.joining_index))?;
+        let motives = Array::new();
+        for m in &i.motives {
+            let mo = Object::new();
+            set_f64(&mo, "effectMin", f64::from(m.effect_min))?;
+            set_f64(&mo, "effectMax", f64::from(m.effect_max))?;
+            set_f64(&mo, "personalityModifier", f64::from(m.personality_modifier))?;
+            motives.push(&mo);
+        }
+        Reflect::set(&inter, &JsValue::from_str("motives"), &motives.into())
+            .map_err(|_| JsError::new("set motives"))?;
+        interactions.push(&inter);
+    }
+    Reflect::set(&obj, &JsValue::from_str("interactions"), &interactions.into())
+        .map_err(|_| JsError::new("set interactions"))?;
+    Ok(obj)
+}
+
 fn set_f64(obj: &Object, key: &str, value: f64) -> Result<(), JsError> {
     Reflect::set(obj, &JsValue::from_str(key), &JsValue::from_f64(value))
         .map_err(|_| JsError::new("set"))?;

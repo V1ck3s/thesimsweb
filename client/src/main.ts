@@ -1,7 +1,7 @@
 import { createRenderer } from "./renderer/webgl.js";
 import { drawHelloSims } from "./renderer/hello.js";
 import { engine } from "./engine/wasm.js";
-import { fetchManifest, readStandaloneIff } from "./engine/assets.js";
+import { fetchManifest, readIffFromFar, readStandaloneIff } from "./engine/assets.js";
 
 function findCanvas(): HTMLCanvasElement {
   const el = document.getElementById("game");
@@ -84,12 +84,61 @@ async function runRealAssetSmokeTest(wasm: Awaited<ReturnType<typeof engine>>): 
       rgba: Uint8Array;
     };
     drawSpriteToOverlay(decoded);
+    const catalogLine = await tryDecodeAlarmClock(wasm, manifest);
     setHud(
-      `${floor.path} · ${chunks.length} chunks · sprite ${decoded.width}×${decoded.height} (${decoded.rgba.length}B RGBA)`,
+      `${floor.path} · ${chunks.length} chunks · sprite ${decoded.width}×${decoded.height} (${decoded.rgba.length}B RGBA)` +
+        (catalogLine ? ` · ${catalogLine}` : ""),
     );
   } catch (err) {
     setHud(`real-asset smoke test failed: ${(err as Error).message}`);
     console.error(err);
+  }
+}
+
+interface AlarmClockSummary {
+  price: number;
+  ttabId: number;
+  type: number;
+  guid: number;
+  interactions: number;
+  pieMenuLabels: number;
+}
+
+async function tryDecodeAlarmClock(
+  wasm: Awaited<ReturnType<typeof engine>>,
+  manifest: Awaited<ReturnType<typeof fetchManifest>>,
+): Promise<string | null> {
+  const objectsFar = manifest.files.find((f) =>
+    f.path.toLowerCase().endsWith("objects/objects.far"),
+  );
+  if (!objectsFar) return null;
+  try {
+    const { data, chunks } = await readIffFromFar(objectsFar.path, "AlarmClock.iff");
+    const objdChunk = chunks.find((c) => c.kind === "OBJD");
+    const ttabChunk = chunks.find((c) => c.kind === "TTAB");
+    const ttasChunk = chunks.find((c) => c.kind === "TTAs");
+    if (!objdChunk || !ttabChunk || !ttasChunk) return null;
+    const objd = wasm.parseObjd(
+      data.subarray(objdChunk.dataStart, objdChunk.dataStart + objdChunk.dataLen),
+    ) as { version: number; fields: number[]; guid: number };
+    const ttab = wasm.parseTtab(
+      data.subarray(ttabChunk.dataStart, ttabChunk.dataStart + ttabChunk.dataLen),
+    ) as { version: number; interactions: unknown[] };
+    const ttas = wasm.parseStrTable(
+      data.subarray(ttasChunk.dataStart, ttasChunk.dataStart + ttasChunk.dataLen),
+    ) as { version: number; entries: unknown[] };
+    const summary: AlarmClockSummary = {
+      price: objd.fields[16] ?? -1,
+      ttabId: objd.fields[5] ?? -1,
+      type: objd.fields[7] ?? -1,
+      guid: objd.guid,
+      interactions: ttab.interactions.length,
+      pieMenuLabels: ttas.entries.length,
+    };
+    return `AlarmClock OBJDv${objd.version} guid=0x${summary.guid.toString(16)} price=${summary.price}§ TTABv${ttab.version}/${summary.interactions} interactions · TTAsv${ttas.version}/${summary.pieMenuLabels} labels`;
+  } catch (err) {
+    console.warn("[catalog] AlarmClock decode failed:", err);
+    return null;
   }
 }
 
