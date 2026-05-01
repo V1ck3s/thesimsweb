@@ -18,8 +18,7 @@ drawHelloSims(renderer);
 // against a synthetic FAR + IFF. If any of this throws the page surfaces it.
 void engine().then((wasm) => {
   const fakeFar = buildSyntheticFar();
-  const fakeIff = new Uint8Array(64);
-  fakeIff.set(new TextEncoder().encode("IFF FILE 2.5:TY"), 0);
+  const fakeIff = buildSyntheticIff();
   const manifest = wasm.parseFarManifest(fakeFar) as Array<{
     filename: string;
     sizeDecompressed: number;
@@ -27,8 +26,16 @@ void engine().then((wasm) => {
     offset: number;
   }>;
   const payload = wasm.extractFarEntry(fakeFar, 0);
+  const chunks = wasm.parseIffChunks(fakeIff) as Array<{
+    kind: string;
+    size: number;
+    id: number;
+    flags: number;
+    dataStart: number;
+    dataLen: number;
+  }>;
   console.info(
-    `[engine] v${wasm.engine_version()} · checkFarMagic=${wasm.checkFarMagic(fakeFar)} · iffVersion=${wasm.parseIffHeader(fakeIff)} · entries=${manifest.length} (${manifest[0]?.filename}, ${payload.length}B)`,
+    `[engine] v${wasm.engine_version()} · far ${manifest.length} entries (${manifest[0]?.filename}, ${payload.length}B) · iff v${wasm.parseIffHeader(fakeIff)}, ${chunks.length} chunks (${chunks.map((c) => c.kind).join(",")})`,
   );
 });
 
@@ -46,6 +53,23 @@ function buildSyntheticFar(): Uint8Array {
   view.setUint32(34, 16, true); // offset
   view.setUint32(38, 6, true); // filename_length
   buf.set(new TextEncoder().encode("hi.txt"), 42);
+  return buf;
+}
+
+/** Synthetic IFF v2.5 with one BHAV chunk (size 80, 4 bytes of payload). */
+function buildSyntheticIff(): Uint8Array {
+  const headerLen = 64;
+  const chunkHeaderLen = 76;
+  const chunkSize = 80;
+  const buf = new Uint8Array(headerLen + chunkSize);
+  const view = new DataView(buf.buffer);
+  buf.set(new TextEncoder().encode("IFF FILE 2.5:TYPE FOLLOWED BY SIZE\0 JAMIE DOORNBOS & MAXIS 1"), 0);
+  view.setUint32(60, 0, false); // rsmp_offset = 0 (BE)
+  buf.set(new TextEncoder().encode("BHAV"), headerLen); // chunk type
+  view.setUint32(headerLen + 4, chunkSize, false); // size BE
+  view.setUint16(headerLen + 8, 1, false); // id BE
+  view.setUint16(headerLen + 10, 0x0010, false); // flags BE
+  buf.set([0xde, 0xad, 0xbe, 0xef], headerLen + chunkHeaderLen); // payload
   return buf;
 }
 
