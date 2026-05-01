@@ -533,3 +533,116 @@ fn set_f64(obj: &Object, key: &str, value: f64) -> Result<(), JsError> {
         .map_err(|_| JsError::new("set"))?;
     Ok(())
 }
+
+/// Run a single `OBJf` event handler through the `SimAntics` VM.
+///
+/// Mirrors `crates/simantics/examples/run_object.rs`: parses both IFFs, builds a
+/// `LayeredBhavSource` (object IFF → private, globals IFF → semi-global), parses
+/// the `OBJf` table, looks up the requested event, and ticks once. Returns
+/// `{ outcome, actionId, exec, trace: [...], effects: [...] }`. Effects are
+/// returned as their `Debug` representation to keep the binding compact.
+///
+/// `globals_iff` may be empty (`new Uint8Array()`); semi-global sub-calls then
+/// bail out cleanly with `BhavNotFound`.
+///
+/// # Errors
+/// Returns a `JsError` if either IFF is malformed, `OBJf` is missing, the event
+/// has no handler, or the VM step-budget is exhausted.
+#[wasm_bindgen(js_name = runObjectEvent)]
+pub fn run_object_event(object_iff: &[u8], globals_iff: &[u8], event: u32) -> Result<Object, JsError> {
+    let object_parsed = iff::Iff::parse(object_iff).map_err(|e| JsError::new(&e.to_string()))?;
+    let mut source = simantics::vm::LayeredBhavSource::default();
+    for chunk in object_parsed.chunks() {
+        let chunk = chunk.map_err(|e| JsError::new(&e.to_string()))?;
+        if &chunk.kind == b"BHAV" {
+            source.private.insert(chunk.id, chunk.data.to_vec());
+        }
+    }
+    if !globals_iff.is_empty() {
+        let globals_parsed = iff::Iff::parse(globals_iff).map_err(|e| JsError::new(&e.to_string()))?;
+        for chunk in globals_parsed.chunks() {
+            let chunk = chunk.map_err(|e| JsError::new(&e.to_string()))?;
+            if &chunk.kind == b"BHAV" {
+                source.semi_global.insert(chunk.id, chunk.data.to_vec());
+            }
+        }
+    }
+    let mut objf_data: Option<&[u8]> = None;
+    for chunk in object_parsed.chunks() {
+        let chunk = chunk.map_err(|e| JsError::new(&e.to_string()))?;
+        if &chunk.kind == b"OBJf" {
+            objf_data = Some(chunk.data);
+            break;
+        }
+    }
+    let objf_data = objf_data.ok_or_else(|| JsError::new("no OBJf chunk in object IFF"))?;
+    let objf = simantics::Objf::parse(objf_data).map_err(|e| JsError::new(&e.to_string()))?;
+    let entry = objf
+        .dispatch(event as usize)
+        .ok_or_else(|| JsError::new("OBJf event has no handler (or pair is (0,0))"))?;
+
+    let mut vm = simantics::vm::Vm::new(&source);
+    vm.trace_enabled = true;
+    vm.world.interaction_queue.push(simantics::vm::PendingInteraction {
+        sim_id: 0xAA,
+        stack_object_id: 0xBB,
+        action_function: entry.action,
+        joining_index: if entry.condition == 0 {
+            -1
+        } else {
+            i32::from(entry.condition)
+        },
+    });
+    let outcome = vm.tick().map_err(|e| JsError::new(&e.to_string()))?;
+
+    let result = Object::new();
+    let (outcome_str, action_id, exec_str) = match &outcome {
+        simantics::vm::TickOutcome::Idle => ("idle", 0u16, String::new()),
+        simantics::vm::TickOutcome::Skipped(p) => ("skipped", p.action_function, String::new()),
+        simantics::vm::TickOutcome::Ran(p, exec) => {
+            let s = match exec {
+                simantics::vm::ExecResult::Returned(true) => "returned_true".to_string(),
+                simantics::vm::ExecResult::Returned(false) => "returned_false".to_string(),
+                simantics::vm::ExecResult::Error => "ret_error".to_string(),
+                simantics::vm::ExecResult::BudgetExhausted => "budget_exhausted".to_string(),
+            };
+            ("ran", p.action_function, s)
+        }
+    };
+    Reflect::set(&result, &JsValue::from_str("outcome"), &JsValue::from_str(outcome_str))
+        .map_err(|_| JsError::new("set outcome"))?;
+    set_f64(&result, "actionId", f64::from(action_id))?;
+    Reflect::set(&result, &JsValue::from_str("exec"), &JsValue::from_str(&exec_str))
+        .map_err(|_| JsError::new("set exec"))?;
+
+    let trace = Array::new();
+    for entry in &vm.trace {
+        let e = Object::new();
+        #[allow(clippy::cast_precision_loss)]
+        let depth_f = entry.depth as f64;
+        set_f64(&e, "depth", depth_f)?;
+        set_f64(&e, "bhavId", f64::from(entry.bhav_id))?;
+        set_f64(&e, "ip", f64::from(entry.ip))?;
+        set_f64(&e, "opcode", f64::from(entry.opcode))?;
+        let branch = match entry.branch_taken {
+            simantics::vm::TraceBranch::Continue(ip) => format!("→{ip}"),
+            simantics::vm::TraceBranch::Returned(true) => "ret_true".to_string(),
+            simantics::vm::TraceBranch::Returned(false) => "ret_false".to_string(),
+            simantics::vm::TraceBranch::Error => "ret_error".to_string(),
+        };
+        Reflect::set(&e, &JsValue::from_str("branch"), &JsValue::from_str(&branch))
+            .map_err(|_| JsError::new("set branch"))?;
+        trace.push(&e);
+    }
+    Reflect::set(&result, &JsValue::from_str("trace"), &trace)
+        .map_err(|_| JsError::new("set trace"))?;
+
+    let effects = Array::new();
+    for ef in &vm.effects {
+        effects.push(&JsValue::from_str(&format!("{ef:?}")));
+    }
+    Reflect::set(&result, &JsValue::from_str("effects"), &effects)
+        .map_err(|_| JsError::new("set effects"))?;
+
+    Ok(result)
+}

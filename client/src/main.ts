@@ -191,6 +191,15 @@ interface LoadedObject {
   paltChunk: IffChunkRef | null;
   baseGraphicId: number;
   dgrps: DgrpChunk[];
+  semiGlobalName: string | null;
+}
+
+interface RunOutput {
+  outcome: string;
+  actionId: number;
+  exec: string;
+  trace: Array<{ depth: number; bhavId: number; ip: number; opcode: number; branch: string }>;
+  effects: string[];
 }
 
 const DIRECTION_FLAGS: Array<{ flag: number; label: string }> = [
@@ -227,6 +236,18 @@ function buildLoadedObject(
   const labelTrimmed = objdChunk.label.trim();
   const objectName = labelTrimmed.length > 0 ? labelTrimmed : humanizeIffName(iffName);
   const paltChunk = chunks.find((c) => c.kind === "PALT" && c.id === 0) ?? null;
+  const globChunk = chunks.find((c) => c.kind === "GLOB");
+  let semiGlobalName: string | null = null;
+  if (globChunk) {
+    try {
+      const glob = wasm.parseGlob(
+        data.subarray(globChunk.dataStart, globChunk.dataStart + globChunk.dataLen),
+      ) as { semiGlobalName: string };
+      semiGlobalName = glob.semiGlobalName;
+    } catch (err) {
+      console.warn(`[viewer] GLOB parse failed for ${iffName}:`, err);
+    }
+  }
   const dgrps: DgrpChunk[] = [];
   for (const c of chunks) {
     if (c.kind !== "DGRP") continue;
@@ -240,7 +261,7 @@ function buildLoadedObject(
       console.warn(`[viewer] DGRP ${c.id} parse failed:`, err);
     }
   }
-  return { iffName, objectName, data, chunks, paltChunk, baseGraphicId, dgrps };
+  return { iffName, objectName, data, chunks, paltChunk, baseGraphicId, dgrps, semiGlobalName };
 }
 
 /** "AlarmClock.iff" → "Alarm Clock". CamelCase → space-separated. */
@@ -427,6 +448,91 @@ async function loadObjectByName(
   }
 }
 
+/** Per-name cache of semi-global IFF bytes loaded from `Global.far`. */
+const globalsCache = new Map<string, Uint8Array | null>();
+
+async function loadSemiGlobalIff(
+  wasm: Awaited<ReturnType<typeof engine>>,
+  globalsFarPath: string,
+  name: string,
+): Promise<Uint8Array | null> {
+  const key = name.toLowerCase();
+  if (globalsCache.has(key)) return globalsCache.get(key) ?? null;
+  try {
+    const farManifest = await readFarManifest(globalsFarPath);
+    const target = farManifest.find((e) => {
+      const stem = e.filename.replace(/\.iff$/i, "");
+      return stem.toLowerCase() === key;
+    });
+    if (!target) {
+      globalsCache.set(key, null);
+      return null;
+    }
+    const { data } = await readIffFromFar(globalsFarPath, target.filename);
+    globalsCache.set(key, data);
+    return data;
+  } catch (err) {
+    console.warn(`[viewer] semi-global ${name} load failed:`, err);
+    globalsCache.set(key, null);
+    return null;
+  }
+}
+
+const RUN_OUTPUT_EL = document.getElementById("run-output");
+
+function setRunOutput(text: string): void {
+  if (!RUN_OUTPUT_EL) return;
+  RUN_OUTPUT_EL.textContent = text;
+  RUN_OUTPUT_EL.style.display = text ? "block" : "none";
+}
+
+function formatTraceEntry(
+  wasm: Awaited<ReturnType<typeof engine>>,
+  e: { depth: number; bhavId: number; ip: number; opcode: number; branch: string },
+): string {
+  const indent = "  ".repeat(e.depth);
+  const opLabel = (wasm.primitiveName(e.opcode) as string | null) ?? `op${e.opcode.toString(16)}`;
+  const bhavLabel = `0x${e.bhavId.toString(16).padStart(4, "0")}`;
+  return `${indent}${bhavLabel}#${e.ip} ${opLabel} → ${e.branch}`;
+}
+
+async function runMain(globalsFarPath: string | null): Promise<void> {
+  const wasm = viewerState.wasm;
+  const obj = viewerState.current;
+  if (!wasm || !obj) {
+    setRunOutput("(no object loaded)");
+    return;
+  }
+  setRunOutput("running…");
+  let globalsBytes: Uint8Array = new Uint8Array(0);
+  if (obj.semiGlobalName && globalsFarPath) {
+    const loaded = await loadSemiGlobalIff(wasm, globalsFarPath, obj.semiGlobalName);
+    if (loaded) globalsBytes = loaded;
+  }
+  try {
+    const out = wasm.runObjectEvent(obj.data, globalsBytes, 1) as RunOutput;
+    const lines: string[] = [];
+    lines.push(
+      `event=Main action=0x${out.actionId.toString(16).padStart(4, "0")} outcome=${out.outcome}${out.exec ? ` (${out.exec})` : ""}`,
+    );
+    if (obj.semiGlobalName) lines.push(`semi-global: ${obj.semiGlobalName} (${globalsBytes.length}B)`);
+    lines.push(`trace (${out.trace.length} steps):`);
+    const limit = Math.min(out.trace.length, 80);
+    for (let i = 0; i < limit; i++) {
+      const entry = out.trace[i];
+      if (entry) lines.push("  " + formatTraceEntry(wasm, entry));
+    }
+    if (out.trace.length > limit) lines.push(`  … +${out.trace.length - limit} more`);
+    if (out.effects.length > 0) {
+      lines.push(`effects (${out.effects.length}):`);
+      for (const ef of out.effects) lines.push("  " + ef);
+    }
+    setRunOutput(lines.join("\n"));
+  } catch (err) {
+    setRunOutput(`run failed: ${(err as Error).message}`);
+  }
+}
+
 /**
  * Initial viewer bootstrap: AlarmClock at south/zoom-3/base-graphic, plus catalog dropdown.
  * Returns a one-line summary for the HUD.
@@ -439,10 +545,17 @@ async function tryRenderAlarmClockObject(
     f.path.toLowerCase().endsWith("objects/objects.far"),
   );
   if (!objectsFar) return null;
+  const globalsFar = manifest.files.find((f) => f.path.toLowerCase().endsWith("global.far"));
   viewerState.wasm = wasm;
   mountStaticControls();
   void mountObjectSelector(wasm, objectsFar.path);
   await loadObjectByName(wasm, objectsFar.path, "AlarmClock.iff");
+  const runBtn = document.getElementById("run-main-btn");
+  if (runBtn instanceof HTMLButtonElement) {
+    runBtn.addEventListener("click", () => {
+      void runMain(globalsFar ? globalsFar.path : null);
+    });
+  }
   const obj = viewerState.current;
   return obj ? `viewer ${obj.objectName} (${obj.dgrps.length} DGRP)` : null;
 }
