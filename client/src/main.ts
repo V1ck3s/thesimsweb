@@ -1,7 +1,7 @@
 import { createRenderer } from "./renderer/webgl.js";
 import { drawHelloSims } from "./renderer/hello.js";
 import { engine } from "./engine/wasm.js";
-import { fetchManifest, readIffFromFar, readStandaloneIff } from "./engine/assets.js";
+import { fetchManifest, readFarManifest, readIffFromFar, readStandaloneIff } from "./engine/assets.js";
 
 function findCanvas(): HTMLCanvasElement {
   const el = document.getElementById("game");
@@ -167,11 +167,264 @@ interface DecodedSprite {
   rgba: Uint8Array;
 }
 
+interface IffChunkRef {
+  kind: string;
+  size: number;
+  id: number;
+  flags: number;
+  dataStart: number;
+  dataLen: number;
+}
+
+interface DgrpChunk {
+  id: number;
+  version: number;
+  images: DgrpImage[];
+}
+
+interface LoadedObject {
+  iffName: string;
+  objectName: string;
+  data: Uint8Array;
+  chunks: IffChunkRef[];
+  paltChunk: IffChunkRef | null;
+  baseGraphicId: number;
+  dgrps: DgrpChunk[];
+}
+
+const DIRECTION_FLAGS: Array<{ flag: number; label: string }> = [
+  { flag: 0x10, label: "S" },
+  { flag: 0x40, label: "E" },
+  { flag: 0x01, label: "N" },
+  { flag: 0x04, label: "W" },
+];
+const ZOOM_LEVELS = [1, 2, 3];
+
+const viewerState = {
+  current: null as LoadedObject | null,
+  direction: 0x10,
+  zoom: 3,
+  dgrpId: 0,
+  wasm: null as Awaited<ReturnType<typeof engine>> | null,
+};
+
+/** Build a `LoadedObject` snapshot for an IFF: parse OBJD + every DGRP once. */
+function buildLoadedObject(
+  wasm: Awaited<ReturnType<typeof engine>>,
+  iffName: string,
+  data: Uint8Array,
+  chunks: IffChunkRef[],
+): LoadedObject | null {
+  const objdChunk = chunks.find((c) => c.kind === "OBJD");
+  if (!objdChunk) return null;
+  const objd = wasm.parseObjd(
+    data.subarray(objdChunk.dataStart, objdChunk.dataStart + objdChunk.dataLen),
+  ) as { fields: number[] };
+  const baseGraphicId = objd.fields[1] ?? 0;
+  const objectName = humanizeIffName(iffName);
+  const paltChunk = chunks.find((c) => c.kind === "PALT" && c.id === 0) ?? null;
+  const dgrps: DgrpChunk[] = [];
+  for (const c of chunks) {
+    if (c.kind !== "DGRP") continue;
+    try {
+      const parsed = wasm.parseDgrp(data.subarray(c.dataStart, c.dataStart + c.dataLen)) as {
+        version: number;
+        images: DgrpImage[];
+      };
+      dgrps.push({ id: c.id, version: parsed.version, images: parsed.images });
+    } catch (err) {
+      console.warn(`[viewer] DGRP ${c.id} parse failed:`, err);
+    }
+  }
+  return { iffName, objectName, data, chunks, paltChunk, baseGraphicId, dgrps };
+}
+
+/** "AlarmClock.iff" → "Alarm Clock". CamelCase → space-separated. */
+function humanizeIffName(iffName: string): string {
+  const stem = iffName.replace(/\.iff$/i, "");
+  return stem.replace(/([a-z0-9])([A-Z])/gu, "$1 $2");
+}
+
+/** Render the currently selected (object, direction, zoom, dgrpId) tuple. */
+function renderViewer(): void {
+  const wasm = viewerState.wasm;
+  const obj = viewerState.current;
+  if (!wasm || !obj) return;
+  const dgrp = obj.dgrps.find((d) => d.id === viewerState.dgrpId) ?? obj.dgrps[0];
+  if (!dgrp) {
+    setObjectLabel(`${obj.objectName} · no DGRP`);
+    return;
+  }
+  const image =
+    dgrp.images.find(
+      (i) => i.directionFlags === viewerState.direction && i.zoomLevel === viewerState.zoom,
+    ) ?? dgrp.images[0];
+  if (!image || !obj.paltChunk) {
+    setObjectLabel(`${obj.objectName} · DGRP ${dgrp.id} · no image for that view`);
+    clearObjectViewer();
+    return;
+  }
+  const palt = obj.data.subarray(
+    obj.paltChunk.dataStart,
+    obj.paltChunk.dataStart + obj.paltChunk.dataLen,
+  );
+  const decoded: Array<{ sp: DgrpSprite; bmp: DecodedSprite }> = [];
+  for (const sp of image.sprites) {
+    const spr2Chunk = obj.chunks.find((c) => c.kind === "SPR2" && c.id === sp.sprChunkId);
+    if (!spr2Chunk) continue;
+    try {
+      const bmp = wasm.decodeSpr2Frame(
+        obj.data.subarray(spr2Chunk.dataStart, spr2Chunk.dataStart + spr2Chunk.dataLen),
+        palt,
+        sp.sprFrameNumber,
+      ) as DecodedSprite;
+      decoded.push({ sp, bmp });
+    } catch (err) {
+      console.warn(`[viewer] SPR2 ${sp.sprChunkId}#${sp.sprFrameNumber} decode failed:`, err);
+    }
+  }
+  if (decoded.length === 0) {
+    setObjectLabel(`${obj.objectName} · DGRP ${dgrp.id} · no decodable sprites`);
+    clearObjectViewer();
+    return;
+  }
+  composeObjectViewer(decoded);
+  const dirLabel = DIRECTION_FLAGS.find((d) => d.flag === viewerState.direction)?.label ?? "?";
+  setObjectLabel(
+    `${obj.objectName} · DGRP ${dgrp.id}${dgrp.id === obj.baseGraphicId ? " (base)" : ""} · ${dirLabel} z${viewerState.zoom} · ${decoded.length}/${image.sprites.length} sprites`,
+  );
+  refreshStateButtons();
+}
+
+/** Show all DGRP IDs as buttons; highlight the current one. */
+function refreshStateButtons(): void {
+  const obj = viewerState.current;
+  const root = document.getElementById("state-buttons");
+  if (!root || !obj) return;
+  root.innerHTML = "";
+  for (const d of obj.dgrps) {
+    const btn = document.createElement("button");
+    btn.textContent = String(d.id);
+    btn.style.cssText = controlButtonStyle(d.id === viewerState.dgrpId);
+    btn.addEventListener("click", () => {
+      viewerState.dgrpId = d.id;
+      renderViewer();
+    });
+    root.appendChild(btn);
+  }
+}
+
+/** Mount direction/zoom buttons (static; only their highlight changes per render). */
+function mountStaticControls(): void {
+  const dirRoot = document.getElementById("dir-buttons");
+  if (dirRoot) {
+    dirRoot.innerHTML = "";
+    for (const d of DIRECTION_FLAGS) {
+      const btn = document.createElement("button");
+      btn.textContent = d.label;
+      btn.dataset["flag"] = String(d.flag);
+      btn.addEventListener("click", () => {
+        viewerState.direction = d.flag;
+        updateButtonHighlights();
+        renderViewer();
+      });
+      dirRoot.appendChild(btn);
+    }
+  }
+  const zoomRoot = document.getElementById("zoom-buttons");
+  if (zoomRoot) {
+    zoomRoot.innerHTML = "";
+    for (const z of ZOOM_LEVELS) {
+      const btn = document.createElement("button");
+      btn.textContent = String(z);
+      btn.dataset["zoom"] = String(z);
+      btn.addEventListener("click", () => {
+        viewerState.zoom = z;
+        updateButtonHighlights();
+        renderViewer();
+      });
+      zoomRoot.appendChild(btn);
+    }
+  }
+  updateButtonHighlights();
+}
+
+function updateButtonHighlights(): void {
+  for (const btn of document.querySelectorAll<HTMLButtonElement>("#dir-buttons button")) {
+    const flag = Number(btn.dataset["flag"] ?? "0");
+    btn.style.cssText = controlButtonStyle(flag === viewerState.direction);
+  }
+  for (const btn of document.querySelectorAll<HTMLButtonElement>("#zoom-buttons button")) {
+    const z = Number(btn.dataset["zoom"] ?? "0");
+    btn.style.cssText = controlButtonStyle(z === viewerState.zoom);
+  }
+}
+
+function controlButtonStyle(active: boolean): string {
+  return `background:${active ? "#3b6" : "#222"};color:${active ? "#000" : "#cde"};border:1px solid #444;font:inherit;padding:1px 6px;cursor:pointer;border-radius:2px;min-width:22px;`;
+}
+
+function clearObjectViewer(): void {
+  if (!OBJECT_VIEWER_CANVAS) return;
+  const ctx = OBJECT_VIEWER_CANVAS.getContext("2d");
+  if (!ctx) return;
+  ctx.clearRect(0, 0, OBJECT_VIEWER_CANVAS.width, OBJECT_VIEWER_CANVAS.height);
+}
+
+/** Populate the obj <select> with every IFF in Objects.far. */
+async function mountObjectSelector(
+  wasm: Awaited<ReturnType<typeof engine>>,
+  objectsFarPath: string,
+): Promise<void> {
+  const select = document.getElementById("object-select");
+  if (!(select instanceof HTMLSelectElement)) return;
+
+  const farManifest = await readFarManifest(objectsFarPath);
+  const candidates = farManifest
+    .map((e) => e.filename)
+    .filter((n) => n.toLowerCase().endsWith(".iff"))
+    .sort((a, b) => a.localeCompare(b));
+
+  select.innerHTML = "";
+  for (const name of candidates) {
+    const opt = document.createElement("option");
+    opt.value = name;
+    opt.textContent = humanizeIffName(name);
+    if (name === "AlarmClock.iff") opt.selected = true;
+    select.appendChild(opt);
+  }
+  select.addEventListener("change", () => {
+    void loadObjectByName(wasm, objectsFarPath, select.value);
+  });
+}
+
+async function loadObjectByName(
+  wasm: Awaited<ReturnType<typeof engine>>,
+  objectsFarPath: string,
+  iffName: string,
+): Promise<void> {
+  try {
+    const { data, chunks } = await readIffFromFar(objectsFarPath, iffName);
+    const loaded = buildLoadedObject(wasm, iffName, data, chunks as IffChunkRef[]);
+    if (!loaded || loaded.dgrps.length === 0) {
+      setObjectLabel(`${iffName} · no DGRP`);
+      clearObjectViewer();
+      return;
+    }
+    viewerState.current = loaded;
+    viewerState.dgrpId = loaded.baseGraphicId;
+    if (!loaded.dgrps.some((d) => d.id === viewerState.dgrpId)) {
+      viewerState.dgrpId = loaded.dgrps[0]?.id ?? 0;
+    }
+    renderViewer();
+  } catch (err) {
+    console.warn(`[viewer] load ${iffName} failed:`, err);
+    setObjectLabel(`${iffName} · load failed`);
+  }
+}
+
 /**
- * Compose AlarmClock's `BASE_GRAPHIC_ID` DGRP into the object viewer canvas.
- *
- * Uses the south-facing image (direction 0x10) at maximum zoom (3). Composites
- * each sprite at `(spriteXOffset, spriteYOffset)` relative to the canvas centre.
+ * Initial viewer bootstrap: AlarmClock at south/zoom-3/base-graphic, plus catalog dropdown.
  * Returns a one-line summary for the HUD.
  */
 async function tryRenderAlarmClockObject(
@@ -182,55 +435,12 @@ async function tryRenderAlarmClockObject(
     f.path.toLowerCase().endsWith("objects/objects.far"),
   );
   if (!objectsFar) return null;
-  try {
-    const { data, chunks } = await readIffFromFar(objectsFar.path, "AlarmClock.iff");
-    const objdChunk = chunks.find((c) => c.kind === "OBJD");
-    if (!objdChunk) return null;
-    const objd = wasm.parseObjd(
-      data.subarray(objdChunk.dataStart, objdChunk.dataStart + objdChunk.dataLen),
-    ) as { fields: number[] };
-    const baseGraphicId = objd.fields[1] ?? 0;
-    const dgrpChunk = chunks.find((c) => c.kind === "DGRP" && c.id === baseGraphicId);
-    if (!dgrpChunk) return `no DGRP id=${baseGraphicId}`;
-
-    const dgrp = wasm.parseDgrp(
-      data.subarray(dgrpChunk.dataStart, dgrpChunk.dataStart + dgrpChunk.dataLen),
-    ) as { version: number; images: DgrpImage[] };
-    // Pick south-facing maximum zoom — the most face-on view.
-    const image =
-      dgrp.images.find((i) => i.directionFlags === 0x10 && i.zoomLevel === 3) ??
-      dgrp.images[0];
-    if (!image) return "DGRP empty";
-
-    // Decode each sprite frame.
-    const decoded: Array<{ sp: DgrpSprite; bmp: DecodedSprite }> = [];
-    for (const sp of image.sprites) {
-      const spr2Chunk = chunks.find((c) => c.kind === "SPR2" && c.id === sp.sprChunkId);
-      if (!spr2Chunk) continue;
-      const paltChunk = chunks.find((c) => c.kind === "PALT" && c.id === 0);
-      if (!paltChunk) continue;
-      try {
-        const bmp = wasm.decodeSpr2Frame(
-          data.subarray(spr2Chunk.dataStart, spr2Chunk.dataStart + spr2Chunk.dataLen),
-          data.subarray(paltChunk.dataStart, paltChunk.dataStart + paltChunk.dataLen),
-          sp.sprFrameNumber,
-        ) as DecodedSprite;
-        decoded.push({ sp, bmp });
-      } catch (err) {
-        console.warn(`[viewer] SPR2 ${sp.sprChunkId}#${sp.sprFrameNumber} decode failed:`, err);
-      }
-    }
-    if (decoded.length === 0) return "no decodable sprites";
-
-    composeObjectViewer(decoded);
-    setObjectLabel(
-      `AlarmClock · DGRP ${baseGraphicId} · dir=0x10 zoom=3 · ${decoded.length}/${image.sprites.length} sprites`,
-    );
-    return `viewer ${decoded.length} sprite(s)`;
-  } catch (err) {
-    console.warn("[viewer] AlarmClock render failed:", err);
-    return `viewer err: ${(err as Error).message}`;
-  }
+  viewerState.wasm = wasm;
+  mountStaticControls();
+  void mountObjectSelector(wasm, objectsFar.path);
+  await loadObjectByName(wasm, objectsFar.path, "AlarmClock.iff");
+  const obj = viewerState.current;
+  return obj ? `viewer ${obj.objectName} (${obj.dgrps.length} DGRP)` : null;
 }
 
 const OBJECT_VIEWER_CANVAS = document.getElementById("object-viewer") as HTMLCanvasElement | null;
