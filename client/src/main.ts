@@ -496,8 +496,12 @@ function formatTraceEntry(
   e: { depth: number; bhavId: number; ip: number; opcode: number; branch: string },
 ): string {
   const indent = "  ".repeat(e.depth);
-  const opLabel = (wasm.primitiveName(e.opcode) as string | null) ?? `op${e.opcode.toString(16)}`;
   const bhavLabel = `0x${e.bhavId.toString(16).padStart(4, "0")}`;
+  // <256 = primitive, ≥256 = sub-call into another BHAV (semi/private/global per range).
+  const opLabel =
+    e.opcode < 256
+      ? ((wasm.primitiveName(e.opcode) as string | null) ?? `prim ${e.opcode}`)
+      : `call 0x${e.opcode.toString(16).padStart(4, "0")}`;
   return `${indent}${bhavLabel}#${e.ip} ${opLabel} → ${e.branch}`;
 }
 
