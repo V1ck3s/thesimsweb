@@ -18,6 +18,8 @@ use alloc::vec::Vec;
 
 use thiserror::Error;
 
+pub mod vm;
+
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum SimAnticsError {
     #[error("buffer too short")]
