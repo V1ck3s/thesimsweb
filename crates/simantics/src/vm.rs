@@ -243,6 +243,31 @@ impl World {
     }
 }
 
+/// Observable side-effect requested by a primitive that would yield to the engine.
+///
+/// Several `SimAntics` primitives don't compute anything in the VM — they tell the
+/// game engine to do something (queue an animation, play a sound, sleep `n` ticks).
+/// Without an engine to receive those requests, we still want them to be visible:
+/// each one is recorded here so tests can assert "this BHAV asked the engine to
+/// `AnimateSim(0x0001)` then `Sleep(20)`" without needing a full engine model.
+///
+/// The raw 8-byte operand is preserved on every variant so we can revisit the
+/// interpretation later without losing data.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VmEffect {
+    /// Primitive 0 — `ticks` is the number of game ticks to yield. Niotso says
+    /// the count is at operand bytes 4..6 (offsets 4 and 5).
+    Sleep { ticks: u16, operand: [u8; 8] },
+    /// Primitive 17 — like Sleep, but the engine may interrupt to push another
+    /// interaction onto the stack. `ticks` at bytes 4..6, `interruptable` at 6..8.
+    Idle { ticks: u16, interruptable: bool, operand: [u8; 8] },
+    /// Primitive 23 — request the engine play a sound event. Operand layout is
+    /// undocumented; we store the raw bytes and best-guess `event_id` from 0..2.
+    PlaySound { event_id: u16, operand: [u8; 8] },
+    /// Primitive 44 — request the engine queue an animation. Same caveat as `PlaySound`.
+    AnimateSim { anim_id: u16, operand: [u8; 8] },
+}
+
 /// One entry in the per-execution trace. Useful for snapshot/diff testing primitive
 /// implementations once they exist.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -266,6 +291,9 @@ pub struct Vm<'a> {
     pub world: World,
     pub call_stack: Vec<StackFrame>,
     pub trace: Vec<TraceEntry>,
+    /// Side-effects emitted by primitives that yield to the engine (always recorded,
+    /// regardless of `trace_enabled`). See [`VmEffect`].
+    pub effects: Vec<VmEffect>,
     /// Maximum total instructions to execute before bailing out.
     pub step_budget: usize,
     /// Maximum recursion depth.
@@ -279,6 +307,7 @@ impl core::fmt::Debug for Vm<'_> {
         f.debug_struct("Vm")
             .field("call_stack", &self.call_stack)
             .field("trace_len", &self.trace.len())
+            .field("effects_len", &self.effects.len())
             .field("step_budget", &self.step_budget)
             .field("max_depth", &self.max_depth)
             .field("trace_enabled", &self.trace_enabled)
@@ -307,6 +336,7 @@ impl<'a> Vm<'a> {
             world: World::default(),
             call_stack: Vec::new(),
             trace: Vec::new(),
+            effects: Vec::new(),
             step_budget: 1_000_000,
             max_depth: 256,
             trace_enabled: false,
@@ -404,9 +434,46 @@ impl<'a> Vm<'a> {
         // BHAV continues forward — this keeps the runner useful for trace exploration
         // while we land primitives one by one.
         match instr.opcode {
+            0 => self.exec_sleep(instr.operand),
             2 => self.exec_expression(instr.operand),
+            7 => Self::exec_refresh(),
+            17 => self.exec_idle_for_input(instr.operand),
+            23 => self.exec_play_sound(instr.operand),
+            44 => self.exec_animate_sim(instr.operand),
             _ => DispatchOutcome::Branch(true),
         }
+    }
+
+    fn exec_sleep(&mut self, operand: [u8; 8]) -> DispatchOutcome {
+        let ticks = u16::from_le_bytes([operand[4], operand[5]]);
+        self.effects.push(VmEffect::Sleep { ticks, operand });
+        DispatchOutcome::Branch(true)
+    }
+
+    fn exec_idle_for_input(&mut self, operand: [u8; 8]) -> DispatchOutcome {
+        let ticks = u16::from_le_bytes([operand[4], operand[5]]);
+        let interruptable = u16::from_le_bytes([operand[6], operand[7]]) != 0;
+        self.effects.push(VmEffect::Idle { ticks, interruptable, operand });
+        DispatchOutcome::Branch(true)
+    }
+
+    /// Primitive 7 — Refresh. Engine-side request to redraw the object's graphic.
+    /// Pure no-op as far as the VM is concerned; we don't even bother recording it
+    /// as an effect (a redraw doesn't change Sim state).
+    const fn exec_refresh() -> DispatchOutcome {
+        DispatchOutcome::Branch(true)
+    }
+
+    fn exec_play_sound(&mut self, operand: [u8; 8]) -> DispatchOutcome {
+        let event_id = u16::from_le_bytes([operand[0], operand[1]]);
+        self.effects.push(VmEffect::PlaySound { event_id, operand });
+        DispatchOutcome::Branch(true)
+    }
+
+    fn exec_animate_sim(&mut self, operand: [u8; 8]) -> DispatchOutcome {
+        let anim_id = u16::from_le_bytes([operand[0], operand[1]]);
+        self.effects.push(VmEffect::AnimateSim { anim_id, operand });
+        DispatchOutcome::Branch(true)
     }
 
     fn exec_expression(&mut self, operand: [u8; 8]) -> DispatchOutcome {
@@ -851,6 +918,89 @@ mod tests {
         // Second call: param=5, expect Returned(false)
         let r2 = vm.call(0x1000, alloc::vec![5], 0, 0).unwrap();
         assert_eq!(r2, ExecResult::Returned(false));
+    }
+
+    #[test]
+    fn sleep_records_ticks_effect() {
+        // Primitive 0 (Sleep) with operand bytes[4..6] = 20, then RET_TRUE.
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&0x8002u16.to_le_bytes());
+        buf.extend_from_slice(&1u16.to_le_bytes());
+        buf.extend_from_slice(&[0u8; 4]);
+        buf.extend_from_slice(&0u32.to_le_bytes());
+        buf.extend_from_slice(&0u16.to_le_bytes()); // opcode 0 = Sleep
+        buf.push(Instruction::RETURN_TRUE);
+        buf.push(Instruction::RETURN_ERROR);
+        buf.extend_from_slice(&[0, 0, 0, 0, 20, 0, 0, 0]); // ticks = 20 at offset 4
+        let src = source(&[(0x1000, buf)]);
+        let mut vm = Vm::new(&src);
+        let result = vm.call(0x1000, Vec::new(), 0, 0).unwrap();
+        assert_eq!(result, ExecResult::Returned(true));
+        assert_eq!(vm.effects.len(), 1);
+        match vm.effects[0] {
+            VmEffect::Sleep { ticks, .. } => assert_eq!(ticks, 20),
+            ref other => panic!("expected Sleep, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn idle_for_input_records_interruptable_flag() {
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&0x8002u16.to_le_bytes());
+        buf.extend_from_slice(&1u16.to_le_bytes());
+        buf.extend_from_slice(&[0u8; 4]);
+        buf.extend_from_slice(&0u32.to_le_bytes());
+        buf.extend_from_slice(&17u16.to_le_bytes()); // opcode 17 = idle for input
+        buf.push(Instruction::RETURN_TRUE);
+        buf.push(Instruction::RETURN_ERROR);
+        // ticks = 5 @ 4..6, interruptable = 1 @ 6..8
+        buf.extend_from_slice(&[0, 0, 0, 0, 5, 0, 1, 0]);
+        let src = source(&[(0x1000, buf)]);
+        let mut vm = Vm::new(&src);
+        vm.call(0x1000, Vec::new(), 0, 0).unwrap();
+        match vm.effects[0] {
+            VmEffect::Idle { ticks, interruptable, .. } => {
+                assert_eq!(ticks, 5);
+                assert!(interruptable);
+            }
+            ref other => panic!("expected Idle, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn animate_sim_and_play_sound_record_operands() {
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&0x8002u16.to_le_bytes());
+        buf.extend_from_slice(&2u16.to_le_bytes()); // 2 instructions
+        buf.extend_from_slice(&[0u8; 4]);
+        buf.extend_from_slice(&0u32.to_le_bytes());
+        // ip 0: opcode 44 Animate Sim, t=1 f=ERR, anim_id=0x1234
+        buf.extend_from_slice(&44u16.to_le_bytes());
+        buf.push(1);
+        buf.push(Instruction::RETURN_ERROR);
+        buf.extend_from_slice(&[0x34, 0x12, 0, 0, 0, 0, 0, 0]);
+        // ip 1: opcode 23 Play Sound Event, t=RET_TRUE f=ERR, event_id=0x00AB
+        buf.extend_from_slice(&23u16.to_le_bytes());
+        buf.push(Instruction::RETURN_TRUE);
+        buf.push(Instruction::RETURN_ERROR);
+        buf.extend_from_slice(&[0xAB, 0x00, 0, 0, 0, 0, 0, 0]);
+        let src = source(&[(0x1000, buf)]);
+        let mut vm = Vm::new(&src);
+        vm.call(0x1000, Vec::new(), 0, 0).unwrap();
+        assert_eq!(vm.effects.len(), 2);
+        assert!(matches!(vm.effects[0], VmEffect::AnimateSim { anim_id: 0x1234, .. }));
+        assert!(matches!(vm.effects[1], VmEffect::PlaySound { event_id: 0x00AB, .. }));
+    }
+
+    #[test]
+    fn refresh_is_pure_noop() {
+        let body = bhav(&[(7u16, Instruction::RETURN_TRUE, Instruction::RETURN_ERROR)]);
+        let src = source(&[(0x1000, body)]);
+        let mut vm = Vm::new(&src);
+        let result = vm.call(0x1000, Vec::new(), 0, 0).unwrap();
+        assert_eq!(result, ExecResult::Returned(true));
+        // No effects emitted — Refresh is engine-side draw, not Sim state.
+        assert!(vm.effects.is_empty());
     }
 
     #[test]
