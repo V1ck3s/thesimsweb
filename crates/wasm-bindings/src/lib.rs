@@ -345,6 +345,35 @@ pub fn parse_objd(data: &[u8]) -> Result<Object, JsError> {
     Ok(obj)
 }
 
+/// Look up the human-readable name of a `SimAntics` primitive opcode.
+/// Returns `null` (an empty `JsValue`) for opcodes outside the documented `0..=67` range.
+#[wasm_bindgen(js_name = primitiveName)]
+#[must_use]
+pub fn primitive_name(opcode: u16) -> JsValue {
+    simantics::primitive_name(opcode).map_or(JsValue::NULL, JsValue::from_str)
+}
+
+/// Look up the human-readable name of a `SimAntics` variable scope.
+/// Returns `null` for scopes outside the documented `0..=37` range.
+#[wasm_bindgen(js_name = scopeName)]
+#[must_use]
+pub fn scope_name(scope: u16) -> JsValue {
+    simantics::scope_name(scope).map_or(JsValue::NULL, JsValue::from_str)
+}
+
+/// Classify a BHAV `opcode`: returns one of `"primitive"`, `"semiglobal"`, `"private"`, `"global"`.
+#[wasm_bindgen(js_name = classifyOpcode)]
+#[must_use]
+pub fn classify_opcode(opcode: u16) -> JsValue {
+    let kind = match simantics::classify_opcode(opcode) {
+        simantics::InstructionKind::Primitive => "primitive",
+        simantics::InstructionKind::SemiGlobal => "semiglobal",
+        simantics::InstructionKind::Private => "private",
+        simantics::InstructionKind::Global => "global",
+    };
+    JsValue::from_str(kind)
+}
+
 /// Parse a TTAB chunk's data payload.
 ///
 /// Returns `{ version, interactions: Array<{ actionFunction, guardFunction,

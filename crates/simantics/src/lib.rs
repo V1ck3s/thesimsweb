@@ -243,6 +243,168 @@ impl Bcon {
     }
 }
 
+// ---- Opcode + Scope tables ----
+
+/// Human-readable name of a `SimAntics` primitive (opcode `< 256`).
+///
+/// Source: Niotso wiki, [`SimAntics`] page §Primitives. Returns `None` for opcodes
+/// outside the documented `0..=67` range. Names are kept verbatim as Niotso labels
+/// them — including the "(used in Sims 2.0)" tags on slots 51..=54 — so traces stay
+/// faithful to the reference.
+///
+/// [`SimAntics`]: http://wiki.niotso.org/SimAntics
+#[must_use]
+pub const fn primitive_name(opcode: u16) -> Option<&'static str> {
+    Some(match opcode {
+        0 => "Sleep",
+        1 => "Generic Sims Online Call",
+        2 => "Expression",
+        3 => "Report Metric",
+        4 => "grab",
+        5 => "drop",
+        6 => "Change Suit/Accessory",
+        7 => "Refresh",
+        8 => "Random Number",
+        9 => "burn",
+        10 => "Sims1.0 tutorial",
+        11 => "Get Distance To",
+        12 => "Get Direction To",
+        13 => "Push Interaction",
+        14 => "Find Best Object for Function",
+        15 => "Break Point",
+        16 => "Find Location For",
+        17 => "idle for input",
+        18 => "Remove Object Instance",
+        19 => "make new character",
+        20 => "Run Functional Tree",
+        21 => "show string",
+        22 => "look towards",
+        23 => "Play Sound Event",
+        24 => "old relationship",
+        25 => "Transfer Funds",
+        26 => "Relationship",
+        27 => "Go To Relative Position",
+        28 => "Run Tree by Name",
+        29 => "Set Motive Change",
+        30 => "Syslog",
+        31 => "Set to Next",
+        32 => "Test Object Type",
+        33 => "find 5 worst motives",
+        34 => "ui effect",
+        35 => "Special Effect",
+        36 => "Dialog - Private Strings",
+        37 => "Test Sim Interacting With",
+        38 => "Dialog - Global Strings",
+        39 => "Dialog - Semi-Global Strings",
+        40 => "OnlineJobsCall",
+        41 => "Set Balloon/Headline",
+        42 => "Create New Object Instance",
+        43 => "drop onto",
+        44 => "Animate Sim",
+        45 => "Go To Routing Slot",
+        46 => "Snap",
+        47 => "reach",
+        48 => "Stop ALL Sounds",
+        49 => "Notify the Stack Object out of Idle",
+        50 => "Add/Change the Action String",
+        51 => "prim 51 (Sims 2.0)",
+        52 => "prim 52 (Sims 2.0)",
+        53 => "prim 53 (Sims 2.0)",
+        54 => "prim 54 (Sims 2.0)",
+        55 => "Sync Field",
+        56 => "Ownership",
+        57 => "Start Persistant Dialog",
+        58 => "End Persistant Dialog",
+        59 => "Update Persistant Dialog",
+        60 => "Poll Persistant Dialog",
+        61 => "Send Maxis Letter",
+        62 => "Invoke Plugin",
+        63 => "Get Terrain Info",
+        64 => "Leave Lot and Goto",
+        65 => "Find Best Action",
+        66 => "Set Dynamic Object Name",
+        67 => "Inventory Operations",
+        _ => return None,
+    })
+}
+
+/// Classification of a BHAV instruction's `opcode` field.
+///
+/// The boundaries follow Niotso's §Primitives:
+/// - `< 256`   — primitive (built-in)
+/// - `< 4096`  — semi-global subroutine (`globals.iff` calls)
+/// - `< 8192`  — private subroutine (this object's own BHAVs)
+/// - `≥ 8192`  — global subroutine (`behavior.iff` calls)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InstructionKind {
+    Primitive,
+    SemiGlobal,
+    Private,
+    Global,
+}
+
+#[must_use]
+pub const fn classify_opcode(opcode: u16) -> InstructionKind {
+    if opcode < 256 {
+        InstructionKind::Primitive
+    } else if opcode < 4096 {
+        InstructionKind::SemiGlobal
+    } else if opcode < 8192 {
+        InstructionKind::Private
+    } else {
+        InstructionKind::Global
+    }
+}
+
+/// Human-readable name of a variable scope (the "owner" half of a variable reference).
+///
+/// Source: Niotso wiki §Scopes. Scopes 0..=37 are documented; the parser returns the
+/// label verbatim including "(DO NOT USE)" on the leftover slots 2 and 5.
+#[must_use]
+pub const fn scope_name(scope: u16) -> Option<&'static str> {
+    Some(match scope {
+        0 => "my objects attributes",
+        1 => "stack objects attributes",
+        2 => "targ obj attr (DO NOT USE)",
+        3 => "my object",
+        4 => "stack object",
+        5 => "targ obj's (DO NOT USE)",
+        6 => "Global (from avatar)",
+        7 => "literal",
+        8 => "temps",
+        9 => "parameters",
+        10 => "stack object id",
+        11 => "Temp[temp]",
+        12 => "check tree ad range",
+        13 => "stack obj's temp",
+        14 => "my motives",
+        15 => "stack obj's motives",
+        16 => "stack object's slot",
+        17 => "stack obj's motive[temp]",
+        18 => "my person data",
+        19 => "stack obj's person data",
+        20 => "my slot",
+        21 => "stack objects definition",
+        22 => "stack object's attr[stack param]",
+        23 => "room[temp 0]",
+        24 => "neighbor in stack object",
+        25 => "local",
+        26 => "stack object tuning",
+        27 => "Dyn. Sprite Flag[temp] of Stack Object",
+        28 => "check tree ad personality var",
+        29 => "check tree ad min",
+        30 => "my person data [temp]",
+        31 => "stack obj's person data [temp]",
+        32 => "neighbor's person data",
+        33 => "job data [temp 0, 1]",
+        34 => "neighborhood data",
+        35 => "stack object's function",
+        36 => "my type attr",
+        37 => "stack obj's type attr",
+        _ => return None,
+    })
+}
+
 // ---- STR# ----
 
 /// Encoding of a single entry inside an STR# chunk.
@@ -959,6 +1121,36 @@ mod tests {
         assert_eq!(first.autonomy_threshold, 100);
         assert_eq!(first.joining_index, -1);
         assert_eq!(first.motives[0].effect_max, 5);
+    }
+
+    #[test]
+    fn primitive_names_cover_documented_range() {
+        assert_eq!(primitive_name(0), Some("Sleep"));
+        assert_eq!(primitive_name(2), Some("Expression"));
+        assert_eq!(primitive_name(44), Some("Animate Sim"));
+        assert_eq!(primitive_name(67), Some("Inventory Operations"));
+        assert_eq!(primitive_name(68), None);
+        assert_eq!(primitive_name(0xFFFF), None);
+    }
+
+    #[test]
+    fn classify_matches_niotso_ranges() {
+        assert_eq!(classify_opcode(0), InstructionKind::Primitive);
+        assert_eq!(classify_opcode(255), InstructionKind::Primitive);
+        assert_eq!(classify_opcode(256), InstructionKind::SemiGlobal);
+        assert_eq!(classify_opcode(4095), InstructionKind::SemiGlobal);
+        assert_eq!(classify_opcode(4096), InstructionKind::Private);
+        assert_eq!(classify_opcode(8191), InstructionKind::Private);
+        assert_eq!(classify_opcode(8192), InstructionKind::Global);
+        assert_eq!(classify_opcode(0xFFFF), InstructionKind::Global);
+    }
+
+    #[test]
+    fn scope_names_cover_documented_range() {
+        assert_eq!(scope_name(0), Some("my objects attributes"));
+        assert_eq!(scope_name(7), Some("literal"));
+        assert_eq!(scope_name(37), Some("stack obj's type attr"));
+        assert_eq!(scope_name(38), None);
     }
 
     #[test]
