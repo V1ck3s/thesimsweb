@@ -32,6 +32,8 @@
   <body>
     <div id="app">
       <canvas id="game" width="1024" height="768"></canvas>
+      <div id="hud" style="position:fixed;top:8px;left:8px;font:12px/1.4 ui-monospace,monospace;color:#9ad;background:rgba(0,0,0,.55);padding:6px 8px;border-radius:4px;pointer-events:none;max-width:60%;">loading…</div>
+      <canvas id="sprite-overlay" width="128" height="128" style="position:fixed;bottom:12px;right:12px;background:#222;border:1px solid #444;image-rendering:pixelated;"></canvas>
     </div>
     <script type="module" src="/src/main.ts"></script>
   </body>

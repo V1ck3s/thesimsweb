@@ -1,6 +1,7 @@
 import { createRenderer } from "./renderer/webgl.js";
 import { drawHelloSims } from "./renderer/hello.js";
 import { engine } from "./engine/wasm.js";
+import { fetchManifest, readStandaloneIff } from "./engine/assets.js";
 
 function findCanvas(): HTMLCanvasElement {
   const el = document.getElementById("game");
@@ -43,7 +44,65 @@ void engine().then((wasm) => {
   console.info(
     `[engine] v${wasm.engine_version()} · far ${manifest.length} entries (${manifest[0]?.filename}, ${payload.length}B) · iff v${wasm.parseIffHeader(fakeIff)}, ${chunks.length} chunks (${chunks.map((c) => c.kind).join(",")}) · spr2 ${sprite.width}x${sprite.height} (${sprite.rgba.length}B RGBA)`,
   );
+  void runRealAssetSmokeTest(wasm);
 });
+
+const HUD = document.getElementById("hud");
+const SPRITE_CANVAS = document.getElementById("sprite-overlay") as HTMLCanvasElement | null;
+
+function setHud(text: string): void {
+  if (HUD) HUD.textContent = text;
+}
+
+async function runRealAssetSmokeTest(wasm: Awaited<ReturnType<typeof engine>>): Promise<void> {
+  try {
+    const manifest = await fetchManifest();
+    const fars = manifest.files.filter((f) => f.kind === "far").length;
+    const iffs = manifest.files.filter((f) => f.kind === "iff").length;
+    setHud(`manifest: ${manifest.files.length} files · ${fars} FAR · ${iffs} IFF`);
+
+    const floor = manifest.files.find((f) =>
+      f.path.toLowerCase().endsWith("floors/floorjapanesetile.flr"),
+    );
+    if (!floor) {
+      setHud(`manifest OK (${manifest.files.length} files) — no FloorJapaneseTile in install`);
+      return;
+    }
+
+    const { data, chunks } = await readStandaloneIff(floor.path);
+    const palt = chunks.find((c) => c.kind === "PALT" && c.id === 1);
+    const spr2 = chunks.find((c) => c.kind === "SPR2");
+    if (!palt || !spr2) {
+      setHud(`${floor.path}: missing PALT(1) or SPR2`);
+      return;
+    }
+    const paltData = data.subarray(palt.dataStart, palt.dataStart + palt.dataLen);
+    const spr2Data = data.subarray(spr2.dataStart, spr2.dataStart + spr2.dataLen);
+    const decoded = wasm.decodeSpr2Frame(spr2Data, paltData, 0) as {
+      width: number;
+      height: number;
+      rgba: Uint8Array;
+    };
+    drawSpriteToOverlay(decoded);
+    setHud(
+      `${floor.path} · ${chunks.length} chunks · sprite ${decoded.width}×${decoded.height} (${decoded.rgba.length}B RGBA)`,
+    );
+  } catch (err) {
+    setHud(`real-asset smoke test failed: ${(err as Error).message}`);
+    console.error(err);
+  }
+}
+
+function drawSpriteToOverlay(decoded: { width: number; height: number; rgba: Uint8Array }): void {
+  if (!SPRITE_CANVAS) return;
+  SPRITE_CANVAS.width = decoded.width;
+  SPRITE_CANVAS.height = decoded.height;
+  const ctx = SPRITE_CANVAS.getContext("2d");
+  if (!ctx) return;
+  const img = ctx.createImageData(decoded.width, decoded.height);
+  img.data.set(decoded.rgba);
+  ctx.putImageData(img, 0, 0);
+}
 
 /** Synthetic FAR v1 with one entry "hi.txt" → "HELLO!". Mirrors the unit-test fixture. */
 function buildSyntheticFar(): Uint8Array {

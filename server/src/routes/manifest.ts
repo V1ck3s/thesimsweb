@@ -22,9 +22,22 @@ async function walk(dir: string, base = dir): Promise<ManifestEntry[]> {
   }
   for (const ent of listing) {
     const full = join(dir, ent.name);
-    if (ent.isDirectory()) {
+    let isDir = ent.isDirectory();
+    let isFile = ent.isFile();
+    if (ent.isSymbolicLink()) {
+      // Resolve the symlink target so users can `ln -s "/mnt/c/.../Les Sims" server/assets/Sims`
+      // and have the manifest find the install.
+      try {
+        const s = await stat(full);
+        isDir = s.isDirectory();
+        isFile = s.isFile();
+      } catch {
+        continue;
+      }
+    }
+    if (isDir) {
       entries.push(...(await walk(full, base)));
-    } else if (ent.isFile()) {
+    } else if (isFile) {
       const s = await stat(full);
       const rel = relative(base, full).split("\\").join("/");
       entries.push({
