@@ -8,19 +8,42 @@ Le but : faire tourner le jeu directement dans un navigateur moderne, sans insta
 
 ## État du projet
 
-🚧 **Phase 0 — Initialisation.** Le plan détaillé se trouve dans [`PLAN.md`](./PLAN.md).
+- Phase 0 (monorepo + scaffold) : ✅ terminée.
+- Phase 0bis (spike d'émulation v86/Boxedwine) : ✅ terminée — Approche D rejetée. Voir [`docs/decision-A-vs-D.md`](./docs/decision-A-vs-D.md).
+- Phase 1 (RE des formats) + Phase 2 (parseurs Rust) : 🚧 prochaines étapes.
 
-## Stack envisagée
+Plan détaillé : [`PLAN.md`](./PLAN.md). Notes pour les sessions futures : `docs/DEVELOPMENT.md`.
 
-- **TypeScript** (UI, game loop, VM SimAntics)
-- **Rust → WebAssembly** (parseurs FAR/IFF, décodeur sprites)
-- **WebGL 2** (rendu isométrique)
-- **Web Audio API** (musique, voix, FX)
-- **IndexedDB** + **OPFS** (stockage des assets et sauvegardes)
+## Stack
 
-## Démarrage
+- **Client** : TypeScript strict, Vite, WebGL 2, IndexedDB.
+- **Engine** : Rust → WebAssembly (`#![no_std]`, `wasm-pack`, exposé en workspace pnpm sous `@thesimsweb/wasm-bindings`).
+- **Serveur de dev** : Fastify (Node 22), `@fastify/static` avec Range, SQLite via `better-sqlite3` pour les saves.
 
-_(Pas encore de code — voir [`PLAN.md`](./PLAN.md) pour la roadmap.)_
+## Quick start
+
+```bash
+pnpm install
+wasm-pack build --target web --scope thesimsweb crates/wasm-bindings
+pnpm dev   # → client http://localhost:5173/  ·  server http://127.0.0.1:3000/
+```
+
+Détails et bootstrap d'une machine vierge : `docs/DEVELOPMENT.md`.
+
+## Layout
+
+```
+client/                 Vite + TS frontend
+server/                 Fastify dev backend (assets streaming + saves API)
+crates/
+  iff/                  Maxis IFF parser
+  far/                  FAR archive parser
+  sprite/               SPR2 / RLE / palette decoder
+  wasm-bindings/        wasm-pack cdylib exposing the above to TS
+docs/                   Format specs & design decisions
+spike/                  Throwaway experiments (v86 emulation spike, etc.)
+PLAN.md                 Living roadmap
+```
 
 ## Mention légale
 
