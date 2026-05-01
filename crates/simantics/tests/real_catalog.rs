@@ -10,7 +10,7 @@
 use std::path::PathBuf;
 
 use iff::Iff;
-use simantics::{Objd, Objf, StrEntry, StrTable, Ttab, objd_field};
+use simantics::{Dgrp, Objd, Objf, StrEntry, StrTable, Ttab, objd_field};
 
 fn sample_path(name: &str) -> PathBuf {
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
@@ -102,4 +102,45 @@ fn alarm_clock_objf_dispatch_table() {
     );
     // The remaining events are unset; dispatch returns None for those.
     assert_eq!(objf.dispatch(30), None);
+}
+
+#[test]
+fn alarm_clock_dgrp_v20004_has_12_images() {
+    let Ok(data) = std::fs::read(sample_path("AlarmClock.iff")) else {
+        eprintln!("skipping: samples/iff/AlarmClock.iff missing");
+        return;
+    };
+    let iff_file = Iff::parse(&data).expect("valid IFF");
+    let chunks: Vec<_> = iff_file.chunks().collect::<Result<_, _>>().unwrap();
+    let dgrp_chunks: Vec<_> = chunks.iter().filter(|c| &c.kind == b"DGRP").collect();
+    // AlarmClock has 7 DGRP chunks (one per object state, IDs 128..=134).
+    assert_eq!(dgrp_chunks.len(), 7);
+    for chunk in &dgrp_chunks {
+        let dgrp = Dgrp::parse(chunk.data).expect("DGRP decodes");
+        assert_eq!(dgrp.version, 20004);
+        // Always 4 directions × 3 zooms = 12 images (per Niotso).
+        assert_eq!(dgrp.images.len(), 12);
+        let directions: std::collections::BTreeSet<_> =
+            dgrp.images.iter().map(|i| i.direction_flags).collect();
+        let zooms: std::collections::BTreeSet<_> =
+            dgrp.images.iter().map(|i| i.zoom_level).collect();
+        assert_eq!(directions, [0x01u32, 0x04, 0x10, 0x40].into_iter().collect());
+        assert_eq!(zooms, [1u32, 2, 3].into_iter().collect());
+    }
+    // Every image of DGRP[128] points to at least one valid SPR2 chunk.
+    let dgrp = Dgrp::parse(dgrp_chunks[0].data).unwrap();
+    let spr2_ids: std::collections::BTreeSet<u16> = chunks
+        .iter()
+        .filter(|c| &c.kind == b"SPR2")
+        .map(|c| c.id)
+        .collect();
+    for img in &dgrp.images {
+        for sp in &img.sprites {
+            let id = u16::try_from(sp.spr_chunk_id).expect("chunk id fits in u16");
+            assert!(
+                spr2_ids.contains(&id),
+                "DGRP references missing SPR2 id {id}"
+            );
+        }
+    }
 }

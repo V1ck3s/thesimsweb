@@ -370,6 +370,49 @@ pub fn parse_objf(data: &[u8]) -> Result<Object, JsError> {
     Ok(obj)
 }
 
+/// Parse a `DGRP` (Drawing Group) chunk's data payload.
+///
+/// Returns `{ version, images: Array<{ directionFlags, zoomLevel, sprites:
+/// Array<{ sprChunkId, sprFrameNumber, spriteXOffset, spriteYOffset,
+/// objectZOffset, flags, objectXOffset, objectYOffset }> }> }`. Each image
+/// is one (direction, zoom) view; sprite refs point at SPR2 chunks in the
+/// same IFF.
+///
+/// # Errors
+/// Returns a `JsError` if the buffer is malformed or the version is
+/// unsupported (v20000/v20001 are TSO-only and not parsed yet).
+#[wasm_bindgen(js_name = parseDgrp)]
+pub fn parse_dgrp(data: &[u8]) -> Result<Object, JsError> {
+    let dgrp = simantics::Dgrp::parse(data).map_err(|e| JsError::new(&e.to_string()))?;
+    let obj = Object::new();
+    set_f64(&obj, "version", f64::from(dgrp.version))?;
+    let images = Array::new();
+    for img in &dgrp.images {
+        let row = Object::new();
+        set_f64(&row, "directionFlags", f64::from(img.direction_flags))?;
+        set_f64(&row, "zoomLevel", f64::from(img.zoom_level))?;
+        let sprites = Array::new();
+        for sp in &img.sprites {
+            let s = Object::new();
+            set_f64(&s, "sprChunkId", f64::from(sp.spr_chunk_id))?;
+            set_f64(&s, "sprFrameNumber", f64::from(sp.spr_frame_number))?;
+            set_f64(&s, "spriteXOffset", f64::from(sp.sprite_x_offset))?;
+            set_f64(&s, "spriteYOffset", f64::from(sp.sprite_y_offset))?;
+            set_f64(&s, "objectZOffset", f64::from(sp.object_z_offset))?;
+            set_f64(&s, "flags", f64::from(sp.flags))?;
+            set_f64(&s, "objectXOffset", f64::from(sp.object_x_offset))?;
+            set_f64(&s, "objectYOffset", f64::from(sp.object_y_offset))?;
+            sprites.push(&s);
+        }
+        Reflect::set(&row, &JsValue::from_str("sprites"), &sprites.into())
+            .map_err(|_| JsError::new("set sprites"))?;
+        images.push(&row);
+    }
+    Reflect::set(&obj, &JsValue::from_str("images"), &images.into())
+        .map_err(|_| JsError::new("set images"))?;
+    Ok(obj)
+}
+
 /// Parse a `GLOB` chunk's data payload.
 ///
 /// Returns `{ semiGlobalName }` — the filename (without `.iff` extension) of

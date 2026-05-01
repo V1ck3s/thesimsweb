@@ -48,6 +48,8 @@ pub enum SimAnticsError {
     ObjfUnsupportedVersion(u32),
     #[error("GLOB chunk is empty")]
     GlobEmpty,
+    #[error("DGRP version {0} is not supported (need 20003 or 20004)")]
+    DgrpUnsupportedVersion(u16),
 }
 
 // ---- BHAV ----
@@ -894,6 +896,128 @@ impl Glob {
     }
 }
 
+// ---- DGRP ----
+
+/// One sprite reference inside a `DgrpImage`.
+///
+/// Coordinates and offsets are signed integers / floats; the renderer composites
+/// sprites at `(sprite_x_offset, sprite_y_offset)` relative to the image center,
+/// then shifts by `(object_x_offset, object_y_offset, object_z_offset)` in grid
+/// units. `flags` bit 0 mirrors the sprite, bit 2 marks it as cache-friendly.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct DgrpSprite {
+    /// Chunk ID of the SPR# or SPR2 this references.
+    pub spr_chunk_id: u32,
+    /// Frame index inside that SPR chunk.
+    pub spr_frame_number: u32,
+    pub sprite_x_offset: i32,
+    pub sprite_y_offset: i32,
+    pub object_z_offset: f32,
+    pub flags: u32,
+    /// `0.0` for v20003 (which lacks the field).
+    pub object_x_offset: f32,
+    /// `0.0` for v20003.
+    pub object_y_offset: f32,
+}
+
+/// One of 12 images in a [`Dgrp`] — exactly one (direction, zoom) combination.
+///
+/// The 12 images are 4 directions (`0x01` right-rear, `0x04` right-front,
+/// `0x10` left-front, `0x40` left-rear) × 3 zoom levels (1=far, 2=mid, 3=near).
+#[derive(Debug, Clone)]
+pub struct DgrpImage {
+    pub direction_flags: u32,
+    pub zoom_level: u32,
+    pub sprites: Vec<DgrpSprite>,
+}
+
+/// `DGRP` (Drawing Group) chunk — the renderer's lookup table from
+/// `(direction, zoom)` to a list of sprite references and offsets.
+///
+/// Supports versions **20003** and **20004** (TS1 / TSO production formats).
+/// Older versions 20000/20001 use a different layout and are rejected.
+#[derive(Debug, Clone)]
+pub struct Dgrp {
+    pub version: u16,
+    pub images: Vec<DgrpImage>,
+}
+
+impl Dgrp {
+    /// Parse a `DGRP` chunk's data payload.
+    ///
+    /// # Errors
+    /// Returns `DgrpUnsupportedVersion` for v20000/20001/other, or `TooShort`
+    /// if the buffer is truncated before all images / sprites are read.
+    pub fn parse(data: &[u8]) -> Result<Self, SimAnticsError> {
+        if data.len() < 6 {
+            return Err(SimAnticsError::TooShort);
+        }
+        let version = read_u16_le(data, 0)?;
+        let v20004 = match version {
+            20003 => false,
+            20004 => true,
+            other => return Err(SimAnticsError::DgrpUnsupportedVersion(other)),
+        };
+        let image_count = read_u32_le(data, 2)? as usize;
+        let mut cursor = 6usize;
+        let mut images = Vec::with_capacity(image_count);
+        for _ in 0..image_count {
+            let direction_flags = read_u32_le(data, cursor)?;
+            cursor += 4;
+            let zoom_level = read_u32_le(data, cursor)?;
+            cursor += 4;
+            let sprite_count = read_u32_le(data, cursor)? as usize;
+            cursor += 4;
+            let mut sprites = Vec::with_capacity(sprite_count);
+            for _ in 0..sprite_count {
+                let spr_chunk_id = read_u32_le(data, cursor)?;
+                cursor += 4;
+                let spr_frame_number = read_u32_le(data, cursor)?;
+                cursor += 4;
+                let sprite_x_offset = read_i32_le(data, cursor)?;
+                cursor += 4;
+                let sprite_y_offset = read_i32_le(data, cursor)?;
+                cursor += 4;
+                let object_z_offset = f32::from_bits(read_u32_le(data, cursor)?);
+                cursor += 4;
+                let flags = read_u32_le(data, cursor)?;
+                cursor += 4;
+                let (object_x_offset, object_y_offset) = if v20004 {
+                    let x = f32::from_bits(read_u32_le(data, cursor)?);
+                    cursor += 4;
+                    let y = f32::from_bits(read_u32_le(data, cursor)?);
+                    cursor += 4;
+                    (x, y)
+                } else {
+                    (0.0, 0.0)
+                };
+                sprites.push(DgrpSprite {
+                    spr_chunk_id,
+                    spr_frame_number,
+                    sprite_x_offset,
+                    sprite_y_offset,
+                    object_z_offset,
+                    flags,
+                    object_x_offset,
+                    object_y_offset,
+                });
+            }
+            images.push(DgrpImage { direction_flags, zoom_level, sprites });
+        }
+        Ok(Self { version, images })
+    }
+
+    /// Look up the image for a specific `(direction_flag, zoom_level)` pair.
+    /// `direction_flag` should be one of `0x01`, `0x04`, `0x10`, `0x40`;
+    /// `zoom_level` should be 1, 2, or 3. Returns `None` when no image matches.
+    #[must_use]
+    pub fn image_for(&self, direction_flag: u32, zoom_level: u32) -> Option<&DgrpImage> {
+        self.images
+            .iter()
+            .find(|i| i.direction_flags == direction_flag && i.zoom_level == zoom_level)
+    }
+}
+
 // ---- helpers ----
 
 fn read_u16_le(data: &[u8], offset: usize) -> Result<u16, SimAnticsError> {
@@ -1389,5 +1513,72 @@ mod tests {
     #[test]
     fn glob_rejects_empty_chunk() {
         assert!(matches!(Glob::parse(&[]), Err(SimAnticsError::GlobEmpty)));
+    }
+
+    #[test]
+    fn dgrp_v20004_round_trip_one_image_one_sprite() {
+        // Build a minimal v20004 DGRP: 1 image with 1 sprite.
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&20004u16.to_le_bytes()); // version
+        buf.extend_from_slice(&1u32.to_le_bytes()); // image_count = 1
+        // image header
+        buf.extend_from_slice(&0x01u32.to_le_bytes()); // direction = right-rear
+        buf.extend_from_slice(&3u32.to_le_bytes()); // zoom = near
+        buf.extend_from_slice(&1u32.to_le_bytes()); // sprite_count = 1
+        // sprite
+        buf.extend_from_slice(&128u32.to_le_bytes()); // spr_chunk_id
+        buf.extend_from_slice(&5u32.to_le_bytes()); // spr_frame_number
+        buf.extend_from_slice(&(-3i32).to_le_bytes()); // x_offset
+        buf.extend_from_slice(&7i32.to_le_bytes()); // y_offset
+        buf.extend_from_slice(&0.5f32.to_bits().to_le_bytes()); // z
+        buf.extend_from_slice(&0u32.to_le_bytes()); // flags
+        buf.extend_from_slice(&1.5f32.to_bits().to_le_bytes()); // x_obj
+        buf.extend_from_slice(&(-2.5f32).to_bits().to_le_bytes()); // y_obj
+        let dgrp = Dgrp::parse(&buf).unwrap();
+        assert_eq!(dgrp.version, 20004);
+        assert_eq!(dgrp.images.len(), 1);
+        let img = &dgrp.images[0];
+        assert_eq!(img.direction_flags, 0x01);
+        assert_eq!(img.zoom_level, 3);
+        assert_eq!(img.sprites.len(), 1);
+        let sp = &img.sprites[0];
+        assert_eq!(sp.spr_chunk_id, 128);
+        assert_eq!(sp.spr_frame_number, 5);
+        assert_eq!(sp.sprite_x_offset, -3);
+        assert_eq!(sp.sprite_y_offset, 7);
+        assert!((sp.object_z_offset - 0.5).abs() < f32::EPSILON);
+        assert!((sp.object_x_offset - 1.5).abs() < f32::EPSILON);
+        assert!((sp.object_y_offset - (-2.5)).abs() < f32::EPSILON);
+        // image_for matches.
+        assert!(dgrp.image_for(0x01, 3).is_some());
+        assert!(dgrp.image_for(0x40, 3).is_none()); // wrong direction
+    }
+
+    #[test]
+    fn dgrp_v20003_skips_object_xy_offsets() {
+        // v20003 omits the trailing two floats per sprite.
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&20003u16.to_le_bytes()); // version
+        buf.extend_from_slice(&1u32.to_le_bytes()); // image_count = 1
+        buf.extend_from_slice(&0x04u32.to_le_bytes()); // direction
+        buf.extend_from_slice(&2u32.to_le_bytes()); // zoom
+        buf.extend_from_slice(&1u32.to_le_bytes()); // sprite_count
+        buf.extend_from_slice(&[0u8; 4 * 6]); // 6 fields × 4 bytes (no x_obj/y_obj)
+        let dgrp = Dgrp::parse(&buf).unwrap();
+        assert_eq!(dgrp.version, 20003);
+        let sp = &dgrp.images[0].sprites[0];
+        assert!(sp.object_x_offset.abs() < f32::EPSILON);
+        assert!(sp.object_y_offset.abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn dgrp_rejects_v20000() {
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&20000u16.to_le_bytes());
+        buf.extend_from_slice(&[0u8; 4]);
+        assert!(matches!(
+            Dgrp::parse(&buf),
+            Err(SimAnticsError::DgrpUnsupportedVersion(20000))
+        ));
     }
 }
