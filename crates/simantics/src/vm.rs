@@ -31,6 +31,115 @@ use alloc::vec::Vec;
 
 use crate::{Bhav, Instruction, SimAnticsError};
 
+// ---- Expression primitive (#2) ----
+
+/// Operators understood by the Expression primitive. Source: Niotso wiki §Primitive 2.
+///
+/// Operators 0–9 + 14–16 cover the bulk of TS1 BHAVs (~95 % on the `AlarmClock` + Beds
+/// samples). Flag ops (8/9/10) and increment-and-compare (11/17), modulo (12), bitwise
+/// AND (13), and Push/Pop (18/19) are recognised but their effect on object attributes
+/// versus temps depends on which Sims build authored the BHAV; we implement the canonical
+/// reading and revisit if differential traces disagree.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExpressionOp {
+    Gt,         // 0  >
+    Lt,         // 1  <
+    Eq,         // 2  ==
+    AddAssign,  // 3  +=
+    SubAssign,  // 4  -=
+    Assign,     // 5  =
+    MulAssign,  // 6  *=
+    DivAssign,  // 7  /=
+    IsFlagSet,  // 8
+    SetFlag,    // 9
+    ClearFlag,  // 10
+    IncThenLt,  // 11 ++ then <
+    ModAssign,  // 12 %=
+    AndAssign,  // 13 &=
+    Ge,         // 14 >=
+    Le,         // 15 <=
+    Ne,         // 16 !=
+    DecThenGt,  // 17 -- then >
+    Push,       // 18
+    Pop,        // 19
+}
+
+impl ExpressionOp {
+    #[must_use]
+    pub const fn from_byte(b: u8) -> Option<Self> {
+        Some(match b {
+            0 => Self::Gt,
+            1 => Self::Lt,
+            2 => Self::Eq,
+            3 => Self::AddAssign,
+            4 => Self::SubAssign,
+            5 => Self::Assign,
+            6 => Self::MulAssign,
+            7 => Self::DivAssign,
+            8 => Self::IsFlagSet,
+            9 => Self::SetFlag,
+            10 => Self::ClearFlag,
+            11 => Self::IncThenLt,
+            12 => Self::ModAssign,
+            13 => Self::AndAssign,
+            14 => Self::Ge,
+            15 => Self::Le,
+            16 => Self::Ne,
+            17 => Self::DecThenGt,
+            18 => Self::Push,
+            19 => Self::Pop,
+            _ => return None,
+        })
+    }
+
+    /// `true` for operators that *write* to the LHS (they expect lhs to be assignable).
+    #[must_use]
+    pub const fn writes_lhs(self) -> bool {
+        matches!(
+            self,
+            Self::AddAssign
+                | Self::SubAssign
+                | Self::Assign
+                | Self::MulAssign
+                | Self::DivAssign
+                | Self::SetFlag
+                | Self::ClearFlag
+                | Self::IncThenLt
+                | Self::ModAssign
+                | Self::AndAssign
+                | Self::DecThenGt
+                | Self::Pop,
+        )
+    }
+}
+
+/// Parsed view of an Expression primitive's 8-byte operand.
+#[derive(Debug, Clone, Copy)]
+pub struct ExpressionOperand {
+    pub lhs_data: u16,
+    pub rhs_data: u16,
+    pub is_signed: u8,
+    pub operator: u8,
+    pub lhs_owner: u8,
+    pub rhs_owner: u8,
+}
+
+impl ExpressionOperand {
+    /// Decode the 8-byte operand of an Expression instruction. Layout per Niotso:
+    /// `lhs_data: u16 LE | rhs_data: u16 LE | is_signed: u8 | operator: u8 | lhs_owner: u8 | rhs_owner: u8`.
+    #[must_use]
+    pub const fn decode(operand: &[u8; 8]) -> Self {
+        Self {
+            lhs_data: u16::from_le_bytes([operand[0], operand[1]]),
+            rhs_data: u16::from_le_bytes([operand[2], operand[3]]),
+            is_signed: operand[4],
+            operator: operand[5],
+            lhs_owner: operand[6],
+            rhs_owner: operand[7],
+        }
+    }
+}
+
 /// Source of BHAV bytecode keyed by opcode/chunk-id.
 ///
 /// Production code resolves an opcode (which doubles as a chunk ID for `>= 256` opcodes)
@@ -102,10 +211,36 @@ impl StackFrame {
 /// objects with attributes, motives, the lot grid, and the global temp registers.
 #[derive(Debug, Default, Clone)]
 pub struct World {
-    /// Shared u32 temp registers (scope 8). `SimAntics` ships ~32 temps; we allocate 32.
+    /// Shared temp registers (scope 8). `SimAntics` ships ~32 temps; we allocate 32.
     pub temps: [i32; 32],
-    /// Object ID → attributes. Empty in the stub VM.
+    /// Object ID → attributes (scope 0 / 1 keyed by object id and attribute index).
     pub object_attrs: BTreeMap<u32, Vec<i32>>,
+}
+
+impl World {
+    /// Read attribute `index` of `object_id`. Returns 0 if either is unset (Niotso says
+    /// attributes default to 0 when never written, which matches the binary on-disk
+    /// representation in OBJD).
+    #[must_use]
+    pub fn read_object_attr(&self, object_id: u32, index: usize) -> i32 {
+        self.object_attrs
+            .get(&object_id)
+            .and_then(|v| v.get(index).copied())
+            .unwrap_or(0)
+    }
+
+    /// Write `value` to attribute `index` of `object_id`. Grows the attribute vector
+    /// on demand (Sims allocates one slot per attribute used; we follow the same rule).
+    pub fn write_object_attr(&mut self, object_id: u32, index: usize, value: i32) {
+        let entry = self.object_attrs.entry(object_id).or_default();
+        if entry.len() <= index {
+            entry.resize(index + 1, 0);
+        }
+        #[allow(clippy::indexing_slicing)] // resize above
+        {
+            entry[index] = value;
+        }
+    }
 }
 
 /// One entry in the per-execution trace. Useful for snapshot/diff testing primitive
@@ -238,7 +373,7 @@ impl<'a> Vm<'a> {
         }
         #[allow(clippy::indexing_slicing)] // ip checked above
         let instr = bhav.instructions[ip as usize];
-        let result = Self::dispatch(instr);
+        let result = self.dispatch(instr);
         if self.trace_enabled {
             let dest = match result {
                 DispatchOutcome::Branch(true) | DispatchOutcome::SubCall { .. } => instr.t_dest,
@@ -260,13 +395,102 @@ impl<'a> Vm<'a> {
         }
     }
 
-    const fn dispatch(instr: Instruction) -> DispatchOutcome {
-        if instr.is_primitive() {
-            // Stub: every primitive returns true. Real implementations live here,
-            // dispatched by `instr.opcode` in 0..=67.
-            DispatchOutcome::Branch(true)
-        } else {
-            DispatchOutcome::SubCall { opcode: instr.opcode }
+    fn dispatch(&mut self, instr: Instruction) -> DispatchOutcome {
+        if !instr.is_primitive() {
+            return DispatchOutcome::SubCall { opcode: instr.opcode };
+        }
+        // Real primitives go here, indexed by `instr.opcode` in 0..=67. Anything we
+        // haven't wired yet falls back to the conservative "return true" stub so the
+        // BHAV continues forward — this keeps the runner useful for trace exploration
+        // while we land primitives one by one.
+        match instr.opcode {
+            2 => self.exec_expression(instr.operand),
+            _ => DispatchOutcome::Branch(true),
+        }
+    }
+
+    fn exec_expression(&mut self, operand: [u8; 8]) -> DispatchOutcome {
+        let op = ExpressionOperand::decode(&operand);
+        let Some(operator) = ExpressionOp::from_byte(op.operator) else {
+            // Unknown operator: act like a no-op test that succeeds. Surfaces as the
+            // `t_dest` branch but the malformed-operand case is rare enough that we
+            // log it via the trace rather than a hard error.
+            return DispatchOutcome::Branch(true);
+        };
+        let lhs = self.read_var(op.lhs_owner, op.lhs_data);
+        let rhs = self.read_var(op.rhs_owner, op.rhs_data);
+        let (result, written) = compute_expression(operator, lhs, rhs);
+        if let Some(value) = written {
+            self.write_var(op.lhs_owner, op.lhs_data, value);
+        }
+        DispatchOutcome::Branch(result)
+    }
+
+    fn read_var(&self, owner: u8, data: u16) -> i32 {
+        let Some(frame) = self.call_stack.last() else {
+            return 0;
+        };
+        match owner {
+            // 0 = my object's attributes
+            0 => self.world.read_object_attr(frame.my_id, usize::from(data)),
+            // 1 = stack object's attributes
+            1 => self.world.read_object_attr(frame.stack_object_id, usize::from(data)),
+            // 7 = literal
+            7 => i32::from(i16::from_le_bytes(data.to_le_bytes())),
+            // 8 = temp registers (shared across the call stack — TS1's "local temps"
+            // are technically per-tree but most BHAVs we've inspected use the global
+            // bank; see Niotso §Scopes 8 for the nuance).
+            8 => {
+                let i = usize::from(data);
+                if i < self.world.temps.len() {
+                    self.world.temps[i]
+                } else {
+                    0
+                }
+            }
+            // 9 = parameters (the args vec for the current frame)
+            9 => frame.params.get(usize::from(data)).copied().unwrap_or(0),
+            // 10 = stack object id (data ignored)
+            10 => i32::from_le_bytes(frame.stack_object_id.to_le_bytes()),
+            // 25 = locals (per-frame)
+            25 => frame.locals.get(usize::from(data)).copied().unwrap_or(0),
+            // Other scopes return 0 until we wire their semantics. The trace exposes
+            // the (owner, data) pair so we can spot which scopes need backing first.
+            _ => 0,
+        }
+    }
+
+    fn write_var(&mut self, owner: u8, data: u16, value: i32) {
+        let (my_id, stack_object_id) = match self.call_stack.last() {
+            Some(f) => (f.my_id, f.stack_object_id),
+            None => return,
+        };
+        match owner {
+            0 => self.world.write_object_attr(my_id, usize::from(data), value),
+            1 => self.world.write_object_attr(stack_object_id, usize::from(data), value),
+            8 => {
+                let i = usize::from(data);
+                if i < self.world.temps.len() {
+                    self.world.temps[i] = value;
+                }
+            }
+            9 => {
+                if let Some(frame) = self.call_stack.last_mut() {
+                    if let Some(slot) = frame.params.get_mut(usize::from(data)) {
+                        *slot = value;
+                    }
+                }
+            }
+            25 => {
+                if let Some(frame) = self.call_stack.last_mut() {
+                    if let Some(slot) = frame.locals.get_mut(usize::from(data)) {
+                        *slot = value;
+                    }
+                }
+            }
+            // 7 = literal: writing to a literal is undefined; silently drop.
+            // Other scopes: not yet wired (motives, person data, slots, etc.).
+            _ => {}
         }
     }
 
@@ -346,6 +570,72 @@ impl<'a> Vm<'a> {
     }
 }
 
+/// Evaluate an Expression operator against `(lhs, rhs)`.
+///
+/// Returns `(result, written)`:
+/// - `result` is the boolean reported back to the BHAV (`t_dest` branch on `true`,
+///   `f_dest` on `false`).
+/// - `written` is `Some(new_lhs)` when the operator mutates the LHS slot; the caller
+///   stores that back into the LHS scope. Pure comparisons return `None`.
+#[must_use]
+pub const fn compute_expression(op: ExpressionOp, lhs: i32, rhs: i32) -> (bool, Option<i32>) {
+    use ExpressionOp::{
+        AddAssign, AndAssign, Assign, ClearFlag, DecThenGt, DivAssign, Eq, Ge, Gt, IncThenLt,
+        IsFlagSet, Le, Lt, ModAssign, MulAssign, Ne, Pop, Push, SetFlag, SubAssign,
+    };
+    match op {
+        Gt => (lhs > rhs, None),
+        Lt => (lhs < rhs, None),
+        Eq => (lhs == rhs, None),
+        Ge => (lhs >= rhs, None),
+        Le => (lhs <= rhs, None),
+        Ne => (lhs != rhs, None),
+        Assign => (true, Some(rhs)),
+        AddAssign => (true, Some(lhs.wrapping_add(rhs))),
+        SubAssign => (true, Some(lhs.wrapping_sub(rhs))),
+        MulAssign => (true, Some(lhs.wrapping_mul(rhs))),
+        DivAssign => {
+            if rhs == 0 {
+                (false, None)
+            } else {
+                (true, Some(lhs.wrapping_div(rhs)))
+            }
+        }
+        ModAssign => {
+            if rhs == 0 {
+                (false, None)
+            } else {
+                (true, Some(lhs.wrapping_rem(rhs)))
+            }
+        }
+        AndAssign => (true, Some(lhs & rhs)),
+        IsFlagSet => {
+            // bit `rhs` of `lhs` set?
+            let bit = rhs & 31;
+            (((lhs >> bit) & 1) != 0, None)
+        }
+        SetFlag => {
+            let bit = rhs & 31;
+            (true, Some(lhs | (1 << bit)))
+        }
+        ClearFlag => {
+            let bit = rhs & 31;
+            (true, Some(lhs & !(1 << bit)))
+        }
+        IncThenLt => {
+            let new_lhs = lhs.wrapping_add(1);
+            (new_lhs < rhs, Some(new_lhs))
+        }
+        DecThenGt => {
+            let new_lhs = lhs.wrapping_sub(1);
+            (new_lhs > rhs, Some(new_lhs))
+        }
+        // Push/Pop interact with a runtime stack we don't model yet; treat them as
+        // truthy no-ops so the BHAV continues forward instead of erroring out.
+        Push | Pop => (true, None),
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 enum DispatchOutcome {
     /// Primitive completed with the given truth value; follow `t_dest` / `f_dest`.
@@ -421,13 +711,18 @@ mod tests {
         s
     }
 
+    /// Use opcode `0x0007` (Refresh) for VM-plumbing tests — it's a primitive that
+    /// remains a stub returning `true`, so we exercise the dispatch loop without
+    /// also depending on Expression operand semantics.
+    const STUB_PRIM: u16 = 0x0007;
+
     #[test]
     fn linear_walk_returns_true() {
         // Two primitives, both fall through their t_dest into the next instruction;
         // the second returns true.
         let body = bhav(&[
-            (0x0002, 1, Instruction::RETURN_ERROR),
-            (0x0002, Instruction::RETURN_TRUE, Instruction::RETURN_ERROR),
+            (STUB_PRIM, 1, Instruction::RETURN_ERROR),
+            (STUB_PRIM, Instruction::RETURN_TRUE, Instruction::RETURN_ERROR),
         ]);
         let src = source(&[(0x1000, body)]);
         let mut vm = Vm::new(&src);
@@ -437,7 +732,7 @@ mod tests {
 
     #[test]
     fn return_false_sentinel() {
-        let body = bhav(&[(0x0002, Instruction::RETURN_FALSE, Instruction::RETURN_ERROR)]);
+        let body = bhav(&[(STUB_PRIM, Instruction::RETURN_FALSE, Instruction::RETURN_ERROR)]);
         let src = source(&[(0x1000, body)]);
         let mut vm = Vm::new(&src);
         // Stub primitives always return true → t_dest is taken → RET_FALSE.
@@ -448,7 +743,7 @@ mod tests {
     fn subroutine_call_then_return() {
         // Caller calls 0x1001, then returns whatever the callee returned via t_dest.
         let caller = bhav(&[(0x1001, Instruction::RETURN_TRUE, Instruction::RETURN_FALSE)]);
-        let callee = bhav(&[(0x0002, Instruction::RETURN_TRUE, Instruction::RETURN_ERROR)]);
+        let callee = bhav(&[(STUB_PRIM, Instruction::RETURN_TRUE, Instruction::RETURN_ERROR)]);
         let src = source(&[(0x1000, caller), (0x1001, callee)]);
         let mut vm = Vm::new(&src);
         assert_eq!(vm.call(0x1000, Vec::new(), 0, 0).unwrap(), ExecResult::Returned(true));
@@ -464,7 +759,7 @@ mod tests {
     #[test]
     fn step_budget_caps_runaway() {
         // Loop: instruction 0 jumps to itself on its t_dest.
-        let body = bhav(&[(0x0002, 0, Instruction::RETURN_ERROR)]);
+        let body = bhav(&[(STUB_PRIM, 0, Instruction::RETURN_ERROR)]);
         let src = source(&[(0x1000, body)]);
         let mut vm = Vm::new(&src);
         vm.step_budget = 1000;
@@ -472,17 +767,104 @@ mod tests {
     }
 
     #[test]
+    fn compute_expression_comparisons() {
+        assert_eq!(compute_expression(ExpressionOp::Eq, 5, 5), (true, None));
+        assert_eq!(compute_expression(ExpressionOp::Eq, 5, 6), (false, None));
+        assert_eq!(compute_expression(ExpressionOp::Lt, 5, 6), (true, None));
+        assert_eq!(compute_expression(ExpressionOp::Ge, 5, 5), (true, None));
+        assert_eq!(compute_expression(ExpressionOp::Ne, 5, 6), (true, None));
+    }
+
+    #[test]
+    fn compute_expression_assignments() {
+        assert_eq!(compute_expression(ExpressionOp::Assign, 0, 42), (true, Some(42)));
+        assert_eq!(compute_expression(ExpressionOp::AddAssign, 5, 3), (true, Some(8)));
+        assert_eq!(compute_expression(ExpressionOp::SubAssign, 5, 3), (true, Some(2)));
+        assert_eq!(compute_expression(ExpressionOp::MulAssign, 5, 3), (true, Some(15)));
+        assert_eq!(compute_expression(ExpressionOp::DivAssign, 9, 0), (false, None));
+        assert_eq!(compute_expression(ExpressionOp::DivAssign, 9, 3), (true, Some(3)));
+    }
+
+    #[test]
+    fn compute_expression_flags() {
+        assert_eq!(compute_expression(ExpressionOp::IsFlagSet, 0b0100, 2), (true, None));
+        assert_eq!(compute_expression(ExpressionOp::IsFlagSet, 0b0100, 1), (false, None));
+        assert_eq!(compute_expression(ExpressionOp::SetFlag, 0, 3), (true, Some(0b1000)));
+        assert_eq!(compute_expression(ExpressionOp::ClearFlag, 0b0110, 2), (true, Some(0b0010)));
+    }
+
+    #[test]
+    fn compute_expression_inc_then_lt() {
+        assert_eq!(compute_expression(ExpressionOp::IncThenLt, 4, 6), (true, Some(5)));
+        assert_eq!(compute_expression(ExpressionOp::IncThenLt, 5, 6), (false, Some(6)));
+    }
+
+    #[test]
+    fn vm_expression_assigns_to_temp() {
+        // Operand: lhs_data=0 (temp[0]), rhs_data=42 (literal), op=5 (=), lhs_owner=8 (temps),
+        // rhs_owner=7 (literal). Decoded: temp[0] = 42; result = true.
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&0x8002u16.to_le_bytes());
+        buf.extend_from_slice(&1u16.to_le_bytes());
+        buf.extend_from_slice(&[0u8; 4]);
+        buf.extend_from_slice(&0u32.to_le_bytes());
+        // instruction: opcode=2 Expression, t=RET_TRUE f=RET_ERR, operand
+        buf.extend_from_slice(&2u16.to_le_bytes());
+        buf.push(Instruction::RETURN_TRUE);
+        buf.push(Instruction::RETURN_ERROR);
+        // operand
+        buf.extend_from_slice(&0u16.to_le_bytes()); // lhs_data
+        buf.extend_from_slice(&42u16.to_le_bytes()); // rhs_data
+        buf.push(0); // is_signed
+        buf.push(5); // op = Assign
+        buf.push(8); // lhs_owner = temps
+        buf.push(7); // rhs_owner = literal
+        let src = source(&[(0x1000, buf)]);
+        let mut vm = Vm::new(&src);
+        let result = vm.call(0x1000, Vec::new(), 0, 0).unwrap();
+        assert_eq!(result, ExecResult::Returned(true));
+        assert_eq!(vm.world.temps[0], 42);
+    }
+
+    #[test]
+    fn vm_expression_compares_param_to_literal() {
+        // Build: if param[0] == 0 then RET_TRUE else RET_FALSE.
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&0x8002u16.to_le_bytes());
+        buf.extend_from_slice(&1u16.to_le_bytes());
+        buf.extend_from_slice(&[0, 1, 0, 0]); // type/args/locals/flags — args=1
+        buf.extend_from_slice(&0u32.to_le_bytes());
+        buf.extend_from_slice(&2u16.to_le_bytes()); // opcode 2 Expression
+        buf.push(Instruction::RETURN_TRUE); // t
+        buf.push(Instruction::RETURN_FALSE); // f
+        buf.extend_from_slice(&0u16.to_le_bytes()); // lhs_data = 0 (param index)
+        buf.extend_from_slice(&0u16.to_le_bytes()); // rhs_data = 0
+        buf.push(0);
+        buf.push(2); // op = Eq
+        buf.push(9); // lhs_owner = parameters
+        buf.push(7); // rhs_owner = literal
+        let src = source(&[(0x1000, buf)]);
+        let mut vm = Vm::new(&src);
+        // First call: param=0, expect Returned(true)
+        let r1 = vm.call(0x1000, alloc::vec![0], 0, 0).unwrap();
+        assert_eq!(r1, ExecResult::Returned(true));
+        // Second call: param=5, expect Returned(false)
+        let r2 = vm.call(0x1000, alloc::vec![5], 0, 0).unwrap();
+        assert_eq!(r2, ExecResult::Returned(false));
+    }
+
+    #[test]
     fn trace_records_each_step() {
         let body = bhav(&[
-            (0x0002, 1, Instruction::RETURN_ERROR),
-            (0x0002, Instruction::RETURN_TRUE, Instruction::RETURN_ERROR),
+            (STUB_PRIM, 1, Instruction::RETURN_ERROR),
+            (STUB_PRIM, Instruction::RETURN_TRUE, Instruction::RETURN_ERROR),
         ]);
         let src = source(&[(0x1000, body)]);
         let mut vm = Vm::new(&src);
         vm.trace_enabled = true;
         vm.call(0x1000, Vec::new(), 0, 0).unwrap();
         assert_eq!(vm.trace.len(), 2);
-        assert_eq!(vm.trace[0].opcode, 0x0002);
-        assert_eq!(vm.trace[1].opcode, 0x0002);
+        assert_eq!(vm.trace[0].opcode, STUB_PRIM);
+        assert_eq!(vm.trace[1].opcode, STUB_PRIM);
     }
 }
