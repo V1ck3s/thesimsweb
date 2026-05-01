@@ -175,6 +175,17 @@ pub enum ExecResult {
     BudgetExhausted,
 }
 
+/// Result of a single scheduler tick — see [`Vm::tick`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TickOutcome {
+    /// No interactions were waiting in the queue.
+    Idle,
+    /// The interaction's joining/guard function returned false; the action was skipped.
+    Skipped(PendingInteraction),
+    /// The action ran to completion (or to an `Error` / `BudgetExhausted` terminus).
+    Ran(PendingInteraction, ExecResult),
+}
+
 /// One activation record on the call stack.
 #[derive(Debug, Clone)]
 pub struct StackFrame {
@@ -1101,6 +1112,69 @@ impl<'a> Vm<'a> {
         Ok(StepOutcome::Continue)
     }
 
+    /// Pop the next [`PendingInteraction`] from `world.interaction_queue` (FIFO) and
+    /// run it.
+    ///
+    /// If the interaction has a `joining_index >= 0`, that BHAV is invoked first as a
+    /// guard: only when it returns `true` does the action function run. Returns
+    /// [`TickOutcome::Idle`] when the queue is empty.
+    ///
+    /// The scheduler is intentionally minimal: real engine semantics include priority,
+    /// pre-emption, and the concept of an "active" interaction per Sim. We pop, test,
+    /// run — that's it. Enough to drive a BHAV from the queue end-to-end.
+    ///
+    /// # Errors
+    ///
+    /// Propagates [`VmError`] from the joining or action call (missing BHAV, malformed
+    /// bytecode, IP out of bounds, stack overflow).
+    pub fn tick(&mut self) -> Result<TickOutcome, VmError> {
+        if self.world.interaction_queue.is_empty() {
+            return Ok(TickOutcome::Idle);
+        }
+        let pending = self.world.interaction_queue.remove(0);
+        if pending.joining_index >= 0 {
+            // joining_index encodes the guard tree id; out-of-range u16 just means
+            // there's no guard (the engine's all-bits-1 sentinel decodes as -1).
+            if let Ok(joining_id) = u16::try_from(pending.joining_index) {
+                let result = self.call(
+                    joining_id,
+                    Vec::new(),
+                    pending.sim_id,
+                    pending.stack_object_id,
+                )?;
+                if !matches!(result, ExecResult::Returned(true)) {
+                    return Ok(TickOutcome::Skipped(pending));
+                }
+            }
+        }
+        let result = self.call(
+            pending.action_function,
+            Vec::new(),
+            pending.sim_id,
+            pending.stack_object_id,
+        )?;
+        Ok(TickOutcome::Ran(pending, result))
+    }
+
+    /// Drive [`Vm::tick`] until the queue is empty or `max_ticks` have run.
+    ///
+    /// Returns the number of ticks consumed (including [`TickOutcome::Skipped`]).
+    /// Useful as the entry-point for a "run this lot for N ticks" harness.
+    ///
+    /// # Errors
+    ///
+    /// Propagates [`VmError`] from the first tick that fails.
+    pub fn run_until_idle(&mut self, max_ticks: usize) -> Result<usize, VmError> {
+        let mut ran = 0usize;
+        while ran < max_ticks {
+            match self.tick()? {
+                TickOutcome::Idle => return Ok(ran),
+                TickOutcome::Skipped(_) | TickOutcome::Ran(..) => ran += 1,
+            }
+        }
+        Ok(ran)
+    }
+
     fn resume_parent(&mut self, callee_value: bool) -> Result<StepOutcome, VmError> {
         let parent = self
             .call_stack
@@ -1880,5 +1954,148 @@ mod tests {
         assert_eq!(vm.trace.len(), 2);
         assert_eq!(vm.trace[0].opcode, STUB_PRIM);
         assert_eq!(vm.trace[1].opcode, STUB_PRIM);
+    }
+
+    #[test]
+    fn tick_returns_idle_on_empty_queue() {
+        let src = source(&[]);
+        let mut vm = Vm::new(&src);
+        assert_eq!(vm.tick().unwrap(), TickOutcome::Idle);
+        // run_until_idle reports zero work done.
+        assert_eq!(vm.run_until_idle(10).unwrap(), 0);
+    }
+
+    #[test]
+    fn tick_runs_pending_action_function() {
+        // Action function: a one-instruction BHAV that returns true.
+        let action = bhav(&[(STUB_PRIM, Instruction::RETURN_TRUE, Instruction::RETURN_ERROR)]);
+        let src = source(&[(0x2001, action)]);
+        let mut vm = Vm::new(&src);
+        let pending = PendingInteraction {
+            sim_id: 0xAA,
+            stack_object_id: 0xBB,
+            action_function: 0x2001,
+            joining_index: -1, // no guard
+        };
+        vm.world.interaction_queue.push(pending);
+        let outcome = vm.tick().unwrap();
+        assert_eq!(outcome, TickOutcome::Ran(pending, ExecResult::Returned(true)));
+        // Queue is now empty.
+        assert!(vm.world.interaction_queue.is_empty());
+        assert_eq!(vm.tick().unwrap(), TickOutcome::Idle);
+    }
+
+    #[test]
+    fn tick_skips_when_joining_returns_false() {
+        // Guard returns false → action must not run.
+        let guard = bhav(&[(STUB_PRIM, Instruction::RETURN_FALSE, Instruction::RETURN_ERROR)]);
+        // If the action ever ran, it would write 99 to temps[0]. We assert it stays 0.
+        let action = one_instr(
+            2, // Expression: temps[0] = literal(99)
+            [0, 0, 99, 0, 0, 5, 8, 7],
+            Instruction::RETURN_TRUE,
+            Instruction::RETURN_ERROR,
+        );
+        let src = source(&[(0x3001, guard), (0x3002, action)]);
+        let mut vm = Vm::new(&src);
+        let pending = PendingInteraction {
+            sim_id: 0xAA,
+            stack_object_id: 0xBB,
+            action_function: 0x3002,
+            joining_index: 0x3001,
+        };
+        vm.world.interaction_queue.push(pending);
+        let outcome = vm.tick().unwrap();
+        assert_eq!(outcome, TickOutcome::Skipped(pending));
+        assert_eq!(vm.world.temps[0], 0, "action ran despite failed guard");
+    }
+
+    #[test]
+    fn tick_runs_action_when_joining_returns_true() {
+        let guard = bhav(&[(STUB_PRIM, Instruction::RETURN_TRUE, Instruction::RETURN_ERROR)]);
+        let action = one_instr(
+            2, // Expression: temps[0] = literal(7)
+            [0, 0, 7, 0, 0, 5, 8, 7],
+            Instruction::RETURN_TRUE,
+            Instruction::RETURN_ERROR,
+        );
+        let src = source(&[(0x3001, guard), (0x3002, action)]);
+        let mut vm = Vm::new(&src);
+        vm.world.interaction_queue.push(PendingInteraction {
+            sim_id: 0xAA,
+            stack_object_id: 0xBB,
+            action_function: 0x3002,
+            joining_index: 0x3001,
+        });
+        let outcome = vm.tick().unwrap();
+        assert!(matches!(outcome, TickOutcome::Ran(_, ExecResult::Returned(true))));
+        assert_eq!(vm.world.temps[0], 7);
+    }
+
+    #[test]
+    fn tick_consumes_queue_in_fifo_order() {
+        // Two actions: first writes temps[0]=1, second writes temps[1]=2. Both push
+        // a third interaction onto the queue mid-flight to also verify pushes during
+        // ticks are honored on the next tick.
+        let action_a = one_instr(
+            2, // Expression: temps[0] = literal(1)
+            [0, 0, 1, 0, 0, 5, 8, 7],
+            Instruction::RETURN_TRUE,
+            Instruction::RETURN_ERROR,
+        );
+        let action_b = one_instr(
+            2, // Expression: temps[1] = literal(2)
+            [1, 0, 2, 0, 0, 5, 8, 7],
+            Instruction::RETURN_TRUE,
+            Instruction::RETURN_ERROR,
+        );
+        let src = source(&[(0x4001, action_a), (0x4002, action_b)]);
+        let mut vm = Vm::new(&src);
+        vm.world.interaction_queue.push(PendingInteraction {
+            sim_id: 0xAA,
+            stack_object_id: 0xBB,
+            action_function: 0x4001,
+            joining_index: -1,
+        });
+        vm.world.interaction_queue.push(PendingInteraction {
+            sim_id: 0xAA,
+            stack_object_id: 0xBB,
+            action_function: 0x4002,
+            joining_index: -1,
+        });
+        let count = vm.run_until_idle(10).unwrap();
+        assert_eq!(count, 2);
+        assert_eq!(vm.world.temps[0], 1);
+        assert_eq!(vm.world.temps[1], 2);
+    }
+
+    #[test]
+    fn tick_caps_at_max_ticks_when_queue_keeps_growing() {
+        // Action re-pushes itself onto the queue (Push Interaction primitive #13)
+        // before returning. Without max_ticks the loop would never terminate.
+        let mut action = Vec::new();
+        action.extend_from_slice(&0x8002u16.to_le_bytes());
+        action.extend_from_slice(&1u16.to_le_bytes()); // count=1
+        action.extend_from_slice(&[0u8; 4]); // type/args/locals/flags
+        action.extend_from_slice(&0u32.to_le_bytes()); // extra
+        action.extend_from_slice(&13u16.to_le_bytes()); // opcode = Push Interaction
+        action.push(Instruction::RETURN_TRUE);
+        action.push(Instruction::RETURN_ERROR);
+        // operand: action_function=0x4001 in [0..2], joining_index=-1 in [2..4]
+        action.extend_from_slice(&0x4001u16.to_le_bytes());
+        action.extend_from_slice(&0xFFFFu16.to_le_bytes());
+        action.extend_from_slice(&[0, 0, 0, 0]);
+        let src = source(&[(0x4001, action)]);
+        let mut vm = Vm::new(&src);
+        vm.world.interaction_queue.push(PendingInteraction {
+            sim_id: 0xAA,
+            stack_object_id: 0xBB,
+            action_function: 0x4001,
+            joining_index: -1,
+        });
+        let count = vm.run_until_idle(5).unwrap();
+        assert_eq!(count, 5);
+        // Queue is non-empty: the cap fired before the queue drained.
+        assert!(!vm.world.interaction_queue.is_empty());
     }
 }
