@@ -570,13 +570,15 @@ impl<'a> Vm<'a> {
             DispatchOutcome::Branch(value) => {
                 self.follow_branch(instr, value, bhav.header.count)
             }
-            DispatchOutcome::SubCall { opcode } => self.subroutine_call(opcode),
+            DispatchOutcome::SubCall { opcode, operand } => {
+                self.subroutine_call(opcode, operand)
+            }
         }
     }
 
     fn dispatch(&mut self, instr: Instruction) -> DispatchOutcome {
         if !instr.is_primitive() {
-            return DispatchOutcome::SubCall { opcode: instr.opcode };
+            return DispatchOutcome::SubCall { opcode: instr.opcode, operand: instr.operand };
         }
         // Real primitives go here, indexed by `instr.opcode` in 0..=67. Anything we
         // haven't wired yet falls back to the conservative "return true" stub so the
@@ -732,10 +734,12 @@ impl<'a> Vm<'a> {
     }
 
     /// Primitive 20 — Run Functional Tree. Calls another tree by ID stored in the
-    /// operand (typically bytes[0..2]). Behaves like an opcode-≥-256 call.
+    /// operand (typically bytes[0..2]). Behaves like an opcode-≥-256 call but with
+    /// no extra args (the operand bytes after the tree id are not part of the call's
+    /// argument list).
     const fn exec_run_functional_tree(operand: [u8; 8]) -> DispatchOutcome {
         let tree_id = u16::from_le_bytes([operand[0], operand[1]]);
-        DispatchOutcome::SubCall { opcode: tree_id }
+        DispatchOutcome::SubCall { opcode: tree_id, operand: [0u8; 8] }
     }
 
     fn exec_show_string(&mut self, operand: [u8; 8]) -> DispatchOutcome {
@@ -1066,7 +1070,7 @@ impl<'a> Vm<'a> {
         }
     }
 
-    fn subroutine_call(&mut self, opcode: u16) -> Result<StepOutcome, VmError> {
+    fn subroutine_call(&mut self, opcode: u16, operand: [u8; 8]) -> Result<StepOutcome, VmError> {
         if self.call_stack.len() >= self.max_depth {
             return Err(VmError::StackOverflow {
                 depth: self.call_stack.len(),
@@ -1074,13 +1078,22 @@ impl<'a> Vm<'a> {
         }
         let bytes = self.source.lookup(opcode).ok_or(VmError::BhavNotFound(opcode))?;
         let callee = Bhav::parse(bytes)?;
-        // Inherit my/stack-object pointers from the caller; arguments come from the
-        // operand. For now we pass an empty params vec — operand decoding lands later.
+        // Decode the call instruction's 8-byte operand into `callee.header.args`
+        // i32 parameters. The TS1 convention (per FreeSO/Simitone reverse) treats
+        // the operand as a packed array of i8 values, one per parameter, sign-
+        // extended to i32. The all-`0xFF` operand commonly seen in disassembly
+        // is the canonical "no arguments needed" sentinel and decodes naturally
+        // to `[-1, -1, …]` — harmless when `args == 0`.
+        let arg_count = usize::from(callee.header.args).min(8);
+        let mut params = Vec::with_capacity(arg_count);
+        for &raw in &operand[..arg_count] {
+            params.push(i32::from(i8::from_le_bytes([raw])));
+        }
         let parent = self.call_stack.last().ok_or(VmError::StackOverflow { depth: 0 })?;
         let frame = StackFrame::new(
             opcode,
             callee.header.locals,
-            Vec::new(),
+            params,
             parent.my_id,
             parent.stack_object_id,
         );
@@ -1178,8 +1191,9 @@ pub const fn compute_expression(op: ExpressionOp, lhs: i32, rhs: i32) -> (bool, 
 enum DispatchOutcome {
     /// Primitive completed with the given truth value; follow `t_dest` / `f_dest`.
     Branch(bool),
-    /// Subroutine call — `opcode` is the callee's chunk ID.
-    SubCall { opcode: u16 },
+    /// Subroutine call — `opcode` is the callee's chunk ID, `operand` carries the
+    /// caller's 8 bytes which encode the args to pass to the callee.
+    SubCall { opcode: u16, operand: [u8; 8] },
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1205,25 +1219,47 @@ enum StepOutcome {
 /// semantics worth labelling (engine-side redraw flag).
 #[must_use]
 pub fn format_primitive_operand(opcode: u16, operand: [u8; 8]) -> Option<String> {
+    let u16_lo = || u16::from_le_bytes([operand[0], operand[1]]);
+    let u32_lo = || u32::from_le_bytes([operand[0], operand[1], operand[2], operand[3]]);
+    let i16_at = |i: usize| i16::from_le_bytes([operand[i], operand[i + 1]]);
     match opcode {
-        0 => {
-            let ticks = u16::from_le_bytes([operand[4], operand[5]]);
-            Some(alloc::format!("ticks={ticks}"))
-        }
+        0 => Some(alloc::format!("ticks={}", u16::from_le_bytes([operand[4], operand[5]]))),
         2 => Some(format_expression_operand(operand)),
+        6 => Some(alloc::format!("suit=0x{:04X}", u16_lo())),
+        8 => Some(alloc::format!(
+            "max={} → {}[{}]",
+            u16_lo(),
+            scope_name(u16::from(operand[4])).unwrap_or("?"),
+            u16::from_le_bytes([operand[2], operand[3]])
+        )),
+        13 => Some(alloc::format!("push tree=0x{:04X} joining={}", u16_lo(), i16_at(2))),
         17 => {
             let ticks = u16::from_le_bytes([operand[4], operand[5]]);
             let interruptable = u16::from_le_bytes([operand[6], operand[7]]) != 0;
             Some(alloc::format!("ticks={ticks} interruptable={interruptable}"))
         }
-        23 => {
-            let event_id = u16::from_le_bytes([operand[0], operand[1]]);
-            Some(alloc::format!("event=0x{event_id:04X}"))
-        }
-        44 => {
-            let anim_id = u16::from_le_bytes([operand[0], operand[1]]);
-            Some(alloc::format!("anim=0x{anim_id:04X}"))
-        }
+        20 => Some(alloc::format!("tree=0x{:04X}", u16_lo())),
+        21 => Some(alloc::format!("show string kind={}", u16_lo())),
+        23 => Some(alloc::format!("event=0x{:04X}", u16_lo())),
+        25 => Some(alloc::format!(
+            "delta={}§",
+            i32::from_le_bytes([operand[0], operand[1], operand[2], operand[3]])
+        )),
+        28 => Some(alloc::format!("name=#{}", u16_lo())),
+        29 => Some(alloc::format!("motive[{}] += {}/tick", u16_lo(), i16_at(2))),
+        31 => Some(alloc::format!("next guid=0x{:08X}", u32_lo())),
+        32 => Some(alloc::format!("type==0x{:08X}", u32_lo())),
+        34 => Some(alloc::format!("ui kind={}", u16_lo())),
+        35 => Some(alloc::format!("fx kind={}", u16_lo())),
+        36 => Some(alloc::format!("dialog priv #{}", u16_lo())),
+        38 => Some(alloc::format!("dialog glob #{}", u16_lo())),
+        39 => Some(alloc::format!("dialog semi #{}", u16_lo())),
+        41 => Some(alloc::format!("balloon kind={}", u16_lo())),
+        42 => Some(alloc::format!("create guid=0x{:08X}", u32_lo())),
+        44 => Some(alloc::format!("anim=0x{:04X}", u16_lo())),
+        50 => Some(alloc::format!("action str=#{}", u16_lo())),
+        // 7 (Refresh), 15 (Break Point), 18 (Remove), 48 (Stop ALL Sounds),
+        // 49 (Notify Out of Idle): no operand semantics worth labelling.
         _ => None,
     }
 }
@@ -1711,19 +1747,36 @@ mod tests {
 
     #[test]
     fn set_to_next_walks_objects_with_matching_guid() {
-        let body = one_instr(
+        // Returns Returned(true) since RET_TRUE was the t_dest and the primitive
+        // succeeded in finding a match — but we can't observe the new
+        // stack_object_id from here once the BHAV returns. Instead, verify the
+        // primitive's truth value via two cases: when there is a match (true) and
+        // when there isn't (false).
+        let body_match = one_instr(
             31,
             [0x25, 0xD7, 0x83, 0xA4, 0, 0, 0, 0], // GUID 0xA483D725
             Instruction::RETURN_TRUE,
             Instruction::RETURN_FALSE,
         );
-        let src = source(&[(0x1000, body)]);
-        let mut vm = Vm::new(&src);
+        let src_match = source(&[(0x1000, body_match)]);
+        let mut vm = Vm::new(&src_match);
         vm.world.objects.insert(0x10, ObjectInstance { guid: 0x1234_5678, ..Default::default() });
         vm.world.objects.insert(0x20, ObjectInstance { guid: 0xA483_D725, ..Default::default() });
-        vm.world.objects.insert(0x30, ObjectInstance { guid: 0xA483_D725, ..Default::default() });
-        // Starting from stack=0x10, next match is 0x20.
-        let _ = vm.call(0x1000, Vec::new(), 0, 0x10).unwrap();
+        let r = vm.call(0x1000, Vec::new(), 0, 0x10).unwrap();
+        assert_eq!(r, ExecResult::Returned(true));
+
+        // No match → false branch.
+        let body_nomatch = one_instr(
+            31,
+            [0xAA, 0xAA, 0xAA, 0xAA, 0, 0, 0, 0],
+            Instruction::RETURN_TRUE,
+            Instruction::RETURN_FALSE,
+        );
+        let src_nomatch = source(&[(0x1000, body_nomatch)]);
+        let mut vm2 = Vm::new(&src_nomatch);
+        vm2.world.objects.insert(0x10, ObjectInstance { guid: 0x1234_5678, ..Default::default() });
+        let r2 = vm2.call(0x1000, Vec::new(), 0, 0x10).unwrap();
+        assert_eq!(r2, ExecResult::Returned(false));
     }
 
     #[test]
@@ -1753,6 +1806,42 @@ mod tests {
                 VmEffect::Dialog { flavour, string_index: 0x42, .. } if flavour == expected
             ));
         }
+    }
+
+    #[test]
+    fn subcall_passes_operand_bytes_as_signed_args() {
+        // Caller calls 0x1001 with operand bytes [5, -3, 0, 0, ...]. Callee has
+        // args=2 in its header and returns the value of param[0] - param[1] via
+        // an Expression: temps[0] = params[0]; cmp temps[0] == literal(8).
+        let caller = one_instr(
+            300,
+            [5, 0xFD, 0, 0, 0, 0, 0, 0],
+            Instruction::RETURN_TRUE,
+            Instruction::RETURN_FALSE,
+        );
+        // Build callee: header args=2, locals=0; ip 0 = Expression that compares
+        // params[0] (5) == literal(5) → t=RET_TRUE.
+        let mut callee = Vec::new();
+        callee.extend_from_slice(&0x8002u16.to_le_bytes());
+        callee.extend_from_slice(&1u16.to_le_bytes()); // count
+        callee.extend_from_slice(&[0, 2, 0, 0]); // type/args=2/locals/flags
+        callee.extend_from_slice(&0u32.to_le_bytes()); // extra
+        callee.extend_from_slice(&2u16.to_le_bytes()); // Expression
+        callee.push(Instruction::RETURN_TRUE);
+        callee.push(Instruction::RETURN_FALSE);
+        // operand: lhs=param[0], op=Eq, rhs=literal(5)
+        callee.extend_from_slice(&0u16.to_le_bytes()); // lhs_data=0
+        callee.extend_from_slice(&5u16.to_le_bytes()); // rhs_data=5 (literal)
+        callee.push(0);
+        callee.push(2); // Eq
+        callee.push(9); // lhs_owner = parameters
+        callee.push(7); // rhs_owner = literal
+        let src = source(&[(0x1000, caller), (300, callee)]);
+        let mut vm = Vm::new(&src);
+        let r = vm.call(0x1000, Vec::new(), 0, 0).unwrap();
+        // The callee saw param[0]=5 from operand byte 0 → comparison true → RET_TRUE
+        // bubbled up to caller's t_dest → caller's RET_TRUE.
+        assert_eq!(r, ExecResult::Returned(true));
     }
 
     #[test]
