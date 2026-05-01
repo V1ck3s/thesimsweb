@@ -49,6 +49,11 @@ test:
     pnpm test
     cargo test --workspace
 
+# differential test: compare our FAR extraction against TS1-FAR-Unpack.
+# Requires git + python3; clones the oracle on first run.
+diff-far archive:
+    ./scripts/diff/far.sh {{archive}}
+
 # clean build artifacts (keeps node_modules and target caches)
 clean:
     rm -rf client/dist server/dist

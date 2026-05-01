@@ -33,6 +33,10 @@ pub struct IffHeader {
 }
 
 /// Parse the 64-byte IFF header. Implementation lands in phase 1.
+///
+/// # Errors
+/// Returns `IffError::HeaderTooShort` if `data` is shorter than 64 bytes,
+/// or `IffError::BadMagic` if the magic prefix doesn't match a known Maxis IFF version.
 pub fn parse_header(data: &[u8]) -> Result<IffHeader, IffError> {
     if data.len() < HEADER_LEN {
         return Err(IffError::HeaderTooShort { got: data.len() });
@@ -50,6 +54,7 @@ pub fn parse_header(data: &[u8]) -> Result<IffHeader, IffError> {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
 
