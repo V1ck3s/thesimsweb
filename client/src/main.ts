@@ -505,8 +505,11 @@ async function runMain(globalsFarPath: string | null): Promise<void> {
   }
   setRunOutput("running…");
   let globalsBytes: Uint8Array = new Uint8Array(0);
-  if (obj.semiGlobalName && globalsFarPath) {
-    const loaded = await loadSemiGlobalIff(wasm, globalsFarPath, obj.semiGlobalName);
+  // When the object has no GLOB chunk, the engine falls back to `Global.iff` itself
+  // (same convention as `examples/run_object.rs`).
+  const targetName = obj.semiGlobalName ?? "Global";
+  if (globalsFarPath) {
+    const loaded = await loadSemiGlobalIff(wasm, globalsFarPath, targetName);
     if (loaded) globalsBytes = loaded;
   }
   try {
