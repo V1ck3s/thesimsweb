@@ -1,10 +1,11 @@
 # FAR — Maxis archive format
 
 > Sources:
-> - Niotso wiki (offline 2026-05-01, no archive.org mirror reachable from WSL).
-> - Empirical hexdump of `samples/far/UnSnacker.far` (15 962 B, 2 entries) and `GameData/Global/Global.far` (~2 MiB, 24 entries) on the user's Complete Edition install.
-> - Cross-checked against the format implemented by [TS1-FAR-Unpack](https://github.com/samulated/TS1-FAR-Unpack) (reference parser used for differential tests).
-> - All numbers little-endian unless stated. ASCII filenames, no NUL terminator.
+> - Niotso wiki, page [`FAR`](http://wiki.niotso.org/FAR) — canonical reference. Local snapshot in [`_niotso/FAR.md`](./_niotso/FAR.md) (2026-05-01).
+> - Empirical hexdump of `samples/far/UnSnacker.far` (15 962 B, 2 entries), `samples/far/ColumnFrench.far` (3 entries), and `GameData/Global/Global.far` (24 entries) on the user's Complete Edition install.
+> - Cross-checked byte-for-byte against [TS1-FAR-Unpack](https://github.com/samulated/TS1-FAR-Unpack) — see `scripts/diff/far.sh`.
+>
+> Format created by **Alex Zvenigorodsky** (Maxis). All numbers little-endian unless stated. ASCII filenames, no NUL terminator.
 
 ## Magic / signature
 
@@ -12,15 +13,15 @@
 offset 0   8 bytes   "FAR!byAZ"   (0x46 0x41 0x52 0x21 0x62 0x79 0x41 0x5A)
 ```
 
-The literal `byAZ` is part of the magic — Maxis credit to Andrew Zarudnyy. Reject any file that does not start with this exact 8-byte sequence.
+The literal `byAZ` is part of the magic — Maxis crediting Alex Zvenigorodsky. Reject any file that does not start with this exact 8-byte sequence.
 
 ## Header (16 bytes)
 
-| Offset | Size | Endianness | Field             | Notes                                         |
-|--------|------|------------|-------------------|-----------------------------------------------|
-| 0      | 8    | —          | `magic`           | `"FAR!byAZ"`                                  |
-| 8      | 4    | LE         | `version`         | `1` for TS1 (all observed). Other values exist (see "Versions") |
-| 12     | 4    | LE         | `manifest_offset` | Absolute byte offset of the manifest          |
+| Offset | Size | Endianness | Field                | Notes                                         |
+|--------|------|------------|----------------------|-----------------------------------------------|
+| 0      | 8    | —          | `magic`              | `"FAR!byAZ"`                                  |
+| 8      | 4    | LE         | `version`            | `1` for both v1a (TS1) and v1b (TSO). Disambiguated by entry layout, see "Versions" |
+| 12     | 4    | LE         | `file_table_offset`  | Absolute byte offset of the file table        |
 
 Payloads start at offset 16 immediately after the header. The manifest is at the end of the file.
 
@@ -46,15 +47,19 @@ Each entry is variable-sized:
 
 Total entry size = `16 + filename_length` bytes. Entries are packed end-to-end with no padding.
 
-## Versions
+## Versions (per Niotso)
 
-| Version | Compression | Where seen                               | Status                  |
-|---------|-------------|------------------------------------------|-------------------------|
-| 1       | None        | The Sims 1 (all observed FARs)           | **Implemented** (Phase 2) |
-| 1a      | None, with extra `type: u32` per entry | Some TS1 / TS Online expansion content | Planned, deferred       |
-| 3       | RefPack (per-entry flag)                | The Sims Online                          | Out of scope for v1     |
+| Niotso version | `version` field | Filename length width | Extra entry fields                                 | Used by      | Status                |
+|----------------|-----------------|-----------------------|----------------------------------------------------|--------------|-----------------------|
+| **1a**         | `1`             | u32                   | none                                               | The Sims 1   | **Implemented**       |
+| **1b**         | `1`             | u16                   | none                                               | TSO          | Deferred (no samples) |
+| **3**          | `3`             | u16                   | `flags: u16` after `data_offset`, `type_id: u32`, `file_id: u32` after filename_length | TSO        | Out of scope for v1   |
 
-We have **only v1** in the user's Complete Edition install (verified by reading `version` at offset 8 across `Downloads/`, `GameData/`, `ExpansionPack*/`, `Music/` FARs — all return `0x00000001`). A future encounter of v1a or v3 will require re-checking the entry layout against TS1-FAR-Unpack and adding a version dispatch in the parser.
+Both 1a and 1b advertise `version = 1` in the header — they are distinguished by entry layout, not by the header. Niotso speculates 1b "was intended to be version 2." Compression has been **supported since v1a but never used until TSO** — the spec leaves room for it (compressed != decompressed sizes), but TS1 archives always have them equal.
+
+In v3 the `compressed_size` field's high bit is a flag: set ⇒ payload is wrapped in a little-endian `Stream` container (RefPack). See [`RefPack.md`](./_niotso/RefPack.md) and [`Stream`](http://wiki.niotso.org/Stream) for the compression scheme.
+
+We have **only v1a** in the user's Complete Edition install (verified by reading `version` at offset 8 across `Downloads/`, `GameData/`, `ExpansionPack*/`, `Music/` FARs — all return `0x00000001`, with u32 filename_length confirmed by hexdump). A future encounter of v1b or v3 will require checking the entry layout and adding a version dispatch in the parser.
 
 ## Worked example — `samples/far/UnSnacker.far`
 
@@ -88,5 +93,5 @@ Total file size = 15 962 B; manifest spans `0x3E1C..0x3E5A` (62 B = 4 + 2 × (16
 
 ## Open questions
 
-- Does v1a use a `type: u32` field after `filename_length` (16-byte filename header) or before it (different ordering)? — Answer requires a v1a sample, which we don't have. Deferred until we encounter one.
-- Do any v1 archives in TS Online / Hot Date / Vacation / Superstar / Makin' Magic use compressed payloads despite advertising `version = 1`? — Verify by walking every `.far` in the install and asserting `size_compressed == size_decompressed`. Small smoke test, can be added to the differential script.
+- Do any expansion FARs (Hot Date, Vacation, Superstar, Makin' Magic) sneak in compressed payloads despite advertising `version = 1`? — Niotso says "TS1 does not actually support any form of compression," but that's the engine, not the format. Verify by walking every `.far` in the install and asserting `size_compressed == size_decompressed`. Small smoke test, can be added to the differential script.
+- Does the FAR loader inside `Sims.exe` enforce alignment on the file table, or accept any `file_table_offset`? — Not critical for read-only parsing; only matters if we ever rewrite an archive.

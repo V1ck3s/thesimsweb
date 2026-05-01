@@ -1,16 +1,19 @@
-//! Parser for the Maxis FAR v1 archive format ("FAR! by AZ"), as used by The Sims 1.
+//! Parser for the Maxis FAR v1a archive format ("FAR! by AZ"), as used by The Sims 1.
 //!
-//! Format reference: [`docs/formats/FAR.md`].
+//! Format reference: [`docs/formats/FAR.md`]. Niotso names this version `1a`; the on-disk
+//! `version` field still reads `1` (it's also used by TSO's v1b, which differs in entry
+//! layout). The TSO v1b/v3 variants are out of scope.
 //!
 //! Zero-copy: every entry borrows from the input slice. Suitable for streaming the
-//! manifest tail of a remote archive once the header is known.
+//! file-table tail of a remote archive once the header is known.
 
 #![no_std]
 
 use thiserror::Error;
 
 pub const MAGIC: &[u8; 8] = b"FAR!byAZ";
-pub const VERSION_1: u32 = 1;
+/// Niotso v1a — the only TS1 variant. Header `version` field reads `1`.
+pub const VERSION_1A: u32 = 1;
 pub const HEADER_SIZE: usize = 16;
 pub const ENTRY_FIXED_SIZE: usize = 16;
 
@@ -18,7 +21,7 @@ pub const ENTRY_FIXED_SIZE: usize = 16;
 pub enum FarError {
     #[error("not a FAR archive: bad magic")]
     BadMagic,
-    #[error("unsupported FAR version (got {0}, want 1)")]
+    #[error("unsupported FAR version (got {0}, want v1a header value 1)")]
     UnsupportedVersion(u32),
     #[error("buffer too short")]
     TooShort,
@@ -62,7 +65,7 @@ impl<'a> Far<'a> {
             return Err(FarError::BadMagic);
         }
         let version = read_u32_le(data, 8)?;
-        if version != VERSION_1 {
+        if version != VERSION_1A {
             return Err(FarError::UnsupportedVersion(version));
         }
         let manifest_offset = read_u32_le(data, 12)?;
