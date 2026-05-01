@@ -80,11 +80,12 @@ pub fn parse_iff_header(data: &[u8]) -> Result<JsValue, JsError> {
 }
 
 /// Enumerate IFF chunks. Returns an array of plain JS objects:
-/// `{ kind: string, size: number, id: number, flags: number, offset: number, dataStart: number, dataLen: number }`.
+/// `{ kind, size, id, flags, label, offset, dataStart, dataLen }`.
 ///
-/// `kind` is the 4-byte chunk type as a UTF-8 lossy string. `dataStart` is the absolute byte
-/// offset of the chunk payload in the input buffer; `dataLen` is the payload length. The
-/// caller can extract the payload as `data.subarray(dataStart, dataStart + dataLen)`.
+/// `kind` is the 4-byte chunk type as a UTF-8 lossy string. `label` is the 64-byte chunk
+/// label (commonly the human-readable name) trimmed at the first null byte, decoded
+/// lossily as UTF-8. `dataStart` is the absolute byte offset of the chunk payload in the
+/// input buffer; `dataLen` is the payload length.
 ///
 /// # Errors
 /// Returns a `JsError` if the buffer is not a valid IFF file or any chunk header is malformed.
@@ -96,6 +97,8 @@ pub fn parse_iff_chunks(data: &[u8]) -> Result<Array, JsError> {
         let chunk = chunk.map_err(|e| JsError::new(&e.to_string()))?;
         let obj = Object::new();
         let kind = core::str::from_utf8(&chunk.kind).unwrap_or("????");
+        let label_end = chunk.label.iter().position(|&b| b == 0).unwrap_or(chunk.label.len());
+        let label = String::from_utf8_lossy(&chunk.label[..label_end]);
         let data_start = chunk.offset + iff::CHUNK_HEADER_LEN;
         let data_len = chunk.data.len();
         Reflect::set(&obj, &JsValue::from_str("kind"), &JsValue::from_str(kind))
@@ -106,6 +109,8 @@ pub fn parse_iff_chunks(data: &[u8]) -> Result<Array, JsError> {
             .map_err(|_| JsError::new("set id"))?;
         Reflect::set(&obj, &JsValue::from_str("flags"), &JsValue::from_f64(f64::from(chunk.flags)))
             .map_err(|_| JsError::new("set flags"))?;
+        Reflect::set(&obj, &JsValue::from_str("label"), &JsValue::from_str(&label))
+            .map_err(|_| JsError::new("set label"))?;
         #[allow(clippy::cast_precision_loss)]
         let offset_f = chunk.offset as f64;
         #[allow(clippy::cast_precision_loss)]

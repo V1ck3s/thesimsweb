@@ -134,6 +134,8 @@ export interface IffChunkInfo {
   size: number;
   id: number;
   flags: number;
+  /** 64-byte chunk label, trimmed at the first null. Empty if absent. */
+  label: string;
   offset: number;
   dataStart: number;
   dataLen: number;

@@ -172,6 +172,7 @@ interface IffChunkRef {
   size: number;
   id: number;
   flags: number;
+  label: string;
   dataStart: number;
   dataLen: number;
 }
@@ -221,7 +222,10 @@ function buildLoadedObject(
     data.subarray(objdChunk.dataStart, objdChunk.dataStart + objdChunk.dataLen),
   ) as { fields: number[] };
   const baseGraphicId = objd.fields[1] ?? 0;
-  const objectName = humanizeIffName(iffName);
+  // Prefer the OBJD chunk's 64-byte label (Maxis stores the human-readable name there);
+  // fall back to humanizing the IFF filename.
+  const labelTrimmed = objdChunk.label.trim();
+  const objectName = labelTrimmed.length > 0 ? labelTrimmed : humanizeIffName(iffName);
   const paltChunk = chunks.find((c) => c.kind === "PALT" && c.id === 0) ?? null;
   const dgrps: DgrpChunk[] = [];
   for (const c of chunks) {
