@@ -165,6 +165,34 @@ impl BhavSource for InMemoryBhavSource {
     }
 }
 
+/// A [`BhavSource`] that routes lookups to one of three sub-sources based on the
+/// `SimAntics` opcode classification:
+/// - `0x0100..=0x0FFF` → `semi_global` (the IFF named by the object's `GLOB` chunk)
+/// - `0x1000..=0x1FFF` → `private` (the object's own IFF)
+/// - `0x2000..=0xFFFF` → `global` (typically `Behavior.iff`)
+/// - `0x0000..=0x00FF` → primitives, never resolved through a `BhavSource`
+///
+/// Each layer falls through to a flat `BTreeMap` lookup. Missing layers are fine —
+/// the trait method just returns `None`, which the VM surfaces as a clean bail-out.
+#[derive(Debug, Default, Clone)]
+pub struct LayeredBhavSource {
+    pub private: BTreeMap<u16, Vec<u8>>,
+    pub semi_global: BTreeMap<u16, Vec<u8>>,
+    pub global: BTreeMap<u16, Vec<u8>>,
+}
+
+impl BhavSource for LayeredBhavSource {
+    fn lookup(&self, opcode: u16) -> Option<&[u8]> {
+        let map = match opcode {
+            0x0100..=0x0FFF => &self.semi_global,
+            0x1000..=0x1FFF => &self.private,
+            0x2000..=0xFFFF => &self.global,
+            _ => return None,
+        };
+        map.get(&opcode).map(Vec::as_slice)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ExecResult {
     /// BHAV returned with the given truth value.
@@ -2067,6 +2095,38 @@ mod tests {
         assert_eq!(count, 2);
         assert_eq!(vm.world.temps[0], 1);
         assert_eq!(vm.world.temps[1], 2);
+    }
+
+    #[test]
+    fn layered_source_routes_by_opcode_class() {
+        let mut src = LayeredBhavSource::default();
+        src.private.insert(0x1000, alloc::vec![1, 2, 3]);
+        src.semi_global.insert(0x0500, alloc::vec![4, 5, 6]);
+        src.global.insert(0x2000, alloc::vec![7, 8, 9]);
+        // Primitive range: never resolved.
+        assert!(src.lookup(0x0042).is_none());
+        // Private range hits the private map.
+        assert_eq!(src.lookup(0x1000), Some(&[1u8, 2, 3][..]));
+        // Semi-global range hits the semi_global map.
+        assert_eq!(src.lookup(0x0500), Some(&[4u8, 5, 6][..]));
+        // Global range hits the global map.
+        assert_eq!(src.lookup(0x2000), Some(&[7u8, 8, 9][..]));
+        // Misses fall through to None.
+        assert!(src.lookup(0x1234).is_none());
+    }
+
+    #[test]
+    fn layered_source_runs_a_semi_global_subcall() {
+        // Caller (private) calls 0x0500, a semi-global. Without GLOB-style routing
+        // the call would bail out (BhavNotFound). With LayeredBhavSource it resolves.
+        let caller = bhav(&[(0x0500, Instruction::RETURN_TRUE, Instruction::RETURN_FALSE)]);
+        let callee = bhav(&[(STUB_PRIM, Instruction::RETURN_TRUE, Instruction::RETURN_ERROR)]);
+        let mut src = LayeredBhavSource::default();
+        src.private.insert(0x1000, caller);
+        src.semi_global.insert(0x0500, callee);
+        let mut vm = Vm::new(&src);
+        let r = vm.call(0x1000, Vec::new(), 0, 0).unwrap();
+        assert_eq!(r, ExecResult::Returned(true));
     }
 
     #[test]

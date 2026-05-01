@@ -46,6 +46,8 @@ pub enum SimAnticsError {
     TtabUnsupportedVersion(u16),
     #[error("OBJf version {0} is not supported (need 0)")]
     ObjfUnsupportedVersion(u32),
+    #[error("GLOB chunk is empty")]
+    GlobEmpty,
 }
 
 // ---- BHAV ----
@@ -836,6 +838,62 @@ impl Objf {
     }
 }
 
+// ---- GLOB ----
+
+/// `GLOB` chunk — points at a semi-global IFF file used to resolve sub-call
+/// opcodes in the 0x0100..=0x0FFF range.
+///
+/// The chunk format is undocumented in Niotso beyond "C string or Pascal string,
+/// optionally padded to 256 bytes with `0xA3`". Empirically (verified against
+/// Objects.far in TS1):
+/// - Short form: null-terminated C string in 11..=15 bytes, no padding.
+///   Example: `"CarGlobals\0"` (11 B).
+/// - Long form: 256 B chunk with a Pascal string prefix (length byte + chars,
+///   length always < 0x20), garbage after the string, padded with `0xA3` bytes
+///   to 256 B. Example: `[0x0b, 'D','o','o','r','G','l','o','b','a','l','s', …]`
+///   resolves to `"DoorGlobals"`.
+///
+/// We disambiguate by the first byte: if `< 0x20` it's a Pascal length prefix,
+/// otherwise it's the first ASCII char of a C string.
+#[derive(Debug, Clone)]
+pub struct Glob {
+    /// The semi-global filename **without** the `.iff` extension (the engine
+    /// adds it). Always ASCII in practice.
+    pub semi_global_name: alloc::string::String,
+}
+
+impl Glob {
+    /// Parse a `GLOB` chunk's data payload.
+    ///
+    /// # Errors
+    /// Returns `GlobEmpty` for a zero-byte chunk; otherwise always succeeds
+    /// (malformed strings are sanitised to ASCII via lossy conversion).
+    pub fn parse(data: &[u8]) -> Result<Self, SimAnticsError> {
+        if data.is_empty() {
+            return Err(SimAnticsError::GlobEmpty);
+        }
+        let bytes: &[u8] = if data[0] < 0x20 {
+            // Pascal string: length byte then ASCII.
+            let len = usize::from(data[0]);
+            let end = (1 + len).min(data.len());
+            &data[1..end]
+        } else {
+            // C string: read until NUL or end of buffer.
+            let end = data.iter().position(|&b| b == 0).unwrap_or(data.len());
+            &data[..end]
+        };
+        // Strip a trailing `.iff` if present (some chunks include it, the engine
+        // ignores the extension regardless).
+        let trimmed = if bytes.len() >= 4 && bytes[bytes.len() - 4..].eq_ignore_ascii_case(b".iff") {
+            &bytes[..bytes.len() - 4]
+        } else {
+            bytes
+        };
+        let semi_global_name = alloc::string::String::from_utf8_lossy(trimmed).into_owned();
+        Ok(Self { semi_global_name })
+    }
+}
+
 // ---- helpers ----
 
 fn read_u16_le(data: &[u8], offset: usize) -> Result<u16, SimAnticsError> {
@@ -1295,5 +1353,41 @@ mod tests {
         buf.extend_from_slice(&4u32.to_le_bytes());
         buf.extend_from_slice(&[0u8; 4]); // only one entry
         assert!(matches!(Objf::parse(&buf), Err(SimAnticsError::TooShort)));
+    }
+
+    #[test]
+    fn glob_short_form_is_c_string() {
+        // Real chunk from CarBentley.iff: "CarGlobals\0" — 11 bytes.
+        let data = b"CarGlobals\0";
+        let glob = Glob::parse(data).unwrap();
+        assert_eq!(glob.semi_global_name, "CarGlobals");
+    }
+
+    #[test]
+    fn glob_long_form_is_pascal_string_with_padding() {
+        // Real chunk from Doors.iff: 0x0b length, "DoorGlobals", garbage, 0xA3 padding to 256.
+        let mut data = Vec::with_capacity(256);
+        data.push(0x0b); // length = 11
+        data.extend_from_slice(b"DoorGlobals");
+        data.extend_from_slice(b".iff"); // garbage from a previous filename
+        data.resize(256, 0xA3); // 0xA3 padding
+        let glob = Glob::parse(&data).unwrap();
+        // Pascal length is 11, so we read exactly "DoorGlobals" — the leftover
+        // ".iff" bytes are not part of the name.
+        assert_eq!(glob.semi_global_name, "DoorGlobals");
+    }
+
+    #[test]
+    fn glob_strips_iff_extension_when_included() {
+        // A C-string GLOB that mistakenly includes the .iff extension should
+        // still resolve to the stem (the engine adds the extension itself).
+        let data = b"FooGlobals.iff\0";
+        let glob = Glob::parse(data).unwrap();
+        assert_eq!(glob.semi_global_name, "FooGlobals");
+    }
+
+    #[test]
+    fn glob_rejects_empty_chunk() {
+        assert!(matches!(Glob::parse(&[]), Err(SimAnticsError::GlobEmpty)));
     }
 }

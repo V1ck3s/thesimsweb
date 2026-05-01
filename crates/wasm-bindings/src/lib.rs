@@ -370,6 +370,26 @@ pub fn parse_objf(data: &[u8]) -> Result<Object, JsError> {
     Ok(obj)
 }
 
+/// Parse a `GLOB` chunk's data payload.
+///
+/// Returns `{ semiGlobalName }` — the filename (without `.iff` extension) of
+/// the semi-global IFF the object's sub-calls in `0x0100..=0x0FFF` resolve to.
+///
+/// # Errors
+/// Returns a `JsError` for an empty chunk.
+#[wasm_bindgen(js_name = parseGlob)]
+pub fn parse_glob(data: &[u8]) -> Result<Object, JsError> {
+    let glob = simantics::Glob::parse(data).map_err(|e| JsError::new(&e.to_string()))?;
+    let obj = Object::new();
+    Reflect::set(
+        &obj,
+        &JsValue::from_str("semiGlobalName"),
+        &JsValue::from_str(&glob.semi_global_name),
+    )
+    .map_err(|_| JsError::new("set semiGlobalName"))?;
+    Ok(obj)
+}
+
 /// Look up the human-readable name of a `SimAntics` primitive opcode.
 /// Returns `null` (an empty `JsValue`) for opcodes outside the documented `0..=67` range.
 #[wasm_bindgen(js_name = primitiveName)]
