@@ -315,8 +315,13 @@ function renderViewer(): void {
   }
   composeObjectViewer(decoded);
   const dirLabel = DIRECTION_FLAGS.find((d) => d.flag === viewerState.direction)?.label ?? "?";
+  // Show the sprite refs as `id#frame` so the user can spot when adjacent directions
+  // reuse the same compiled sprite (TS1 stores e.g. only N+W and flips at render time).
+  const spriteRefs = image.sprites
+    .map((s) => `${s.sprChunkId}#${s.sprFrameNumber}`)
+    .join(", ");
   setObjectLabel(
-    `${obj.objectName} · DGRP ${dgrp.id}${dgrp.id === obj.baseGraphicId ? " (base)" : ""} · ${dirLabel} z${viewerState.zoom} · ${decoded.length}/${image.sprites.length} sprites`,
+    `${obj.objectName} · DGRP ${dgrp.id}${dgrp.id === obj.baseGraphicId ? " (base)" : ""} · ${dirLabel} z${viewerState.zoom} · spr=[${spriteRefs}]`,
   );
   refreshStateButtons();
 }
