@@ -16,5 +16,6 @@ workspace = true
 iff = { path = "../iff" }
 far = { path = "../far" }
 sprite = { path = "../sprite" }
+simantics = { path = "../simantics" }
 wasm-bindgen = { workspace = true }
 js-sys = { workspace = true }

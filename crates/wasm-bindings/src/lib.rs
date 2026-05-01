@@ -155,3 +155,62 @@ pub fn decode_spr2_frame(
         .map_err(|_| JsError::new("set rgba"))?;
     Ok(obj)
 }
+
+/// Parse a BHAV chunk's data payload into a JS object:
+/// `{ magic, count, kind, args, locals, flags, extra, instructions: [{ opcode, tDest, fDest, operand: Uint8Array }] }`.
+///
+/// `magic` is one of `0x8000`, `0x8001`, `0x8002`, `0x8003`. `tDest`/`fDest` are
+/// 0-based indices into `instructions`, or one of the sentinel values `0xFD` (return
+/// error), `0xFE` (return false), `0xFF` (return true).
+///
+/// # Errors
+/// Returns a `JsError` if the buffer doesn't decode as a valid BHAV.
+#[wasm_bindgen(js_name = parseBhav)]
+pub fn parse_bhav(data: &[u8]) -> Result<Object, JsError> {
+    let bhav = simantics::Bhav::parse(data).map_err(|e| JsError::new(&e.to_string()))?;
+    let obj = Object::new();
+    set_f64(&obj, "magic", f64::from(bhav.header.magic.raw()))?;
+    set_f64(&obj, "count", f64::from(bhav.header.count))?;
+    set_f64(&obj, "kind", f64::from(bhav.header.kind))?;
+    set_f64(&obj, "args", f64::from(bhav.header.args))?;
+    set_f64(&obj, "locals", f64::from(bhav.header.locals))?;
+    set_f64(&obj, "flags", f64::from(bhav.header.flags))?;
+    set_f64(&obj, "extra", f64::from(bhav.header.extra))?;
+    let instructions = Array::new();
+    for instr in &bhav.instructions {
+        let i = Object::new();
+        set_f64(&i, "opcode", f64::from(instr.opcode))?;
+        set_f64(&i, "tDest", f64::from(instr.t_dest))?;
+        set_f64(&i, "fDest", f64::from(instr.f_dest))?;
+        Reflect::set(&i, &JsValue::from_str("operand"), &Uint8Array::from(&instr.operand[..]).into())
+            .map_err(|_| JsError::new("set operand"))?;
+        instructions.push(&i);
+    }
+    Reflect::set(&obj, &JsValue::from_str("instructions"), &instructions.into())
+        .map_err(|_| JsError::new("set instructions"))?;
+    Ok(obj)
+}
+
+/// Parse a BCON chunk's data payload into `{ flags, constants: number[] }`.
+///
+/// # Errors
+/// Returns a `JsError` if the buffer is malformed.
+#[wasm_bindgen(js_name = parseBcon)]
+pub fn parse_bcon(data: &[u8]) -> Result<Object, JsError> {
+    let bcon = simantics::Bcon::parse(data).map_err(|e| JsError::new(&e.to_string()))?;
+    let obj = Object::new();
+    set_f64(&obj, "flags", f64::from(bcon.flags))?;
+    let constants = Array::new();
+    for c in &bcon.constants {
+        constants.push(&JsValue::from_f64(f64::from(*c)));
+    }
+    Reflect::set(&obj, &JsValue::from_str("constants"), &constants.into())
+        .map_err(|_| JsError::new("set constants"))?;
+    Ok(obj)
+}
+
+fn set_f64(obj: &Object, key: &str, value: f64) -> Result<(), JsError> {
+    Reflect::set(obj, &JsValue::from_str(key), &JsValue::from_f64(value))
+        .map_err(|_| JsError::new("set"))?;
+    Ok(())
+}

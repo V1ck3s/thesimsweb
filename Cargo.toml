@@ -4,6 +4,7 @@ members = [
     "crates/iff",
     "crates/far",
     "crates/sprite",
+    "crates/simantics",
     "crates/wasm-bindings",
 ]
 
