@@ -28,7 +28,7 @@ build-ts:
     pnpm build
 
 build-wasm:
-    @echo "TODO: wasm-pack builds for crates/wasm-bindings — phase 0bis"
+    wasm-pack build --target web --scope thesimsweb crates/wasm-bindings
 
 # lint
 lint:

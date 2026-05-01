@@ -8,6 +8,7 @@ build/
 
 # Rust
 Cargo.lock.bak
+crates/wasm-bindings/pkg/
 
 # pnpm
 .pnpm-debug.log

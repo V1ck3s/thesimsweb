@@ -17,6 +17,9 @@ importers:
 
   client:
     dependencies:
+      '@thesimsweb/wasm-bindings':
+        specifier: workspace:*
+        version: link:../crates/wasm-bindings/pkg
       idb:
         specifier: ^8.0.0
         version: 8.0.3
@@ -33,6 +36,8 @@ importers:
       vitest:
         specifier: ^2.1.5
         version: 2.1.9(@types/node@22.19.17)(@vitest/browser@2.1.9)(msw@2.14.2(@types/node@22.19.17)(typescript@5.9.3))
+
+  crates/wasm-bindings/pkg: {}
 
   server:
     dependencies:

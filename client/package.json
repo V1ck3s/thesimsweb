@@ -12,6 +12,7 @@
     "typecheck": "tsc -p . --noEmit"
   },
   "dependencies": {
+    "@thesimsweb/wasm-bindings": "workspace:*",
     "idb": "^8.0.0"
   },
   "devDependencies": {
