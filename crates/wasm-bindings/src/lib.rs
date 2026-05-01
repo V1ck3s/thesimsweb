@@ -361,6 +361,23 @@ pub fn scope_name(scope: u16) -> JsValue {
     simantics::scope_name(scope).map_or(JsValue::NULL, JsValue::from_str)
 }
 
+/// Render a primitive's 8-byte operand in human-readable form.
+///
+/// Examples: `"ticks=20"` for Sleep, `"stack objects attributes[5] = literal(1)"`
+/// for Expression. Returns `null` for opcodes whose operand layout is not yet
+/// decoded — callers fall back to raw hex.
+#[wasm_bindgen(js_name = formatPrimitiveOperand)]
+#[must_use]
+pub fn format_primitive_operand(opcode: u16, operand: &[u8]) -> JsValue {
+    let mut bytes = [0u8; 8];
+    if operand.len() < 8 {
+        return JsValue::NULL;
+    }
+    bytes.copy_from_slice(&operand[..8]);
+    simantics::vm::format_primitive_operand(opcode, bytes)
+        .map_or(JsValue::NULL, |s| JsValue::from_str(&s))
+}
+
 /// Classify a BHAV `opcode`: returns one of `"primitive"`, `"semiglobal"`, `"private"`, `"global"`.
 #[wasm_bindgen(js_name = classifyOpcode)]
 #[must_use]

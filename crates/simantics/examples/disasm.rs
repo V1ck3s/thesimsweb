@@ -12,7 +12,10 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::print_stdout)]
 
 use iff::Iff;
-use simantics::{Bhav, Instruction, InstructionKind, classify_opcode, primitive_name};
+use simantics::{
+    Bhav, Instruction, InstructionKind, classify_opcode, primitive_name,
+    vm::format_primitive_operand,
+};
 
 fn render_branch(branch: u8, count: u16) -> String {
     if branch == Instruction::RETURN_TRUE {
@@ -79,18 +82,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             bhav.header.flags,
         );
         for (i, instr) in bhav.instructions.iter().enumerate() {
+            let raw_operand = instr
+                .operand
+                .iter()
+                .map(|b| format!("{b:02X}"))
+                .collect::<Vec<_>>()
+                .join(" ");
+            let decoded = format_primitive_operand(instr.opcode, instr.operand)
+                .map(|s| format!(" | {s}"))
+                .unwrap_or_default();
             println!(
-                "  {:3}: {:30}  t={:8}  f={:8}  operand={}",
+                "  {:3}: {:30}  t={:8}  f={:8}  operand={raw_operand}{decoded}",
                 i,
                 render_opcode(instr.opcode),
                 render_branch(instr.t_dest, bhav.header.count),
                 render_branch(instr.f_dest, bhav.header.count),
-                instr
-                    .operand
-                    .iter()
-                    .map(|b| format!("{b:02X}"))
-                    .collect::<Vec<_>>()
-                    .join(" "),
             );
         }
         count += 1;

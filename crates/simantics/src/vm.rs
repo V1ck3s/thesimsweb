@@ -29,7 +29,7 @@ use alloc::collections::BTreeMap;
 use alloc::string::String;
 use alloc::vec::Vec;
 
-use crate::{Bhav, Instruction, SimAnticsError};
+use crate::{Bhav, Instruction, SimAnticsError, scope_name};
 
 // ---- Expression primitive (#2) ----
 
@@ -718,6 +718,88 @@ enum StepOutcome {
     Error,
 }
 
+/// Render the 8-byte operand of a primitive in a human-readable form.
+///
+/// Returns `None` for primitives whose operand layout we don't decode yet (the
+/// disassembler falls back to printing the raw hex bytes in that case). For the
+/// six primitives we currently know — Sleep, Expression, Refresh, Idle for input,
+/// Play Sound Event, Animate Sim — we format the operand fields as named values
+/// so traces and disassembly are self-documenting.
+///
+/// Caveat: layouts for Animate Sim and Play Sound Event aren't documented in
+/// Niotso, so the rendered fields are best-guess from observed `AlarmClock` data.
+/// They round-trip the raw operand back through `format!("op=...")` for fidelity.
+///
+/// Refresh (#7) intentionally falls through to the wildcard arm — it has no operand
+/// semantics worth labelling (engine-side redraw flag).
+#[must_use]
+pub fn format_primitive_operand(opcode: u16, operand: [u8; 8]) -> Option<String> {
+    match opcode {
+        0 => {
+            let ticks = u16::from_le_bytes([operand[4], operand[5]]);
+            Some(alloc::format!("ticks={ticks}"))
+        }
+        2 => Some(format_expression_operand(operand)),
+        17 => {
+            let ticks = u16::from_le_bytes([operand[4], operand[5]]);
+            let interruptable = u16::from_le_bytes([operand[6], operand[7]]) != 0;
+            Some(alloc::format!("ticks={ticks} interruptable={interruptable}"))
+        }
+        23 => {
+            let event_id = u16::from_le_bytes([operand[0], operand[1]]);
+            Some(alloc::format!("event=0x{event_id:04X}"))
+        }
+        44 => {
+            let anim_id = u16::from_le_bytes([operand[0], operand[1]]);
+            Some(alloc::format!("anim=0x{anim_id:04X}"))
+        }
+        _ => None,
+    }
+}
+
+fn format_expression_operand(operand: [u8; 8]) -> String {
+    let op = ExpressionOperand::decode(&operand);
+    let lhs = format_var_ref(op.lhs_owner, op.lhs_data);
+    let rhs = format_var_ref(op.rhs_owner, op.rhs_data);
+    let op_str = match ExpressionOp::from_byte(op.operator) {
+        Some(ExpressionOp::Gt) => ">",
+        Some(ExpressionOp::Lt) => "<",
+        Some(ExpressionOp::Eq) => "==",
+        Some(ExpressionOp::Ge) => ">=",
+        Some(ExpressionOp::Le) => "<=",
+        Some(ExpressionOp::Ne) => "!=",
+        Some(ExpressionOp::Assign) => "=",
+        Some(ExpressionOp::AddAssign) => "+=",
+        Some(ExpressionOp::SubAssign) => "-=",
+        Some(ExpressionOp::MulAssign) => "*=",
+        Some(ExpressionOp::DivAssign) => "/=",
+        Some(ExpressionOp::ModAssign) => "%=",
+        Some(ExpressionOp::AndAssign) => "&=",
+        Some(ExpressionOp::IsFlagSet) => "?bit",
+        Some(ExpressionOp::SetFlag) => "|=bit",
+        Some(ExpressionOp::ClearFlag) => "&=~bit",
+        Some(ExpressionOp::IncThenLt) => "++<",
+        Some(ExpressionOp::DecThenGt) => "--<",
+        Some(ExpressionOp::Push) => "push",
+        Some(ExpressionOp::Pop) => "pop",
+        None => return alloc::format!("expr op=0x{:02X} ({lhs}, {rhs})", op.operator),
+    };
+    alloc::format!("{lhs} {op_str} {rhs}")
+}
+
+fn format_var_ref(owner: u8, data: u16) -> String {
+    if owner == 7 {
+        // Literal: display the signed value directly.
+        let signed = i16::from_le_bytes(data.to_le_bytes());
+        return alloc::format!("literal({signed})");
+    }
+    if owner == 10 {
+        return "stack_obj_id".into();
+    }
+    let scope = scope_name(u16::from(owner)).unwrap_or("?");
+    alloc::format!("{scope}[{data}]")
+}
+
 /// Render a [`TraceEntry`] for debugger output. Standalone so `Vm` itself doesn't depend
 /// on `String` formatting in `core`.
 #[must_use]
@@ -990,6 +1072,54 @@ mod tests {
         assert_eq!(vm.effects.len(), 2);
         assert!(matches!(vm.effects[0], VmEffect::AnimateSim { anim_id: 0x1234, .. }));
         assert!(matches!(vm.effects[1], VmEffect::PlaySound { event_id: 0x00AB, .. }));
+    }
+
+    #[test]
+    fn format_primitive_operand_decodes_known_primitives() {
+        // Sleep #0
+        assert_eq!(
+            format_primitive_operand(0, [0, 0, 0, 0, 20, 0, 0, 0]).as_deref(),
+            Some("ticks=20")
+        );
+        // Idle for input #17 with interruptable=true
+        assert_eq!(
+            format_primitive_operand(17, [0, 0, 0, 0, 5, 0, 1, 0]).as_deref(),
+            Some("ticks=5 interruptable=true")
+        );
+        // Play Sound Event #23
+        assert_eq!(
+            format_primitive_operand(23, [0xAB, 0x00, 0, 0, 0, 0, 0, 0]).as_deref(),
+            Some("event=0x00AB")
+        );
+        // Animate Sim #44
+        assert_eq!(
+            format_primitive_operand(44, [0x34, 0x12, 0, 0, 0, 0, 0, 0]).as_deref(),
+            Some("anim=0x1234")
+        );
+        // Refresh #7 (no operand semantics)
+        assert!(format_primitive_operand(7, [0; 8]).is_none());
+        // Unknown primitive
+        assert!(format_primitive_operand(99, [0; 8]).is_none());
+    }
+
+    #[test]
+    fn format_expression_operand_renders_real_alarm_clock_instr() {
+        // From AlarmClock 0x1001 ip=1: operand=05 00 01 00 00 05 01 07
+        // → stack obj attr [5] = literal(1)
+        let s = format_primitive_operand(2, [0x05, 0x00, 0x01, 0x00, 0x00, 0x05, 0x01, 0x07])
+            .expect("Expression should decode");
+        assert!(s.contains("stack objects attributes[5]"), "got: {s}");
+        assert!(s.contains(" = "), "got: {s}");
+        assert!(s.contains("literal(1)"), "got: {s}");
+    }
+
+    #[test]
+    fn format_expression_operand_renders_comparisons() {
+        // param[0] == literal(0): operand=00 00 00 00 00 02 09 07
+        let s = format_primitive_operand(2, [0, 0, 0, 0, 0, 2, 9, 7]).unwrap();
+        assert!(s.contains("parameters[0]"), "got: {s}");
+        assert!(s.contains(" == "), "got: {s}");
+        assert!(s.contains("literal(0)"), "got: {s}");
     }
 
     #[test]
