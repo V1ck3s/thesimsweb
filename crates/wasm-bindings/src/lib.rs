@@ -345,6 +345,31 @@ pub fn parse_objd(data: &[u8]) -> Result<Object, JsError> {
     Ok(obj)
 }
 
+/// Parse an `OBJf` chunk's data payload.
+///
+/// Returns `{ version, entries: Array<{ condition, action }> }`. Each entry's
+/// position in the array is the event index — the meaning is defined by
+/// `behavior.iff` chunk `0x00F5` (typically 0 = Init, 1 = Main, …).
+///
+/// # Errors
+/// Returns a `JsError` if the buffer is malformed or the version is unsupported.
+#[wasm_bindgen(js_name = parseObjf)]
+pub fn parse_objf(data: &[u8]) -> Result<Object, JsError> {
+    let objf = simantics::Objf::parse(data).map_err(|e| JsError::new(&e.to_string()))?;
+    let obj = Object::new();
+    set_f64(&obj, "version", f64::from(objf.version))?;
+    let entries = Array::new();
+    for e in &objf.entries {
+        let row = Object::new();
+        set_f64(&row, "condition", f64::from(e.condition))?;
+        set_f64(&row, "action", f64::from(e.action))?;
+        entries.push(&row);
+    }
+    Reflect::set(&obj, &JsValue::from_str("entries"), &entries.into())
+        .map_err(|_| JsError::new("set entries"))?;
+    Ok(obj)
+}
+
 /// Look up the human-readable name of a `SimAntics` primitive opcode.
 /// Returns `null` (an empty `JsValue`) for opcodes outside the documented `0..=67` range.
 #[wasm_bindgen(js_name = primitiveName)]

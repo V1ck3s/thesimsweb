@@ -10,7 +10,7 @@
 use std::path::PathBuf;
 
 use iff::Iff;
-use simantics::{Objd, StrEntry, StrTable, Ttab, objd_field};
+use simantics::{Objd, Objf, StrEntry, StrTable, Ttab, objd_field};
 
 fn sample_path(name: &str) -> PathBuf {
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
@@ -73,4 +73,33 @@ fn alarm_clock_objd_ttab_ttas() {
         _ => false,
     });
     assert!(any_with_label);
+}
+
+#[test]
+fn alarm_clock_objf_dispatch_table() {
+    let Ok(data) = std::fs::read(sample_path("AlarmClock.iff")) else {
+        eprintln!("skipping: samples/iff/AlarmClock.iff missing");
+        return;
+    };
+    let iff_file = Iff::parse(&data).expect("valid IFF");
+    let chunks: Vec<_> = iff_file.chunks().collect::<Result<_, _>>().unwrap();
+
+    let objf_chunks: Vec<_> = chunks.iter().filter(|c| &c.kind == b"OBJf").collect();
+    assert_eq!(objf_chunks.len(), 1);
+    let objf = Objf::parse(objf_chunks[0].data).expect("OBJf decodes");
+    assert_eq!(objf.version, 0);
+    // AlarmClock declares 31 events in its OBJf (verified via xxd).
+    assert_eq!(objf.entries.len(), 31);
+    // Event 0 dispatches to action BHAV 0x1005 with no condition (verified via xxd).
+    assert_eq!(
+        objf.dispatch(0),
+        Some(simantics::ObjfEntry { condition: 0, action: 0x1005 })
+    );
+    // Event 1 dispatches to action BHAV 0x1000 with no condition.
+    assert_eq!(
+        objf.dispatch(1),
+        Some(simantics::ObjfEntry { condition: 0, action: 0x1000 })
+    );
+    // The remaining events are unset; dispatch returns None for those.
+    assert_eq!(objf.dispatch(30), None);
 }

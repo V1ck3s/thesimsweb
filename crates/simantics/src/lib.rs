@@ -44,6 +44,8 @@ pub enum SimAnticsError {
     ObjdMisalignedPayload { got: usize },
     #[error("TTAB version {0} is not supported (need 5 or 8 — v9+ is field-encoded)")]
     TtabUnsupportedVersion(u16),
+    #[error("OBJf version {0} is not supported (need 0)")]
+    ObjfUnsupportedVersion(u32),
 }
 
 // ---- BHAV ----
@@ -766,6 +768,74 @@ impl Ttab {
     }
 }
 
+// ---- OBJf ----
+
+/// One row of an [`Objf`] dispatch table.
+///
+/// Index in the parent's `entries` vector identifies the *event* (the meaning of
+/// each event index is defined by `behavior.iff` chunk `0x00F5` per Niotso —
+/// typically index 0 = "Init", 1 = "Main", etc.). `action` is the BHAV chunk ID
+/// to invoke; `condition` (when non-zero) is the guard BHAV that must return
+/// true first. A zero `action` means "no handler for this event".
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ObjfEntry {
+    pub condition: u16,
+    pub action: u16,
+}
+
+/// `OBJf` (Object Functions) chunk — fixed dispatch table from event index → BHAV.
+///
+/// Layout (per Niotso): 4 reserved zero bytes, 4-byte version (must be 0),
+/// 4-byte magic (`"fJBO"` or zero), 4-byte entry count, then `count × 4` bytes
+/// of `(condition u16, action u16)` pairs.
+#[derive(Debug, Clone)]
+pub struct Objf {
+    pub version: u32,
+    pub entries: Vec<ObjfEntry>,
+}
+
+impl Objf {
+    /// Parse an `OBJf` chunk's data payload.
+    ///
+    /// # Errors
+    /// Returns `ObjfUnsupportedVersion` for any version other than 0,
+    /// or `TooShort` if the buffer is truncated.
+    pub fn parse(data: &[u8]) -> Result<Self, SimAnticsError> {
+        if data.len() < 16 {
+            return Err(SimAnticsError::TooShort);
+        }
+        // bytes 0..4 reserved zero, 4..8 version, 8..12 magic, 12..16 count
+        let version = read_u32_le(data, 4)?;
+        if version != 0 {
+            return Err(SimAnticsError::ObjfUnsupportedVersion(version));
+        }
+        let count = read_u32_le(data, 12)? as usize;
+        if 16 + count.saturating_mul(4) > data.len() {
+            return Err(SimAnticsError::TooShort);
+        }
+        let mut entries = Vec::with_capacity(count);
+        for i in 0..count {
+            let off = 16 + i * 4;
+            entries.push(ObjfEntry {
+                condition: read_u16_le(data, off)?,
+                action: read_u16_le(data, off + 2)?,
+            });
+        }
+        Ok(Self { version, entries })
+    }
+
+    /// Lookup the (condition, action) BHAV pair for `event`. Returns `None` when
+    /// `event` is past the end of the table or both fields are zero (no handler).
+    #[must_use]
+    pub fn dispatch(&self, event: usize) -> Option<ObjfEntry> {
+        let entry = *self.entries.get(event)?;
+        if entry.condition == 0 && entry.action == 0 {
+            return None;
+        }
+        Some(entry)
+    }
+}
+
 // ---- helpers ----
 
 fn read_u16_le(data: &[u8], offset: usize) -> Result<u16, SimAnticsError> {
@@ -1164,5 +1234,66 @@ mod tests {
             Ttab::parse(&buf),
             Err(SimAnticsError::TtabUnsupportedVersion(9))
         ));
+    }
+
+    #[test]
+    fn objf_parses_minimal_two_entry_table() {
+        // 16 B header + 2 entries × 4 B
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&0u32.to_le_bytes()); // reserved
+        buf.extend_from_slice(&0u32.to_le_bytes()); // version
+        buf.extend_from_slice(b"fJBO"); // magic
+        buf.extend_from_slice(&2u32.to_le_bytes()); // count
+        // entry 0: condition=0, action=0x1005
+        buf.extend_from_slice(&0u16.to_le_bytes());
+        buf.extend_from_slice(&0x1005u16.to_le_bytes());
+        // entry 1: condition=0x1006, action=0x1007
+        buf.extend_from_slice(&0x1006u16.to_le_bytes());
+        buf.extend_from_slice(&0x1007u16.to_le_bytes());
+        let objf = Objf::parse(&buf).unwrap();
+        assert_eq!(objf.version, 0);
+        assert_eq!(objf.entries.len(), 2);
+        assert_eq!(objf.entries[0], ObjfEntry { condition: 0, action: 0x1005 });
+        assert_eq!(objf.entries[1], ObjfEntry { condition: 0x1006, action: 0x1007 });
+        // dispatch: index 0 has an action → returns it
+        assert_eq!(objf.dispatch(0), Some(ObjfEntry { condition: 0, action: 0x1005 }));
+        // out-of-range index → None
+        assert_eq!(objf.dispatch(2), None);
+    }
+
+    #[test]
+    fn objf_dispatch_skips_zero_pairs() {
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&[0u8; 8]); // reserved + version
+        buf.extend_from_slice(b"fJBO");
+        buf.extend_from_slice(&2u32.to_le_bytes()); // count = 2
+        // Both entries are (0, 0) — meaning "no handler".
+        buf.extend_from_slice(&[0u8; 8]);
+        let objf = Objf::parse(&buf).unwrap();
+        assert_eq!(objf.dispatch(0), None);
+        assert_eq!(objf.dispatch(1), None);
+    }
+
+    #[test]
+    fn objf_rejects_nonzero_version() {
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&0u32.to_le_bytes());
+        buf.extend_from_slice(&1u32.to_le_bytes()); // version = 1, unsupported
+        buf.extend_from_slice(&[0u8; 8]);
+        assert!(matches!(
+            Objf::parse(&buf),
+            Err(SimAnticsError::ObjfUnsupportedVersion(1))
+        ));
+    }
+
+    #[test]
+    fn objf_rejects_truncated_buffer() {
+        // Header claims 4 entries but only 1 entry's bytes are present.
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&[0u8; 8]);
+        buf.extend_from_slice(b"fJBO");
+        buf.extend_from_slice(&4u32.to_le_bytes());
+        buf.extend_from_slice(&[0u8; 4]); // only one entry
+        assert!(matches!(Objf::parse(&buf), Err(SimAnticsError::TooShort)));
     }
 }
