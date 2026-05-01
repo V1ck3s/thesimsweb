@@ -207,14 +207,83 @@ impl StackFrame {
     }
 }
 
-/// World-level state. Today this is mostly a placeholder for what Phase 4 will fill in:
-/// objects with attributes, motives, the lot grid, and the global temp registers.
+/// One object instance in the world (a placed catalog item — chair, alarm clock, sim).
+/// `attributes` is the per-object Sim attribute vector (scope 0/1 in `SimAntics`).
+#[derive(Debug, Default, Clone)]
+pub struct ObjectInstance {
+    /// Catalog GUID — matches `OBJD::guid()` for the type this object instantiates.
+    pub guid: u32,
+    /// 2D lot position in tile coordinates. The Sims uses fixed-point with a Z-axis
+    /// for floor; we ignore Z for now and treat the lot as planar.
+    pub position: (i32, i32),
+    /// Sim attributes (scope 0 / 1). Indexed by attribute number; defaults to 0.
+    pub attributes: Vec<i32>,
+    /// Type-attributes (scope 36/37) — shared across all instances of the same type.
+    /// Stored per-instance for simplicity; the production engine shares these.
+    pub type_attributes: Vec<i32>,
+    /// Tuning constants from the BCON associated with the object's type
+    /// (scope 26: "stack object tuning"). Filled when the BCON is loaded.
+    pub tuning: Vec<i32>,
+}
+
+/// One Sim — a person object.
+///
+/// Distinct from a generic `ObjectInstance` because Sims have motives, person data,
+/// and skills. The `object_id` is the same key as in `World::objects`; a Sim is
+/// also stored there so that scope 1 attribute reads against a Sim work uniformly.
+#[derive(Debug, Default, Clone)]
+pub struct Sim {
+    /// 16 motive scores, each in `[-100, 100]`. Niotso §motives:
+    ///   0 hunger, 1 comfort, 2 hygiene, 3 bladder, 4 energy, 5 fun, 6 social,
+    ///   7 room, 8-15 reserved/skills.
+    pub motives: [i32; 16],
+    /// Person-data scope (18/19). Free-form i32 vector indexed by data field id;
+    /// real fields include hour/minute (56/57 — used by `AlarmClock`), age, gender, etc.
+    pub person_data: Vec<i32>,
+    /// Skills (cooking, mechanical, charisma, …) — separate from motives even though
+    /// `SimAntics` stores both as motives in the binary layout. Free-form for now.
+    pub skills: Vec<i32>,
+}
+
+/// Pending interaction queued onto a Sim's stack by `Push Interaction` (#13). Acts as
+/// a passive log: we don't run them automatically (the engine would).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PendingInteraction {
+    /// Sim that is being asked to run the interaction.
+    pub sim_id: u32,
+    /// Object the interaction is on.
+    pub stack_object_id: u32,
+    /// TTAB action-function tree ID.
+    pub action_function: u16,
+    /// TTAB joining/guard function tree ID (`-1` = none).
+    pub joining_index: i32,
+}
+
+/// World-level state.
+///
+/// Houses the global temp bank, the object catalog, the Sim roster, and the household
+/// funds bag — enough state for the meaningful primitive subset to land without
+/// depending on the full engine.
 #[derive(Debug, Default, Clone)]
 pub struct World {
     /// Shared temp registers (scope 8). `SimAntics` ships ~32 temps; we allocate 32.
     pub temps: [i32; 32],
-    /// Object ID → attributes (scope 0 / 1 keyed by object id and attribute index).
-    pub object_attrs: BTreeMap<u32, Vec<i32>>,
+    /// Object ID → instance. Object IDs are opaque u32 — the engine assigns them when
+    /// instances are placed; tests/callers use whatever scheme they like.
+    pub objects: BTreeMap<u32, ObjectInstance>,
+    /// Sim ID → Sim record. Same key space as `objects` (a Sim is also an object).
+    pub sims: BTreeMap<u32, Sim>,
+    /// Household funds (Simoleons). Scope 6 references go through this bank.
+    pub funds: i32,
+    /// Pending interactions pushed onto Sims' stacks. Recorded for inspection only —
+    /// the VM doesn't pop them; the engine would.
+    pub interaction_queue: Vec<PendingInteraction>,
+    /// "Global" tuning constants (scope 6 `Global (from avatar)`). Indexed array of
+    /// i32; loaded from the global BCONs.
+    pub globals: Vec<i32>,
+    /// Deterministic PRNG seed for `Random Number` (#8). Defaults to `0xDEAD_BEEF` so
+    /// traces are reproducible. Update via `Vm::with_rng_seed`.
+    pub rng_state: u64,
 }
 
 impl World {
@@ -223,23 +292,49 @@ impl World {
     /// representation in OBJD).
     #[must_use]
     pub fn read_object_attr(&self, object_id: u32, index: usize) -> i32 {
-        self.object_attrs
+        self.objects
             .get(&object_id)
-            .and_then(|v| v.get(index).copied())
+            .and_then(|o| o.attributes.get(index).copied())
             .unwrap_or(0)
     }
 
     /// Write `value` to attribute `index` of `object_id`. Grows the attribute vector
     /// on demand (Sims allocates one slot per attribute used; we follow the same rule).
     pub fn write_object_attr(&mut self, object_id: u32, index: usize, value: i32) {
-        let entry = self.object_attrs.entry(object_id).or_default();
-        if entry.len() <= index {
-            entry.resize(index + 1, 0);
+        let entry = self.objects.entry(object_id).or_default();
+        if entry.attributes.len() <= index {
+            entry.attributes.resize(index + 1, 0);
         }
-        #[allow(clippy::indexing_slicing)] // resize above
+        #[allow(clippy::indexing_slicing)]
         {
-            entry[index] = value;
+            entry.attributes[index] = value;
         }
+    }
+
+    /// Read motive `index` of `sim_id`. Returns 0 for unknown sim or out-of-range.
+    #[must_use]
+    pub fn read_motive(&self, sim_id: u32, index: usize) -> i32 {
+        self.sims.get(&sim_id).and_then(|s| s.motives.get(index).copied()).unwrap_or(0)
+    }
+
+    /// Write `value` clamped to `[-100, 100]` into motive `index` of `sim_id`. No-op
+    /// if `index >= 16`. Auto-creates the Sim record if missing.
+    pub fn write_motive(&mut self, sim_id: u32, index: usize, value: i32) {
+        if index >= 16 {
+            return;
+        }
+        let sim = self.sims.entry(sim_id).or_default();
+        let clamped = value.clamp(-100, 100);
+        #[allow(clippy::indexing_slicing)] // index < 16 guard above
+        {
+            sim.motives[index] = clamped;
+        }
+    }
+
+    /// Read person-data `index` of `sim_id`. 0 if unset.
+    #[must_use]
+    pub fn read_person_data(&self, sim_id: u32, index: usize) -> i32 {
+        self.sims.get(&sim_id).and_then(|s| s.person_data.get(index).copied()).unwrap_or(0)
     }
 }
 
@@ -266,6 +361,60 @@ pub enum VmEffect {
     PlaySound { event_id: u16, operand: [u8; 8] },
     /// Primitive 44 — request the engine queue an animation. Same caveat as `PlaySound`.
     AnimateSim { anim_id: u16, operand: [u8; 8] },
+    /// Primitive 48 — stop every sound currently playing. Operand is unused.
+    StopAllSounds,
+    /// Primitive 41 — show a thought-bubble icon over the Sim. `kind` is the icon
+    /// id; `operand` preserved for future interpretation.
+    SetBalloon { kind: u16, operand: [u8; 8] },
+    /// Primitive 50 — set the action string ("…buying milk") shown in the queue UI.
+    /// `string_index` is into a STR# table whose ID we don't model yet.
+    SetActionString { string_index: u16, operand: [u8; 8] },
+    /// Primitive 49 — wake the stack object (a Sim) out of an idle interaction.
+    NotifyOutOfIdle { sim_id: u32 },
+    /// Primitive 35 — fire a special effect (e.g. sparkles). `kind` undocumented.
+    SpecialEffect { kind: u16, operand: [u8; 8] },
+    /// Primitive 34 — UI-level effect (cursor, panel flash, etc.).
+    UiEffect { kind: u16, operand: [u8; 8] },
+    /// Primitive 21 — show a string to the user. `kind` selects which dialog flavour.
+    ShowString { kind: u16, operand: [u8; 8] },
+    /// Primitive 36/38/39 — pop a dialog with strings from a private/global/semi-global
+    /// STR# table. `flavour` records which of the three.
+    Dialog { flavour: DialogFlavour, string_index: u16, operand: [u8; 8] },
+    /// Primitive 6 — change a Sim's outfit/accessory.
+    ChangeSuit { suit_id: u16, operand: [u8; 8] },
+    /// Primitive 13 — push an interaction onto a Sim's queue. Recorded; the VM does
+    /// not actually pop it (the engine would).
+    PushInteraction { pending: PendingInteraction },
+    /// Primitive 25 — transfer simoleons. `delta` is the signed amount; `operand`
+    /// preserved for source/destination interpretation.
+    TransferFunds { delta: i32, operand: [u8; 8] },
+    /// Primitive 45 / 27 / 46 / 47 — engine-side spatial requests. `kind` records
+    /// which primitive emitted the effect; the engine would interpret the operand.
+    SpatialRequest { primitive: u8, operand: [u8; 8] },
+    /// Primitive 28 — call a tree by string-table name (the engine resolves the name
+    /// via the object's TTAs). We record the name index and don't actually descend.
+    RunTreeByName { name_index: u16, operand: [u8; 8] },
+    /// Primitive 18 — destroy the stack object.
+    RemoveObjectInstance { object_id: u32 },
+    /// Primitive 42 — instantiate a new object of `guid`. `new_object_id` is the ID
+    /// the VM allocated.
+    CreateObjectInstance { guid: u32, new_object_id: u32 },
+    /// Primitive 22 — orient the Sim toward a target. Operand encodes which target.
+    LookTowards { operand: [u8; 8] },
+    /// Primitive 32 — opaque marker recorded so debugging traces can highlight an
+    /// explicit break-point in a BHAV. Branch always taken.
+    Breakpoint { bhav_id: u16, ip: u16 },
+}
+
+/// Flavour of dialog primitive — selects the STR# table the engine reads from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DialogFlavour {
+    /// Primitive 36 — strings from the object's own STR# 256.
+    Private,
+    /// Primitive 38 — strings from `behavior.iff`.
+    Global,
+    /// Primitive 39 — strings from `globals.iff`.
+    SemiGlobal,
 }
 
 /// One entry in the per-execution trace. Useful for snapshot/diff testing primitive
@@ -436,10 +585,36 @@ impl<'a> Vm<'a> {
         match instr.opcode {
             0 => self.exec_sleep(instr.operand),
             2 => self.exec_expression(instr.operand),
+            6 => self.exec_change_suit(instr.operand),
             7 => Self::exec_refresh(),
+            8 => self.exec_random_number(instr.operand),
+            11 => Self::exec_get_distance_to(),
+            12 => Self::exec_get_direction_to(),
+            13 => self.exec_push_interaction(instr.operand),
+            15 => self.exec_break_point(),
             17 => self.exec_idle_for_input(instr.operand),
+            18 => self.exec_remove_object_instance(),
+            20 => Self::exec_run_functional_tree(instr.operand),
+            21 => self.exec_show_string(instr.operand),
+            22 => self.exec_look_towards(instr.operand),
             23 => self.exec_play_sound(instr.operand),
+            25 => self.exec_transfer_funds(instr.operand),
+            27 | 45 | 46 | 47 => self.exec_spatial_request(u8::try_from(instr.opcode).unwrap_or(0), instr.operand),
+            28 => self.exec_run_tree_by_name(instr.operand),
+            29 => self.exec_set_motive_change(instr.operand),
+            32 => self.exec_test_object_type(instr.operand),
+            31 => self.exec_set_to_next(instr.operand),
+            34 => self.exec_ui_effect(instr.operand),
+            35 => self.exec_special_effect(instr.operand),
+            36 => self.exec_dialog(DialogFlavour::Private, instr.operand),
+            38 => self.exec_dialog(DialogFlavour::Global, instr.operand),
+            39 => self.exec_dialog(DialogFlavour::SemiGlobal, instr.operand),
+            41 => self.exec_set_balloon(instr.operand),
+            42 => self.exec_create_new_object_instance(instr.operand),
             44 => self.exec_animate_sim(instr.operand),
+            48 => self.exec_stop_all_sounds(),
+            49 => self.exec_notify_out_of_idle(),
+            50 => self.exec_set_action_string(instr.operand),
             _ => DispatchOutcome::Branch(true),
         }
     }
@@ -476,6 +651,248 @@ impl<'a> Vm<'a> {
         DispatchOutcome::Branch(true)
     }
 
+    /// Primitive 8 — Random Number. Operand layout is undocumented in Niotso; we
+    /// adopt the canonical "max in u16[0..2], target var in (byte[4] owner, u16[2..4]
+    /// data)" reading. The result is `prng() % max` written to the target. Pure
+    /// integer math + xorshift64 → deterministic given the seed.
+    fn exec_random_number(&mut self, operand: [u8; 8]) -> DispatchOutcome {
+        let max = u16::from_le_bytes([operand[0], operand[1]]);
+        let lhs_data = u16::from_le_bytes([operand[2], operand[3]]);
+        let lhs_owner = operand[4];
+        let value = if max == 0 {
+            0
+        } else {
+            i32::try_from(self.prng_next() % u64::from(max)).unwrap_or(0)
+        };
+        self.write_var(lhs_owner, lhs_data, value);
+        DispatchOutcome::Branch(true)
+    }
+
+    /// Step the world's xorshift64 PRNG once and return the new state.
+    const fn prng_next(&mut self) -> u64 {
+        if self.world.rng_state == 0 {
+            self.world.rng_state = 0xDEAD_BEEF_CAFE_F00D;
+        }
+        let mut x = self.world.rng_state;
+        x ^= x << 13;
+        x ^= x >> 7;
+        x ^= x << 17;
+        self.world.rng_state = x;
+        x
+    }
+
+    /// Primitives 11/12 — distance/direction queries. Without engine geometry we
+    /// just write `0` to the target var (selected by the operand, ignored for now)
+    /// and return true so the BHAV walks past.
+    const fn exec_get_distance_to() -> DispatchOutcome {
+        DispatchOutcome::Branch(true)
+    }
+
+    const fn exec_get_direction_to() -> DispatchOutcome {
+        DispatchOutcome::Branch(true)
+    }
+
+    /// Primitive 13 — Push Interaction. Records a `PendingInteraction` on the world
+    /// queue with operand-derived `action_function`. The actual scheduling is the
+    /// engine's job.
+    fn exec_push_interaction(&mut self, operand: [u8; 8]) -> DispatchOutcome {
+        let action_function = u16::from_le_bytes([operand[0], operand[1]]);
+        let joining_index = i32::from(i16::from_le_bytes([operand[2], operand[3]]));
+        let (sim_id, stack_object_id) = match self.call_stack.last() {
+            Some(f) => (f.my_id, f.stack_object_id),
+            None => return DispatchOutcome::Branch(true),
+        };
+        let pending = PendingInteraction {
+            sim_id,
+            stack_object_id,
+            action_function,
+            joining_index,
+        };
+        self.world.interaction_queue.push(pending);
+        self.effects.push(VmEffect::PushInteraction { pending });
+        DispatchOutcome::Branch(true)
+    }
+
+    fn exec_break_point(&mut self) -> DispatchOutcome {
+        let (bhav_id, ip) = self.call_stack.last().map_or((0, 0), |f| (f.bhav_id, f.ip));
+        self.effects.push(VmEffect::Breakpoint { bhav_id, ip });
+        DispatchOutcome::Branch(true)
+    }
+
+    /// Primitive 18 — Remove Object Instance. Drops the stack object from the world.
+    fn exec_remove_object_instance(&mut self) -> DispatchOutcome {
+        let Some(frame) = self.call_stack.last() else {
+            return DispatchOutcome::Branch(true);
+        };
+        let object_id = frame.stack_object_id;
+        self.world.objects.remove(&object_id);
+        self.world.sims.remove(&object_id);
+        self.effects.push(VmEffect::RemoveObjectInstance { object_id });
+        DispatchOutcome::Branch(true)
+    }
+
+    /// Primitive 20 — Run Functional Tree. Calls another tree by ID stored in the
+    /// operand (typically bytes[0..2]). Behaves like an opcode-≥-256 call.
+    const fn exec_run_functional_tree(operand: [u8; 8]) -> DispatchOutcome {
+        let tree_id = u16::from_le_bytes([operand[0], operand[1]]);
+        DispatchOutcome::SubCall { opcode: tree_id }
+    }
+
+    fn exec_show_string(&mut self, operand: [u8; 8]) -> DispatchOutcome {
+        let kind = u16::from_le_bytes([operand[0], operand[1]]);
+        self.effects.push(VmEffect::ShowString { kind, operand });
+        DispatchOutcome::Branch(true)
+    }
+
+    fn exec_look_towards(&mut self, operand: [u8; 8]) -> DispatchOutcome {
+        self.effects.push(VmEffect::LookTowards { operand });
+        DispatchOutcome::Branch(true)
+    }
+
+    /// Primitive 25 — Transfer Funds. Operand bytes[0..4] = signed delta (canonical).
+    fn exec_transfer_funds(&mut self, operand: [u8; 8]) -> DispatchOutcome {
+        let delta = i32::from_le_bytes([operand[0], operand[1], operand[2], operand[3]]);
+        self.world.funds = self.world.funds.saturating_add(delta);
+        self.effects.push(VmEffect::TransferFunds { delta, operand });
+        DispatchOutcome::Branch(true)
+    }
+
+    fn exec_spatial_request(&mut self, primitive: u8, operand: [u8; 8]) -> DispatchOutcome {
+        self.effects.push(VmEffect::SpatialRequest { primitive, operand });
+        DispatchOutcome::Branch(true)
+    }
+
+    fn exec_run_tree_by_name(&mut self, operand: [u8; 8]) -> DispatchOutcome {
+        let name_index = u16::from_le_bytes([operand[0], operand[1]]);
+        self.effects.push(VmEffect::RunTreeByName { name_index, operand });
+        DispatchOutcome::Branch(true)
+    }
+
+    /// Primitive 29 — Set Motive Change. Updates a Sim's motive directly.
+    /// Operand: bytes[0..2] = motive index, bytes[2..4] = signed delta-per-tick.
+    /// Without a scheduler we apply the delta once and record it.
+    fn exec_set_motive_change(&mut self, operand: [u8; 8]) -> DispatchOutcome {
+        let motive_index = usize::from(u16::from_le_bytes([operand[0], operand[1]]));
+        let delta = i32::from(i16::from_le_bytes([operand[2], operand[3]]));
+        let Some(frame) = self.call_stack.last() else {
+            return DispatchOutcome::Branch(true);
+        };
+        let target = frame.stack_object_id;
+        let current = self.world.read_motive(target, motive_index);
+        self.world.write_motive(target, motive_index, current.saturating_add(delta));
+        DispatchOutcome::Branch(true)
+    }
+
+    /// Primitive 31 — Set to Next. Iterates through objects matching a filter; the
+    /// canonical effect is "find the next object after `stack_object_id` whose GUID
+    /// matches `operand[0..4]` and assign it to `stack_object_id`". Returns false
+    /// when there is no next match. We implement a simple `BTreeMap` walk.
+    fn exec_set_to_next(&mut self, operand: [u8; 8]) -> DispatchOutcome {
+        let target_guid = u32::from_le_bytes([operand[0], operand[1], operand[2], operand[3]]);
+        let Some(frame) = self.call_stack.last() else {
+            return DispatchOutcome::Branch(false);
+        };
+        let current = frame.stack_object_id;
+        let next = self
+            .world
+            .objects
+            .range((current + 1)..)
+            .find(|(_, obj)| target_guid == 0 || obj.guid == target_guid)
+            .map(|(id, _)| *id);
+        match next {
+            Some(id) => {
+                if let Some(frame) = self.call_stack.last_mut() {
+                    frame.stack_object_id = id;
+                }
+                DispatchOutcome::Branch(true)
+            }
+            None => DispatchOutcome::Branch(false),
+        }
+    }
+
+    fn exec_ui_effect(&mut self, operand: [u8; 8]) -> DispatchOutcome {
+        let kind = u16::from_le_bytes([operand[0], operand[1]]);
+        self.effects.push(VmEffect::UiEffect { kind, operand });
+        DispatchOutcome::Branch(true)
+    }
+
+    fn exec_special_effect(&mut self, operand: [u8; 8]) -> DispatchOutcome {
+        let kind = u16::from_le_bytes([operand[0], operand[1]]);
+        self.effects.push(VmEffect::SpecialEffect { kind, operand });
+        DispatchOutcome::Branch(true)
+    }
+
+    fn exec_dialog(&mut self, flavour: DialogFlavour, operand: [u8; 8]) -> DispatchOutcome {
+        let string_index = u16::from_le_bytes([operand[0], operand[1]]);
+        self.effects.push(VmEffect::Dialog { flavour, string_index, operand });
+        DispatchOutcome::Branch(true)
+    }
+
+    fn exec_set_balloon(&mut self, operand: [u8; 8]) -> DispatchOutcome {
+        let kind = u16::from_le_bytes([operand[0], operand[1]]);
+        self.effects.push(VmEffect::SetBalloon { kind, operand });
+        DispatchOutcome::Branch(true)
+    }
+
+    /// Primitive 42 — Create New Object Instance. Allocates a fresh world ID and
+    /// records the GUID from operand[0..4]. The instance's attribute table is
+    /// initialised to empty.
+    fn exec_create_new_object_instance(&mut self, operand: [u8; 8]) -> DispatchOutcome {
+        let guid = u32::from_le_bytes([operand[0], operand[1], operand[2], operand[3]]);
+        let new_id = self
+            .world
+            .objects
+            .keys()
+            .max()
+            .copied()
+            .unwrap_or(0x1000_0000)
+            .saturating_add(1);
+        self.world.objects.insert(
+            new_id,
+            ObjectInstance {
+                guid,
+                ..ObjectInstance::default()
+            },
+        );
+        self.effects.push(VmEffect::CreateObjectInstance { guid, new_object_id: new_id });
+        DispatchOutcome::Branch(true)
+    }
+
+    fn exec_change_suit(&mut self, operand: [u8; 8]) -> DispatchOutcome {
+        let suit_id = u16::from_le_bytes([operand[0], operand[1]]);
+        self.effects.push(VmEffect::ChangeSuit { suit_id, operand });
+        DispatchOutcome::Branch(true)
+    }
+
+    fn exec_stop_all_sounds(&mut self) -> DispatchOutcome {
+        self.effects.push(VmEffect::StopAllSounds);
+        DispatchOutcome::Branch(true)
+    }
+
+    fn exec_notify_out_of_idle(&mut self) -> DispatchOutcome {
+        let sim_id = self.call_stack.last().map_or(0, |f| f.stack_object_id);
+        self.effects.push(VmEffect::NotifyOutOfIdle { sim_id });
+        DispatchOutcome::Branch(true)
+    }
+
+    fn exec_set_action_string(&mut self, operand: [u8; 8]) -> DispatchOutcome {
+        let string_index = u16::from_le_bytes([operand[0], operand[1]]);
+        self.effects.push(VmEffect::SetActionString { string_index, operand });
+        DispatchOutcome::Branch(true)
+    }
+
+    /// Primitive 32 — Test Object Type. Compares the stack object's GUID to one
+    /// encoded in the operand bytes[0..4]. Returns true on match. Default-zero GUID
+    /// is treated as "any object" (matches if a stack object exists at all).
+    fn exec_test_object_type(&self, operand: [u8; 8]) -> DispatchOutcome {
+        let expected = u32::from_le_bytes([operand[0], operand[1], operand[2], operand[3]]);
+        let Some(frame) = self.call_stack.last() else {
+            return DispatchOutcome::Branch(false);
+        };
+        let actual = self.world.objects.get(&frame.stack_object_id).map_or(0, |o| o.guid);
+        DispatchOutcome::Branch(expected == 0 || actual == expected)
+    }
+
     fn exec_expression(&mut self, operand: [u8; 8]) -> DispatchOutcome {
         let op = ExpressionOperand::decode(&operand);
         let Some(operator) = ExpressionOp::from_byte(op.operator) else {
@@ -497,30 +914,38 @@ impl<'a> Vm<'a> {
         let Some(frame) = self.call_stack.last() else {
             return 0;
         };
+        let i = usize::from(data);
         match owner {
-            // 0 = my object's attributes
-            0 => self.world.read_object_attr(frame.my_id, usize::from(data)),
-            // 1 = stack object's attributes
-            1 => self.world.read_object_attr(frame.stack_object_id, usize::from(data)),
-            // 7 = literal
+            0 => self.world.read_object_attr(frame.my_id, i),
+            1 => self.world.read_object_attr(frame.stack_object_id, i),
+            6 => self.world.globals.get(i).copied().unwrap_or(0),
             7 => i32::from(i16::from_le_bytes(data.to_le_bytes())),
-            // 8 = temp registers (shared across the call stack — TS1's "local temps"
-            // are technically per-tree but most BHAVs we've inspected use the global
-            // bank; see Niotso §Scopes 8 for the nuance).
-            8 => {
-                let i = usize::from(data);
-                if i < self.world.temps.len() {
-                    self.world.temps[i]
-                } else {
-                    0
-                }
-            }
-            // 9 = parameters (the args vec for the current frame)
-            9 => frame.params.get(usize::from(data)).copied().unwrap_or(0),
-            // 10 = stack object id (data ignored)
+            8 => self.world.temps.get(i).copied().unwrap_or(0),
+            9 => frame.params.get(i).copied().unwrap_or(0),
             10 => i32::from_le_bytes(frame.stack_object_id.to_le_bytes()),
-            // 25 = locals (per-frame)
-            25 => frame.locals.get(usize::from(data)).copied().unwrap_or(0),
+            14 => self.world.read_motive(frame.my_id, i),
+            15 => self.world.read_motive(frame.stack_object_id, i),
+            18 => self.world.read_person_data(frame.my_id, i),
+            19 => self.world.read_person_data(frame.stack_object_id, i),
+            25 => frame.locals.get(i).copied().unwrap_or(0),
+            26 => self
+                .world
+                .objects
+                .get(&frame.stack_object_id)
+                .and_then(|o| o.tuning.get(i).copied())
+                .unwrap_or(0),
+            36 => self
+                .world
+                .objects
+                .get(&frame.my_id)
+                .and_then(|o| o.type_attributes.get(i).copied())
+                .unwrap_or(0),
+            37 => self
+                .world
+                .objects
+                .get(&frame.stack_object_id)
+                .and_then(|o| o.type_attributes.get(i).copied())
+                .unwrap_or(0),
             // Other scopes return 0 until we wire their semantics. The trace exposes
             // the (owner, data) pair so we can spot which scopes need backing first.
             _ => 0,
@@ -532,31 +957,77 @@ impl<'a> Vm<'a> {
             Some(f) => (f.my_id, f.stack_object_id),
             None => return,
         };
+        let i = usize::from(data);
         match owner {
-            0 => self.world.write_object_attr(my_id, usize::from(data), value),
-            1 => self.world.write_object_attr(stack_object_id, usize::from(data), value),
+            0 => self.world.write_object_attr(my_id, i, value),
+            1 => self.world.write_object_attr(stack_object_id, i, value),
+            6 => {
+                if self.world.globals.len() <= i {
+                    self.world.globals.resize(i + 1, 0);
+                }
+                if let Some(slot) = self.world.globals.get_mut(i) {
+                    *slot = value;
+                }
+            }
             8 => {
-                let i = usize::from(data);
-                if i < self.world.temps.len() {
-                    self.world.temps[i] = value;
+                if let Some(slot) = self.world.temps.get_mut(i) {
+                    *slot = value;
                 }
             }
             9 => {
                 if let Some(frame) = self.call_stack.last_mut() {
-                    if let Some(slot) = frame.params.get_mut(usize::from(data)) {
+                    if let Some(slot) = frame.params.get_mut(i) {
                         *slot = value;
                     }
+                }
+            }
+            14 => self.world.write_motive(my_id, i, value),
+            15 => self.world.write_motive(stack_object_id, i, value),
+            18 => {
+                let sim = self.world.sims.entry(my_id).or_default();
+                if sim.person_data.len() <= i {
+                    sim.person_data.resize(i + 1, 0);
+                }
+                if let Some(slot) = sim.person_data.get_mut(i) {
+                    *slot = value;
+                }
+            }
+            19 => {
+                let sim = self.world.sims.entry(stack_object_id).or_default();
+                if sim.person_data.len() <= i {
+                    sim.person_data.resize(i + 1, 0);
+                }
+                if let Some(slot) = sim.person_data.get_mut(i) {
+                    *slot = value;
                 }
             }
             25 => {
                 if let Some(frame) = self.call_stack.last_mut() {
-                    if let Some(slot) = frame.locals.get_mut(usize::from(data)) {
+                    if let Some(slot) = frame.locals.get_mut(i) {
                         *slot = value;
                     }
                 }
             }
+            36 => {
+                let obj = self.world.objects.entry(my_id).or_default();
+                if obj.type_attributes.len() <= i {
+                    obj.type_attributes.resize(i + 1, 0);
+                }
+                if let Some(slot) = obj.type_attributes.get_mut(i) {
+                    *slot = value;
+                }
+            }
+            37 => {
+                let obj = self.world.objects.entry(stack_object_id).or_default();
+                if obj.type_attributes.len() <= i {
+                    obj.type_attributes.resize(i + 1, 0);
+                }
+                if let Some(slot) = obj.type_attributes.get_mut(i) {
+                    *slot = value;
+                }
+            }
             // 7 = literal: writing to a literal is undefined; silently drop.
-            // Other scopes: not yet wired (motives, person data, slots, etc.).
+            // Other scopes: not yet wired (slots, jobs, etc.).
             _ => {}
         }
     }
@@ -1120,6 +1591,180 @@ mod tests {
         assert!(s.contains("parameters[0]"), "got: {s}");
         assert!(s.contains(" == "), "got: {s}");
         assert!(s.contains("literal(0)"), "got: {s}");
+    }
+
+    /// Build a single-instruction BHAV with a custom opcode + operand.
+    fn one_instr(opcode: u16, operand: [u8; 8], t: u8, f: u8) -> Vec<u8> {
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&0x8002u16.to_le_bytes());
+        buf.extend_from_slice(&1u16.to_le_bytes());
+        buf.extend_from_slice(&[0u8; 4]);
+        buf.extend_from_slice(&0u32.to_le_bytes());
+        buf.extend_from_slice(&opcode.to_le_bytes());
+        buf.push(t);
+        buf.push(f);
+        buf.extend_from_slice(&operand);
+        buf
+    }
+
+    #[test]
+    fn random_number_is_deterministic_and_in_range() {
+        // op=8, max=10 in u16[0..2], target = temps[3] (lhs_owner=8, lhs_data=3 in u16[2..4]).
+        let body = one_instr(
+            8,
+            [10, 0, 3, 0, 8, 0, 0, 0],
+            Instruction::RETURN_TRUE,
+            Instruction::RETURN_ERROR,
+        );
+        let src = source(&[(0x1000, body)]);
+        let mut vm = Vm::new(&src);
+        let _ = vm.call(0x1000, Vec::new(), 0, 0).unwrap();
+        let v1 = vm.world.temps[3];
+        assert!((0..10).contains(&v1), "expected 0..10, got {v1}");
+        // Reset PRNG to default seed and re-run; same value (deterministic).
+        let mut vm2 = Vm::new(&src);
+        let _ = vm2.call(0x1000, Vec::new(), 0, 0).unwrap();
+        assert_eq!(v1, vm2.world.temps[3]);
+    }
+
+    #[test]
+    fn test_object_type_matches_guid() {
+        let body = one_instr(
+            32,
+            [0x25, 0xD7, 0x83, 0xA4, 0, 0, 0, 0], // GUID 0xA483D725 (AlarmClock)
+            Instruction::RETURN_TRUE,
+            Instruction::RETURN_FALSE,
+        );
+        let src = source(&[(0x1000, body)]);
+        let mut vm = Vm::new(&src);
+        // Stack object 0x10 has the matching GUID → t_dest taken (RET_TRUE).
+        vm.world.objects.insert(
+            0x10,
+            ObjectInstance {
+                guid: 0xA483_D725,
+                ..ObjectInstance::default()
+            },
+        );
+        let r1 = vm.call(0x1000, Vec::new(), 0, 0x10).unwrap();
+        assert_eq!(r1, ExecResult::Returned(true));
+        // Stack object 0x20 has a different GUID → f_dest (RET_FALSE).
+        vm.world.objects.insert(
+            0x20,
+            ObjectInstance {
+                guid: 0x1234_5678,
+                ..ObjectInstance::default()
+            },
+        );
+        let r2 = vm.call(0x1000, Vec::new(), 0, 0x20).unwrap();
+        assert_eq!(r2, ExecResult::Returned(false));
+    }
+
+    #[test]
+    fn set_motive_change_writes_to_stack_object_motive() {
+        // operand: motive index 0 (hunger), delta = -10.
+        let body = one_instr(
+            29,
+            [0, 0, 0xF6, 0xFF, 0, 0, 0, 0], // -10 in i16
+            Instruction::RETURN_TRUE,
+            Instruction::RETURN_ERROR,
+        );
+        let src = source(&[(0x1000, body)]);
+        let mut vm = Vm::new(&src);
+        vm.world.write_motive(0x10, 0, 50);
+        let _ = vm.call(0x1000, Vec::new(), 0, 0x10).unwrap();
+        assert_eq!(vm.world.read_motive(0x10, 0), 40);
+    }
+
+    #[test]
+    fn push_interaction_records_pending() {
+        let body = one_instr(
+            13,
+            [0x01, 0x10, 0xFF, 0xFF, 0, 0, 0, 0],
+            Instruction::RETURN_TRUE,
+            Instruction::RETURN_ERROR,
+        );
+        let src = source(&[(0x1000, body)]);
+        let mut vm = Vm::new(&src);
+        let _ = vm.call(0x1000, Vec::new(), 0xAA, 0xBB).unwrap();
+        assert_eq!(vm.world.interaction_queue.len(), 1);
+        let pending = vm.world.interaction_queue[0];
+        assert_eq!(pending.action_function, 0x1001);
+        assert_eq!(pending.joining_index, -1);
+        assert_eq!(pending.sim_id, 0xAA);
+        assert_eq!(pending.stack_object_id, 0xBB);
+    }
+
+    #[test]
+    fn transfer_funds_modifies_world_funds() {
+        let body = one_instr(
+            25,
+            [0x9C, 0xFF, 0xFF, 0xFF, 0, 0, 0, 0], // -100 as i32 LE
+            Instruction::RETURN_TRUE,
+            Instruction::RETURN_ERROR,
+        );
+        let src = source(&[(0x1000, body)]);
+        let mut vm = Vm::new(&src);
+        vm.world.funds = 1000;
+        let _ = vm.call(0x1000, Vec::new(), 0, 0).unwrap();
+        assert_eq!(vm.world.funds, 900);
+    }
+
+    #[test]
+    fn set_to_next_walks_objects_with_matching_guid() {
+        let body = one_instr(
+            31,
+            [0x25, 0xD7, 0x83, 0xA4, 0, 0, 0, 0], // GUID 0xA483D725
+            Instruction::RETURN_TRUE,
+            Instruction::RETURN_FALSE,
+        );
+        let src = source(&[(0x1000, body)]);
+        let mut vm = Vm::new(&src);
+        vm.world.objects.insert(0x10, ObjectInstance { guid: 0x1234_5678, ..Default::default() });
+        vm.world.objects.insert(0x20, ObjectInstance { guid: 0xA483_D725, ..Default::default() });
+        vm.world.objects.insert(0x30, ObjectInstance { guid: 0xA483_D725, ..Default::default() });
+        // Starting from stack=0x10, next match is 0x20.
+        let _ = vm.call(0x1000, Vec::new(), 0, 0x10).unwrap();
+    }
+
+    #[test]
+    fn run_functional_tree_dispatches_subcall() {
+        // Tree id 0x1001 in operand[0..2]; subcall returns RET_TRUE.
+        let caller = one_instr(20, [0x01, 0x10, 0, 0, 0, 0, 0, 0], Instruction::RETURN_TRUE, Instruction::RETURN_ERROR);
+        let callee = one_instr(7, [0; 8], Instruction::RETURN_TRUE, Instruction::RETURN_ERROR);
+        let src = source(&[(0x1000, caller), (0x1001, callee)]);
+        let mut vm = Vm::new(&src);
+        let r = vm.call(0x1000, Vec::new(), 0, 0).unwrap();
+        assert_eq!(r, ExecResult::Returned(true));
+    }
+
+    #[test]
+    fn dialog_primitives_emit_correct_flavour() {
+        for (opcode, expected) in [
+            (36u16, DialogFlavour::Private),
+            (38, DialogFlavour::Global),
+            (39, DialogFlavour::SemiGlobal),
+        ] {
+            let body = one_instr(opcode, [0x42, 0x00, 0, 0, 0, 0, 0, 0], Instruction::RETURN_TRUE, Instruction::RETURN_ERROR);
+            let src = source(&[(0x1000, body)]);
+            let mut vm = Vm::new(&src);
+            vm.call(0x1000, Vec::new(), 0, 0).unwrap();
+            assert!(matches!(
+                vm.effects[0],
+                VmEffect::Dialog { flavour, string_index: 0x42, .. } if flavour == expected
+            ));
+        }
+    }
+
+    #[test]
+    fn write_motive_clamps_to_minus_100_to_100() {
+        let mut w = World::default();
+        w.write_motive(0xAA, 3, 200);
+        assert_eq!(w.read_motive(0xAA, 3), 100);
+        w.write_motive(0xAA, 3, -200);
+        assert_eq!(w.read_motive(0xAA, 3), -100);
+        // out-of-range index: silent no-op
+        w.write_motive(0xAA, 99, 50);
+        assert_eq!(w.read_motive(0xAA, 99), 0);
     }
 
     #[test]

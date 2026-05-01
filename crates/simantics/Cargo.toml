@@ -14,3 +14,4 @@ thiserror = { workspace = true }
 
 [dev-dependencies]
 iff = { path = "../iff" }
+far = { path = "../far" }

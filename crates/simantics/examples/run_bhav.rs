@@ -12,7 +12,7 @@
 use std::collections::BTreeMap;
 
 use iff::Iff;
-use simantics::vm::{ExecResult, InMemoryBhavSource, Vm, VmEffect, fmt_trace_entry};
+use simantics::vm::{ExecResult, InMemoryBhavSource, Vm, fmt_trace_entry};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut args = std::env::args().skip(1);
@@ -46,18 +46,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if !vm.effects.is_empty() {
         println!("effects ({}):", vm.effects.len());
         for effect in &vm.effects {
-            match effect {
-                VmEffect::Sleep { ticks, .. } => println!("  Sleep ticks={ticks}"),
-                VmEffect::Idle { ticks, interruptable, .. } => {
-                    println!("  Idle ticks={ticks} interruptable={interruptable}");
-                }
-                VmEffect::PlaySound { event_id, .. } => {
-                    println!("  PlaySound event_id=0x{event_id:04X}");
-                }
-                VmEffect::AnimateSim { anim_id, .. } => {
-                    println!("  AnimateSim anim_id=0x{anim_id:04X}");
-                }
-            }
+            println!("  {effect:?}");
         }
     }
     match result {
