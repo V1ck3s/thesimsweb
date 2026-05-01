@@ -1,0 +1,20 @@
+[package]
+name = "wasm-bindings"
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[lints]
+workspace = true
+
+[dependencies]
+iff = { path = "../iff" }
+far = { path = "../far" }
+sprite = { path = "../sprite" }
+wasm-bindgen = { workspace = true }
+js-sys = { workspace = true }

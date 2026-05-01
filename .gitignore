@@ -6,6 +6,13 @@ dist/
 build/
 .cache/
 
+# Rust
+Cargo.lock.bak
+
+# pnpm
+.pnpm-debug.log
+pnpm-lock.yaml.bak
+
 # Environnement
 .env
 .env.local
