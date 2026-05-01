@@ -122,3 +122,36 @@ pub fn parse_iff_chunks(data: &[u8]) -> Result<Array, JsError> {
     }
     Ok(array)
 }
+
+/// Decode an SPR2 frame to RGBA8.
+///
+/// Inputs:
+/// - `spr2_data`: the **chunk data** (post 76-byte IFF header) of an SPR2 chunk.
+/// - `palt_data`: the **chunk data** of the PALT chunk it references.
+/// - `frame_index`: which frame in the SPR2 chunk to decode.
+///
+/// Returns a JS object: `{ width, height, rgba: Uint8Array }`.
+///
+/// # Errors
+/// Returns a `JsError` if either chunk is malformed, the frame index is out of range,
+/// or the RLE stream is invalid.
+#[wasm_bindgen(js_name = decodeSpr2Frame)]
+pub fn decode_spr2_frame(
+    spr2_data: &[u8],
+    palt_data: &[u8],
+    frame_index: u32,
+) -> Result<Object, JsError> {
+    let palt = sprite::Palette::parse(palt_data).map_err(|e| JsError::new(&e.to_string()))?;
+    let spr2 = sprite::Spr2::parse(spr2_data).map_err(|e| JsError::new(&e.to_string()))?;
+    let frame = spr2
+        .decode_frame(frame_index, &palt)
+        .map_err(|e| JsError::new(&e.to_string()))?;
+    let obj = Object::new();
+    Reflect::set(&obj, &JsValue::from_str("width"), &JsValue::from_f64(f64::from(frame.width)))
+        .map_err(|_| JsError::new("set width"))?;
+    Reflect::set(&obj, &JsValue::from_str("height"), &JsValue::from_f64(f64::from(frame.height)))
+        .map_err(|_| JsError::new("set height"))?;
+    Reflect::set(&obj, &JsValue::from_str("rgba"), &Uint8Array::from(frame.rgba.as_slice()).into())
+        .map_err(|_| JsError::new("set rgba"))?;
+    Ok(obj)
+}

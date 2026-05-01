@@ -34,8 +34,14 @@ void engine().then((wasm) => {
     dataStart: number;
     dataLen: number;
   }>;
+  const { palt, spr2 } = buildSyntheticSpr2();
+  const sprite = wasm.decodeSpr2Frame(spr2, palt, 0) as {
+    width: number;
+    height: number;
+    rgba: Uint8Array;
+  };
   console.info(
-    `[engine] v${wasm.engine_version()} · far ${manifest.length} entries (${manifest[0]?.filename}, ${payload.length}B) · iff v${wasm.parseIffHeader(fakeIff)}, ${chunks.length} chunks (${chunks.map((c) => c.kind).join(",")})`,
+    `[engine] v${wasm.engine_version()} · far ${manifest.length} entries (${manifest[0]?.filename}, ${payload.length}B) · iff v${wasm.parseIffHeader(fakeIff)}, ${chunks.length} chunks (${chunks.map((c) => c.kind).join(",")}) · spr2 ${sprite.width}x${sprite.height} (${sprite.rgba.length}B RGBA)`,
   );
 });
 
@@ -54,6 +60,41 @@ function buildSyntheticFar(): Uint8Array {
   view.setUint32(38, 6, true); // filename_length
   buf.set(new TextEncoder().encode("hi.txt"), 42);
   return buf;
+}
+
+/**
+ * Synthetic PALT (6 colors, index 5 = green) + SPR2 v1000 (1×1 frame, color-only,
+ * single pixel using palette index 5). Mirrors the Rust integration test fixture.
+ */
+function buildSyntheticSpr2(): { palt: Uint8Array; spr2: Uint8Array } {
+  const palt = new Uint8Array(16 + 3 * 6);
+  const paltView = new DataView(palt.buffer);
+  paltView.setUint32(0, 1, true); // version
+  paltView.setUint32(4, 6, true); // count
+  palt.set([0x00, 0xff, 0x00], 16 + 5 * 3); // index 5 = green
+
+  const spr2 = new Uint8Array(12 + 4 + 16 + 2 + 2 + 2 + 2);
+  const v = new DataView(spr2.buffer);
+  v.setUint32(0, 1000, true); // SPR2 v1000
+  v.setUint32(4, 1, true); // sprite_count = 1
+  v.setUint32(8, 1, true); // default_palette = 1
+  v.setUint32(12, 16, true); // offset_table[0] = 16 (relative to start of SPR2 data)
+  // Frame at offset 16
+  v.setUint16(16, 1, true); // width
+  v.setUint16(18, 1, true); // height
+  v.setUint32(20, 0x01, true); // flags = color only
+  v.setUint16(24, 0xa3a3, true); // palette = use default
+  v.setUint16(26, 0, true); // transparent_color = 0 (palette[0] = (0,0,0))
+  v.setInt16(28, 0, true); // y_loc
+  v.setInt16(30, 0, true); // x_loc
+  // RLE: row cmd 0 (fill), block size = 6
+  v.setUint16(32, 6, true);
+  // Pixel cmd 6 (color only), count=1
+  v.setUint16(34, (6 << 13) | 1, true);
+  spr2.set([0x05, 0x00], 36); // color idx 5 + pad
+  // End marker (cmd=5)
+  v.setUint16(38, 5 << 13, true);
+  return { palt, spr2 };
 }
 
 /** Synthetic IFF v2.5 with one BHAV chunk (size 80, 4 bytes of payload). */
