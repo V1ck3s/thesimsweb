@@ -48,6 +48,10 @@ interface SimState {
   } | null;
   /** Optional hook fired when the Sim arrives at the walk target. */
   onArrive: (() => void) | null;
+  /** Transient speech bubble shown above the Sim — replaces the name label
+   *  for `expiresAtMs - now` ms. Used to surface VM effects (Dialog,
+   *  ShowString, AnimateSim, PlaySound) during an interaction. */
+  bubble: { text: string; expiresAtMs: number } | null;
 }
 
 const simState: SimState = {
@@ -56,7 +60,166 @@ const simState: SimState = {
   fy: 8,
   walk: null,
   onArrive: null,
+  bubble: null,
 };
+
+/** Queue of upcoming speech bubbles shown above the Sim, paced ~1.4 s each
+ *  so multi-effect interactions don't collapse into one flash. */
+const bubbleQueue: string[] = [];
+let bubbleTimer: number | null = null;
+
+function showBubble(text: string, durMs: number = 1400): void {
+  bubbleQueue.push(text);
+  if (bubbleTimer !== null) return;
+  const advance = (): void => {
+    const next = bubbleQueue.shift();
+    if (next === undefined) {
+      simState.bubble = null;
+      bubbleTimer = null;
+      ensureRenderLoop();
+      return;
+    }
+    simState.bubble = { text: next, expiresAtMs: performance.now() + durMs };
+    ensureRenderLoop();
+    bubbleTimer = window.setTimeout(advance, durMs);
+  };
+  advance();
+}
+
+function clearBubbles(): void {
+  bubbleQueue.length = 0;
+  if (bubbleTimer !== null) {
+    clearTimeout(bubbleTimer);
+    bubbleTimer = null;
+  }
+  simState.bubble = null;
+}
+
+// TS1 motive index → label, in the order TTAB writes them. The 8th slot is
+// nominally "Room" in TS1 (replaced or repurposed in TSO/expansions); we keep
+// the canonical TS1 ordering.
+const MOTIVE_NAMES = [
+  "Hunger",
+  "Comfort",
+  "Hygiene",
+  "Bladder",
+  "Energy",
+  "Fun",
+  "Social",
+  "Room",
+] as const;
+
+/** Motive values are stored in TS1's native range [-100, +100]. Bars start at
+ *  comfortable defaults and decay slowly while idle. */
+const motives: number[] = [60, 60, 60, 60, 60, 50, 50, 50];
+
+const MOTIVE_DECAY_PER_S = 0.4; // ~24 pts / minute, brisker than TS1 for demo.
+
+function clampMotive(v: number): number {
+  return Math.max(-100, Math.min(100, v));
+}
+
+function tickMotives(deltaMs: number): void {
+  const dec = MOTIVE_DECAY_PER_S * (deltaMs / 1000);
+  for (let i = 0; i < motives.length; i += 1) {
+    motives[i] = clampMotive((motives[i] ?? 0) - dec);
+  }
+  renderMotivesHud();
+}
+
+function applyMotiveEffects(
+  ttabMotives: Array<{ effectMin: number; effectMax: number; personalityModifier: number }>,
+): void {
+  // TTAB stores up to 8 motive effects per interaction, in motive order.
+  // effect_min..effect_max gives a bump range; we average them and let the
+  // personality_modifier nudge if non-zero (we don't model personalities yet).
+  for (let i = 0; i < ttabMotives.length && i < motives.length; i += 1) {
+    const m = ttabMotives[i];
+    if (!m) continue;
+    if (m.effectMin === 0 && m.effectMax === 0) continue;
+    const avg = (m.effectMin + m.effectMax) / 2;
+    motives[i] = clampMotive((motives[i] ?? 0) + avg);
+  }
+  renderMotivesHud();
+}
+
+let motivesHudEl: HTMLDivElement | null = null;
+function ensureMotivesHud(): HTMLDivElement {
+  if (motivesHudEl) return motivesHudEl;
+  const el = document.createElement("div");
+  el.id = "motives-hud";
+  el.style.cssText =
+    "position:fixed;top:8px;left:8px;background:rgba(0,0,0,.55);padding:8px 10px;border-radius:6px;font:11px/1.4 ui-sans-serif,system-ui,sans-serif;color:#cde;width:200px;display:flex;flex-direction:column;gap:3px;";
+  document.body.appendChild(el);
+  motivesHudEl = el;
+  return el;
+}
+
+function motiveColor(value: number): string {
+  // Red below 0, amber 0..40, green above.
+  if (value < 0) return "#d8533a";
+  if (value < 40) return "#d8a13a";
+  return "#5fb86b";
+}
+
+function renderMotivesHud(): void {
+  const root = ensureMotivesHud();
+  if (root.childElementCount !== MOTIVE_NAMES.length + 1) {
+    root.innerHTML = "";
+    const title = document.createElement("div");
+    title.textContent = `${simState.name} · motives`;
+    title.style.cssText = "color:#9ad;opacity:.85;margin-bottom:3px;";
+    root.appendChild(title);
+    for (let i = 0; i < MOTIVE_NAMES.length; i += 1) {
+      const row = document.createElement("div");
+      row.dataset["motiveIdx"] = String(i);
+      row.style.cssText = "display:grid;grid-template-columns:60px 1fr 32px;gap:6px;align-items:center;";
+      const lbl = document.createElement("span");
+      lbl.textContent = MOTIVE_NAMES[i] ?? "";
+      lbl.style.opacity = "0.85";
+      const track = document.createElement("div");
+      track.style.cssText = "position:relative;height:8px;background:#222;border-radius:3px;overflow:hidden;";
+      const fill = document.createElement("div");
+      fill.dataset["fill"] = "1";
+      fill.style.cssText = "position:absolute;left:50%;top:0;bottom:0;width:0;background:#5fb86b;transition:width .15s linear,background-color .25s;";
+      track.appendChild(fill);
+      const num = document.createElement("span");
+      num.dataset["num"] = "1";
+      num.style.cssText = "text-align:right;font-variant-numeric:tabular-nums;";
+      row.append(lbl, track, num);
+      root.appendChild(row);
+    }
+  }
+  const rows = root.querySelectorAll<HTMLDivElement>("div[data-motive-idx]");
+  for (const row of rows) {
+    const idx = parseInt(row.dataset["motiveIdx"] ?? "-1", 10);
+    const v = motives[idx] ?? 0;
+    const fill = row.querySelector<HTMLDivElement>("div[data-fill]");
+    const num = row.querySelector<HTMLSpanElement>("span[data-num]");
+    if (fill) {
+      const half = Math.abs(v) / 100 / 2; // 0..0.5 of track width
+      const widthPct = half * 100;
+      if (v >= 0) {
+        fill.style.left = "50%";
+        fill.style.width = `${widthPct}%`;
+      } else {
+        fill.style.left = `${50 - widthPct}%`;
+        fill.style.width = `${widthPct}%`;
+      }
+      fill.style.backgroundColor = motiveColor(v);
+    }
+    if (num) num.textContent = Math.round(v).toString().padStart(3, " ");
+  }
+}
+
+let lastMotiveTick = performance.now();
+function startMotivesLoop(): void {
+  setInterval(() => {
+    const now = performance.now();
+    tickMotives(now - lastMotiveTick);
+    lastMotiveTick = now;
+  }, 1000);
+}
 
 /** "Play" lets clicks walk the Sim and trigger interactions; "Build" lets the
  *  user place new objects on empty tiles. Build is the legacy default for the
@@ -112,12 +275,16 @@ function ensureRenderLoop(): void {
 }
 
 function simEntity(): IsoEntity {
+  const label =
+    simState.bubble && simState.bubble.expiresAtMs > performance.now()
+      ? simState.bubble.text
+      : simState.name;
   return {
     worldX: simState.fx,
     worldY: simState.fy,
     kind: "sim",
     color: "#7ab8ff",
-    label: simState.name,
+    label,
   };
 }
 
@@ -1105,6 +1272,7 @@ interface InteractionMenuRow {
   actionFunction: number;
   joiningIndex: number;
   guardFunction: number;
+  ttabMotives?: Array<{ effectMin: number; effectMax: number; personalityModifier: number }>;
 }
 
 let interactionMenuEl: HTMLDivElement | null = null;
@@ -1172,6 +1340,7 @@ function buildInteractionRows(
     actionFunction: it.actionFunction,
     joiningIndex: it.joiningIndex,
     guardFunction: it.guardFunction,
+    ttabMotives: it.motives,
   }));
 }
 
@@ -1250,6 +1419,11 @@ async function runInteractionFromMenu(
   inst: LotInstance,
   row: InteractionMenuRow,
 ): Promise<void> {
+  // Bump motives based on this interaction's TTAB row before running, so the
+  // user sees feedback immediately even if the BHAV is short.
+  if (row.ttabMotives) {
+    applyMotiveEffects(row.ttabMotives);
+  }
   const wasm = viewerState.wasm;
   if (!wasm) return;
   let globalsBytes: Uint8Array = new Uint8Array(0);
@@ -1277,6 +1451,8 @@ async function runInteractionFromMenu(
       if (e) lines.push("  " + formatTraceEntry(wasm, e));
     }
     if (out.trace.length > limit) lines.push(`  … +${out.trace.length - limit}`);
+    clearBubbles();
+    showBubble(`▶ ${row.label}`);
     if (out.effects.length > 0) {
       lines.push(`effects (${out.effects.length}):`);
       const playable: string[] = [];
@@ -1290,7 +1466,23 @@ async function runInteractionFromMenu(
             if (r.patchPath) tail.push(r.patchPath);
             line += `  → ${tail.join(" · ")}`;
             if (r.patchPath?.toLowerCase().endsWith(".xa")) playable.push(r.patchPath);
+            showBubble(`♪ ${r.eventName}`);
+            // Auto-play the resolved patch through Web Audio so the user hears
+            // the sound without having to click the manual ▶ button.
+            if (r.patchPath?.toLowerCase().endsWith(".xa") && hitAudioManifest) {
+              void playXaPath(wasm, hitAudioManifest, r.patchPath).catch(() => {});
+            }
           }
+        } else if (ef.kind === "AnimateSim") {
+          showBubble(`anim 0x${Number(ef["animId"]).toString(16)}`);
+        } else if (ef.kind === "Dialog") {
+          showBubble(`💬 dialog ${ef["flavour"]} #${ef["stringIndex"]}`);
+        } else if (ef.kind === "ShowString") {
+          showBubble(`"${String(ef["stringKind"] ?? "")}"`);
+        } else if (ef.kind === "SetBalloon") {
+          showBubble(`(balloon ${ef["balloonKind"]})`);
+        } else if (ef.kind === "SetActionString") {
+          showBubble(`action #${ef["stringIndex"]}`);
         }
         lines.push(line);
       }
@@ -1299,6 +1491,7 @@ async function runInteractionFromMenu(
     setRunOutput(lines.join("\n"));
   } catch (err) {
     setRunOutput(`interaction failed: ${(err as Error).message}`);
+    showBubble("⚠ failed");
   }
 }
 
@@ -2230,6 +2423,8 @@ async function tryRenderAlarmClockObject(
   await loadObjectByName(wasm, objectsFar.path, "AlarmClock.iff");
   lotGlobalsFarPath = globalsFar ? globalsFar.path : null;
   objectsFarPathCache = objectsFar.path;
+  renderMotivesHud();
+  startMotivesLoop();
   // Try to restore the user's last lot first; if there is none, fall back to
   // the bundled demo placements so the page is never empty on boot.
   try {
