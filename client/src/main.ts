@@ -221,6 +221,64 @@ function startMotivesLoop(): void {
   }, 1000);
 }
 
+// ============================================================================
+// Game-clock + funds HUD — gives a real "Sims" feel of time passing.
+// One real second = TIME_SCALE in-game minutes. Day starts at 08:00 Mon.
+// ============================================================================
+
+const DAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"] as const;
+const TIME_SCALE = 1; // 1 in-game minute per real second
+let gameMinutes = 8 * 60; // 08:00 day 0
+let gameDayIdx = 0;
+let funds = 20000;
+const TIME_HUD_ID = "time-funds-hud";
+
+let timeHudEl: HTMLDivElement | null = null;
+function ensureTimeFundsHud(): HTMLDivElement {
+  if (timeHudEl) return timeHudEl;
+  const el = document.createElement("div");
+  el.id = TIME_HUD_ID;
+  el.style.cssText =
+    "position:fixed;top:8px;left:50%;transform:translateX(-50%);background:rgba(0,0,0,.55);padding:6px 14px;border-radius:6px;font:12px/1.3 ui-sans-serif,system-ui,sans-serif;color:#cde;display:flex;gap:18px;align-items:center;";
+  el.innerHTML = `
+    <span><span data-th-day style="color:#9ad;">Mon</span> <span data-th-time>08:00</span></span>
+    <span style="opacity:.4;">·</span>
+    <span><span style="color:#cfa;">§</span><span data-th-funds style="font-variant-numeric:tabular-nums;">20000</span></span>
+  `;
+  document.body.appendChild(el);
+  timeHudEl = el;
+  return el;
+}
+
+function renderTimeFundsHud(): void {
+  const root = ensureTimeFundsHud();
+  const day = DAYS[gameDayIdx % DAYS.length] ?? "?";
+  const hh = Math.floor(gameMinutes / 60).toString().padStart(2, "0");
+  const mm = Math.floor(gameMinutes % 60).toString().padStart(2, "0");
+  const dEl = root.querySelector<HTMLSpanElement>("span[data-th-day]");
+  const tEl = root.querySelector<HTMLSpanElement>("span[data-th-time]");
+  const fEl = root.querySelector<HTMLSpanElement>("span[data-th-funds]");
+  if (dEl) dEl.textContent = day;
+  if (tEl) tEl.textContent = `${hh}:${mm}`;
+  if (fEl) fEl.textContent = funds.toLocaleString("en-US");
+}
+
+function startGameClock(): void {
+  setInterval(() => {
+    gameMinutes += TIME_SCALE;
+    if (gameMinutes >= 24 * 60) {
+      gameMinutes -= 24 * 60;
+      gameDayIdx += 1;
+    }
+    renderTimeFundsHud();
+  }, 1000);
+}
+
+function adjustFunds(delta: number): void {
+  funds = Math.max(0, funds + delta);
+  renderTimeFundsHud();
+}
+
 /** "Play" lets clicks walk the Sim and trigger interactions; "Build" lets the
  *  user place new objects on empty tiles. Build is the legacy default for the
  *  dev viewer; Play is the new game-feel default. */
@@ -1090,6 +1148,34 @@ function onLotCanvasClick(ev: MouseEvent): void {
 }
 
 canvas.addEventListener("click", onLotCanvasClick);
+canvas.addEventListener("mousemove", (ev) => {
+  const rect = canvas.getBoundingClientRect();
+  const cx = (ev.clientX - rect.left) * (canvas.width / rect.width);
+  const cy = (ev.clientY - rect.top) * (canvas.height / rect.height);
+  const tile = screenToTile(cx, cy, lotScene.camera, canvas);
+  const N = lotScene.gridSize;
+  if (tile.worldX < 0 || tile.worldY < 0 || tile.worldX >= N || tile.worldY >= N) {
+    if (lotScene.hoverTile) {
+      lotScene.hoverTile = null;
+      renderLot();
+    }
+    return;
+  }
+  if (
+    !lotScene.hoverTile ||
+    lotScene.hoverTile.worldX !== tile.worldX ||
+    lotScene.hoverTile.worldY !== tile.worldY
+  ) {
+    lotScene.hoverTile = { worldX: tile.worldX, worldY: tile.worldY };
+    renderLot();
+  }
+});
+canvas.addEventListener("mouseleave", () => {
+  if (lotScene.hoverTile) {
+    lotScene.hoverTile = null;
+    renderLot();
+  }
+});
 
 // Right-click on a placed instance cycles through the 4 DGRP directions so
 // the user can re-orient an object after it's been placed. The browser's own
@@ -1483,6 +1569,10 @@ async function runInteractionFromMenu(
           showBubble(`(balloon ${ef["balloonKind"]})`);
         } else if (ef.kind === "SetActionString") {
           showBubble(`action #${ef["stringIndex"]}`);
+        } else if (ef.kind === "TransferFunds") {
+          const delta = Number(ef["delta"] ?? 0);
+          adjustFunds(delta);
+          showBubble(delta >= 0 ? `+§${delta}` : `§${delta}`);
         }
         lines.push(line);
       }
@@ -2425,6 +2515,8 @@ async function tryRenderAlarmClockObject(
   objectsFarPathCache = objectsFar.path;
   renderMotivesHud();
   startMotivesLoop();
+  renderTimeFundsHud();
+  startGameClock();
   // Try to restore the user's last lot first; if there is none, fall back to
   // the bundled demo placements so the page is never empty on boot.
   try {

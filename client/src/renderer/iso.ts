@@ -71,6 +71,9 @@ export interface IsoScene {
    *  sprites in painter's order. */
   entities?: IsoEntity[];
   camera: IsoCamera;
+  /** Tile coordinate the cursor is currently hovering. Drawn last as a
+   *  highlight outline so the user sees where their click will land. */
+  hoverTile?: { worldX: number; worldY: number } | null;
 }
 
 const SKY = "#1f3340";
@@ -244,6 +247,27 @@ export function renderIso(canvas: HTMLCanvasElement, scene: IsoScene): void {
     } else {
       const { sx, sy } = projectTile(d.ref.worldX, d.ref.worldY, cam, canvas);
       drawEntity(ctx, d.ref, sx, sy, cam.tileWidth);
+    }
+  }
+
+  // Hover highlight — drawn last so it sits above sprites and entities.
+  if (scene.hoverTile) {
+    const ht = scene.hoverTile;
+    if (ht.worldX >= 0 && ht.worldY >= 0 && ht.worldX < N && ht.worldY < N) {
+      const { sx, sy } = projectTile(ht.worldX, ht.worldY, cam, canvas);
+      const tw = cam.tileWidth;
+      const th = tw / 2;
+      ctx.beginPath();
+      ctx.moveTo(sx, sy - th / 2);
+      ctx.lineTo(sx + tw / 2, sy);
+      ctx.lineTo(sx, sy + th / 2);
+      ctx.lineTo(sx - tw / 2, sy);
+      ctx.closePath();
+      ctx.strokeStyle = "rgba(255,255,255,.85)";
+      ctx.lineWidth = 2;
+      ctx.stroke();
+      ctx.fillStyle = "rgba(255,255,255,.10)";
+      ctx.fill();
     }
   }
 }
