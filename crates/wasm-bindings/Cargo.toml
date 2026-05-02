@@ -17,5 +17,6 @@ iff = { path = "../iff" }
 far = { path = "../far" }
 sprite = { path = "../sprite" }
 simantics = { path = "../simantics" }
+audio = { path = "../audio" }
 wasm-bindgen = { workspace = true }
 js-sys = { workspace = true }

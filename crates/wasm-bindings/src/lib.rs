@@ -1089,3 +1089,51 @@ fn hit_effect_to_object(ef: &simantics::hit_vm::HitEffect) -> Result<JsValue, Js
     }
     Ok(obj.into())
 }
+
+/// Decode an EA-XA `.xa` byte buffer to a self-contained WAV file (the browser
+/// can hand it directly to `AudioContext.decodeAudioData`). Returns
+/// `{ sampleRate, channels, samples, wav }` where `wav` is a `Uint8Array`
+/// containing a PCM RIFF/WAV.
+///
+/// # Errors
+/// Returns a `JsError` if the buffer is too short, has the wrong magic, or
+/// uses an unsupported channel/bit-depth configuration.
+#[wasm_bindgen(js_name = decodeXa)]
+pub fn decode_xa(data: &[u8]) -> Result<Object, JsError> {
+    let pcm = audio::Xa::decode(data).map_err(|e| JsError::new(&e.to_string()))?;
+    let obj = Object::new();
+    set_f64(&obj, "sampleRate", f64::from(pcm.sample_rate))?;
+    set_f64(&obj, "channels", f64::from(pcm.channels))?;
+    #[allow(clippy::cast_precision_loss)]
+    let n_samples = pcm.samples.len() as f64;
+    set_f64(&obj, "samples", n_samples)?;
+    let wav = pcm.to_wav();
+    Reflect::set(&obj, &JsValue::from_str("wav"), &Uint8Array::from(wav.as_slice()).into())
+        .map_err(|_| JsError::new("set wav"))?;
+    Ok(obj)
+}
+
+/// Parse an XA header without decoding (cheap metadata preview).
+/// Returns `{ magic, channels, sampleRate, bitsPerSample, pcmSizeBytes,
+///            blockAlign, avgBytesPerSec, dataOffset }`.
+///
+/// # Errors
+/// Same conditions as [`decode_xa`].
+#[wasm_bindgen(js_name = parseXaHeader)]
+pub fn parse_xa_header(data: &[u8]) -> Result<Object, JsError> {
+    let h = audio::Xa::parse_header(data).map_err(|e| JsError::new(&e.to_string()))?;
+    let obj = Object::new();
+    let magic = core::str::from_utf8(&h.magic).unwrap_or("?");
+    Reflect::set(&obj, &JsValue::from_str("magic"), &JsValue::from_str(magic))
+        .map_err(|_| JsError::new("set magic"))?;
+    set_f64(&obj, "channels", f64::from(h.channels))?;
+    set_f64(&obj, "sampleRate", f64::from(h.sample_rate))?;
+    set_f64(&obj, "bitsPerSample", f64::from(h.bits_per_sample))?;
+    set_f64(&obj, "pcmSizeBytes", f64::from(h.pcm_size_bytes))?;
+    set_f64(&obj, "blockAlign", f64::from(h.block_align))?;
+    set_f64(&obj, "avgBytesPerSec", f64::from(h.avg_bytes_per_sec))?;
+    #[allow(clippy::cast_precision_loss)]
+    let data_offset = h.data_offset as f64;
+    set_f64(&obj, "dataOffset", data_offset)?;
+    Ok(obj)
+}

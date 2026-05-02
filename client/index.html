@@ -77,6 +77,10 @@
           <summary style="padding:4px 8px;cursor:pointer;user-select:none;">HIT Sandbox</summary>
           <div style="padding:6px 8px;display:flex;flex-direction:column;gap:6px;">
             <div style="display:flex;gap:6px;align-items:center;">
+              <span style="opacity:.7;width:42px;">file</span>
+              <select id="hit-file-select" style="flex:1;background:#111;color:#cde;border:1px solid #444;font:inherit;padding:2px 4px;"></select>
+            </div>
+            <div style="display:flex;gap:6px;align-items:center;">
               <span style="opacity:.7;width:42px;">event</span>
               <select id="hit-event-select" style="flex:1;background:#111;color:#cde;border:1px solid #444;font:inherit;padding:2px 4px;"></select>
             </div>
@@ -86,6 +90,7 @@
               <button id="hit-run-btn" style="flex:1;background:#3b6;color:#000;border:1px solid #444;font:inherit;padding:3px 8px;cursor:pointer;border-radius:2px;">Run</button>
             </div>
             <pre id="hit-sandbox-output" style="margin:0;padding:6px 8px;background:#111;color:#cfa;border:1px solid #444;border-radius:3px;font:10.5px/1.35 ui-monospace,monospace;max-height:240px;overflow:auto;white-space:pre;"></pre>
+            <div id="hit-audio-controls" style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;"></div>
           </div>
         </details>
       </div>

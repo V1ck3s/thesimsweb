@@ -884,7 +884,7 @@ async function tryDisasmHit(
     target.textContent = lines.join("\n");
     // Wire the HIT Sandbox (event picker + Run) using SimsSound.hot.
     const hotPath = hitFile.path.replace(/simssound\.hit$/i, "SimsSound.hot");
-    void mountHitSandbox(wasm, data, hotPath);
+    void mountHitSandbox(wasm, data, hotPath, manifest);
   } catch (err) {
     target.textContent = `disasm failed: ${(err as Error).message}`;
   }
@@ -922,37 +922,99 @@ interface HotFile {
   equates: Array<{ name: string; value: number }>;
 }
 
-interface HitSandboxState {
-  hot: HotFile | null;
-  hitData: Uint8Array | null;
+interface HitSandboxFile {
+  label: string;
+  hot: HotFile;
+  hitData: Uint8Array;
 }
-const hitSandboxState: HitSandboxState = { hot: null, hitData: null };
+interface HitSandboxState {
+  files: HitSandboxFile[];
+  selected: number;
+}
+const hitSandboxState: HitSandboxState = { files: [], selected: 0 };
 
 async function mountHitSandbox(
   wasm: Awaited<ReturnType<typeof engine>>,
   hitData: Uint8Array,
   hotPath: string,
+  manifest: Awaited<ReturnType<typeof fetchManifest>>,
 ): Promise<void> {
-  const select = document.getElementById("hit-event-select");
+  hitAudioManifest = manifest;
+  const fileSelect = document.getElementById("hit-file-select");
+  const eventSelect = document.getElementById("hit-event-select");
   const runBtn = document.getElementById("hit-run-btn");
   const output = document.getElementById("hit-sandbox-output");
-  if (!(select instanceof HTMLSelectElement) || !runBtn || !output) return;
-
-  const res = await fetch(`/assets/${hotPath}`);
-  if (!res.ok) {
-    output.textContent = `failed to fetch ${hotPath}: ${res.status}`;
+  if (
+    !(fileSelect instanceof HTMLSelectElement) ||
+    !(eventSelect instanceof HTMLSelectElement) ||
+    !runBtn ||
+    !output
+  ) {
     return;
   }
-  const text = await res.text();
-  const hot = wasm.parseHot(text) as HotFile;
-  hitSandboxState.hot = hot;
-  hitSandboxState.hitData = hitData;
 
-  // Populate dropdown with events that resolve to a known TrackData address.
+  // Load the small (SimsSound) pair already passed in.
+  const baseHotRes = await fetch(`/assets/${hotPath}`);
+  if (baseHotRes.ok) {
+    const baseHot = wasm.parseHot(await baseHotRes.text()) as HotFile;
+    hitSandboxState.files.push({ label: "SimsSound", hot: baseHot, hitData });
+  }
+
+  // Try to also load the bigger SimsGeneratedHitSource pair (mostly voice .xa).
+  const dir = hotPath.replace(/[^/]+$/, "");
+  const bigHitFile = manifest.files.find((f) =>
+    f.path.toLowerCase().endsWith("sounddata/simsgeneratedhitsource.hit"),
+  );
+  if (bigHitFile) {
+    try {
+      const [hitRes, hotRes] = await Promise.all([
+        fetch(`/assets/${bigHitFile.path}`),
+        fetch(`/assets/${dir}SimsGeneratedHitSource.hot`),
+      ]);
+      if (hitRes.ok && hotRes.ok) {
+        const data = new Uint8Array(await hitRes.arrayBuffer());
+        const hot = wasm.parseHot(await hotRes.text()) as HotFile;
+        hitSandboxState.files.push({ label: "SimsGeneratedHitSource", hot, hitData: data });
+      }
+    } catch (err) {
+      console.warn("optional SimsGeneratedHitSource load failed", err);
+    }
+  }
+
+  if (hitSandboxState.files.length === 0) {
+    output.textContent = "no HIT/HOT pair available";
+    return;
+  }
+
+  fileSelect.replaceChildren();
+  for (const [idx, f] of hitSandboxState.files.entries()) {
+    const opt = document.createElement("option");
+    opt.value = String(idx);
+    opt.textContent = `${f.label} (${f.hot.eventMapping.length} events · ${f.hot.patches.length} patches)`;
+    fileSelect.appendChild(opt);
+  }
+  fileSelect.addEventListener("change", () => {
+    hitSandboxState.selected = parseInt(fileSelect.value, 10) || 0;
+    refreshHitEventSelect();
+  });
+  refreshHitEventSelect();
+
+  output.textContent = `${hitSandboxState.files.length} HIT pair(s) loaded — pick an event and Run`;
+
+  runBtn.addEventListener("click", () => {
+    runHitSandbox(wasm);
+  });
+}
+
+function refreshHitEventSelect(): void {
+  const select = document.getElementById("hit-event-select");
+  if (!(select instanceof HTMLSelectElement)) return;
+  const file = hitSandboxState.files[hitSandboxState.selected];
+  if (!file) return;
   const trackAddr = new Map<number, number>();
-  for (const td of hot.trackData) trackAddr.set(td.trackId, td.address);
+  for (const td of file.hot.trackData) trackAddr.set(td.trackId, td.address);
   select.replaceChildren();
-  const sortedEvents = [...hot.eventMapping].sort((a, b) => a.name.localeCompare(b.name));
+  const sortedEvents = [...file.hot.eventMapping].sort((a, b) => a.name.localeCompare(b.name));
   for (const ev of sortedEvents) {
     const addr = trackAddr.get(ev.trackId);
     if (addr === undefined) continue;
@@ -961,11 +1023,78 @@ async function mountHitSandbox(
     opt.textContent = `${ev.name} (track 0x${ev.trackId.toString(16)} → 0x${addr.toString(16)})`;
     select.appendChild(opt);
   }
-  output.textContent = `loaded ${hot.eventMapping.length} events · ${hot.trackData.length} tracks · ${hot.patches.length} patches`;
+}
 
-  runBtn.addEventListener("click", () => {
-    runHitSandbox(wasm);
-  });
+// ---- Web Audio routing ----
+let sharedAudioContext: AudioContext | null = null;
+function getAudioContext(): AudioContext {
+  if (sharedAudioContext === null) {
+    const Ctx =
+      window.AudioContext ??
+      (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+    if (!Ctx) throw new Error("Web Audio API not supported");
+    sharedAudioContext = new Ctx();
+  }
+  return sharedAudioContext;
+}
+
+async function playXaPath(
+  wasm: Awaited<ReturnType<typeof engine>>,
+  manifest: Awaited<ReturnType<typeof fetchManifest>>,
+  patchPath: string,
+): Promise<void> {
+  // patchPath is the Maxis-relative path like "SoundData\Sfx\foo.xa".
+  // Convert backslashes and find the matching manifest entry.
+  const normalized = patchPath.replace(/\\/g, "/").toLowerCase();
+  const file = manifest.files.find((f) => f.path.toLowerCase().endsWith(normalized));
+  if (!file) {
+    throw new Error(`patch not in manifest: ${patchPath}`);
+  }
+  const res = await fetch(`/assets/${file.path}`);
+  if (!res.ok) throw new Error(`fetch ${file.path}: ${res.status}`);
+  const data = new Uint8Array(await res.arrayBuffer());
+  const decoded = wasm.decodeXa(data) as { wav: Uint8Array };
+  const ctx = getAudioContext();
+  if (ctx.state === "suspended") await ctx.resume();
+  const wavBuf = new ArrayBuffer(decoded.wav.byteLength);
+  new Uint8Array(wavBuf).set(decoded.wav);
+  const buf = await ctx.decodeAudioData(wavBuf);
+  const source = ctx.createBufferSource();
+  source.buffer = buf;
+  source.connect(ctx.destination);
+  source.start();
+}
+
+let hitAudioManifest: Awaited<ReturnType<typeof fetchManifest>> | null = null;
+
+function setHitAudioControls(
+  wasm: Awaited<ReturnType<typeof engine>>,
+  patchPaths: string[],
+): void {
+  const host = document.getElementById("hit-audio-controls");
+  if (!host) return;
+  host.replaceChildren();
+  if (patchPaths.length === 0) return;
+  for (const path of patchPaths) {
+    const btn = document.createElement("button");
+    btn.textContent = `▶ ${path.split(/[\\\/]/).pop() ?? path}`;
+    btn.style.cssText =
+      "background:#246;color:#cef;border:1px solid #444;font:inherit;padding:3px 6px;cursor:pointer;border-radius:2px;";
+    btn.title = path;
+    btn.addEventListener("click", () => {
+      const manifest = hitAudioManifest;
+      if (!manifest) return;
+      void playXaPath(wasm, manifest, path).catch((err: unknown) => {
+        console.error("XA play failed", err);
+        const out = document.getElementById("hit-sandbox-output");
+        if (out) {
+          out.textContent +=
+            "\n[playback failed: " + (err instanceof Error ? err.message : String(err)) + "]";
+        }
+      });
+    });
+    host.appendChild(btn);
+  }
 }
 
 function runHitSandbox(wasm: Awaited<ReturnType<typeof engine>>): void {
@@ -973,12 +1102,13 @@ function runHitSandbox(wasm: Awaited<ReturnType<typeof engine>>): void {
   const stepsInput = document.getElementById("hit-max-steps");
   const output = document.getElementById("hit-sandbox-output");
   if (!(select instanceof HTMLSelectElement) || !output) return;
-  const hot = hitSandboxState.hot;
-  const hitData = hitSandboxState.hitData;
-  if (!hot || !hitData) {
+  const file = hitSandboxState.files[hitSandboxState.selected];
+  if (!file) {
     output.textContent = "sandbox not initialised";
     return;
   }
+  const hot = file.hot;
+  const hitData = file.hitData;
   const eventName = select.value;
   const event = hot.eventMapping.find((e) => e.name === eventName);
   if (!event) {
@@ -1033,8 +1163,15 @@ function runHitSandbox(wasm: Awaited<ReturnType<typeof engine>>): void {
       }
     }
     output.textContent = lines.join("\n");
+    // Surface a Play button when the patch resolves to a known XA path.
+    const patchPaths: string[] = [];
+    if (patch && patch.soundPath.toLowerCase().endsWith(".xa")) {
+      patchPaths.push(patch.soundPath);
+    }
+    setHitAudioControls(wasm, patchPaths);
   } catch (err) {
     output.textContent = `run failed: ${(err as Error).message}`;
+    setHitAudioControls(wasm, []);
   }
 }
 
