@@ -52,16 +52,42 @@ interface SimState {
    *  for `expiresAtMs - now` ms. Used to surface VM effects (Dialog,
    *  ShowString, AnimateSim, PlaySound) during an interaction. */
   bubble: { text: string; expiresAtMs: number } | null;
+  /** Per-Sim motive bars [-100, +100] in TS1 order (Hunger/Comfort/.../Room). */
+  motives: number[];
 }
 
-const simState: SimState = {
-  name: "Sim",
-  fx: 8,
-  fy: 8,
-  walk: null,
-  onArrive: null,
-  bubble: null,
-};
+const SIM_PALETTE = [
+  { name: "Bella", color: "#7ab8ff" },
+  { name: "Mortimer", color: "#d8a13a" },
+  { name: "Cassandra", color: "#cf6dd1" },
+  { name: "Don", color: "#5fb86b" },
+  { name: "Jeff", color: "#d8533a" },
+] as const;
+
+function defaultMotives(): number[] {
+  return [60, 60, 60, 60, 60, 50, 50, 50];
+}
+
+const sims: SimState[] = [
+  {
+    name: SIM_PALETTE[0]!.name,
+    fx: 8,
+    fy: 8,
+    walk: null,
+    onArrive: null,
+    bubble: null,
+    motives: defaultMotives(),
+  },
+];
+let selectedSimIdx = 0;
+const simColorOf = (i: number): string => SIM_PALETTE[i % SIM_PALETTE.length]!.color;
+
+/** Proxy that always reads/writes the currently-selected Sim. Lets all the
+ *  pre-existing `simState.X` references keep working without a rename. */
+const simState = new Proxy({} as SimState, {
+  get: (_, prop) => Reflect.get(sims[selectedSimIdx]!, prop),
+  set: (_, prop, value) => Reflect.set(sims[selectedSimIdx]!, prop, value),
+}) as SimState;
 
 /** Queue of upcoming speech bubbles shown above the Sim, paced ~1.4 s each
  *  so multi-effect interactions don't collapse into one flash. */
@@ -109,10 +135,6 @@ const MOTIVE_NAMES = [
   "Room",
 ] as const;
 
-/** Motive values are stored in TS1's native range [-100, +100]. Bars start at
- *  comfortable defaults and decay slowly while idle. */
-const motives: number[] = [60, 60, 60, 60, 60, 50, 50, 50];
-
 const MOTIVE_DECAY_PER_S = 0.4; // ~24 pts / minute, brisker than TS1 for demo.
 
 function clampMotive(v: number): number {
@@ -121,8 +143,12 @@ function clampMotive(v: number): number {
 
 function tickMotives(deltaMs: number): void {
   const dec = MOTIVE_DECAY_PER_S * (deltaMs / 1000);
-  for (let i = 0; i < motives.length; i += 1) {
-    motives[i] = clampMotive((motives[i] ?? 0) - dec);
+  // Decay every Sim's motives, not just the selected one — they all live on
+  // the lot and get hungry/tired in parallel.
+  for (const sim of sims) {
+    for (let i = 0; i < sim.motives.length; i += 1) {
+      sim.motives[i] = clampMotive((sim.motives[i] ?? 0) - dec);
+    }
   }
   renderMotivesHud();
 }
@@ -130,15 +156,14 @@ function tickMotives(deltaMs: number): void {
 function applyMotiveEffects(
   ttabMotives: Array<{ effectMin: number; effectMax: number; personalityModifier: number }>,
 ): void {
-  // TTAB stores up to 8 motive effects per interaction, in motive order.
-  // effect_min..effect_max gives a bump range; we average them and let the
-  // personality_modifier nudge if non-zero (we don't model personalities yet).
-  for (let i = 0; i < ttabMotives.length && i < motives.length; i += 1) {
+  const target = sims[selectedSimIdx];
+  if (!target) return;
+  for (let i = 0; i < ttabMotives.length && i < target.motives.length; i += 1) {
     const m = ttabMotives[i];
     if (!m) continue;
     if (m.effectMin === 0 && m.effectMax === 0) continue;
     const avg = (m.effectMin + m.effectMax) / 2;
-    motives[i] = clampMotive((motives[i] ?? 0) + avg);
+    target.motives[i] = clampMotive((target.motives[i] ?? 0) + avg);
   }
   renderMotivesHud();
 }
@@ -190,10 +215,16 @@ function renderMotivesHud(): void {
       root.appendChild(row);
     }
   }
+  const sim = sims[selectedSimIdx];
+  if (!sim) return;
+  const title = root.firstChild;
+  if (title instanceof HTMLDivElement) {
+    title.textContent = `${sim.name} · motives`;
+  }
   const rows = root.querySelectorAll<HTMLDivElement>("div[data-motive-idx]");
   for (const row of rows) {
     const idx = parseInt(row.dataset["motiveIdx"] ?? "-1", 10);
-    const v = motives[idx] ?? 0;
+    const v = sim.motives[idx] ?? 0;
     const fill = row.querySelector<HTMLDivElement>("div[data-fill]");
     const num = row.querySelector<HTMLSpanElement>("span[data-num]");
     if (fill) {
@@ -421,17 +452,18 @@ function ensureRenderLoop(): void {
   if (renderLoopHandle !== null) return;
   const tick = (now: number): void => {
     let alive = false;
-    if (simState.walk) {
-      const w = simState.walk;
+    // Advance every Sim's walk independently so multi-Sim lots all animate.
+    for (const sim of sims) {
+      if (!sim.walk) continue;
+      const w = sim.walk;
       const t = Math.min(1, (now - w.startMs) / w.durMs);
-      // Smoothstep ease so the Sim doesn't jerk on start/stop.
       const eased = t * t * (3 - 2 * t);
-      simState.fx = w.fromX + (w.toX - w.fromX) * eased;
-      simState.fy = w.fromY + (w.toY - w.fromY) * eased;
+      sim.fx = w.fromX + (w.toX - w.fromX) * eased;
+      sim.fy = w.fromY + (w.toY - w.fromY) * eased;
       if (t >= 1) {
-        simState.walk = null;
-        const cb = simState.onArrive;
-        simState.onArrive = null;
+        sim.walk = null;
+        const cb = sim.onArrive;
+        sim.onArrive = null;
         cb?.();
       } else {
         alive = true;
@@ -447,18 +479,26 @@ function ensureRenderLoop(): void {
   renderLoopHandle = requestAnimationFrame(tick);
 }
 
-function simEntity(): IsoEntity {
-  const label =
-    simState.bubble && simState.bubble.expiresAtMs > performance.now()
-      ? simState.bubble.text
-      : simState.name;
-  return {
-    worldX: simState.fx,
-    worldY: simState.fy,
-    kind: "sim",
-    color: "#7ab8ff",
-    label,
-  };
+function allSimEntities(): IsoEntity[] {
+  const out: IsoEntity[] = [];
+  for (let i = 0; i < sims.length; i += 1) {
+    const sim = sims[i]!;
+    const isSelected = i === selectedSimIdx;
+    const label =
+      sim.bubble && sim.bubble.expiresAtMs > performance.now()
+        ? sim.bubble.text
+        : sim.name;
+    out.push({
+      worldX: sim.fx,
+      worldY: sim.fy,
+      kind: "sim",
+      color: simColorOf(i),
+      // Mark selected with a small chevron prefix so the user always knows
+      // which Sim a click controls.
+      label: isSelected ? `▸ ${label}` : label,
+    });
+  }
+  return out;
 }
 
 /** Find an empty tile adjacent to (objX, objY) the Sim can stand on. Returns
@@ -531,6 +571,8 @@ function mountCameraControls(): void {
     <button data-cam-action="mode-play" title="Click walks the Sim & triggers interactions">play</button>
     <button data-cam-action="mode-build" title="Click places the viewer object on empty tiles">build</button>
     <span style="opacity:.5;">·</span>
+    <button data-cam-action="add-sim" title="Spawn a new Sim on the lot">+ sim</button>
+    <span style="opacity:.5;">·</span>
     <button data-cam-action="save" title="Save current lot to server">save</button>
     <button data-cam-action="load" title="Reload lot from server">load</button>
     <button data-cam-action="reset" title="Clear all placed objects">reset</button>
@@ -548,6 +590,7 @@ function mountCameraControls(): void {
     if (action === "reset") clearLot();
     else if (action === "save") void saveLot();
     else if (action === "load") void loadLot(true);
+    else if (action === "add-sim") spawnSim();
     else if (action === "mode-play") {
       lotMode = "play";
       updateModeButtonHighlights();
@@ -603,7 +646,7 @@ function mountCameraControls(): void {
   help.style.cssText =
     "position:fixed;top:46px;right:8px;background:rgba(0,0,0,.55);padding:4px 8px;border-radius:4px;font:11px/1.4 ui-monospace,monospace;color:#9ad;max-width:220px;text-align:right;";
   help.innerHTML =
-    "<b>play</b>: click ground = walk Sim · click obj = walk + interact<br/><b>build</b>: click ground = place viewer obj<br/>right-click: rotate · shift+click: remove<br/>Q/E rotate camera · +/- zoom";
+    "<b>play</b>: click ground = walk Sim · click obj = walk + interact · click another Sim = select it<br/><b>build</b>: click ground = place obj or paint floor<br/>right-click: rotate · shift+click: remove<br/>Q/E rotate camera · +/- zoom";
   document.body.appendChild(help);
   updateCameraButtonHighlights();
 }
@@ -1225,7 +1268,7 @@ function composeLotScene(): void {
     }
   }
   lotScene.sprites = sprites;
-  lotScene.entities = [simEntity()];
+  lotScene.entities = allSimEntities();
   lotScene.floorPaint = floorPaint;
   renderLot();
 }
@@ -1266,10 +1309,40 @@ function projectedDepth(inst: LotInstance): number {
   return lx + ly;
 }
 
+function pickSimIndex(canvasX: number, canvasY: number): number | null {
+  const cam = lotScene.camera;
+  const radius = cam.tileWidth / 2;
+  let bestIdx: number | null = null;
+  let bestDist = Infinity;
+  for (let i = 0; i < sims.length; i += 1) {
+    const sim = sims[i]!;
+    const { sx, sy } = projectTileToScreen(sim.fx, sim.fy, cam, canvas);
+    // Hit area centred slightly above the projected tile centre (Sim head).
+    const dx = sx - canvasX;
+    const dy = sy - cam.tileWidth / 4 - canvasY;
+    const d = Math.hypot(dx, dy);
+    if (d < radius && d < bestDist) {
+      bestIdx = i;
+      bestDist = d;
+    }
+  }
+  return bestIdx;
+}
+
 function onLotCanvasClick(ev: MouseEvent): void {
   const rect = canvas.getBoundingClientRect();
   const cx = (ev.clientX - rect.left) * (canvas.width / rect.width);
   const cy = (ev.clientY - rect.top) * (canvas.height / rect.height);
+  // Sim hit-test wins over instance hit-test so the user can grab a Sim
+  // even when it's standing on top of an object.
+  const simIdx = pickSimIndex(cx, cy);
+  if (simIdx !== null && simIdx !== selectedSimIdx) {
+    selectedSimIdx = simIdx;
+    renderMotivesHud();
+    composeLotScene();
+    closeInteractionMenuImpl();
+    return;
+  }
   const inst = pickInstance(cx, cy);
   if (inst) {
     if (ev.shiftKey) {
@@ -1399,6 +1472,39 @@ function clearLot(): void {
   closeInteractionMenuImpl();
 }
 
+function spawnSim(): void {
+  const N = lotScene.gridSize;
+  // Pick the first empty tile we find (simple deterministic spawn). If the lot
+  // is fully packed, spawn on top of the centre.
+  let x = 4;
+  let y = 4;
+  outer: for (let iy = 1; iy < N - 1; iy += 1) {
+    for (let ix = 1; ix < N - 1; ix += 1) {
+      const occupiedByObj = lotInstances.some((i) => i.worldX === ix && i.worldY === iy);
+      const occupiedBySim = sims.some((s) => Math.round(s.fx) === ix && Math.round(s.fy) === iy);
+      if (!occupiedByObj && !occupiedBySim) {
+        x = ix;
+        y = iy;
+        break outer;
+      }
+    }
+  }
+  const idx = sims.length;
+  const palette = SIM_PALETTE[idx % SIM_PALETTE.length]!;
+  sims.push({
+    name: palette.name,
+    fx: x,
+    fy: y,
+    walk: null,
+    onArrive: null,
+    bubble: null,
+    motives: defaultMotives(),
+  });
+  selectedSimIdx = idx;
+  renderMotivesHud();
+  composeLotScene();
+}
+
 // ============================================================================
 // Lot persistence — serializes the placed instances to /api/saves/current-lot.
 // ============================================================================
@@ -1416,9 +1522,21 @@ const LOT_SAVE_ID = "current-lot";
 
 let objectsFarPathCache: string | null = null;
 
+interface SerializedSim {
+  name: string;
+  fx: number;
+  fy: number;
+  motives: number[];
+}
+
 interface SerializedLot {
   instances: SerializedLotInstance[];
   floorPaint: Array<{ key: number; color: string }>;
+  sims?: SerializedSim[];
+  selectedSim?: number;
+  funds?: number;
+  gameMinutes?: number;
+  gameDayIdx?: number;
 }
 
 function serializeLot(): SerializedLot {
@@ -1432,7 +1550,21 @@ function serializeLot(): SerializedLot {
   }));
   const floor: Array<{ key: number; color: string }> = [];
   for (const [k, c] of floorPaint) floor.push({ key: k, color: c });
-  return { instances: inst, floorPaint: floor };
+  const serSims: SerializedSim[] = sims.map((s) => ({
+    name: s.name,
+    fx: s.fx,
+    fy: s.fy,
+    motives: [...s.motives],
+  }));
+  return {
+    instances: inst,
+    floorPaint: floor,
+    sims: serSims,
+    selectedSim: selectedSimIdx,
+    funds,
+    gameMinutes,
+    gameDayIdx,
+  };
 }
 
 async function saveLot(): Promise<void> {
@@ -1472,6 +1604,29 @@ async function loadLot(replace: boolean = true): Promise<void> {
     if (replace) {
       lotInstances.length = 0;
       floorPaint.clear();
+    }
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      const obj = parsed as SerializedLot;
+      if (Array.isArray(obj.sims) && obj.sims.length > 0) {
+        sims.length = 0;
+        for (const s of obj.sims) {
+          sims.push({
+            name: s.name ?? "Sim",
+            fx: s.fx ?? 8,
+            fy: s.fy ?? 8,
+            walk: null,
+            onArrive: null,
+            bubble: null,
+            motives:
+              Array.isArray(s.motives) && s.motives.length === 8 ? [...s.motives] : defaultMotives(),
+          });
+        }
+        selectedSimIdx = Math.max(0, Math.min(sims.length - 1, obj.selectedSim ?? 0));
+      }
+      if (typeof obj.funds === "number") funds = obj.funds;
+      if (typeof obj.gameMinutes === "number") gameMinutes = obj.gameMinutes;
+      if (typeof obj.gameDayIdx === "number") gameDayIdx = obj.gameDayIdx;
+      renderTimeFundsHud();
     }
     for (const s of instances) {
       try {
