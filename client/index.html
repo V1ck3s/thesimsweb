@@ -73,6 +73,21 @@
           <summary style="padding:4px 8px;cursor:pointer;user-select:none;">Disasm HIT (simssound)</summary>
           <pre id="hit-output" style="margin:0;padding:6px 8px;color:#cfa;font:10.5px/1.35 ui-monospace,monospace;max-height:240px;overflow:auto;white-space:pre;"></pre>
         </details>
+        <details id="hit-sandbox-wrap" style="background:rgba(0,0,0,.55);border:1px solid #444;border-radius:3px;max-width:340px;color:#9ad;font:11px/1.35 ui-monospace,monospace;">
+          <summary style="padding:4px 8px;cursor:pointer;user-select:none;">HIT Sandbox</summary>
+          <div style="padding:6px 8px;display:flex;flex-direction:column;gap:6px;">
+            <div style="display:flex;gap:6px;align-items:center;">
+              <span style="opacity:.7;width:42px;">event</span>
+              <select id="hit-event-select" style="flex:1;background:#111;color:#cde;border:1px solid #444;font:inherit;padding:2px 4px;"></select>
+            </div>
+            <div style="display:flex;gap:6px;align-items:center;">
+              <span style="opacity:.7;width:42px;">steps</span>
+              <input id="hit-max-steps" type="number" value="500" min="1" max="50000" style="width:80px;background:#111;color:#cde;border:1px solid #444;font:inherit;padding:2px 4px;" />
+              <button id="hit-run-btn" style="flex:1;background:#3b6;color:#000;border:1px solid #444;font:inherit;padding:3px 8px;cursor:pointer;border-radius:2px;">Run</button>
+            </div>
+            <pre id="hit-sandbox-output" style="margin:0;padding:6px 8px;background:#111;color:#cfa;border:1px solid #444;border-radius:3px;font:10.5px/1.35 ui-monospace,monospace;max-height:240px;overflow:auto;white-space:pre;"></pre>
+          </div>
+        </details>
       </div>
     </div>
     <script type="module" src="/src/main.ts"></script>

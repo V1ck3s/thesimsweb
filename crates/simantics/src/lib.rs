@@ -18,6 +18,8 @@ use alloc::vec::Vec;
 
 use thiserror::Error;
 
+pub mod hit_vm;
+pub mod hot;
 pub mod vm;
 
 #[derive(Debug, Error, PartialEq, Eq)]
@@ -1278,8 +1280,12 @@ impl Hit {
                 "{} #0x{:x}", fmt_var(read_u8(1)), read_u32(2).unwrap_or(0)
             )),
 
-            // jump (0x0D): use Niotso's heuristic — 5 bytes for 4-byte address
-            // (when it's a valid offset within the code), else 2 bytes for variable.
+            // jump (0x0D): Niotso 3-way heuristic.
+            //   1. If next 4 bytes look like an absolute address (>= 16 and within
+            //      the code section), it's `jump #addr` (5 bytes).
+            //   2. Else if next byte is 0x05 or 0x06 (v1 or v2 register IDs), it's
+            //      `jump var` in the compact 2-byte form.
+            //   3. Else it's the wide 5-byte variable form `jump var32`.
             0x0D => {
                 if len_left >= 5 {
                     let candidate = read_u32(1).unwrap_or(0);
@@ -1289,10 +1295,19 @@ impl Hit {
                         return ("jump", 5, format!("#0x{candidate:x}"));
                     }
                 }
-                if len_left >= 2 {
-                    ("jump", 2, fmt_one_var(read_u8(1)))
+                let first = read_u8(1).unwrap_or(0);
+                if first == 0x05 || first == 0x06 {
+                    if len_left >= 2 {
+                        ("jump", 2, fmt_one_var(read_u8(1)))
+                    } else {
+                        ("jump", 1, alloc::string::String::new())
+                    }
+                } else if len_left >= 5 {
+                    // Wide variable form — render the variable byte but skip the
+                    // 3 zero-pad bytes.
+                    ("jump", 5, fmt_one_var(read_u8(1)))
                 } else {
-                    ("jump", 1, alloc::string::String::new())
+                    ("jump", len_left.min(2), fmt_one_var(read_u8(1)))
                 }
             }
 

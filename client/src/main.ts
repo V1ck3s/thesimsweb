@@ -845,7 +845,8 @@ async function runMain(globalsFarPath: string | null): Promise<void> {
   }
 }
 
-/** Fetch and disassemble simssound.HIT into the side panel. */
+/** Fetch and disassemble simssound.HIT into the side panel. Also mounts the
+ *  HIT Sandbox (event picker + Run button) using the matching SimsSound.hot. */
 async function tryDisasmHit(
   wasm: Awaited<ReturnType<typeof engine>>,
   manifest: Awaited<ReturnType<typeof fetchManifest>>,
@@ -881,8 +882,196 @@ async function tryDisasmHit(
       lines.push(`  ${addr}: ${ins.mnemonic.padEnd(15)} ${ins.args}`);
     }
     target.textContent = lines.join("\n");
+    // Wire the HIT Sandbox (event picker + Run) using SimsSound.hot.
+    const hotPath = hitFile.path.replace(/simssound\.hit$/i, "SimsSound.hot");
+    void mountHitSandbox(wasm, data, hotPath);
   } catch (err) {
     target.textContent = `disasm failed: ${(err as Error).message}`;
+  }
+}
+
+interface HotEventMapping {
+  name: string;
+  eventKind: number;
+  trackId: number;
+  extraArgs: number[];
+}
+interface HotPatch {
+  id: number;
+  name: string;
+  soundPath: string;
+  looped: boolean;
+  piano: boolean;
+}
+interface HotTrack {
+  id: number;
+  subroutineName: string;
+  volume: number;
+  argsKind: string;
+  duckingPriority: string;
+  controlGroup: string;
+  spl: string;
+  hitlistId: string;
+  patchId: string;
+}
+interface HotFile {
+  trackData: Array<{ trackId: number; address: number }>;
+  eventMapping: HotEventMapping[];
+  patches: HotPatch[];
+  tracks: HotTrack[];
+  equates: Array<{ name: string; value: number }>;
+}
+
+interface HitSandboxState {
+  hot: HotFile | null;
+  hitData: Uint8Array | null;
+}
+const hitSandboxState: HitSandboxState = { hot: null, hitData: null };
+
+async function mountHitSandbox(
+  wasm: Awaited<ReturnType<typeof engine>>,
+  hitData: Uint8Array,
+  hotPath: string,
+): Promise<void> {
+  const select = document.getElementById("hit-event-select");
+  const runBtn = document.getElementById("hit-run-btn");
+  const output = document.getElementById("hit-sandbox-output");
+  if (!(select instanceof HTMLSelectElement) || !runBtn || !output) return;
+
+  const res = await fetch(`/assets/${hotPath}`);
+  if (!res.ok) {
+    output.textContent = `failed to fetch ${hotPath}: ${res.status}`;
+    return;
+  }
+  const text = await res.text();
+  const hot = wasm.parseHot(text) as HotFile;
+  hitSandboxState.hot = hot;
+  hitSandboxState.hitData = hitData;
+
+  // Populate dropdown with events that resolve to a known TrackData address.
+  const trackAddr = new Map<number, number>();
+  for (const td of hot.trackData) trackAddr.set(td.trackId, td.address);
+  select.replaceChildren();
+  const sortedEvents = [...hot.eventMapping].sort((a, b) => a.name.localeCompare(b.name));
+  for (const ev of sortedEvents) {
+    const addr = trackAddr.get(ev.trackId);
+    if (addr === undefined) continue;
+    const opt = document.createElement("option");
+    opt.value = ev.name;
+    opt.textContent = `${ev.name} (track 0x${ev.trackId.toString(16)} → 0x${addr.toString(16)})`;
+    select.appendChild(opt);
+  }
+  output.textContent = `loaded ${hot.eventMapping.length} events · ${hot.trackData.length} tracks · ${hot.patches.length} patches`;
+
+  runBtn.addEventListener("click", () => {
+    runHitSandbox(wasm);
+  });
+}
+
+function runHitSandbox(wasm: Awaited<ReturnType<typeof engine>>): void {
+  const select = document.getElementById("hit-event-select");
+  const stepsInput = document.getElementById("hit-max-steps");
+  const output = document.getElementById("hit-sandbox-output");
+  if (!(select instanceof HTMLSelectElement) || !output) return;
+  const hot = hitSandboxState.hot;
+  const hitData = hitSandboxState.hitData;
+  if (!hot || !hitData) {
+    output.textContent = "sandbox not initialised";
+    return;
+  }
+  const eventName = select.value;
+  const event = hot.eventMapping.find((e) => e.name === eventName);
+  if (!event) {
+    output.textContent = `no event named ${eventName}`;
+    return;
+  }
+  const trackEntry = hot.trackData.find((t) => t.trackId === event.trackId);
+  if (!trackEntry) {
+    output.textContent = `track 0x${event.trackId.toString(16)} has no entry in TrackData`;
+    return;
+  }
+  const maxSteps =
+    stepsInput instanceof HTMLInputElement ? parseInt(stepsInput.value, 10) || 500 : 500;
+  const args = new Int32Array([0, 0, 0, 0, 0]);
+  try {
+    const result = wasm.runHitTrack(hitData, trackEntry.address, args, maxSteps) as {
+      steps: number;
+      halted: boolean;
+      exhausted: boolean;
+      finalPc: number;
+      error?: string;
+      effects: Array<Record<string, unknown> & { kind: string }>;
+      finalRegs: Record<string, number>;
+    };
+    const lines: string[] = [];
+    const track = hot.tracks.find((t) => t.id === event.trackId);
+    const subroutine = track?.subroutineName ?? "?";
+    const patchName = track?.patchId ?? "";
+    const patch =
+      patchName && /^\d+$/.test(patchName)
+        ? hot.patches.find((p) => p.id === parseInt(patchName, 10))
+        : hot.patches.find((p) => p.name === patchName);
+    lines.push(
+      `event=${event.name} eventKind=${event.eventKind} track=0x${event.trackId.toString(16)} (${subroutine})`,
+    );
+    if (patch) {
+      lines.push(`patch ${patch.name} → ${patch.soundPath}`);
+    }
+    lines.push(
+      `entry=0x${trackEntry.address.toString(16)} steps=${result.steps} pc=0x${result.finalPc.toString(16)} halted=${result.halted} exhausted=${result.exhausted}`,
+    );
+    if (result.error) lines.push(`error: ${result.error}`);
+    if (result.effects.length === 0) {
+      lines.push("(no effects)");
+    } else {
+      lines.push(`effects (${result.effects.length}):`);
+      for (const ef of result.effects.slice(0, 50)) {
+        lines.push("  " + formatHitEffect(ef));
+      }
+      if (result.effects.length > 50) {
+        lines.push(`  … ${result.effects.length - 50} more`);
+      }
+    }
+    output.textContent = lines.join("\n");
+  } catch (err) {
+    output.textContent = `run failed: ${(err as Error).message}`;
+  }
+}
+
+function formatHitEffect(ef: Record<string, unknown> & { kind: string }): string {
+  const kind = ef.kind;
+  switch (kind) {
+    case "PlayNote":
+    case "PlayNoteLoop":
+    case "StopNote":
+      return `${kind} note=${String(ef["noteId"])}`;
+    case "Wait":
+      return `Wait ms=${String(ef["ms"])}`;
+    case "WaitSamp":
+      return "WaitSamp";
+    case "PlayTrack":
+    case "KillTrack":
+    case "StopTrack":
+      return `${kind} track=0x${Number(ef["trackId"]).toString(16)}`;
+    case "SeqGroupKill":
+    case "SeqGroupReturn":
+      return `${kind} group=${String(ef["group"])}`;
+    case "SeqGroupTrkId":
+      return `SeqGroupTrkId a=${String(ef["a"])} b=${String(ef["b"])}`;
+    case "Duck":
+    case "Unduck":
+    case "End":
+    case "Return":
+      return kind;
+    case "SmartChoose":
+      return `SmartChoose dest=${String(ef["destVar"])} hitlist=0x${Number(ef["hitlist"]).toString(16)} picked=${String(ef["picked"])}`;
+    case "WaitVarCmp":
+      return `Wait${String(ef["waitKind"])} v${String(ef["var1"])} v${String(ef["var2"])}`;
+    case "SetLowLow":
+    case "SetLowTime":
+      return `${kind} dest=${String(ef["destVar"])} value=${String(ef["value"])}`;
+    default:
+      return kind;
   }
 }
 

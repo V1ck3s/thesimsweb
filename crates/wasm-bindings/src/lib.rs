@@ -861,3 +861,231 @@ fn effect_to_object(ef: &simantics::vm::VmEffect) -> Result<JsValue, JsError> {
     }
     Ok(obj.into())
 }
+
+// ===================== Phase 5 — HIT VM + HOT bindings =====================
+
+/// Parse a HOT (HIT Options Table) text file. Returns
+/// `{ trackData: Array<{trackId, address}>, eventMapping: Array<{name, eventKind, trackId, extraArgs}>,
+///    patches: Array<{id, name, soundPath, looped, piano}>,
+///    tracks: Array<{id, subroutineName, volume, argsKind, duckingPriority,
+///                   controlGroup, spl, hitlistId, patchId}>,
+///    equates: Array<{name, value}> }`.
+///
+/// # Errors
+/// Returns a JsError only on internal Reflect failures.
+#[wasm_bindgen(js_name = parseHot)]
+pub fn parse_hot(text: &str) -> Result<Object, JsError> {
+    let hot = simantics::hot::HotFile::parse(text);
+    let obj = Object::new();
+
+    let track_data = Array::new();
+    for (k, v) in &hot.track_data {
+        let row = Object::new();
+        set_f64(&row, "trackId", f64::from(*k))?;
+        set_f64(&row, "address", f64::from(*v))?;
+        track_data.push(&row);
+    }
+    Reflect::set(&obj, &JsValue::from_str("trackData"), &track_data.into())
+        .map_err(|_| JsError::new("set trackData"))?;
+
+    let event_mapping = Array::new();
+    for (name, m) in &hot.event_mapping {
+        let row = Object::new();
+        Reflect::set(&row, &JsValue::from_str("name"), &JsValue::from_str(name))
+            .map_err(|_| JsError::new("set name"))?;
+        set_f64(&row, "eventKind", f64::from(m.event_kind))?;
+        set_f64(&row, "trackId", f64::from(m.track_id))?;
+        let extra = Array::new();
+        for v in &m.extra_args {
+            extra.push(&JsValue::from_f64(f64::from(*v)));
+        }
+        Reflect::set(&row, &JsValue::from_str("extraArgs"), &extra.into())
+            .map_err(|_| JsError::new("set extraArgs"))?;
+        event_mapping.push(&row);
+    }
+    Reflect::set(&obj, &JsValue::from_str("eventMapping"), &event_mapping.into())
+        .map_err(|_| JsError::new("set eventMapping"))?;
+
+    let patches = Array::new();
+    for (id, p) in &hot.patches {
+        let row = Object::new();
+        set_f64(&row, "id", f64::from(*id))?;
+        Reflect::set(&row, &JsValue::from_str("name"), &JsValue::from_str(&p.name))
+            .map_err(|_| JsError::new("set name"))?;
+        Reflect::set(&row, &JsValue::from_str("soundPath"), &JsValue::from_str(&p.sound_path))
+            .map_err(|_| JsError::new("set soundPath"))?;
+        Reflect::set(&row, &JsValue::from_str("looped"), &JsValue::from_bool(p.looped))
+            .map_err(|_| JsError::new("set looped"))?;
+        Reflect::set(&row, &JsValue::from_str("piano"), &JsValue::from_bool(p.piano))
+            .map_err(|_| JsError::new("set piano"))?;
+        patches.push(&row);
+    }
+    Reflect::set(&obj, &JsValue::from_str("patches"), &patches.into())
+        .map_err(|_| JsError::new("set patches"))?;
+
+    let tracks = Array::new();
+    for (id, t) in &hot.tracks {
+        let row = Object::new();
+        set_f64(&row, "id", f64::from(*id))?;
+        Reflect::set(&row, &JsValue::from_str("subroutineName"), &JsValue::from_str(&t.subroutine_name))
+            .map_err(|_| JsError::new("set subroutineName"))?;
+        set_f64(&row, "volume", f64::from(t.volume))?;
+        Reflect::set(&row, &JsValue::from_str("argsKind"), &JsValue::from_str(&t.args_kind))
+            .map_err(|_| JsError::new("set argsKind"))?;
+        Reflect::set(&row, &JsValue::from_str("duckingPriority"), &JsValue::from_str(&t.ducking_priority))
+            .map_err(|_| JsError::new("set duckingPriority"))?;
+        Reflect::set(&row, &JsValue::from_str("controlGroup"), &JsValue::from_str(&t.control_group))
+            .map_err(|_| JsError::new("set controlGroup"))?;
+        Reflect::set(&row, &JsValue::from_str("spl"), &JsValue::from_str(&t.spl))
+            .map_err(|_| JsError::new("set spl"))?;
+        Reflect::set(&row, &JsValue::from_str("hitlistId"), &JsValue::from_str(&t.hitlist_id))
+            .map_err(|_| JsError::new("set hitlistId"))?;
+        Reflect::set(&row, &JsValue::from_str("patchId"), &JsValue::from_str(&t.patch_id))
+            .map_err(|_| JsError::new("set patchId"))?;
+        tracks.push(&row);
+    }
+    Reflect::set(&obj, &JsValue::from_str("tracks"), &tracks.into())
+        .map_err(|_| JsError::new("set tracks"))?;
+
+    let equates = Array::new();
+    for (name, value) in &hot.event_equate {
+        let row = Object::new();
+        Reflect::set(&row, &JsValue::from_str("name"), &JsValue::from_str(name))
+            .map_err(|_| JsError::new("set name"))?;
+        set_f64(&row, "value", f64::from(*value))?;
+        equates.push(&row);
+    }
+    Reflect::set(&obj, &JsValue::from_str("equates"), &equates.into())
+        .map_err(|_| JsError::new("set equates"))?;
+
+    Ok(obj)
+}
+
+/// Run a HIT subroutine starting at `entry_address` (file-relative offset, ≥ 16),
+/// with `args` providing arg0..arg4. Returns
+/// `{ steps, halted, exhausted, finalPc, error?, effects: [{kind, ...}],
+///    finalRegs: {arg0..arg4, v1..v8, h1..h4} }`.
+///
+/// The default `HitHost` is used: deterministic xorshift RNG, all external
+/// lookups (`smart_choose`, `read_object_field`, …) return 0.
+///
+/// # Errors
+/// Returns a JsError if the HIT framing is malformed or the bytecode hits an
+/// unknown opcode the VM cannot recover from.
+#[allow(clippy::too_many_lines)]
+#[wasm_bindgen(js_name = runHitTrack)]
+pub fn run_hit_track(
+    hit_data: &[u8],
+    entry_address: u32,
+    args: &[i32],
+    max_steps: u32,
+) -> Result<Object, JsError> {
+    let hit = simantics::Hit::parse(hit_data).map_err(|e| JsError::new(&e.to_string()))?;
+    let mut vm = simantics::hit_vm::HitVm::new(&hit, entry_address);
+    vm.set_args(args);
+    let mut host = simantics::hit_vm::DefaultHost::new(0x0123_4567_89AB_CDEF);
+
+    let (outcome, effects) = vm.run_until_halt(&mut host, max_steps);
+
+    let obj = Object::new();
+    set_f64(&obj, "steps", f64::from(vm.steps_executed))?;
+    set_f64(&obj, "finalPc", f64::from(vm.pc))?;
+
+    use simantics::hit_vm::RunOutcome;
+    let (halted, exhausted, error_str) = match &outcome {
+        RunOutcome::Halted => (true, false, None),
+        RunOutcome::BudgetExhausted => (false, true, None),
+        RunOutcome::Yielded(_) => (false, false, None),
+        RunOutcome::Error(e) => (false, false, Some(format!("{e:?}"))),
+    };
+    Reflect::set(&obj, &JsValue::from_str("halted"), &JsValue::from_bool(halted))
+        .map_err(|_| JsError::new("set halted"))?;
+    Reflect::set(&obj, &JsValue::from_str("exhausted"), &JsValue::from_bool(exhausted))
+        .map_err(|_| JsError::new("set exhausted"))?;
+    if let Some(err) = error_str {
+        Reflect::set(&obj, &JsValue::from_str("error"), &JsValue::from_str(&err))
+            .map_err(|_| JsError::new("set error"))?;
+    }
+
+    let effects_arr = Array::new();
+    for ef in &effects {
+        effects_arr.push(&hit_effect_to_object(ef)?);
+    }
+    Reflect::set(&obj, &JsValue::from_str("effects"), &effects_arr.into())
+        .map_err(|_| JsError::new("set effects"))?;
+
+    // Final register snapshot — most values are 0 but useful for tests/debug.
+    let regs = Object::new();
+    let names = [
+        ("arg0", 0_usize), ("arg1", 1), ("arg2", 2), ("arg3", 3), ("arg4", 4),
+        ("v1", 5), ("v2", 6), ("v3", 7), ("v4", 8),
+        ("v5", 9), ("v6", 10), ("v7", 11), ("v8", 12),
+        ("h1", 13), ("h2", 14), ("h3", 15), ("h4", 16),
+    ];
+    for (name, idx) in names {
+        set_f64(&regs, name, f64::from(vm.regs[idx]))?;
+    }
+    Reflect::set(&obj, &JsValue::from_str("finalRegs"), &regs.into())
+        .map_err(|_| JsError::new("set finalRegs"))?;
+
+    Ok(obj)
+}
+
+fn hit_effect_to_object(ef: &simantics::hit_vm::HitEffect) -> Result<JsValue, JsError> {
+    use simantics::hit_vm::HitEffect;
+    let obj = Object::new();
+    let set_kind = |k: &str| -> Result<(), JsError> {
+        Reflect::set(&obj, &JsValue::from_str("kind"), &JsValue::from_str(k))
+            .map_err(|_| JsError::new("set kind"))?;
+        Ok(())
+    };
+    match ef {
+        HitEffect::PlayNote { note_id } => { set_kind("PlayNote")?; set_f64(&obj, "noteId", f64::from(*note_id))?; }
+        HitEffect::PlayNoteLoop { note_id } => { set_kind("PlayNoteLoop")?; set_f64(&obj, "noteId", f64::from(*note_id))?; }
+        HitEffect::StopNote { note_id } => { set_kind("StopNote")?; set_f64(&obj, "noteId", f64::from(*note_id))?; }
+        HitEffect::Wait { ms } => { set_kind("Wait")?; set_f64(&obj, "ms", f64::from(*ms))?; }
+        HitEffect::WaitSamp => { set_kind("WaitSamp")?; }
+        HitEffect::PlayTrack { track_id } => { set_kind("PlayTrack")?; set_f64(&obj, "trackId", f64::from(*track_id))?; }
+        HitEffect::KillTrack { track_id } => { set_kind("KillTrack")?; set_f64(&obj, "trackId", f64::from(*track_id))?; }
+        HitEffect::StopTrack { track_id } => { set_kind("StopTrack")?; set_f64(&obj, "trackId", f64::from(*track_id))?; }
+        HitEffect::SeqGroupKill { group } => { set_kind("SeqGroupKill")?; set_f64(&obj, "group", f64::from(*group))?; }
+        HitEffect::SeqGroupReturn { group } => { set_kind("SeqGroupReturn")?; set_f64(&obj, "group", f64::from(*group))?; }
+        HitEffect::SeqGroupTrkId { a, b } => { set_kind("SeqGroupTrkId")?; set_f64(&obj, "a", f64::from(*a))?; set_f64(&obj, "b", f64::from(*b))?; }
+        HitEffect::Duck => { set_kind("Duck")?; }
+        HitEffect::Unduck => { set_kind("Unduck")?; }
+        HitEffect::SmartChoose { dest_var, hitlist, picked } => {
+            set_kind("SmartChoose")?;
+            set_f64(&obj, "destVar", f64::from(*dest_var))?;
+            set_f64(&obj, "hitlist", f64::from(*hitlist))?;
+            set_f64(&obj, "picked", f64::from(*picked))?;
+        }
+        HitEffect::WaitVarCmp { kind, var1, var2 } => {
+            set_kind("WaitVarCmp")?;
+            let kind_s = match kind {
+                simantics::hit_vm::WaitKind::Eq => "eq",
+                simantics::hit_vm::WaitKind::Ne => "ne",
+                simantics::hit_vm::WaitKind::Gt => "gt",
+                simantics::hit_vm::WaitKind::Lt => "lt",
+                simantics::hit_vm::WaitKind::Ge => "ge",
+                simantics::hit_vm::WaitKind::Le => "le",
+            };
+            Reflect::set(&obj, &JsValue::from_str("waitKind"), &JsValue::from_str(kind_s))
+                .map_err(|_| JsError::new("set waitKind"))?;
+            set_f64(&obj, "var1", f64::from(*var1))?;
+            set_f64(&obj, "var2", f64::from(*var2))?;
+        }
+        HitEffect::SetLowLow { dest_var, value } => {
+            set_kind("SetLowLow")?;
+            set_f64(&obj, "destVar", f64::from(*dest_var))?;
+            set_f64(&obj, "value", f64::from(*value))?;
+        }
+        HitEffect::SetLowTime { dest_var, value } => {
+            set_kind("SetLowTime")?;
+            set_f64(&obj, "destVar", f64::from(*dest_var))?;
+            set_f64(&obj, "value", f64::from(*value))?;
+        }
+        HitEffect::End => { set_kind("End")?; }
+        HitEffect::Return => { set_kind("Return")?; }
+    }
+    Ok(obj.into())
+}
