@@ -84,7 +84,7 @@ function mountCameraControls(): void {
   help.style.cssText =
     "position:fixed;top:46px;right:8px;background:rgba(0,0,0,.55);padding:4px 8px;border-radius:4px;font:11px/1.4 ui-monospace,monospace;color:#9ad;max-width:220px;text-align:right;";
   help.innerHTML =
-    "click an object: pie menu<br/>click empty tile: place viewer obj<br/>shift+click: remove<br/>Q/E rotate · +/- zoom";
+    "click object: pie menu<br/>click empty tile: place viewer obj<br/>right-click: rotate object<br/>shift+click: remove<br/>Q/E rotate camera · +/- zoom";
   document.body.appendChild(help);
   updateCameraButtonHighlights();
 }
@@ -761,6 +761,27 @@ function onLotCanvasClick(ev: MouseEvent): void {
 
 canvas.addEventListener("click", onLotCanvasClick);
 
+// Right-click on a placed instance cycles through the 4 DGRP directions so
+// the user can re-orient an object after it's been placed. The browser's own
+// context menu is suppressed only when the right-click hits an instance.
+canvas.addEventListener("contextmenu", (ev) => {
+  const rect = canvas.getBoundingClientRect();
+  const cx = (ev.clientX - rect.left) * (canvas.width / rect.width);
+  const cy = (ev.clientY - rect.top) * (canvas.height / rect.height);
+  const inst = pickInstance(cx, cy);
+  if (!inst) return;
+  ev.preventDefault();
+  rotateInstance(inst);
+});
+
+const DIRECTION_CYCLE = [0x10, 0x40, 0x01, 0x04] as const;
+function rotateInstance(inst: LotInstance): void {
+  const idx = DIRECTION_CYCLE.indexOf(inst.direction as (typeof DIRECTION_CYCLE)[number]);
+  inst.direction = DIRECTION_CYCLE[(idx + 1) % DIRECTION_CYCLE.length] ?? 0x10;
+  inst.decoded = null;
+  composeLotScene();
+}
+
 function removeFromLot(instanceId: number): void {
   const idx = lotInstances.findIndex((i) => i.id === instanceId);
   if (idx >= 0) {
@@ -933,9 +954,26 @@ function trimNullTerminated(bytes: Uint8Array): string {
 }
 
 function ttasLabelAt(entries: TtasEntry[], index: number, fallback: string): string {
-  const entry = entries[index];
-  if (!entry) return fallback;
-  const text = trimNullTerminated(entry.data).trim();
+  // STR# v-3 (kind="lang") interleaves the same labels in every language —
+  // pick the first language present and re-index within that group so the
+  // ttab index lines up with the right entry.
+  let target: TtasEntry | undefined;
+  if (entries.length > 0 && entries[0]?.kind === "lang") {
+    const firstLang = entries[0].langCode ?? 0;
+    let count = 0;
+    for (const e of entries) {
+      if (e.langCode !== firstLang) continue;
+      if (count === index) {
+        target = e;
+        break;
+      }
+      count++;
+    }
+  } else {
+    target = entries[index];
+  }
+  if (!target) return fallback;
+  const text = trimNullTerminated(target.data).trim();
   return text.length > 0 ? text : fallback;
 }
 
