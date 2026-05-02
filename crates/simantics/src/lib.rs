@@ -1115,6 +1115,215 @@ impl Hit {
     }
 }
 
+/// One disassembled HIT instruction.
+#[derive(Debug, Clone)]
+pub struct HitInstr {
+    /// Byte offset relative to the start of the code section.
+    pub address: u32,
+    pub opcode: u8,
+    pub mnemonic: &'static str,
+    /// Pretty-printed arguments (registers / immediates / addresses).
+    pub args: alloc::string::String,
+    /// Total length of this instruction in bytes (opcode + operands).
+    pub byte_len: usize,
+}
+
+impl Hit {
+    /// Linearly disassemble the bytecode after `TRAX`.
+    ///
+    /// Walks instruction-by-instruction using a fixed-length table for the ~60
+    /// known TS1/TSO opcodes. Unknown opcodes emit `db <hex>` and advance one
+    /// byte. The `jump` instruction (0x0D) uses Niotso's heuristic to pick
+    /// between the 1-byte variable form and the 4-byte absolute address form.
+    #[must_use]
+    pub fn disasm(&self) -> Vec<HitInstr> {
+        let mut out = Vec::new();
+        let mut cursor = 0usize;
+        while cursor < self.code.len() {
+            let opcode = self.code[cursor];
+            #[allow(clippy::cast_possible_truncation)]
+            let address = cursor as u32;
+            // Resolve the static (mnemonic, length) table; `jump` is special-cased.
+            let (mnemonic, len, args) = self.decode_hit_at(cursor);
+            out.push(HitInstr {
+                address,
+                opcode,
+                mnemonic,
+                args,
+                byte_len: len,
+            });
+            if len == 0 {
+                // Defensive: never advance zero. A zero would loop forever.
+                cursor += 1;
+            } else {
+                cursor += len;
+            }
+            // If the table lied about length (e.g. truncated last instruction),
+            // stop rather than read past the buffer.
+            if cursor > self.code.len() {
+                break;
+            }
+        }
+        out
+    }
+
+    #[allow(clippy::too_many_lines)]
+    fn decode_hit_at(&self, cursor: usize) -> (&'static str, usize, alloc::string::String) {
+        use alloc::format;
+        let code = &self.code;
+        let opcode = code[cursor];
+        let read_u8 = |offset: usize| -> Option<u8> { code.get(cursor + offset).copied() };
+        let read_u32 = |offset: usize| -> Option<u32> {
+            let bytes = code.get(cursor + offset..cursor + offset + 4)?;
+            Some(u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
+        };
+        let len_left = code.len() - cursor;
+        match opcode {
+            // 1-byte instructions (no operands).
+            0x08 => ("return", 1, alloc::string::String::new()),
+            0x0B => ("wait_samp", 1, alloc::string::String::new()),
+            0x0C => ("end", 1, alloc::string::String::new()),
+            0x0F => ("nop", 1, alloc::string::String::new()),
+            0x20 => ("loop", 1, alloc::string::String::new()),
+            0x21 => ("set_loop", 1, alloc::string::String::new()),
+            0x3A => ("test1", 1, alloc::string::String::new()),
+            0x3B => ("test2", 1, alloc::string::String::new()),
+            0x3C => ("test3", 1, alloc::string::String::new()),
+            0x3D => ("test4", 1, alloc::string::String::new()),
+            0x53 => ("duck", 1, alloc::string::String::new()),
+            0x54 => ("unduck", 1, alloc::string::String::new()),
+
+            // 2-byte: opcode + 1 var
+            0x02 => ("note_on", 2, fmt_one_var(read_u8(1))),
+            0x03 => ("note_off", 2, fmt_one_var(read_u8(1))),
+            0x09 => ("wait", 2, fmt_one_var(read_u8(1))),
+            0x0E => ("test", 2, fmt_one_var(read_u8(1))),
+            0x27 => ("smart_choose", 2, fmt_one_var(read_u8(1))),
+            0x32 => ("play_trk", 2, fmt_one_var(read_u8(1))),
+            0x33 => ("kill_trk", 2, fmt_one_var(read_u8(1))),
+            0x44 => ("smart_setlist", 2, fmt_one_var(read_u8(1))),
+            0x45 => ("seqgroup_kill", 2, fmt_one_var(read_u8(1))),
+            0x47 => ("seqgroup_return", 2, fmt_one_var(read_u8(1))),
+            0x5A => ("stop_trk", 2, fmt_one_var(read_u8(1))),
+            0x60 => ("note_on_loop", 2, fmt_one_var(read_u8(1))),
+
+            // 3-byte: opcode + 1 var + 1 immediate u8
+            0x04 => ("loadb", 3, format!(
+                "{} #{}", fmt_var(read_u8(1)), read_u8(2).map_or(0, u8::from)
+            )),
+            // 3-byte: opcode + 2 vars
+            0x06 => ("set", 3, fmt_two_vars(read_u8(1), read_u8(2))),
+            0x10 => ("add", 3, fmt_two_vars(read_u8(1), read_u8(2))),
+            0x11 => ("sub", 3, fmt_two_vars(read_u8(1), read_u8(2))),
+            0x12 => ("div", 3, fmt_two_vars(read_u8(1), read_u8(2))),
+            0x13 => ("mul", 3, fmt_two_vars(read_u8(1), read_u8(2))),
+            0x14 => ("cmp", 3, fmt_two_vars(read_u8(1), read_u8(2))),
+            0x49 => ("seqgroup_trkid", 3, format!(
+                "#{} #{}",
+                read_u8(1).map_or(0, u8::from),
+                read_u8(2).map_or(0, u8::from)
+            )),
+            0x4A => ("setll", 3, fmt_two_vars(read_u8(1), read_u8(2))),
+            0x4B => ("setlt", 3, fmt_two_vars(read_u8(1), read_u8(2))),
+            0x4D => ("waiteq", 3, fmt_two_vars(read_u8(1), read_u8(2))),
+            0x4E => ("waitne", 3, fmt_two_vars(read_u8(1), read_u8(2))),
+            0x4F => ("waitgt", 3, fmt_two_vars(read_u8(1), read_u8(2))),
+            0x50 => ("waitlt", 3, fmt_two_vars(read_u8(1), read_u8(2))),
+            0x51 => ("waitge", 3, fmt_two_vars(read_u8(1), read_u8(2))),
+            0x52 => ("waitle", 3, fmt_two_vars(read_u8(1), read_u8(2))),
+            0x5F => ("smart_index", 3, fmt_two_vars(read_u8(1), read_u8(2))),
+
+            // 4-byte: opcode + 3 vars
+            0x18 => ("rand", 4, format!(
+                "{} {} {}",
+                fmt_var(read_u8(1)), fmt_var(read_u8(2)), fmt_var(read_u8(3))
+            )),
+            0x48 => ("getsrcdatafield", 4, format!(
+                "{} {} {}",
+                fmt_var(read_u8(1)), fmt_var(read_u8(2)), fmt_var(read_u8(3))
+            )),
+            0x55 => ("testx", 4, format!(
+                "{} {} {}",
+                fmt_var(read_u8(1)), fmt_var(read_u8(2)), fmt_var(read_u8(3))
+            )),
+            0x59 => ("setsrcdatafield", 4, format!(
+                "{} {} {}",
+                fmt_var(read_u8(1)), fmt_var(read_u8(2)), fmt_var(read_u8(3))
+            )),
+
+            // 5-byte: opcode + 4-byte u32 (immediate or address)
+            0x07 => ("call", 5, format!("#0x{:x}", read_u32(1).unwrap_or(0))),
+            0x0A => ("callentrypoint", 5, format!("#0x{:x}", read_u32(1).unwrap_or(0))),
+            0x3E => ("ifeq", 5, format!("#0x{:x}", read_u32(1).unwrap_or(0))),
+            0x3F => ("ifne", 5, format!("#0x{:x}", read_u32(1).unwrap_or(0))),
+            0x40 => ("ifgt", 5, format!("#0x{:x}", read_u32(1).unwrap_or(0))),
+            0x41 => ("iflt", 5, format!("#0x{:x}", read_u32(1).unwrap_or(0))),
+            0x42 => ("ifge", 5, format!("#0x{:x}", read_u32(1).unwrap_or(0))),
+            0x43 => ("ifle", 5, format!("#0x{:x}", read_u32(1).unwrap_or(0))),
+
+            // 6-byte: opcode + 1 var + 4-byte u32
+            0x05 => ("loadl", 6, format!(
+                "{} #0x{:x}", fmt_var(read_u8(1)), read_u32(2).unwrap_or(0)
+            )),
+            0x2D => ("max", 6, format!(
+                "{} #{}", fmt_var(read_u8(1)), read_u32(2).unwrap_or(0)
+            )),
+            0x2E => ("min", 6, format!(
+                "{} #{}", fmt_var(read_u8(1)), read_u32(2).unwrap_or(0)
+            )),
+            0x56 => ("setlg", 6, format!(
+                "{} #0x{:x}", fmt_var(read_u8(1)), read_u32(2).unwrap_or(0)
+            )),
+            0x57 => ("setgl", 6, format!(
+                "{} #0x{:x}", fmt_var(read_u8(1)), read_u32(2).unwrap_or(0)
+            )),
+
+            // jump (0x0D): use Niotso's heuristic — 5 bytes for 4-byte address
+            // (when it's a valid offset within the code), else 2 bytes for variable.
+            0x0D => {
+                if len_left >= 5 {
+                    let candidate = read_u32(1).unwrap_or(0);
+                    let is_address = candidate >= 16
+                        && (candidate as usize) < self.code.len() + 16;
+                    if is_address {
+                        return ("jump", 5, format!("#0x{candidate:x}"));
+                    }
+                }
+                if len_left >= 2 {
+                    ("jump", 2, fmt_one_var(read_u8(1)))
+                } else {
+                    ("jump", 1, alloc::string::String::new())
+                }
+            }
+
+            // Unknown opcode — emit as a single .db pseudo-op so disasm continues.
+            _ => ("db", 1, format!("0x{opcode:02x}")),
+        }
+    }
+}
+
+/// Format a HIT variable byte. Track variables only — globals (>=0x64) and
+/// object variables (>=0x2000) need a 4-byte form which is opcode-specific.
+fn fmt_var(byte: Option<u8>) -> alloc::string::String {
+    use alloc::format;
+    let Some(b) = byte else { return alloc::string::String::from("?") };
+    match b {
+        0x0..=0x4 => format!("arg{b}"),
+        0x5..=0xC => format!("v{}", b - 0x4),
+        0xD..=0x10 => format!("h{}", b - 0xC),
+        _ => format!("var{b:#x}"),
+    }
+}
+
+fn fmt_one_var(byte: Option<u8>) -> alloc::string::String {
+    fmt_var(byte)
+}
+
+fn fmt_two_vars(a: Option<u8>, b: Option<u8>) -> alloc::string::String {
+    use alloc::format;
+    format!("{} {}", fmt_var(a), fmt_var(b))
+}
+
 fn find_marker(data: &[u8], needle: [u8; 4]) -> Option<usize> {
     if data.len() < 4 {
         return None;
@@ -1723,6 +1932,34 @@ mod tests {
             Hit::parse(&buf),
             Err(SimAnticsError::HitUnsupportedVersion { major: 2, minor: 0 })
         ));
+    }
+
+    #[test]
+    fn hit_disasm_walks_all_known_opcodes() {
+        let mut buf = Vec::new();
+        buf.extend_from_slice(b"HIT!");
+        buf.extend_from_slice(&1u32.to_le_bytes());
+        buf.extend_from_slice(&8u32.to_le_bytes());
+        buf.extend_from_slice(b"TRAX");
+        // loadl v1 #0xDEADBEEF (1+1+4 = 6 bytes)
+        buf.extend_from_slice(&[0x05, 0x05]);
+        buf.extend_from_slice(&0xDEAD_BEEFu32.to_le_bytes());
+        // play_trk v1 (2 bytes)
+        buf.extend_from_slice(&[0x32, 0x05]);
+        // wait v1 (2 bytes)
+        buf.extend_from_slice(&[0x09, 0x05]);
+        // end (1 byte)
+        buf.extend_from_slice(&[0x0c]);
+        let hit = Hit::parse(&buf).unwrap();
+        let instrs = hit.disasm();
+        assert_eq!(instrs.len(), 4);
+        assert_eq!(instrs[0].mnemonic, "loadl");
+        assert_eq!(instrs[0].args, "v1 #0xdeadbeef");
+        assert_eq!(instrs[0].byte_len, 6);
+        assert_eq!(instrs[1].mnemonic, "play_trk");
+        assert_eq!(instrs[1].args, "v1");
+        assert_eq!(instrs[2].mnemonic, "wait");
+        assert_eq!(instrs[3].mnemonic, "end");
     }
 
     #[test]

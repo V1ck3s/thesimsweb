@@ -557,6 +557,32 @@ pub fn parse_hit(data: &[u8]) -> Result<Object, JsError> {
     Ok(obj)
 }
 
+/// Disassemble a HIT bytecode file linearly. Returns
+/// `Array<{address, opcode, mnemonic, args, byteLen}>`. Unknown opcodes appear
+/// as `mnemonic="db"` with the byte in `args`.
+///
+/// # Errors
+/// Same conditions as `parseHit`.
+#[wasm_bindgen(js_name = disasmHit)]
+pub fn disasm_hit(data: &[u8]) -> Result<Array, JsError> {
+    let hit = simantics::Hit::parse(data).map_err(|e| JsError::new(&e.to_string()))?;
+    let array = Array::new();
+    for instr in &hit.disasm() {
+        let obj = Object::new();
+        set_f64(&obj, "address", f64::from(instr.address))?;
+        set_f64(&obj, "opcode", f64::from(instr.opcode))?;
+        Reflect::set(&obj, &JsValue::from_str("mnemonic"), &JsValue::from_str(instr.mnemonic))
+            .map_err(|_| JsError::new("set mnemonic"))?;
+        Reflect::set(&obj, &JsValue::from_str("args"), &JsValue::from_str(&instr.args))
+            .map_err(|_| JsError::new("set args"))?;
+        #[allow(clippy::cast_precision_loss)]
+        let byte_len_f = instr.byte_len as f64;
+        set_f64(&obj, "byteLen", byte_len_f)?;
+        array.push(&obj);
+    }
+    Ok(array)
+}
+
 fn set_f64(obj: &Object, key: &str, value: f64) -> Result<(), JsError> {
     Reflect::set(obj, &JsValue::from_str(key), &JsValue::from_f64(value))
         .map_err(|_| JsError::new("set"))?;
