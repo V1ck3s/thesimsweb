@@ -845,6 +845,47 @@ async function runMain(globalsFarPath: string | null): Promise<void> {
   }
 }
 
+/** Fetch and disassemble simssound.HIT into the side panel. */
+async function tryDisasmHit(
+  wasm: Awaited<ReturnType<typeof engine>>,
+  manifest: Awaited<ReturnType<typeof fetchManifest>>,
+): Promise<void> {
+  const hitFile = manifest.files.find((f) =>
+    f.path.toLowerCase().endsWith("sounddata/simssound.hit"),
+  );
+  const target = document.getElementById("hit-output");
+  if (!target) return;
+  if (!hitFile) {
+    target.textContent = "(simssound.HIT not in manifest)";
+    return;
+  }
+  try {
+    const res = await fetch(`/assets/${hitFile.path}`);
+    if (!res.ok) {
+      target.textContent = `fetch failed: ${res.status}`;
+      return;
+    }
+    const data = new Uint8Array(await res.arrayBuffer());
+    const meta = wasm.parseHit(data) as { major: number; minor: number; codeLen: number };
+    const instrs = wasm.disasmHit(data) as Array<{
+      address: number;
+      opcode: number;
+      mnemonic: string;
+      args: string;
+      byteLen: number;
+    }>;
+    const lines: string[] = [];
+    lines.push(`HIT v${meta.major}.${meta.minor} · ${meta.codeLen}B code · ${instrs.length} instr`);
+    for (const ins of instrs) {
+      const addr = ins.address.toString(16).padStart(4, "0");
+      lines.push(`  ${addr}: ${ins.mnemonic.padEnd(15)} ${ins.args}`);
+    }
+    target.textContent = lines.join("\n");
+  } catch (err) {
+    target.textContent = `disasm failed: ${(err as Error).message}`;
+  }
+}
+
 /**
  * Initial viewer bootstrap: AlarmClock at south/zoom-3/base-graphic, plus catalog dropdown.
  * Returns a one-line summary for the HUD.
@@ -861,6 +902,7 @@ async function tryRenderAlarmClockObject(
   viewerState.wasm = wasm;
   mountStaticControls();
   void mountObjectSelector(wasm, objectsFar.path);
+  void tryDisasmHit(wasm, manifest);
   await loadObjectByName(wasm, objectsFar.path, "AlarmClock.iff");
   const globalsFarPath = globalsFar ? globalsFar.path : null;
   const runBtn = document.getElementById("run-main-btn");
