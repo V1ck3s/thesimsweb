@@ -534,12 +534,15 @@ fn set_f64(obj: &Object, key: &str, value: f64) -> Result<(), JsError> {
     Ok(())
 }
 
-/// Run a single `OBJf` event handler through the `SimAntics` VM.
+/// Run an `OBJf` event handler through the `SimAntics` VM.
 ///
 /// Mirrors `crates/simantics/examples/run_object.rs`: parses both IFFs, builds a
 /// `LayeredBhavSource` (object IFF → private, globals IFF → semi-global), parses
-/// the `OBJf` table, looks up the requested event, and ticks once. Returns
-/// `{ outcome, actionId, exec, trace: [...], effects: [...] }`. Effects are
+/// the `OBJf` table, looks up the requested event, pushes the action onto the
+/// interaction queue, and ticks. With `max_ticks=1` only the user's action runs
+/// (single tick); with `max_ticks>1` the scheduler keeps draining until the
+/// queue is empty or the cap is hit (run-until-idle). Returns
+/// `{ outcome, actionId, exec, ticksRan, trace, effects }`. Effects are
 /// returned as their `Debug` representation to keep the binding compact.
 ///
 /// `globals_iff` may be empty (`new Uint8Array()`); semi-global sub-calls then
@@ -548,8 +551,14 @@ fn set_f64(obj: &Object, key: &str, value: f64) -> Result<(), JsError> {
 /// # Errors
 /// Returns a `JsError` if either IFF is malformed, `OBJf` is missing, the event
 /// has no handler, or the VM step-budget is exhausted.
+#[allow(clippy::too_many_lines)]
 #[wasm_bindgen(js_name = runObjectEvent)]
-pub fn run_object_event(object_iff: &[u8], globals_iff: &[u8], event: u32) -> Result<Object, JsError> {
+pub fn run_object_event(
+    object_iff: &[u8],
+    globals_iff: &[u8],
+    event: u32,
+    max_ticks: u32,
+) -> Result<Object, JsError> {
     let object_parsed = iff::Iff::parse(object_iff).map_err(|e| JsError::new(&e.to_string()))?;
     let mut source = simantics::vm::LayeredBhavSource::default();
     for chunk in object_parsed.chunks() {
@@ -593,10 +602,22 @@ pub fn run_object_event(object_iff: &[u8], globals_iff: &[u8], event: u32) -> Re
             i32::from(entry.condition)
         },
     });
-    let outcome = vm.tick().map_err(|e| JsError::new(&e.to_string()))?;
+    // Tick once for the headline outcome (action_id, exec). If max_ticks > 1, drain
+    // the rest of the queue via run_until_idle.
+    let first = vm.tick().map_err(|e| JsError::new(&e.to_string()))?;
+    let mut ticks_ran: u32 = match &first {
+        simantics::vm::TickOutcome::Idle => 0,
+        _ => 1,
+    };
+    if max_ticks > 1 {
+        let extra = vm
+            .run_until_idle((max_ticks - 1) as usize)
+            .map_err(|e| JsError::new(&e.to_string()))?;
+        ticks_ran += u32::try_from(extra).unwrap_or(u32::MAX);
+    }
 
     let result = Object::new();
-    let (outcome_str, action_id, exec_str) = match &outcome {
+    let (outcome_str, action_id, exec_str) = match &first {
         simantics::vm::TickOutcome::Idle => ("idle", 0u16, String::new()),
         simantics::vm::TickOutcome::Skipped(p) => ("skipped", p.action_function, String::new()),
         simantics::vm::TickOutcome::Ran(p, exec) => {
@@ -614,6 +635,7 @@ pub fn run_object_event(object_iff: &[u8], globals_iff: &[u8], event: u32) -> Re
     set_f64(&result, "actionId", f64::from(action_id))?;
     Reflect::set(&result, &JsValue::from_str("exec"), &JsValue::from_str(&exec_str))
         .map_err(|_| JsError::new("set exec"))?;
+    set_f64(&result, "ticksRan", f64::from(ticks_ran))?;
 
     let trace = Array::new();
     for entry in &vm.trace {

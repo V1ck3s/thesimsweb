@@ -220,6 +220,7 @@ interface RunOutput {
   outcome: string;
   actionId: number;
   exec: string;
+  ticksRan: number;
   trace: Array<{ depth: number; bhavId: number; ip: number; opcode: number; branch: string }>;
   effects: string[];
 }
@@ -579,6 +580,11 @@ async function runMain(globalsFarPath: string | null): Promise<void> {
       ? Number(eventSelect.value)
       : 1;
   const eventName = EVENT_NAMES[eventIdx] ?? `Event ${eventIdx}`;
+  const maxTicksInput = document.getElementById("max-ticks");
+  const maxTicks =
+    maxTicksInput instanceof HTMLInputElement
+      ? Math.max(1, Math.min(1000, Number(maxTicksInput.value) || 1))
+      : 1;
   setRunOutput("running…");
   let globalsBytes: Uint8Array = new Uint8Array(0);
   // When the object has no GLOB chunk, the engine falls back to `Global.iff` itself
@@ -589,10 +595,10 @@ async function runMain(globalsFarPath: string | null): Promise<void> {
     if (loaded) globalsBytes = loaded;
   }
   try {
-    const out = wasm.runObjectEvent(obj.data, globalsBytes, eventIdx) as RunOutput;
+    const out = wasm.runObjectEvent(obj.data, globalsBytes, eventIdx, maxTicks) as RunOutput;
     const lines: string[] = [];
     lines.push(
-      `event=${eventIdx} (${eventName}) action=0x${out.actionId.toString(16).padStart(4, "0")} outcome=${out.outcome}${out.exec ? ` (${out.exec})` : ""}`,
+      `event=${eventIdx} (${eventName}) action=0x${out.actionId.toString(16).padStart(4, "0")} outcome=${out.outcome}${out.exec ? ` (${out.exec})` : ""} · ticks=${out.ticksRan}/${maxTicks}`,
     );
     if (obj.semiGlobalName) lines.push(`semi-global: ${obj.semiGlobalName} (${globalsBytes.length}B)`);
     lines.push(`trace (${out.trace.length} steps):`);
