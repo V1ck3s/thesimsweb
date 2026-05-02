@@ -78,6 +78,35 @@ export function projectTileToScreen(
   return projectTile(x, y, cam, canvas);
 }
 
+/** Inverse of {@link projectTileToScreen}: given a canvas pixel, return the
+ *  (worldX, worldY) tile that contains it (rounded to integers). Returns
+ *  fractional values too via `fx`/`fy` if the caller needs sub-tile precision.
+ */
+export function screenToTile(
+  canvasX: number,
+  canvasY: number,
+  cam: IsoCamera,
+  canvas: HTMLCanvasElement,
+): { worldX: number; worldY: number; fx: number; fy: number } {
+  const tw = cam.tileWidth;
+  const dx = canvasX - canvas.width / 2;
+  const dy = canvasY - canvas.height / 2;
+  // From forward projection: dx = (lx - ly) * tw/2, dy = (lx + ly) * tw/4.
+  let localX = dx / tw + (2 * dy) / tw;
+  let localY = -dx / tw + (2 * dy) / tw;
+  // Unrotate (the forward applies rotation in tile-space *before* projection,
+  // so the inverse undoes it after the inverse projection).
+  switch (cam.rotation ?? 0) {
+    case 1: { const t = localX; localX = localY; localY = -t; break; }
+    case 2: localX = -localX; localY = -localY; break;
+    case 3: { const t = localX; localX = -localY; localY = t; break; }
+    default: break;
+  }
+  const fx = localX + cam.centerX;
+  const fy = localY + cam.centerY;
+  return { worldX: Math.round(fx), worldY: Math.round(fy), fx, fy };
+}
+
 function projectTile(
   x: number,
   y: number,

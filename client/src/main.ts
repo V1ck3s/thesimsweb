@@ -1,6 +1,6 @@
 import { engine } from "./engine/wasm.js";
 import { fetchManifest, readFarManifest, readIffFromFar, readStandaloneIff } from "./engine/assets.js";
-import { renderIso, projectTileToScreen, type IsoScene, type IsoSceneSprite } from "./renderer/iso.js";
+import { renderIso, projectTileToScreen, screenToTile, type IsoScene, type IsoSceneSprite } from "./renderer/iso.js";
 
 function findCanvas(): HTMLCanvasElement {
   const el = document.getElementById("game");
@@ -59,6 +59,8 @@ function mountCameraControls(): void {
     <button data-cam-zoom="0">far</button>
     <button data-cam-zoom="1">mid</button>
     <button data-cam-zoom="2">near</button>
+    <span style="opacity:.5;">·</span>
+    <button data-cam-action="reset" title="Clear all placed objects">reset lot</button>
   `;
   document.body.appendChild(bar);
   bar.addEventListener("click", (ev) => {
@@ -69,7 +71,17 @@ function mountCameraControls(): void {
     else if (cam === "rot-r") rotateCamera(1);
     const zoomStr = t.dataset["camZoom"];
     if (zoomStr !== undefined) setCameraZoom(parseInt(zoomStr, 10));
+    const action = t.dataset["camAction"];
+    if (action === "reset") clearLot();
   });
+  // Help blurb directly under the camera bar.
+  const help = document.createElement("div");
+  help.id = "lot-help";
+  help.style.cssText =
+    "position:fixed;top:46px;right:8px;background:rgba(0,0,0,.55);padding:4px 8px;border-radius:4px;font:11px/1.4 ui-monospace,monospace;color:#9ad;max-width:220px;text-align:right;";
+  help.innerHTML =
+    "click an object: pie menu<br/>click empty tile: place viewer obj<br/>shift+click: remove<br/>Q/E rotate · +/- zoom";
+  document.body.appendChild(help);
   updateCameraButtonHighlights();
 }
 
@@ -705,11 +717,62 @@ function onLotCanvasClick(ev: MouseEvent): void {
   const cx = (ev.clientX - rect.left) * (canvas.width / rect.width);
   const cy = (ev.clientY - rect.top) * (canvas.height / rect.height);
   const inst = pickInstance(cx, cy);
-  selectedInstanceId = inst?.id ?? null;
-  onLotInstanceSelected(inst, cx, cy);
+  if (inst) {
+    if (ev.shiftKey) {
+      // Shift-click on an existing instance removes it from the lot.
+      removeFromLot(inst.id);
+      return;
+    }
+    selectedInstanceId = inst.id;
+    onLotInstanceSelected(inst, cx, cy);
+    return;
+  }
+  // Empty tile: place the viewer's currently-selected object there. This is
+  // the smallest possible Build mode — pick something in the side panel, then
+  // click on the lot to drop it.
+  const tile = screenToTile(cx, cy, lotScene.camera, canvas);
+  if (
+    tile.worldX < 0 ||
+    tile.worldY < 0 ||
+    tile.worldX >= lotScene.gridSize ||
+    tile.worldY >= lotScene.gridSize
+  ) {
+    closeInteractionMenuImpl();
+    return;
+  }
+  const obj = viewerState.current;
+  if (!obj) {
+    closeInteractionMenuImpl();
+    return;
+  }
+  // Don't stack two instances on the same tile (would just hide the previous).
+  if (lotInstances.some((i) => i.worldX === tile.worldX && i.worldY === tile.worldY)) {
+    closeInteractionMenuImpl();
+    return;
+  }
+  placeOnLot(obj, tile.worldX, tile.worldY, viewerState.direction, viewerState.zoom);
+  composeLotScene();
+  closeInteractionMenuImpl();
 }
 
 canvas.addEventListener("click", onLotCanvasClick);
+
+function removeFromLot(instanceId: number): void {
+  const idx = lotInstances.findIndex((i) => i.id === instanceId);
+  if (idx >= 0) {
+    lotInstances.splice(idx, 1);
+    if (selectedInstanceId === instanceId) selectedInstanceId = null;
+    composeLotScene();
+    closeInteractionMenuImpl();
+  }
+}
+
+function clearLot(): void {
+  lotInstances.length = 0;
+  selectedInstanceId = null;
+  composeLotScene();
+  closeInteractionMenuImpl();
+}
 
 /** Hook for the pie-menu task: shows the interactions of the selected instance. */
 function onLotInstanceSelected(inst: LotInstance | null, cx: number, cy: number): void {
