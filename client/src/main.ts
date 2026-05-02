@@ -544,21 +544,9 @@ async function enrichDropdownLabels(
   select: HTMLSelectElement,
 ): Promise<void> {
   let cursor = 0;
-  const total = names.length;
   let done = 0;
-  const tick = (): void => {
-    done += 1;
-    if (done === total || done % 10 === 0) {
-      const obj = viewerState.current;
-      if (obj && document.getElementById("object-label")?.textContent?.includes("·")) {
-        // Append a discreet progress hint to the existing label.
-        const baseLabel = document.getElementById("object-label")?.textContent ?? "";
-        const cleaned = baseLabel.replace(/ \[\d+\/\d+\]$/u, "");
-        if (done < total) setObjectLabel(`${cleaned} [${done}/${total}]`);
-        else setObjectLabel(cleaned);
-      }
-    }
-  };
+  const total = names.length;
+  const start = performance.now();
   const worker = async (): Promise<void> => {
     while (cursor < names.length) {
       const i = cursor;
@@ -575,11 +563,14 @@ async function enrichDropdownLabels(
       } catch {
         // Leave the humanized fallback in place.
       }
-      tick();
+      done += 1;
     }
   };
   const workers = Array.from({ length: OBJD_LABEL_CONCURRENCY }, worker);
   await Promise.allSettled(workers);
+  console.info(
+    `[viewer] dropdown labels enriched: ${done}/${total} in ${Math.round(performance.now() - start)}ms`,
+  );
 }
 
 async function loadObjectByName(
@@ -651,6 +642,52 @@ function setRunOutput(text: string): void {
 
 function setDisasmOutput(text: string): void {
   if (DISASM_OUTPUT_EL) DISASM_OUTPUT_EL.textContent = text;
+}
+
+/** Render disasm with anchor-id'd lines so t/f dest clicks scroll to the target. */
+function setDisasmStructured(headerLine: string, instrs: DisasmLine[]): void {
+  if (!DISASM_OUTPUT_EL) return;
+  DISASM_OUTPUT_EL.innerHTML = "";
+  const headerEl = document.createElement("div");
+  headerEl.textContent = headerLine;
+  DISASM_OUTPUT_EL.appendChild(headerEl);
+  for (const line of instrs) {
+    const lineEl = document.createElement("div");
+    lineEl.id = `bhav-ip-${line.ip}`;
+    lineEl.style.cssText = "scroll-margin-top:4px;";
+    const prefix = document.createElement("span");
+    prefix.textContent = `  ${String(line.ip).padStart(2)}: ${line.opLabel}${line.operandPart}  `;
+    lineEl.appendChild(prefix);
+    lineEl.appendChild(makeDestSpan("t", line.tDest));
+    lineEl.appendChild(document.createTextNode(" "));
+    lineEl.appendChild(makeDestSpan("f", line.fDest));
+    DISASM_OUTPUT_EL.appendChild(lineEl);
+  }
+}
+
+interface DisasmLine {
+  ip: number;
+  opLabel: string;
+  operandPart: string;
+  tDest: number;
+  fDest: number;
+}
+
+function makeDestSpan(kind: "t" | "f", dest: number): HTMLElement {
+  const span = document.createElement("span");
+  span.textContent = `${kind}=${formatDest(dest)}`;
+  if (dest < 0xfd) {
+    span.style.cssText = "color:#7df;cursor:pointer;text-decoration:underline dotted;";
+    span.addEventListener("click", () => {
+      const target = document.getElementById(`bhav-ip-${dest}`);
+      if (target) target.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    });
+  } else {
+    // ret_true / ret_false / ret_error — color them differently, no jump.
+    span.style.cssText =
+      dest === 0xff ? "color:#9f8;" : dest === 0xfe ? "color:#fb8;" : "color:#f88;";
+  }
+  return span;
 }
 
 interface BhavInstruction {
@@ -729,22 +766,17 @@ async function refreshDisasmForCurrentEvent(globalsFarPath: string | null): Prom
     setDisasmOutput(`BHAV 0x${actionId.toString(16).padStart(4, "0")}: not found`);
     return;
   }
-  const lines: string[] = [];
-  lines.push(
-    `BHAV 0x${actionId.toString(16).padStart(4, "0")} (${source}) · ${bhav.instructions.length} instr · args=${bhav.args} locals=${bhav.locals}`,
-  );
-  bhav.instructions.forEach((ins, ip) => {
+  const header = `BHAV 0x${actionId.toString(16).padStart(4, "0")} (${source}) · ${bhav.instructions.length} instr · args=${bhav.args} locals=${bhav.locals}`;
+  const lines: DisasmLine[] = bhav.instructions.map((ins, ip) => {
     const opLabel =
       ins.opcode < 256
         ? ((wasm.primitiveName(ins.opcode) as string | null) ?? `prim ${ins.opcode}`)
         : `call 0x${ins.opcode.toString(16).padStart(4, "0")}`;
     const decoded = wasm.formatPrimitiveOperand(ins.opcode, ins.operand) as string | null;
     const operandPart = decoded ? `  ${decoded}` : "";
-    lines.push(
-      `  ${String(ip).padStart(2)}: ${opLabel}${operandPart}  t=${formatDest(ins.tDest)} f=${formatDest(ins.fDest)}`,
-    );
+    return { ip, opLabel, operandPart, tDest: ins.tDest, fDest: ins.fDest };
   });
-  setDisasmOutput(lines.join("\n"));
+  setDisasmStructured(header, lines);
 }
 
 function formatTraceEntry(
