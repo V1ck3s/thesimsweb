@@ -144,14 +144,18 @@ impl HotFile {
     /// Resolve an event name to (event_kind, track_id, entry_address).
     ///
     /// Returns `None` if the event is unknown or the track has no entry address
-    /// in `track_data`.
+    /// in `track_data`. The patch is resolved either as a plain integer id or
+    /// (more commonly in TS1) as the symbolic `@PchXxx` form, in which case we
+    /// scan `patches` by name.
     #[must_use]
     pub fn resolve_event(&self, event_name: &str) -> Option<ResolvedEvent> {
         let mapping = self.event_mapping.get(event_name)?;
-        let entry_address = self.track_data.get(&mapping.track_id).copied()?;
+        let entry_address = self.track_data.get(&mapping.track_id).copied().unwrap_or(0);
         let track = self.tracks.get(&mapping.track_id);
-        let patch_id = track.and_then(|t| parse_int_u32(&t.patch_id));
-        let patch = patch_id.and_then(|p| self.patches.get(&p));
+        let patch = track.and_then(|t| self.lookup_patch(&t.patch_id));
+        // The entry_address may legitimately be 0 (event_mapping points at a
+        // track that has no HIT subroutine) or missing — we still surface what
+        // we have so the UI can fall back to the patch path directly.
         Some(ResolvedEvent {
             event_kind: mapping.event_kind,
             track_id: mapping.track_id,
@@ -159,6 +163,23 @@ impl HotFile {
             patch_path: patch.map(|p| p.sound_path.clone()),
             patch_name: patch.map(|p| p.name.clone()),
         })
+    }
+
+    /// Look up a patch by its `[Track]`-side reference, which is one of:
+    ///   - decimal/hex integer (matches `Patch.id`),
+    ///   - `@PchXxx` (matches `Patch.name`, leading `@` optional),
+    ///   - `0` / empty / absent → no patch.
+    #[must_use]
+    pub fn lookup_patch(&self, patch_ref: &str) -> Option<&Patch> {
+        let s = patch_ref.trim();
+        if s.is_empty() || s == "0" {
+            return None;
+        }
+        if let Some(id) = parse_int_u32(s) {
+            return self.patches.get(&id);
+        }
+        let name = s.strip_prefix('@').unwrap_or(s);
+        self.patches.values().find(|p| p.name == name)
     }
 }
 
@@ -343,16 +364,14 @@ LoadPriority=1
     #[test]
     fn hot_resolve_event_full_chain() {
         let mut hot = HotFile::parse(SAMPLE);
-        // Sample has track 60 referenced by event but no [TrackData] entry —
-        // resolution should fail until we add one.
-        assert!(hot.resolve_event("dishw_sclose").is_none());
+        // Sample has track 60 referenced by event but no [TrackData] entry yet —
+        // resolution still succeeds but entry_address is 0.
+        let r0 = hot.resolve_event("dishw_sclose").unwrap();
+        assert_eq!(r0.entry_address, 0);
+        // Sample stores the patch_id as `@PchDishwasherClose` (HSM symbol). The
+        // resolver looks the patch up by name when the field isn't a number.
+        assert_eq!(r0.patch_name.as_deref(), Some("PchDishwasherClose"));
         hot.track_data.insert(60, 0x100);
-        // Patch by name lookup needs the patch_id field on Track to be a
-        // numeric ID. Sample has `@PchDishwasherClose` (a HSM symbol) — for
-        // resolve() we need the patch ID, so simulate the resolver with a
-        // numeric ID:
-        hot.tracks.get_mut(&60).unwrap().patch_id = "50".to_string();
-
         let r = hot.resolve_event("dishw_sclose").unwrap();
         assert_eq!(r.event_kind, 1);
         assert_eq!(r.track_id, 60);
@@ -362,6 +381,12 @@ LoadPriority=1
             r.patch_path.as_deref(),
             Some("SoundData\\Dishwasher\\DishW_sClose.xa")
         );
+    }
+
+    #[test]
+    fn hot_resolve_event_returns_none_for_unknown_name() {
+        let hot = HotFile::parse(SAMPLE);
+        assert!(hot.resolve_event("nope_not_an_event").is_none());
     }
 
     #[test]

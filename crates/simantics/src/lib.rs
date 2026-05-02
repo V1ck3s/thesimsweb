@@ -50,6 +50,8 @@ pub enum SimAnticsError {
     ObjfUnsupportedVersion(u32),
     #[error("GLOB chunk is empty")]
     GlobEmpty,
+    #[error("FWAV chunk is empty")]
+    FwavEmpty,
     #[error("DGRP version {0} is not supported (need 20003 or 20004)")]
     DgrpUnsupportedVersion(u16),
     #[error("HIT bad magic (want \"HIT!\")")]
@@ -903,6 +905,44 @@ impl Glob {
         };
         let semi_global_name = alloc::string::String::from_utf8_lossy(trimmed).into_owned();
         Ok(Self { semi_global_name })
+    }
+}
+
+// ---- FWAV ----
+
+/// `FWAV` (event name) chunk — a single null-terminated C string naming a
+/// track/event pair. The SimAntics primitive 23 ("Play Sound Event") reads its
+/// 8-byte operand, takes a 16-bit chunk ID, looks up the FWAV chunk with that
+/// ID inside the same IFF, and dispatches the resulting name through the HOT
+/// `EventMapping` table to the HIT VM.
+///
+/// In practice the entire payload is zero-padded up to ~80 bytes and the
+/// string lives at the tail; we tolerate either layout (leading or trailing
+/// nulls) by trimming both ends.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Fwav {
+    pub event_name: alloc::string::String,
+}
+
+impl Fwav {
+    /// Parse a `FWAV` chunk's data payload.
+    ///
+    /// # Errors
+    /// Returns `FwavEmpty` if the chunk holds no printable bytes.
+    pub fn parse(data: &[u8]) -> Result<Self, SimAnticsError> {
+        if data.is_empty() {
+            return Err(SimAnticsError::FwavEmpty);
+        }
+        // Strip leading and trailing zero bytes; the actual string is whatever
+        // printable run remains. Real chunks pad with NUL on the left.
+        let start = data.iter().position(|&b| b != 0).unwrap_or(data.len());
+        let tail = &data[start..];
+        let end = tail.iter().position(|&b| b == 0).unwrap_or(tail.len());
+        if end == 0 {
+            return Err(SimAnticsError::FwavEmpty);
+        }
+        let event_name = alloc::string::String::from_utf8_lossy(&tail[..end]).into_owned();
+        Ok(Self { event_name })
     }
 }
 
@@ -1846,6 +1886,30 @@ mod tests {
     #[test]
     fn glob_rejects_empty_chunk() {
         assert!(matches!(Glob::parse(&[]), Err(SimAnticsError::GlobEmpty)));
+    }
+
+    #[test]
+    fn fwav_pads_with_leading_nulls() {
+        // Real shape from Stereos2.iff: 80 bytes of 0x00 padding then the
+        // event name as a null-terminated C string.
+        let mut data = vec![0u8; 80];
+        data.extend_from_slice(b"stereo_classical_cheap\0");
+        let f = Fwav::parse(&data).unwrap();
+        assert_eq!(f.event_name, "stereo_classical_cheap");
+    }
+
+    #[test]
+    fn fwav_handles_inline_string() {
+        // Defensive: tolerate a chunk whose payload is just the C string.
+        let f = Fwav::parse(b"radio_off\0").unwrap();
+        assert_eq!(f.event_name, "radio_off");
+    }
+
+    #[test]
+    fn fwav_rejects_empty_chunks() {
+        assert!(matches!(Fwav::parse(&[]), Err(SimAnticsError::FwavEmpty)));
+        // All zero bytes — no string at all.
+        assert!(matches!(Fwav::parse(&[0u8; 16]), Err(SimAnticsError::FwavEmpty)));
     }
 
     #[test]

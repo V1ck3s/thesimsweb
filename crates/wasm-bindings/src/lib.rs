@@ -438,6 +438,56 @@ pub fn parse_glob(data: &[u8]) -> Result<Object, JsError> {
     Ok(obj)
 }
 
+/// Parse a single FWAV chunk payload (event-name C string with leading NUL pad).
+/// Returns `{ eventName: string }`.
+///
+/// # Errors
+/// Returns a `JsError` if the chunk is empty or holds no string.
+#[wasm_bindgen(js_name = parseFwav)]
+pub fn parse_fwav(data: &[u8]) -> Result<Object, JsError> {
+    let f = simantics::Fwav::parse(data).map_err(|e| JsError::new(&e.to_string()))?;
+    let obj = Object::new();
+    Reflect::set(
+        &obj,
+        &JsValue::from_str("eventName"),
+        &JsValue::from_str(&f.event_name),
+    )
+    .map_err(|_| JsError::new("set eventName"))?;
+    Ok(obj)
+}
+
+/// Walk an entire IFF and return every FWAV chunk it contains as `{ id, eventName }`
+/// objects. This is the primary lookup used by the SimAntics PlaySound primitive:
+/// the BHAV operand is a chunk id, which selects an entry from this map.
+///
+/// # Errors
+/// Returns a `JsError` if the buffer is not a valid IFF file.
+#[wasm_bindgen(js_name = extractFwavMap)]
+pub fn extract_fwav_map(data: &[u8]) -> Result<Array, JsError> {
+    let iff_file = iff::Iff::parse(data).map_err(|e| JsError::new(&e.to_string()))?;
+    let array = Array::new();
+    for chunk in iff_file.chunks() {
+        let chunk = chunk.map_err(|e| JsError::new(&e.to_string()))?;
+        if &chunk.kind != b"FWAV" {
+            continue;
+        }
+        let Ok(parsed) = simantics::Fwav::parse(chunk.data) else {
+            continue;
+        };
+        let obj = Object::new();
+        Reflect::set(&obj, &JsValue::from_str("id"), &JsValue::from_f64(f64::from(chunk.id)))
+            .map_err(|_| JsError::new("set id"))?;
+        Reflect::set(
+            &obj,
+            &JsValue::from_str("eventName"),
+            &JsValue::from_str(&parsed.event_name),
+        )
+        .map_err(|_| JsError::new("set eventName"))?;
+        array.push(&obj);
+    }
+    Ok(array)
+}
+
 /// Look up the human-readable name of a `SimAntics` primitive opcode.
 /// Returns `null` (an empty `JsValue`) for opcodes outside the documented `0..=67` range.
 #[wasm_bindgen(js_name = primitiveName)]
@@ -1111,6 +1161,64 @@ pub fn decode_xa(data: &[u8]) -> Result<Object, JsError> {
     Reflect::set(&obj, &JsValue::from_str("wav"), &Uint8Array::from(wav.as_slice()).into())
         .map_err(|_| JsError::new("set wav"))?;
     Ok(obj)
+}
+
+/// One-shot resolution of a SimAntics PlaySound primitive (op 0x23).
+///
+/// Walks the chain `event_id → FWAV chunk → event_name → HOT EventMapping →
+/// Track → Patch`. Returns `{ eventId, eventName, eventKind, trackId,
+/// entryAddress, patchName, patchPath }` with any unresolved field omitted.
+///
+/// `iff_data` is the object's IFF (where the FWAV chunks live). `hot_text` is
+/// the HOT file that maps event names to tracks (typically `SimsSound.hot`,
+/// possibly merged with `SimsGeneratedHitSource.hot` for voice events).
+///
+/// Returns `null` if the FWAV chunk for `event_id` is not in the IFF.
+///
+/// # Errors
+/// Returns a `JsError` only if `iff_data` is structurally malformed.
+#[wasm_bindgen(js_name = resolveSoundEvent)]
+pub fn resolve_sound_event(
+    iff_data: &[u8],
+    hot_text: &str,
+    event_id: u32,
+) -> Result<JsValue, JsError> {
+    let iff_file = iff::Iff::parse(iff_data).map_err(|e| JsError::new(&e.to_string()))?;
+    let mut event_name: Option<String> = None;
+    for chunk in iff_file.chunks() {
+        let chunk = chunk.map_err(|e| JsError::new(&e.to_string()))?;
+        if &chunk.kind == b"FWAV" && u32::from(chunk.id) == event_id {
+            if let Ok(parsed) = simantics::Fwav::parse(chunk.data) {
+                event_name = Some(parsed.event_name);
+            }
+            break;
+        }
+    }
+    let Some(event_name) = event_name else {
+        return Ok(JsValue::NULL);
+    };
+
+    let hot = simantics::hot::HotFile::parse(hot_text);
+    let resolved = hot.resolve_event(&event_name);
+
+    let obj = Object::new();
+    set_f64(&obj, "eventId", f64::from(event_id))?;
+    Reflect::set(&obj, &JsValue::from_str("eventName"), &JsValue::from_str(&event_name))
+        .map_err(|_| JsError::new("set eventName"))?;
+    if let Some(r) = resolved {
+        set_f64(&obj, "eventKind", f64::from(r.event_kind))?;
+        set_f64(&obj, "trackId", f64::from(r.track_id))?;
+        set_f64(&obj, "entryAddress", f64::from(r.entry_address))?;
+        if let Some(name) = r.patch_name {
+            Reflect::set(&obj, &JsValue::from_str("patchName"), &JsValue::from_str(&name))
+                .map_err(|_| JsError::new("set patchName"))?;
+        }
+        if let Some(path) = r.patch_path {
+            Reflect::set(&obj, &JsValue::from_str("patchPath"), &JsValue::from_str(&path))
+                .map_err(|_| JsError::new("set patchPath"))?;
+        }
+    }
+    Ok(obj.into())
 }
 
 /// Parse an XA header without decoding (cheap metadata preview).

@@ -857,12 +857,63 @@ async function runMain(globalsFarPath: string | null): Promise<void> {
     if (out.trace.length > limit) lines.push(`  … +${out.trace.length - limit} more`);
     if (out.effects.length > 0) {
       lines.push(`effects (${out.effects.length}):`);
-      for (const ef of out.effects) lines.push("  " + formatEffect(ef));
+      const playablePatches: string[] = [];
+      for (const ef of out.effects) {
+        let line = "  " + formatEffect(ef);
+        if (ef.kind === "PlaySound") {
+          const eventId = Number(ef["eventId"]);
+          const resolved = resolvePlaySound(wasm, obj.data, eventId);
+          if (resolved) {
+            const tail: string[] = [];
+            tail.push(resolved.eventName);
+            if (typeof resolved.trackId === "number") {
+              tail.push(`track=0x${resolved.trackId.toString(16)}`);
+            }
+            if (resolved.patchPath) {
+              tail.push(resolved.patchPath);
+            }
+            line += `  → ${tail.join(" · ")}`;
+            if (resolved.patchPath?.toLowerCase().endsWith(".xa")) {
+              playablePatches.push(resolved.patchPath);
+            }
+          }
+        }
+        lines.push(line);
+      }
+      // Surface a Play button strip in the HIT-sandbox audio controls so the
+      // user can immediately hear sounds the BHAV would have triggered.
+      if (playablePatches.length > 0) {
+        setHitAudioControls(wasm, playablePatches);
+      }
     }
     setRunOutput(lines.join("\n"));
   } catch (err) {
     setRunOutput(`run failed: ${(err as Error).message}`);
   }
+}
+
+interface ResolvedSoundEvent {
+  eventId: number;
+  eventName: string;
+  eventKind?: number;
+  trackId?: number;
+  entryAddress?: number;
+  patchName?: string;
+  patchPath?: string;
+}
+
+/** Best-effort: try every loaded HOT pair (SimsSound, SimsGeneratedHitSource) until
+ *  one resolves the given FWAV chunk id to an event. Returns the first hit. */
+function resolvePlaySound(
+  wasm: Awaited<ReturnType<typeof engine>>,
+  iffData: Uint8Array,
+  eventId: number,
+): ResolvedSoundEvent | null {
+  for (const f of hitSandboxState.files) {
+    const r = wasm.resolveSoundEvent(iffData, f.hotText, eventId) as ResolvedSoundEvent | null;
+    if (r && r.eventName) return r;
+  }
+  return null;
 }
 
 /** Fetch and disassemble simssound.HIT into the side panel. Also mounts the
@@ -945,6 +996,7 @@ interface HotFile {
 interface HitSandboxFile {
   label: string;
   hot: HotFile;
+  hotText: string;
   hitData: Uint8Array;
 }
 interface HitSandboxState {
@@ -976,8 +1028,14 @@ async function mountHitSandbox(
   // Load the small (SimsSound) pair already passed in.
   const baseHotRes = await fetch(`/assets/${hotPath}`);
   if (baseHotRes.ok) {
-    const baseHot = wasm.parseHot(await baseHotRes.text()) as HotFile;
-    hitSandboxState.files.push({ label: "SimsSound", hot: baseHot, hitData });
+    const baseHotText = await baseHotRes.text();
+    const baseHot = wasm.parseHot(baseHotText) as HotFile;
+    hitSandboxState.files.push({
+      label: "SimsSound",
+      hot: baseHot,
+      hotText: baseHotText,
+      hitData,
+    });
   }
 
   // Try to also load the bigger SimsGeneratedHitSource pair (mostly voice .xa).
@@ -993,8 +1051,14 @@ async function mountHitSandbox(
       ]);
       if (hitRes.ok && hotRes.ok) {
         const data = new Uint8Array(await hitRes.arrayBuffer());
-        const hot = wasm.parseHot(await hotRes.text()) as HotFile;
-        hitSandboxState.files.push({ label: "SimsGeneratedHitSource", hot, hitData: data });
+        const hotText = await hotRes.text();
+        const hot = wasm.parseHot(hotText) as HotFile;
+        hitSandboxState.files.push({
+          label: "SimsGeneratedHitSource",
+          hot,
+          hotText,
+          hitData: data,
+        });
       }
     } catch (err) {
       console.warn("optional SimsGeneratedHitSource load failed", err);
