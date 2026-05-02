@@ -16,13 +16,103 @@ const canvas = findCanvas();
 const lotScene: IsoScene = {
   gridSize: 16,
   sprites: [],
-  camera: { tileWidth: 64, centerX: 8, centerY: 8 },
+  camera: { tileWidth: 64, centerX: 8, centerY: 8, rotation: 0 },
 };
+
+/** Camera controls. tileWidth presets matching TS1's three zoom levels. */
+const CAMERA_TILE_WIDTHS = [32, 64, 128] as const;
+let cameraZoomIdx = 1;
 
 function renderLot(): void {
   renderIso(canvas, lotScene);
 }
 
+function rotateCamera(deltaQuarters: 1 | -1): void {
+  const r = lotScene.camera.rotation ?? 0;
+  lotScene.camera.rotation = (((r + deltaQuarters) % 4 + 4) % 4) as 0 | 1 | 2 | 3;
+  renderLot();
+  updateCameraButtonHighlights();
+}
+
+function setCameraZoom(idx: number): void {
+  cameraZoomIdx = Math.max(0, Math.min(CAMERA_TILE_WIDTHS.length - 1, idx));
+  const tw = CAMERA_TILE_WIDTHS[cameraZoomIdx];
+  if (typeof tw === "number") lotScene.camera.tileWidth = tw;
+  renderLot();
+  updateCameraButtonHighlights();
+}
+
+function mountCameraControls(): void {
+  // Render a small bar in the top-right of the canvas with rotation + zoom buttons.
+  const existing = document.getElementById("camera-controls");
+  existing?.remove();
+  const bar = document.createElement("div");
+  bar.id = "camera-controls";
+  bar.style.cssText =
+    "position:fixed;top:8px;right:8px;display:flex;gap:6px;align-items:center;background:rgba(0,0,0,.55);padding:6px 8px;border-radius:4px;font:12px/1.3 ui-monospace,monospace;color:#9ad;";
+  bar.innerHTML = `
+    <span style="opacity:.7;">camera</span>
+    <button data-cam="rot-l" title="Rotate left (Q)">⟲</button>
+    <button data-cam="rot-r" title="Rotate right (E)">⟳</button>
+    <span style="opacity:.5;">·</span>
+    <span style="opacity:.7;">zoom</span>
+    <button data-cam-zoom="0">far</button>
+    <button data-cam-zoom="1">mid</button>
+    <button data-cam-zoom="2">near</button>
+  `;
+  document.body.appendChild(bar);
+  bar.addEventListener("click", (ev) => {
+    const t = ev.target;
+    if (!(t instanceof HTMLButtonElement)) return;
+    const cam = t.dataset["cam"];
+    if (cam === "rot-l") rotateCamera(-1);
+    else if (cam === "rot-r") rotateCamera(1);
+    const zoomStr = t.dataset["camZoom"];
+    if (zoomStr !== undefined) setCameraZoom(parseInt(zoomStr, 10));
+  });
+  updateCameraButtonHighlights();
+}
+
+function updateCameraButtonHighlights(): void {
+  const bar = document.getElementById("camera-controls");
+  if (!bar) return;
+  for (const btn of bar.querySelectorAll("button")) {
+    if (!(btn instanceof HTMLButtonElement)) continue;
+    const z = btn.dataset["camZoom"];
+    if (z !== undefined) {
+      btn.style.cssText = controlButtonStyle(parseInt(z, 10) === cameraZoomIdx);
+    } else if (btn.dataset["cam"]) {
+      btn.style.cssText = controlButtonStyle(false);
+    }
+  }
+}
+
+window.addEventListener("keydown", (ev) => {
+  if (ev.target instanceof HTMLInputElement || ev.target instanceof HTMLTextAreaElement) return;
+  switch (ev.key) {
+    case "q":
+    case "Q":
+      rotateCamera(-1);
+      break;
+    case "e":
+    case "E":
+      rotateCamera(1);
+      break;
+    case "+":
+    case "=":
+      setCameraZoom(cameraZoomIdx + 1);
+      break;
+    case "-":
+    case "_":
+      setCameraZoom(cameraZoomIdx - 1);
+      break;
+    default:
+      return;
+  }
+  ev.preventDefault();
+});
+
+mountCameraControls();
 // Initial render: empty lot.
 renderLot();
 
@@ -428,8 +518,9 @@ function renderViewer(): void {
     return;
   }
   composeObjectViewer(decoded);
-  // Mirror the current sprite into the lot scene at world (8, 8) so the main
-  // canvas shows the object on a tile grid. Phase 3 ramp.
+  // Mirror the current sprite into the lot scene. Place at the visual centre
+  // tile (8, 8) of a 16×16 lot. Camera rotation pivots around this same tile
+  // so the sprite stays put while the surrounding grid spins.
   lotScene.sprites = decoded.map((d) => ({
     bmp: d.bmp,
     sp: d.sp,

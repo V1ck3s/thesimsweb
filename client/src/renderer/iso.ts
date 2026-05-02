@@ -41,6 +41,10 @@ export interface IsoCamera {
   /** Tile (worldX, worldY) at the canvas centre. */
   centerX: number;
   centerY: number;
+  /** 0 / 1 / 2 / 3 — number of 90° clockwise rotations applied to the world
+   *  before projection. 0 = south-facing (the default TS1 view); 1 = west;
+   *  2 = north; 3 = east. */
+  rotation?: 0 | 1 | 2 | 3;
 }
 
 export interface IsoScene {
@@ -54,8 +58,17 @@ const SKY = "#1f3340";
 const GRID_LINE = "#2a4054";
 const TILE_LIGHT = "#3b6e3b";
 const TILE_DARK = "#326432";
+const TILE_NORTH = "#d6ad3d"; // gold strip along world-Y=0 — flips after rotation
+const TILE_EAST = "#bd5e3a"; // rust strip along world-X=N-1 — also flips
 
-/** Project a tile coordinate to screen pixels. */
+/** Project a tile coordinate to screen pixels.
+ *
+ *  Rotation is applied in tile-space *around* the camera centre before the
+ *  isometric projection, so the same world (x, y) lands at a different screen
+ *  position depending on `cam.rotation`. We use the centre of the lot grid
+ *  (`gridSize / 2`) as the pivot — passed via `cam.centerX/centerY` — so a
+ *  16×16 lot keeps spinning around its midpoint regardless of zoom.
+ */
 function projectTile(
   x: number,
   y: number,
@@ -64,8 +77,28 @@ function projectTile(
 ): { sx: number; sy: number } {
   const tw = cam.tileWidth;
   const th = tw / 2;
-  const localX = x - cam.centerX;
-  const localY = y - cam.centerY;
+  let localX = x - cam.centerX;
+  let localY = y - cam.centerY;
+  switch (cam.rotation ?? 0) {
+    case 1: {
+      const t = localX;
+      localX = -localY;
+      localY = t;
+      break;
+    }
+    case 2:
+      localX = -localX;
+      localY = -localY;
+      break;
+    case 3: {
+      const t = localX;
+      localX = localY;
+      localY = -t;
+      break;
+    }
+    default:
+      break;
+  }
   const sx = canvas.width / 2 + (localX - localY) * (tw / 2);
   const sy = canvas.height / 2 + (localX + localY) * (th / 2);
   return { sx, sy };
@@ -112,14 +145,31 @@ export function renderIso(canvas: HTMLCanvasElement, scene: IsoScene): void {
   for (let y = 0; y < N; y += 1) {
     for (let x = 0; x < N; x += 1) {
       const { sx, sy } = projectTile(x, y, cam, canvas);
-      const fill = (x + y) % 2 === 0 ? TILE_LIGHT : TILE_DARK;
+      // Two coloured edges (north & east in world space) make camera rotation
+      // visible — the gold strip points to world-N regardless of camera angle.
+      let fill = (x + y) % 2 === 0 ? TILE_LIGHT : TILE_DARK;
+      if (y === 0) fill = TILE_NORTH;
+      else if (x === N - 1) fill = TILE_EAST;
       drawTile(ctx, sx, sy, cam.tileWidth, fill);
     }
   }
 
-  // Sort sprites by world depth: greater (x + y) renders later (in front).
+  // Sort sprites by depth in *rotated* tile space. Rotation flips which axis
+  // is "back" — without re-projecting we'd render objects in the wrong order
+  // after a 180° camera spin.
+  const depthOf = (worldX: number, worldY: number): number => {
+    let lx = worldX - cam.centerX;
+    let ly = worldY - cam.centerY;
+    switch (cam.rotation ?? 0) {
+      case 1: { const t = lx; lx = -ly; ly = t; break; }
+      case 2: lx = -lx; ly = -ly; break;
+      case 3: { const t = lx; lx = ly; ly = -t; break; }
+      default: break;
+    }
+    return lx + ly;
+  };
   const sorted = [...scene.sprites].sort(
-    (a, b) => a.worldX + a.worldY - (b.worldX + b.worldY),
+    (a, b) => depthOf(a.worldX, a.worldY) - depthOf(b.worldX, b.worldY),
   );
 
   for (const s of sorted) {
