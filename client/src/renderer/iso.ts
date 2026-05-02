@@ -69,6 +69,15 @@ const TILE_EAST = "#bd5e3a"; // rust strip along world-X=N-1 — also flips
  *  (`gridSize / 2`) as the pivot — passed via `cam.centerX/centerY` — so a
  *  16×16 lot keeps spinning around its midpoint regardless of zoom.
  */
+export function projectTileToScreen(
+  x: number,
+  y: number,
+  cam: IsoCamera,
+  canvas: HTMLCanvasElement,
+): { sx: number; sy: number } {
+  return projectTile(x, y, cam, canvas);
+}
+
 function projectTile(
   x: number,
   y: number,

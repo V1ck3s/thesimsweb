@@ -1,6 +1,6 @@
 import { engine } from "./engine/wasm.js";
 import { fetchManifest, readFarManifest, readIffFromFar, readStandaloneIff } from "./engine/assets.js";
-import { renderIso, type IsoScene } from "./renderer/iso.js";
+import { renderIso, projectTileToScreen, type IsoScene, type IsoSceneSprite } from "./renderer/iso.js";
 
 function findCanvas(): HTMLCanvasElement {
   const el = document.getElementById("game");
@@ -518,16 +518,10 @@ function renderViewer(): void {
     return;
   }
   composeObjectViewer(decoded);
-  // Mirror the current sprite into the lot scene. Place at the visual centre
-  // tile (8, 8) of a 16×16 lot. Camera rotation pivots around this same tile
-  // so the sprite stays put while the surrounding grid spins.
-  lotScene.sprites = decoded.map((d) => ({
-    bmp: d.bmp,
-    sp: d.sp,
-    worldX: 8,
-    worldY: 8,
-  }));
-  renderLot();
+  // Update the lot scene: re-decode every placed instance + the transient
+  // viewer overlay at the centre tile (8, 8). Camera rotation pivots around
+  // (8, 8) so the viewer overlay stays put while placed instances orbit.
+  composeLotScene();
   const dirLabel = DIRECTION_FLAGS.find((d) => d.flag === viewerState.direction)?.label ?? "?";
   // Show the sprite refs as `id#frame` so the user can spot when adjacent directions
   // reuse the same compiled sprite (TS1 stores e.g. only N+W and flips at render time).
@@ -539,6 +533,434 @@ function renderViewer(): void {
   );
   refreshStateButtons();
 }
+
+// ============================================================================
+// Multi-object lot — placed instances + click selection
+// ============================================================================
+
+interface LotInstance {
+  id: number;
+  obj: LoadedObject;
+  worldX: number;
+  worldY: number;
+  direction: number;
+  zoom: number;
+  dgrpId: number;
+  /** Lazy decoded sprites; null until first render of this instance. */
+  decoded: Array<{ sp: DgrpSprite; bmp: DecodedSprite }> | null;
+}
+
+const lotInstances: LotInstance[] = [];
+let nextLotInstanceId = 1;
+let selectedInstanceId: number | null = null;
+
+function placeOnLot(
+  obj: LoadedObject,
+  worldX: number,
+  worldY: number,
+  direction: number = 0x10,
+  zoom: number = 3,
+): LotInstance {
+  let dgrpId = obj.baseGraphicId;
+  if (!obj.dgrps.some((d) => d.id === dgrpId)) {
+    dgrpId = obj.dgrps[0]?.id ?? 0;
+  }
+  const inst: LotInstance = {
+    id: nextLotInstanceId++,
+    obj,
+    worldX,
+    worldY,
+    direction,
+    zoom,
+    dgrpId,
+    decoded: null,
+  };
+  lotInstances.push(inst);
+  return inst;
+}
+
+function decodeInstanceSprites(
+  wasm: Awaited<ReturnType<typeof engine>>,
+  inst: LotInstance,
+): Array<{ sp: DgrpSprite; bmp: DecodedSprite }> {
+  if (inst.decoded !== null) return inst.decoded;
+  const out: Array<{ sp: DgrpSprite; bmp: DecodedSprite }> = [];
+  if (!inst.obj.paltChunk) {
+    inst.decoded = out;
+    return out;
+  }
+  const dgrp = inst.obj.dgrps.find((d) => d.id === inst.dgrpId) ?? inst.obj.dgrps[0];
+  if (!dgrp) {
+    inst.decoded = out;
+    return out;
+  }
+  // Try (direction, zoom); fall back to (any direction, zoom); fall back to first image.
+  const image =
+    dgrp.images.find(
+      (i) => i.directionFlags === inst.direction && i.zoomLevel === inst.zoom,
+    ) ??
+    dgrp.images.find((i) => i.zoomLevel === inst.zoom) ??
+    dgrp.images[0];
+  if (!image) {
+    inst.decoded = out;
+    return out;
+  }
+  const palt = inst.obj.data.subarray(
+    inst.obj.paltChunk.dataStart,
+    inst.obj.paltChunk.dataStart + inst.obj.paltChunk.dataLen,
+  );
+  for (const sp of image.sprites) {
+    const c = inst.obj.chunks.find((c) => c.kind === "SPR2" && c.id === sp.sprChunkId);
+    if (!c) continue;
+    try {
+      const bmp = wasm.decodeSpr2Frame(
+        inst.obj.data.subarray(c.dataStart, c.dataStart + c.dataLen),
+        palt,
+        sp.sprFrameNumber,
+      ) as DecodedSprite;
+      out.push({ sp, bmp });
+    } catch (err) {
+      console.warn(
+        `[lot] SPR2 ${sp.sprChunkId}#${sp.sprFrameNumber} of ${inst.obj.iffName} decode failed:`,
+        err,
+      );
+    }
+  }
+  inst.decoded = out;
+  return out;
+}
+
+/** Rebuild `lotScene.sprites` from every placed instance + the transient viewer
+ *  overlay (the side-panel-selected object, mirrored at the lot centre). */
+function composeLotScene(): void {
+  const wasm = viewerState.wasm;
+  if (!wasm) return;
+  const sprites: IsoSceneSprite[] = [];
+  for (const inst of lotInstances) {
+    const dec = decodeInstanceSprites(wasm, inst);
+    for (const d of dec) {
+      sprites.push({ bmp: d.bmp, sp: d.sp, worldX: inst.worldX, worldY: inst.worldY });
+    }
+  }
+  // Viewer's current selection at the centre tile, as a one-off (no entry in
+  // `lotInstances` so it doesn't pollute click hit-tests).
+  const viewerObj = viewerState.current;
+  if (viewerObj) {
+    const transient: LotInstance = {
+      id: 0,
+      obj: viewerObj,
+      worldX: 8,
+      worldY: 8,
+      direction: viewerState.direction,
+      zoom: viewerState.zoom,
+      dgrpId: viewerState.dgrpId,
+      decoded: null,
+    };
+    for (const d of decodeInstanceSprites(wasm, transient)) {
+      sprites.push({ bmp: d.bmp, sp: d.sp, worldX: 8, worldY: 8 });
+    }
+  }
+  lotScene.sprites = sprites;
+  renderLot();
+}
+
+/** Hit-test a click on the main canvas against every placed instance.
+ *  Returns the topmost (closest by depth, i.e. greatest sorted index) within
+ *  half a tile of the click. */
+function pickInstance(canvasX: number, canvasY: number): LotInstance | null {
+  const cam = lotScene.camera;
+  // Walk in painter's order (back-to-front, same sort as the renderer) so the
+  // *front* sprite wins when several stack up under the cursor.
+  const candidates = [...lotInstances].sort((a, b) => {
+    const da = projectedDepth(a);
+    const db = projectedDepth(b);
+    return da - db;
+  });
+  let hit: LotInstance | null = null;
+  const radius = cam.tileWidth / 2;
+  for (const inst of candidates) {
+    const { sx, sy } = projectTileToScreen(inst.worldX, inst.worldY, cam, canvas);
+    const dx = sx - canvasX;
+    const dy = sy - canvasY;
+    if (Math.hypot(dx, dy) < radius) hit = inst;
+  }
+  return hit;
+}
+
+function projectedDepth(inst: LotInstance): number {
+  const cam = lotScene.camera;
+  let lx = inst.worldX - cam.centerX;
+  let ly = inst.worldY - cam.centerY;
+  switch (cam.rotation ?? 0) {
+    case 1: { const t = lx; lx = -ly; ly = t; break; }
+    case 2: lx = -lx; ly = -ly; break;
+    case 3: { const t = lx; lx = ly; ly = -t; break; }
+    default: break;
+  }
+  return lx + ly;
+}
+
+function onLotCanvasClick(ev: MouseEvent): void {
+  const rect = canvas.getBoundingClientRect();
+  const cx = (ev.clientX - rect.left) * (canvas.width / rect.width);
+  const cy = (ev.clientY - rect.top) * (canvas.height / rect.height);
+  const inst = pickInstance(cx, cy);
+  selectedInstanceId = inst?.id ?? null;
+  onLotInstanceSelected(inst, cx, cy);
+}
+
+canvas.addEventListener("click", onLotCanvasClick);
+
+/** Hook for the pie-menu task: shows the interactions of the selected instance. */
+function onLotInstanceSelected(inst: LotInstance | null, cx: number, cy: number): void {
+  if (!inst) {
+    closeInteractionMenuImpl();
+    return;
+  }
+  console.info(
+    `[lot] selected #${inst.id} ${inst.obj.objectName} @ (${inst.worldX}, ${inst.worldY})`,
+  );
+  showInteractionMenuImpl(inst, cx, cy);
+}
+
+/** Pre-populate the lot with a handful of objects so the user can immediately
+ *  see multiple sprites + click-to-select. Best-effort: any IFF that fails to
+ *  load is skipped silently. */
+const DEMO_PLACEMENTS: ReadonlyArray<{ iff: string; x: number; y: number }> = [
+  { iff: "AlarmClock.iff", x: 5, y: 5 },
+  { iff: "BurglarAlarm.iff", x: 11, y: 5 },
+  { iff: "FireAlarm.iff", x: 5, y: 11 },
+  { iff: "CoffeeM.iff", x: 11, y: 11 },
+  { iff: "CoffeeEsp.iff", x: 8, y: 13 },
+];
+
+async function mountLotDemo(
+  wasm: Awaited<ReturnType<typeof engine>>,
+  objectsFarPath: string,
+): Promise<void> {
+  for (const p of DEMO_PLACEMENTS) {
+    try {
+      const { data, chunks } = await readIffFromFar(objectsFarPath, p.iff);
+      const loaded = buildLoadedObject(wasm, p.iff, data, chunks as IffChunkRef[]);
+      if (loaded && loaded.dgrps.length > 0) {
+        placeOnLot(loaded, p.x, p.y);
+      }
+    } catch (err) {
+      console.warn(`[lot] demo placement ${p.iff} failed:`, err);
+    }
+  }
+  composeLotScene();
+}
+
+// ============================================================================
+// Pie / interaction menu — surfaces an object's TTAB rows when it's clicked.
+// ============================================================================
+
+interface TtabInteraction {
+  actionFunction: number;
+  guardFunction: number;
+  motiveEntryCount: number;
+  flags: number;
+  ttasIndex: number;
+  attenuationCode: number;
+  attenuationValue: number;
+  autonomyThreshold: number;
+  joiningIndex: number;
+  motives: Array<{ effectMin: number; effectMax: number; personalityModifier: number }>;
+}
+
+interface TtasEntry {
+  kind: "single" | "pair" | "lang";
+  data: Uint8Array;
+  comment?: Uint8Array;
+  langCode?: number;
+}
+
+interface InteractionMenuRow {
+  label: string;
+  actionFunction: number;
+  joiningIndex: number;
+  guardFunction: number;
+}
+
+let interactionMenuEl: HTMLDivElement | null = null;
+let lastInteractionInst: LotInstance | null = null;
+const TEXT_DECODER = new TextDecoder("latin1");
+
+function trimNullTerminated(bytes: Uint8Array): string {
+  const end = bytes.indexOf(0);
+  return TEXT_DECODER.decode(end < 0 ? bytes : bytes.subarray(0, end));
+}
+
+function ttasLabelAt(entries: TtasEntry[], index: number, fallback: string): string {
+  const entry = entries[index];
+  if (!entry) return fallback;
+  const text = trimNullTerminated(entry.data).trim();
+  return text.length > 0 ? text : fallback;
+}
+
+function buildInteractionRows(
+  wasm: Awaited<ReturnType<typeof engine>>,
+  inst: LotInstance,
+): InteractionMenuRow[] {
+  const ttabChunk = inst.obj.chunks.find((c) => c.kind === "TTAB");
+  const ttasChunk = inst.obj.chunks.find((c) => c.kind === "TTAs");
+  if (!ttabChunk) return [];
+  let ttab: { interactions: TtabInteraction[] };
+  try {
+    ttab = wasm.parseTtab(
+      inst.obj.data.subarray(ttabChunk.dataStart, ttabChunk.dataStart + ttabChunk.dataLen),
+    ) as { interactions: TtabInteraction[] };
+  } catch (err) {
+    // TTAB v9+ uses field-encoded compression we don't decode yet.
+    console.info(`[pie] TTAB v9+ on ${inst.obj.iffName} (${(err as Error).message})`);
+    return [];
+  }
+  let ttas: { entries: TtasEntry[] } = { entries: [] };
+  if (ttasChunk) {
+    try {
+      ttas = wasm.parseStrTable(
+        inst.obj.data.subarray(ttasChunk.dataStart, ttasChunk.dataStart + ttasChunk.dataLen),
+      ) as { entries: TtasEntry[] };
+    } catch (err) {
+      console.warn(`[pie] TTAs parse failed for ${inst.obj.iffName}:`, err);
+    }
+  }
+  return ttab.interactions.map((it, idx) => ({
+    label: ttasLabelAt(ttas.entries, it.ttasIndex, `Interaction ${idx}`),
+    actionFunction: it.actionFunction,
+    joiningIndex: it.joiningIndex,
+    guardFunction: it.guardFunction,
+  }));
+}
+
+function ensureMenuEl(): HTMLDivElement {
+  if (interactionMenuEl) return interactionMenuEl;
+  const el = document.createElement("div");
+  el.id = "pie-menu";
+  el.style.cssText =
+    "position:fixed;display:none;z-index:50;min-width:200px;max-width:320px;background:rgba(20,28,40,.96);border:1px solid #345;border-radius:6px;box-shadow:0 4px 16px rgba(0,0,0,.5);padding:6px 0;font:12px/1.4 ui-sans-serif,system-ui,sans-serif;color:#cde;";
+  document.body.appendChild(el);
+  document.addEventListener("click", (ev) => {
+    // Close on outside click. The canvas-click handler runs first and reopens
+    // the menu, so this only fires when the click is *outside* the menu and
+    // off the canvas.
+    if (!(ev.target instanceof Node)) return;
+    if (interactionMenuEl?.contains(ev.target)) return;
+    if (ev.target === canvas) return;
+    closeInteractionMenuImpl();
+  });
+  interactionMenuEl = el;
+  return el;
+}
+
+function closeInteractionMenuImpl(): void {
+  if (interactionMenuEl) interactionMenuEl.style.display = "none";
+  lastInteractionInst = null;
+}
+
+function showInteractionMenuImpl(inst: LotInstance, cx: number, cy: number): void {
+  const wasm = viewerState.wasm;
+  if (!wasm) return;
+  const rows = buildInteractionRows(wasm, inst);
+  const menu = ensureMenuEl();
+  menu.innerHTML = "";
+  const header = document.createElement("div");
+  header.textContent = `${inst.obj.objectName}  ·  ${rows.length} interaction${rows.length === 1 ? "" : "s"}`;
+  header.style.cssText = "padding:4px 10px;border-bottom:1px solid #345;color:#9ad;opacity:.8;";
+  menu.appendChild(header);
+  if (rows.length === 0) {
+    const empty = document.createElement("div");
+    empty.textContent = "(TTAB v9 not yet decoded — try a vanilla TS1 object)";
+    empty.style.cssText = "padding:6px 10px;opacity:.6;";
+    menu.appendChild(empty);
+  } else {
+    for (const r of rows) {
+      const btn = document.createElement("button");
+      btn.textContent = r.label;
+      btn.style.cssText =
+        "display:block;width:100%;text-align:left;background:transparent;border:none;color:#cde;padding:6px 10px;font:inherit;cursor:pointer;";
+      btn.addEventListener("mouseenter", () => {
+        btn.style.background = "rgba(80,140,200,.18)";
+      });
+      btn.addEventListener("mouseleave", () => {
+        btn.style.background = "transparent";
+      });
+      btn.addEventListener("click", () => {
+        closeInteractionMenuImpl();
+        void runInteractionFromMenu(inst, r);
+      });
+      menu.appendChild(btn);
+    }
+  }
+  // Position: anchor near the click but keep on-screen.
+  const pad = 8;
+  const rect = canvas.getBoundingClientRect();
+  const left = Math.min(window.innerWidth - 340, rect.left + (cx / canvas.width) * rect.width + pad);
+  const top = Math.min(window.innerHeight - 320, rect.top + (cy / canvas.height) * rect.height + pad);
+  menu.style.left = `${Math.max(8, left)}px`;
+  menu.style.top = `${Math.max(8, top)}px`;
+  menu.style.display = "block";
+  lastInteractionInst = inst;
+}
+
+let lotGlobalsFarPath: string | null = null;
+async function runInteractionFromMenu(
+  inst: LotInstance,
+  row: InteractionMenuRow,
+): Promise<void> {
+  const wasm = viewerState.wasm;
+  if (!wasm) return;
+  let globalsBytes: Uint8Array = new Uint8Array(0);
+  const targetName = inst.obj.semiGlobalName ?? "Global";
+  if (lotGlobalsFarPath) {
+    const loaded = await loadSemiGlobalIff(wasm, lotGlobalsFarPath, targetName);
+    if (loaded) globalsBytes = loaded;
+  }
+  try {
+    const out = wasm.runInteraction(
+      inst.obj.data,
+      globalsBytes,
+      row.actionFunction,
+      row.joiningIndex,
+      32,
+    ) as RunOutput;
+    const lines: string[] = [];
+    lines.push(
+      `[${inst.obj.objectName}] ${row.label}  ·  action=0x${row.actionFunction.toString(16).padStart(4, "0")}  ·  ${out.outcome}${out.exec ? ` (${out.exec})` : ""}  ·  ticks=${out.ticksRan}`,
+    );
+    lines.push(`trace (${out.trace.length} steps):`);
+    const limit = Math.min(out.trace.length, 60);
+    for (let i = 0; i < limit; i++) {
+      const e = out.trace[i];
+      if (e) lines.push("  " + formatTraceEntry(wasm, e));
+    }
+    if (out.trace.length > limit) lines.push(`  … +${out.trace.length - limit}`);
+    if (out.effects.length > 0) {
+      lines.push(`effects (${out.effects.length}):`);
+      const playable: string[] = [];
+      for (const ef of out.effects) {
+        let line = "  " + formatEffect(ef);
+        if (ef.kind === "PlaySound") {
+          const eventId = Number(ef["eventId"]);
+          const r = resolvePlaySound(wasm, inst.obj.data, eventId);
+          if (r) {
+            const tail: string[] = [r.eventName];
+            if (r.patchPath) tail.push(r.patchPath);
+            line += `  → ${tail.join(" · ")}`;
+            if (r.patchPath?.toLowerCase().endsWith(".xa")) playable.push(r.patchPath);
+          }
+        }
+        lines.push(line);
+      }
+      if (playable.length > 0) setHitAudioControls(wasm, playable);
+    }
+    setRunOutput(lines.join("\n"));
+  } catch (err) {
+    setRunOutput(`interaction failed: ${(err as Error).message}`);
+  }
+}
+
 
 /** Show all DGRP IDs as buttons; highlight the current one. */
 function refreshStateButtons(): void {
@@ -1465,6 +1887,10 @@ async function tryRenderAlarmClockObject(
   void tryDisasmHit(wasm, manifest);
   mountRadio(manifest);
   await loadObjectByName(wasm, objectsFar.path, "AlarmClock.iff");
+  lotGlobalsFarPath = globalsFar ? globalsFar.path : null;
+  // Pre-populate the lot with a handful of demo objects so the click-select +
+  // pie menu features have something to interact with at boot.
+  void mountLotDemo(wasm, objectsFar.path);
   const globalsFarPath = globalsFar ? globalsFar.path : null;
   const runBtn = document.getElementById("run-main-btn");
   if (runBtn instanceof HTMLButtonElement) {

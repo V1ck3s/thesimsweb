@@ -695,9 +695,7 @@ pub fn run_object_event(
         .dispatch(event as usize)
         .ok_or_else(|| JsError::new("OBJf event has no handler (or pair is (0,0))"))?;
 
-    let mut vm = simantics::vm::Vm::new(&source);
-    vm.trace_enabled = true;
-    vm.world.interaction_queue.push(simantics::vm::PendingInteraction {
+    let pending = simantics::vm::PendingInteraction {
         sim_id: 0xAA,
         stack_object_id: 0xBB,
         action_function: entry.action,
@@ -706,9 +704,65 @@ pub fn run_object_event(
         } else {
             i32::from(entry.condition)
         },
-    });
-    // Tick once for the headline outcome (action_id, exec). If max_ticks > 1, drain
-    // the rest of the queue via run_until_idle.
+    };
+    run_pending_and_serialize(&source, pending, max_ticks)
+}
+
+/// Like [`run_object_event`] but the caller supplies the `action_function` /
+/// `joining_index` directly — used by TTAB pie-menu interactions, which bypass
+/// the OBJf event-index dispatch table.
+///
+/// # Errors
+/// Returns a `JsError` if either IFF is malformed or the VM step-budget is
+/// exhausted.
+#[allow(clippy::too_many_lines)]
+#[wasm_bindgen(js_name = runInteraction)]
+pub fn run_interaction(
+    object_iff: &[u8],
+    globals_iff: &[u8],
+    action_function: u32,
+    joining_index: i32,
+    max_ticks: u32,
+) -> Result<Object, JsError> {
+    let object_parsed = iff::Iff::parse(object_iff).map_err(|e| JsError::new(&e.to_string()))?;
+    let mut source = simantics::vm::LayeredBhavSource::default();
+    for chunk in object_parsed.chunks() {
+        let chunk = chunk.map_err(|e| JsError::new(&e.to_string()))?;
+        if &chunk.kind == b"BHAV" {
+            source.private.insert(chunk.id, chunk.data.to_vec());
+        }
+    }
+    if !globals_iff.is_empty() {
+        let globals_parsed = iff::Iff::parse(globals_iff).map_err(|e| JsError::new(&e.to_string()))?;
+        for chunk in globals_parsed.chunks() {
+            let chunk = chunk.map_err(|e| JsError::new(&e.to_string()))?;
+            if &chunk.kind == b"BHAV" {
+                source.semi_global.insert(chunk.id, chunk.data.to_vec());
+            }
+        }
+    }
+    let action = u16::try_from(action_function & 0xFFFF).unwrap_or(0);
+    let pending = simantics::vm::PendingInteraction {
+        sim_id: 0xAA,
+        stack_object_id: 0xBB,
+        action_function: action,
+        joining_index,
+    };
+    run_pending_and_serialize(&source, pending, max_ticks)
+}
+
+/// Common run-and-serialize body for [`run_object_event`] and
+/// [`run_interaction`]: tick the VM once for the headline outcome, optionally
+/// drain the queue with `run_until_idle`, and emit the trace + effects.
+#[allow(clippy::too_many_lines)]
+fn run_pending_and_serialize(
+    source: &simantics::vm::LayeredBhavSource,
+    pending: simantics::vm::PendingInteraction,
+    max_ticks: u32,
+) -> Result<Object, JsError> {
+    let mut vm = simantics::vm::Vm::new(source);
+    vm.trace_enabled = true;
+    vm.world.interaction_queue.push(pending);
     let first = vm.tick().map_err(|e| JsError::new(&e.to_string()))?;
     let mut ticks_ran: u32 = match &first {
         simantics::vm::TickOutcome::Idle => 0,
