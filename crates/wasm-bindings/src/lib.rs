@@ -528,6 +528,35 @@ pub fn parse_ttab(data: &[u8]) -> Result<Object, JsError> {
     Ok(obj)
 }
 
+/// Parse a `.hit` (Hit Item Table) audio bytecode file.
+///
+/// Returns `{ major, minor, codeLen, exports: Array<{trackId, address}> }`. The
+/// raw code bytes are *not* exposed yet — the HIT VM lives in a future commit.
+///
+/// # Errors
+/// Returns a `JsError` if the magic is wrong, the version is unsupported, or
+/// the export table is truncated.
+#[wasm_bindgen(js_name = parseHit)]
+pub fn parse_hit(data: &[u8]) -> Result<Object, JsError> {
+    let hit = simantics::Hit::parse(data).map_err(|e| JsError::new(&e.to_string()))?;
+    let obj = Object::new();
+    set_f64(&obj, "major", f64::from(hit.major))?;
+    set_f64(&obj, "minor", f64::from(hit.minor))?;
+    #[allow(clippy::cast_precision_loss)]
+    let code_len_f = hit.code.len() as f64;
+    set_f64(&obj, "codeLen", code_len_f)?;
+    let exports = Array::new();
+    for ex in &hit.exports {
+        let row = Object::new();
+        set_f64(&row, "trackId", f64::from(ex.track_id))?;
+        set_f64(&row, "address", f64::from(ex.address))?;
+        exports.push(&row);
+    }
+    Reflect::set(&obj, &JsValue::from_str("exports"), &exports.into())
+        .map_err(|_| JsError::new("set exports"))?;
+    Ok(obj)
+}
+
 fn set_f64(obj: &Object, key: &str, value: f64) -> Result<(), JsError> {
     Reflect::set(obj, &JsValue::from_str(key), &JsValue::from_f64(value))
         .map_err(|_| JsError::new("set"))?;

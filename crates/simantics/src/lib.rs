@@ -50,6 +50,14 @@ pub enum SimAnticsError {
     GlobEmpty,
     #[error("DGRP version {0} is not supported (need 20003 or 20004)")]
     DgrpUnsupportedVersion(u16),
+    #[error("HIT bad magic (want \"HIT!\")")]
+    HitBadMagic,
+    #[error("HIT unsupported version {major}.{minor}")]
+    HitUnsupportedVersion { major: u32, minor: u32 },
+    #[error("HIT missing TRAX section header")]
+    HitMissingTrax,
+    #[error("HIT export table truncated")]
+    HitExportTruncated,
 }
 
 // ---- BHAV ----
@@ -1018,6 +1026,107 @@ impl Dgrp {
     }
 }
 
+// ---- HIT ----
+
+/// One entry in a `HIT` export table (TSO addition; some TS1 files also have it).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HitExport {
+    pub track_id: u32,
+    pub address: u32,
+}
+
+/// Parsed HIT (Hit Item Table) audio bytecode container.
+///
+/// Layout (little-endian):
+/// - `00..04`: magic `HIT!`
+/// - `04..08`: major version (1)
+/// - `08..0C`: minor version (8 — only known value used by TS1 / TSO)
+/// - `0C..10`: code section header `TRAX`
+/// - `10..`  : raw bytecode. Contains an optional export table delimited by
+///   `ENTP` … `EENT` (sentinel `0x544e4545` is therefore an illegal
+///   track ID).
+///
+/// This parser only decodes the framing; executing the bytecode (a separate VM
+/// with ~70 instructions) is out of scope for now.
+#[derive(Debug, Clone)]
+pub struct Hit {
+    pub major: u32,
+    pub minor: u32,
+    /// Bytes after `TRAX` (offset 16 onward in the file). Includes the export
+    /// table if any — keep them so the future HIT VM can `call`/`jump` into them.
+    pub code: Vec<u8>,
+    /// Decoded `ENTP`-delimited export table; empty when no `ENTP` header is present.
+    pub exports: Vec<HitExport>,
+}
+
+impl Hit {
+    /// Parse a `.hit` file (the whole on-disk bytes — there is no IFF wrapper).
+    ///
+    /// # Errors
+    /// `HitBadMagic` if the file doesn't start with `HIT!`,
+    /// `HitMissingTrax` if the `TRAX` header isn't where it's expected,
+    /// `HitUnsupportedVersion` for non-(1, 8) versions,
+    /// `HitExportTruncated` if `ENTP` is found but the table runs off the end.
+    pub fn parse(data: &[u8]) -> Result<Self, SimAnticsError> {
+        if data.len() < 16 {
+            return Err(SimAnticsError::TooShort);
+        }
+        if &data[0..4] != b"HIT!" {
+            return Err(SimAnticsError::HitBadMagic);
+        }
+        let major = read_u32_le(data, 4)?;
+        let minor = read_u32_le(data, 8)?;
+        if major != 1 || minor != 8 {
+            return Err(SimAnticsError::HitUnsupportedVersion { major, minor });
+        }
+        if &data[12..16] != b"TRAX" {
+            return Err(SimAnticsError::HitMissingTrax);
+        }
+        let code = data[16..].to_vec();
+
+        // Search for the ENTP export table. Per Niotso the search starts at the
+        // beginning of the file and the table may be unaligned.
+        let mut exports = Vec::new();
+        if let Some(entp_offset) = find_marker(&code, *b"ENTP") {
+            let mut cursor = entp_offset + 4;
+            loop {
+                if cursor + 4 > code.len() {
+                    return Err(SimAnticsError::HitExportTruncated);
+                }
+                if &code[cursor..cursor + 4] == b"EENT" {
+                    break;
+                }
+                if cursor + 8 > code.len() {
+                    return Err(SimAnticsError::HitExportTruncated);
+                }
+                let track_id = read_u32_le(&code, cursor)?;
+                let address = read_u32_le(&code, cursor + 4)?;
+                exports.push(HitExport { track_id, address });
+                cursor += 8;
+            }
+        }
+
+        Ok(Self {
+            major,
+            minor,
+            code,
+            exports,
+        })
+    }
+}
+
+fn find_marker(data: &[u8], needle: [u8; 4]) -> Option<usize> {
+    if data.len() < 4 {
+        return None;
+    }
+    for i in 0..=data.len() - 4 {
+        if data[i..i + 4] == needle {
+            return Some(i);
+        }
+    }
+    None
+}
+
 // ---- helpers ----
 
 fn read_u16_le(data: &[u8], offset: usize) -> Result<u16, SimAnticsError> {
@@ -1580,5 +1689,61 @@ mod tests {
             Dgrp::parse(&buf),
             Err(SimAnticsError::DgrpUnsupportedVersion(20000))
         ));
+    }
+
+    #[test]
+    fn hit_parses_minimal_header() {
+        let mut buf = Vec::new();
+        buf.extend_from_slice(b"HIT!");
+        buf.extend_from_slice(&1u32.to_le_bytes());
+        buf.extend_from_slice(&8u32.to_le_bytes());
+        buf.extend_from_slice(b"TRAX");
+        buf.extend_from_slice(&[0x0c]); // single `end` instruction
+        let hit = Hit::parse(&buf).unwrap();
+        assert_eq!(hit.major, 1);
+        assert_eq!(hit.minor, 8);
+        assert_eq!(hit.code, vec![0x0c]);
+        assert!(hit.exports.is_empty());
+    }
+
+    #[test]
+    fn hit_rejects_bad_magic() {
+        let buf = b"FOO!\x01\x00\x00\x00\x08\x00\x00\x00TRAX".to_vec();
+        assert!(matches!(Hit::parse(&buf), Err(SimAnticsError::HitBadMagic)));
+    }
+
+    #[test]
+    fn hit_rejects_unsupported_version() {
+        let mut buf = Vec::new();
+        buf.extend_from_slice(b"HIT!");
+        buf.extend_from_slice(&2u32.to_le_bytes());
+        buf.extend_from_slice(&0u32.to_le_bytes());
+        buf.extend_from_slice(b"TRAX");
+        assert!(matches!(
+            Hit::parse(&buf),
+            Err(SimAnticsError::HitUnsupportedVersion { major: 2, minor: 0 })
+        ));
+    }
+
+    #[test]
+    fn hit_parses_export_table() {
+        let mut buf = Vec::new();
+        buf.extend_from_slice(b"HIT!");
+        buf.extend_from_slice(&1u32.to_le_bytes());
+        buf.extend_from_slice(&8u32.to_le_bytes());
+        buf.extend_from_slice(b"TRAX");
+        // Some prefix bytecode
+        buf.extend_from_slice(&[0x0c]);
+        // Export table
+        buf.extend_from_slice(b"ENTP");
+        buf.extend_from_slice(&100u32.to_le_bytes()); // track_id
+        buf.extend_from_slice(&0x40u32.to_le_bytes()); // address
+        buf.extend_from_slice(&200u32.to_le_bytes());
+        buf.extend_from_slice(&0x80u32.to_le_bytes());
+        buf.extend_from_slice(b"EENT");
+        let hit = Hit::parse(&buf).unwrap();
+        assert_eq!(hit.exports.len(), 2);
+        assert_eq!(hit.exports[0], HitExport { track_id: 100, address: 0x40 });
+        assert_eq!(hit.exports[1], HitExport { track_id: 200, address: 0x80 });
     }
 }
