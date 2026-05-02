@@ -285,10 +285,110 @@ function adjustFunds(delta: number): void {
 type LotMode = "play" | "build";
 let lotMode: LotMode = "play";
 
+/** A* on the 16x16 grid, routing around placed instances. Returns a list of
+ *  tile coordinates from the start tile to the goal (inclusive of both).
+ *  Returns null if unreachable; falls back to a straight line if start==goal. */
+function findPath(
+  fromX: number,
+  fromY: number,
+  toX: number,
+  toY: number,
+): Array<{ x: number; y: number }> | null {
+  const N = lotScene.gridSize;
+  if (toX < 0 || toY < 0 || toX >= N || toY >= N) return null;
+  if (fromX === toX && fromY === toY) return [{ x: toX, y: toY }];
+  const blocked = new Set<number>();
+  for (const inst of lotInstances) {
+    const k = inst.worldY * N + inst.worldX;
+    // Don't block the goal tile (the user clicked an object => stand there)
+    // nor the start tile (Sim starts on it).
+    if ((inst.worldX === toX && inst.worldY === toY)) continue;
+    if ((inst.worldX === fromX && inst.worldY === fromY)) continue;
+    blocked.add(k);
+  }
+  const heuristic = (x: number, y: number): number =>
+    Math.abs(x - toX) + Math.abs(y - toY);
+  const startKey = fromY * N + fromX;
+  const open = new Map<number, { g: number; f: number; x: number; y: number }>();
+  open.set(startKey, { g: 0, f: heuristic(fromX, fromY), x: fromX, y: fromY });
+  const came: Map<number, number> = new Map();
+  const closed = new Set<number>();
+  while (open.size > 0) {
+    let bestKey = -1;
+    let best: { g: number; f: number; x: number; y: number } | null = null;
+    for (const [k, v] of open) {
+      if (best === null || v.f < best.f) {
+        best = v;
+        bestKey = k;
+      }
+    }
+    if (best === null) break;
+    open.delete(bestKey);
+    closed.add(bestKey);
+    if (best.x === toX && best.y === toY) {
+      const path: Array<{ x: number; y: number }> = [];
+      let curK = bestKey;
+      let curX = best.x;
+      let curY = best.y;
+      path.push({ x: curX, y: curY });
+      while (came.has(curK)) {
+        const prev = came.get(curK)!;
+        curX = prev % N;
+        curY = Math.floor(prev / N);
+        path.push({ x: curX, y: curY });
+        curK = prev;
+      }
+      path.reverse();
+      return path;
+    }
+    const neighbours: Array<[number, number]> = [
+      [best.x - 1, best.y],
+      [best.x + 1, best.y],
+      [best.x, best.y - 1],
+      [best.x, best.y + 1],
+    ];
+    for (const [nx, ny] of neighbours) {
+      if (nx === undefined || ny === undefined) continue;
+      if (nx < 0 || ny < 0 || nx >= N || ny >= N) continue;
+      const nk = ny * N + nx;
+      if (closed.has(nk)) continue;
+      if (blocked.has(nk)) continue;
+      const tentativeG = best.g + 1;
+      const existing = open.get(nk);
+      if (existing && existing.g <= tentativeG) continue;
+      came.set(nk, bestKey);
+      open.set(nk, { g: tentativeG, f: tentativeG + heuristic(nx, ny), x: nx, y: ny });
+    }
+  }
+  return null;
+}
+
 function startWalk(toX: number, toY: number, onArrive: (() => void) | null = null): void {
-  // Manhattan-ish duration: 350 ms per tile travelled, capped to keep responsiveness.
+  const startX = Math.round(simState.fx);
+  const startY = Math.round(simState.fy);
+  const path = findPath(startX, startY, toX, toY);
+  if (!path || path.length === 0) {
+    // Unreachable — fall back to straight-line lerp so the Sim still feels
+    // responsive instead of silently ignoring the click.
+    walkSegment(toX, toY, onArrive);
+    return;
+  }
+  // First node is the current tile; we don't need to walk to ourselves.
+  let i = path[0]!.x === startX && path[0]!.y === startY ? 1 : 0;
+  const next = (): void => {
+    if (i >= path.length) {
+      onArrive?.();
+      return;
+    }
+    const node = path[i++]!;
+    walkSegment(node.x, node.y, next);
+  };
+  next();
+}
+
+function walkSegment(toX: number, toY: number, onArrive: (() => void) | null): void {
   const dist = Math.hypot(toX - simState.fx, toY - simState.fy);
-  const durMs = Math.max(180, Math.min(2000, dist * 350));
+  const durMs = Math.max(140, Math.min(700, dist * 280));
   simState.walk = {
     fromX: simState.fx,
     fromY: simState.fy,
