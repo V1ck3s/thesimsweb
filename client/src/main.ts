@@ -268,12 +268,20 @@ const DIRECTION_FLAGS: Array<{ flag: number; label: string }> = [
 ];
 const ZOOM_LEVELS = [1, 2, 3];
 
-const viewerState = {
-  current: null as LoadedObject | null,
+const viewerState: {
+  current: LoadedObject | null;
+  direction: number;
+  zoom: number;
+  dgrpId: number;
+  wasm: Awaited<ReturnType<typeof engine>> | null;
+  onObjectLoaded: (() => void) | null;
+} = {
+  current: null,
   direction: 0x10,
   zoom: 3,
   dgrpId: 0,
-  wasm: null as Awaited<ReturnType<typeof engine>> | null,
+  wasm: null,
+  onObjectLoaded: null,
 };
 
 /** Build a `LoadedObject` snapshot for an IFF: parse OBJD + every DGRP once. */
@@ -595,6 +603,7 @@ async function loadObjectByName(
     renderViewer();
     refreshEventSelector();
     setRunOutput("");
+    viewerState.onObjectLoaded?.();
   } catch (err) {
     console.warn(`[viewer] load ${iffName} failed:`, err);
     setObjectLabel(`${iffName} · load failed`);
@@ -632,11 +641,110 @@ async function loadSemiGlobalIff(
 }
 
 const RUN_OUTPUT_EL = document.getElementById("run-output");
+const DISASM_OUTPUT_EL = document.getElementById("disasm-output");
 
 function setRunOutput(text: string): void {
   if (!RUN_OUTPUT_EL) return;
   RUN_OUTPUT_EL.textContent = text;
   RUN_OUTPUT_EL.style.display = text ? "block" : "none";
+}
+
+function setDisasmOutput(text: string): void {
+  if (DISASM_OUTPUT_EL) DISASM_OUTPUT_EL.textContent = text;
+}
+
+interface BhavInstruction {
+  opcode: number;
+  tDest: number;
+  fDest: number;
+  operand: Uint8Array;
+}
+
+interface BhavParsed {
+  magic: number;
+  count: number;
+  args: number;
+  locals: number;
+  instructions: BhavInstruction[];
+}
+
+/** Find a BHAV chunk by ID inside arbitrary IFF data and return its parsed body. */
+function findAndParseBhav(
+  wasm: Awaited<ReturnType<typeof engine>>,
+  data: Uint8Array,
+  chunks: IffChunkRef[],
+  bhavId: number,
+): BhavParsed | null {
+  const chunk = chunks.find((c) => c.kind === "BHAV" && c.id === bhavId);
+  if (!chunk) return null;
+  try {
+    return wasm.parseBhav(
+      data.subarray(chunk.dataStart, chunk.dataStart + chunk.dataLen),
+    ) as BhavParsed;
+  } catch {
+    return null;
+  }
+}
+
+/** Return a printable destination — sentinel returns or numeric IP. */
+function formatDest(dest: number): string {
+  if (dest === 0xff) return "ret_true";
+  if (dest === 0xfe) return "ret_false";
+  if (dest === 0xfd) return "ret_error";
+  return `→${dest}`;
+}
+
+async function refreshDisasmForCurrentEvent(globalsFarPath: string | null): Promise<void> {
+  const wasm = viewerState.wasm;
+  const obj = viewerState.current;
+  if (!wasm || !obj) {
+    setDisasmOutput("");
+    return;
+  }
+  const eventSelect = document.getElementById("event-select");
+  if (!(eventSelect instanceof HTMLSelectElement) || eventSelect.value === "") {
+    setDisasmOutput("");
+    return;
+  }
+  const eventIdx = Number(eventSelect.value);
+  const entry = obj.objfEntries[eventIdx];
+  if (!entry || entry.action === 0) {
+    setDisasmOutput("");
+    return;
+  }
+  const actionId = entry.action;
+  // Look up the action BHAV: private (object IFF) first, then semi-global (globals IFF).
+  let bhav = findAndParseBhav(wasm, obj.data, obj.chunks, actionId);
+  let source = "private";
+  if (!bhav && globalsFarPath) {
+    const targetName = obj.semiGlobalName ?? "Global";
+    const globalsBytes = await loadSemiGlobalIff(wasm, globalsFarPath, targetName);
+    if (globalsBytes) {
+      const globalsChunks = wasm.parseIffChunks(globalsBytes) as IffChunkRef[];
+      bhav = findAndParseBhav(wasm, globalsBytes, globalsChunks, actionId);
+      source = "semi-global";
+    }
+  }
+  if (!bhav) {
+    setDisasmOutput(`BHAV 0x${actionId.toString(16).padStart(4, "0")}: not found`);
+    return;
+  }
+  const lines: string[] = [];
+  lines.push(
+    `BHAV 0x${actionId.toString(16).padStart(4, "0")} (${source}) · ${bhav.instructions.length} instr · args=${bhav.args} locals=${bhav.locals}`,
+  );
+  bhav.instructions.forEach((ins, ip) => {
+    const opLabel =
+      ins.opcode < 256
+        ? ((wasm.primitiveName(ins.opcode) as string | null) ?? `prim ${ins.opcode}`)
+        : `call 0x${ins.opcode.toString(16).padStart(4, "0")}`;
+    const decoded = wasm.formatPrimitiveOperand(ins.opcode, ins.operand) as string | null;
+    const operandPart = decoded ? `  ${decoded}` : "";
+    lines.push(
+      `  ${String(ip).padStart(2)}: ${opLabel}${operandPart}  t=${formatDest(ins.tDest)} f=${formatDest(ins.fDest)}`,
+    );
+  });
+  setDisasmOutput(lines.join("\n"));
 }
 
 function formatTraceEntry(
@@ -722,12 +830,26 @@ async function tryRenderAlarmClockObject(
   mountStaticControls();
   void mountObjectSelector(wasm, objectsFar.path);
   await loadObjectByName(wasm, objectsFar.path, "AlarmClock.iff");
+  const globalsFarPath = globalsFar ? globalsFar.path : null;
   const runBtn = document.getElementById("run-main-btn");
   if (runBtn instanceof HTMLButtonElement) {
     runBtn.addEventListener("click", () => {
-      void runMain(globalsFar ? globalsFar.path : null);
+      void runMain(globalsFarPath);
     });
   }
+  const eventSelect = document.getElementById("event-select");
+  if (eventSelect instanceof HTMLSelectElement) {
+    eventSelect.addEventListener("change", () => {
+      void refreshDisasmForCurrentEvent(globalsFarPath);
+    });
+  }
+  // Wire `loadObjectByName` to also refresh the disasm panel for the new object's
+  // currently-selected event (defaults to Main on each load).
+  viewerState.onObjectLoaded = () => {
+    void refreshDisasmForCurrentEvent(globalsFarPath);
+  };
+  // Trigger once for the initial object.
+  void refreshDisasmForCurrentEvent(globalsFarPath);
   const obj = viewerState.current;
   return obj ? `viewer ${obj.objectName} (${obj.dgrps.length} DGRP)` : null;
 }
