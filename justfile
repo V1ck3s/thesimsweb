@@ -54,6 +54,11 @@ test:
 diff-far archive:
     ./scripts/diff/far.sh {{archive}}
 
+# transcode TS1 .avi intro/cutscene videos to web-friendly .webm + .mp4.
+# Outputs land under server/assets/converted/intro/ (gitignored).
+transcode-videos *args:
+    ./scripts/transcode-videos.sh {{args}}
+
 # clean build artifacts (keeps node_modules and target caches)
 clean:
     rm -rf client/dist server/dist
