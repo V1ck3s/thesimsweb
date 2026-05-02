@@ -521,6 +521,57 @@ async function mountObjectSelector(
   select.addEventListener("change", () => {
     void loadObjectByName(wasm, objectsFarPath, select.value);
   });
+
+  // Background walker: fetch each IFF, find its OBJD chunk's 64-byte label, and patch
+  // the corresponding <option>. Concurrency-capped so we don't slam the dev server.
+  void enrichDropdownLabels(wasm, objectsFarPath, candidates, select);
+}
+
+const OBJD_LABEL_CONCURRENCY = 6;
+
+async function enrichDropdownLabels(
+  wasm: Awaited<ReturnType<typeof engine>>,
+  objectsFarPath: string,
+  names: string[],
+  select: HTMLSelectElement,
+): Promise<void> {
+  let cursor = 0;
+  const total = names.length;
+  let done = 0;
+  const tick = (): void => {
+    done += 1;
+    if (done === total || done % 10 === 0) {
+      const obj = viewerState.current;
+      if (obj && document.getElementById("object-label")?.textContent?.includes("·")) {
+        // Append a discreet progress hint to the existing label.
+        const baseLabel = document.getElementById("object-label")?.textContent ?? "";
+        const cleaned = baseLabel.replace(/ \[\d+\/\d+\]$/u, "");
+        if (done < total) setObjectLabel(`${cleaned} [${done}/${total}]`);
+        else setObjectLabel(cleaned);
+      }
+    }
+  };
+  const worker = async (): Promise<void> => {
+    while (cursor < names.length) {
+      const i = cursor;
+      cursor += 1;
+      const name = names[i];
+      if (!name) continue;
+      try {
+        const { chunks } = await readIffFromFar(objectsFarPath, name);
+        const objd = chunks.find((c) => c.kind === "OBJD");
+        const label = objd?.label.trim();
+        if (label && select.options[i]) {
+          select.options[i].textContent = label;
+        }
+      } catch {
+        // Leave the humanized fallback in place.
+      }
+      tick();
+    }
+  };
+  const workers = Array.from({ length: OBJD_LABEL_CONCURRENCY }, worker);
+  await Promise.allSettled(workers);
 }
 
 async function loadObjectByName(
