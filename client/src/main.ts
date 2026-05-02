@@ -409,17 +409,19 @@ function findPath(
   return null;
 }
 
-function startWalk(toX: number, toY: number, onArrive: (() => void) | null = null): void {
-  const startX = Math.round(simState.fx);
-  const startY = Math.round(simState.fy);
+function startWalkForSim(
+  sim: SimState,
+  toX: number,
+  toY: number,
+  onArrive: (() => void) | null = null,
+): void {
+  const startX = Math.round(sim.fx);
+  const startY = Math.round(sim.fy);
   const path = findPath(startX, startY, toX, toY);
   if (!path || path.length === 0) {
-    // Unreachable — fall back to straight-line lerp so the Sim still feels
-    // responsive instead of silently ignoring the click.
-    walkSegment(toX, toY, onArrive);
+    walkSegmentForSim(sim, toX, toY, onArrive);
     return;
   }
-  // First node is the current tile; we don't need to walk to ourselves.
   let i = path[0]!.x === startX && path[0]!.y === startY ? 1 : 0;
   const next = (): void => {
     if (i >= path.length) {
@@ -427,24 +429,72 @@ function startWalk(toX: number, toY: number, onArrive: (() => void) | null = nul
       return;
     }
     const node = path[i++]!;
-    walkSegment(node.x, node.y, next);
+    walkSegmentForSim(sim, node.x, node.y, next);
   };
   next();
 }
 
-function walkSegment(toX: number, toY: number, onArrive: (() => void) | null): void {
-  const dist = Math.hypot(toX - simState.fx, toY - simState.fy);
+function walkSegmentForSim(
+  sim: SimState,
+  toX: number,
+  toY: number,
+  onArrive: (() => void) | null,
+): void {
+  const dist = Math.hypot(toX - sim.fx, toY - sim.fy);
   const durMs = Math.max(140, Math.min(700, dist * 280));
-  simState.walk = {
-    fromX: simState.fx,
-    fromY: simState.fy,
+  sim.walk = {
+    fromX: sim.fx,
+    fromY: sim.fy,
     toX,
     toY,
     startMs: performance.now(),
     durMs,
   };
-  simState.onArrive = onArrive;
+  sim.onArrive = onArrive;
   ensureRenderLoop();
+}
+
+/** Backwards-compatible shims targeting the currently-selected Sim. */
+function startWalk(toX: number, toY: number, onArrive: (() => void) | null = null): void {
+  const sim = sims[selectedSimIdx];
+  if (!sim) return;
+  startWalkForSim(sim, toX, toY, onArrive);
+}
+
+/** Pick a random reachable tile within `radius` of `sim` and walk it there.
+ *  Used by the auto-wander loop so non-selected Sims aren't statues. */
+function autoWanderSim(sim: SimState): void {
+  if (sim.walk) return; // already moving
+  const N = lotScene.gridSize;
+  const startX = Math.round(sim.fx);
+  const startY = Math.round(sim.fy);
+  const radius = 4;
+  for (let attempt = 0; attempt < 8; attempt += 1) {
+    const dx = Math.floor(Math.random() * (radius * 2 + 1)) - radius;
+    const dy = Math.floor(Math.random() * (radius * 2 + 1)) - radius;
+    const tx = startX + dx;
+    const ty = startY + dy;
+    if (tx === startX && ty === startY) continue;
+    if (tx < 0 || ty < 0 || tx >= N || ty >= N) continue;
+    if (lotInstances.some((i) => i.worldX === tx && i.worldY === ty)) continue;
+    const path = findPath(startX, startY, tx, ty);
+    if (path && path.length > 1) {
+      startWalkForSim(sim, tx, ty);
+      return;
+    }
+  }
+}
+
+function startAutoWanderLoop(): void {
+  setInterval(() => {
+    for (let i = 0; i < sims.length; i += 1) {
+      if (i === selectedSimIdx) continue;
+      const sim = sims[i];
+      if (!sim) continue;
+      // ~50% chance per tick to wander, so they don't all march in lockstep.
+      if (Math.random() < 0.5) autoWanderSim(sim);
+    }
+  }, 2500);
 }
 
 let renderLoopHandle: number | null = null;
@@ -2882,6 +2932,7 @@ async function tryRenderAlarmClockObject(
   startMotivesLoop();
   renderTimeFundsHud();
   startGameClock();
+  startAutoWanderLoop();
   // Try to restore the user's last lot first; if there is none, fall back to
   // the bundled demo placements so the page is never empty on boot.
   try {
