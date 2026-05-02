@@ -74,6 +74,9 @@ export interface IsoScene {
   /** Tile coordinate the cursor is currently hovering. Drawn last as a
    *  highlight outline so the user sees where their click will land. */
   hoverTile?: { worldX: number; worldY: number } | null;
+  /** Per-tile floor color override. Key = `y * gridSize + x`. Tiles without
+   *  an entry use the default checker pattern. */
+  floorPaint?: Map<number, string>;
 }
 
 const SKY = "#1f3340";
@@ -205,11 +208,20 @@ export function renderIso(canvas: HTMLCanvasElement, scene: IsoScene): void {
   for (let y = 0; y < N; y += 1) {
     for (let x = 0; x < N; x += 1) {
       const { sx, sy } = projectTile(x, y, cam, canvas);
-      // Two coloured edges (north & east in world space) make camera rotation
-      // visible — the gold strip points to world-N regardless of camera angle.
-      let fill = (x + y) % 2 === 0 ? TILE_LIGHT : TILE_DARK;
-      if (y === 0) fill = TILE_NORTH;
-      else if (x === N - 1) fill = TILE_EAST;
+      // Painted floor tiles override everything; otherwise we keep the
+      // checker pattern with the gold/rust orientation strips so camera
+      // rotation stays visible.
+      let fill: string;
+      const painted = scene.floorPaint?.get(y * N + x);
+      if (painted) {
+        fill = painted;
+      } else if (y === 0) {
+        fill = TILE_NORTH;
+      } else if (x === N - 1) {
+        fill = TILE_EAST;
+      } else {
+        fill = (x + y) % 2 === 0 ? TILE_LIGHT : TILE_DARK;
+      }
       drawTile(ctx, sx, sy, cam.tileWidth, fill);
     }
   }

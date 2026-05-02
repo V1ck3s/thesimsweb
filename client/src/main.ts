@@ -285,6 +285,21 @@ function adjustFunds(delta: number): void {
 type LotMode = "play" | "build";
 let lotMode: LotMode = "play";
 
+/** When in Build mode, the build sub-tool. */
+type BuildTool = "place" | "paint";
+let buildTool: BuildTool = "place";
+
+const FLOOR_PAINT_PRESETS = [
+  { id: "grass", color: "#3b6e3b", label: "grass" },
+  { id: "tile", color: "#cfd8dc", label: "tile" },
+  { id: "wood", color: "#8d6c4f", label: "wood" },
+  { id: "water", color: "#3a78c2", label: "water" },
+] as const;
+let activePaintId: (typeof FLOOR_PAINT_PRESETS)[number]["id"] = "tile";
+
+/** Initialise the floor-paint map only once; reused across scene composes. */
+const floorPaint: Map<number, string> = new Map();
+
 /** A* on the 16x16 grid, routing around placed instances. Returns a list of
  *  tile coordinates from the start tile to the goal (inclusive of both).
  *  Returns null if unreachable; falls back to a straight line if start==goal. */
@@ -541,6 +556,47 @@ function mountCameraControls(): void {
       updateModeButtonHighlights();
     }
   });
+  // Build sub-tool bar — only effective when lotMode === "build".
+  const existingBuild = document.getElementById("build-tools");
+  existingBuild?.remove();
+  const buildBar = document.createElement("div");
+  buildBar.id = "build-tools";
+  buildBar.style.cssText =
+    "position:fixed;top:46px;left:50%;transform:translateX(-50%);background:rgba(0,0,0,.55);padding:6px 10px;border-radius:6px;font:12px/1.3 ui-sans-serif,system-ui,sans-serif;color:#cde;display:none;gap:6px;align-items:center;flex-wrap:wrap;";
+  const swatches = FLOOR_PAINT_PRESETS.map(
+    (p) =>
+      `<button data-paint-id="${p.id}" title="${p.label}" style="width:22px;height:22px;background:${p.color};border:1px solid #345;border-radius:3px;cursor:pointer;"></button>`,
+  ).join("");
+  buildBar.innerHTML = `
+    <span style="opacity:.7;">tool</span>
+    <button data-build-tool="place">place obj</button>
+    <button data-build-tool="paint">paint floor</button>
+    <span style="opacity:.5;">·</span>
+    <span style="opacity:.7;">color</span>
+    ${swatches}
+    <button data-paint-action="clear" title="Erase all painted tiles">clear floor</button>
+  `;
+  document.body.appendChild(buildBar);
+  buildBar.addEventListener("click", (ev) => {
+    const t = ev.target;
+    if (!(t instanceof HTMLButtonElement)) return;
+    const tool = t.dataset["buildTool"];
+    if (tool === "place" || tool === "paint") {
+      buildTool = tool;
+      updateBuildToolHighlights();
+    }
+    const paintId = t.dataset["paintId"];
+    if (paintId) {
+      activePaintId = paintId as typeof activePaintId;
+      buildTool = "paint";
+      updateBuildToolHighlights();
+    }
+    if (t.dataset["paintAction"] === "clear") {
+      floorPaint.clear();
+      composeLotScene();
+    }
+  });
+
   // Help blurb directly under the camera bar.
   const help = document.createElement("div");
   help.id = "lot-help";
@@ -574,6 +630,24 @@ function updateModeButtonHighlights(): void {
     const action = btn.dataset["camAction"];
     if (action === "mode-play") btn.style.cssText = controlButtonStyle(lotMode === "play");
     else if (action === "mode-build") btn.style.cssText = controlButtonStyle(lotMode === "build");
+  }
+  const buildBar = document.getElementById("build-tools");
+  if (buildBar instanceof HTMLDivElement) {
+    buildBar.style.display = lotMode === "build" ? "flex" : "none";
+  }
+  updateBuildToolHighlights();
+}
+
+function updateBuildToolHighlights(): void {
+  const bar = document.getElementById("build-tools");
+  if (!bar) return;
+  for (const btn of bar.querySelectorAll<HTMLButtonElement>("button[data-build-tool]")) {
+    const tool = btn.dataset["buildTool"];
+    btn.style.cssText = controlButtonStyle(tool === buildTool);
+  }
+  for (const btn of bar.querySelectorAll<HTMLButtonElement>("button[data-paint-id]")) {
+    const id = btn.dataset["paintId"];
+    btn.style.outline = id === activePaintId ? "2px solid #cde" : "none";
   }
 }
 
@@ -1152,6 +1226,7 @@ function composeLotScene(): void {
   }
   lotScene.sprites = sprites;
   lotScene.entities = [simEntity()];
+  lotScene.floorPaint = floorPaint;
   renderLot();
 }
 
@@ -1227,6 +1302,15 @@ function onLotCanvasClick(ev: MouseEvent): void {
     return;
   }
   if (lotMode === "build") {
+    if (buildTool === "paint") {
+      const preset = FLOOR_PAINT_PRESETS.find((p) => p.id === activePaintId);
+      if (preset) {
+        floorPaint.set(tile.worldY * lotScene.gridSize + tile.worldX, preset.color);
+        composeLotScene();
+      }
+      closeInteractionMenuImpl();
+      return;
+    }
     // Place the viewer's currently-selected object on the empty tile.
     const obj = viewerState.current;
     if (!obj) {
@@ -1332,8 +1416,13 @@ const LOT_SAVE_ID = "current-lot";
 
 let objectsFarPathCache: string | null = null;
 
-function serializeLot(): SerializedLotInstance[] {
-  return lotInstances.map((i) => ({
+interface SerializedLot {
+  instances: SerializedLotInstance[];
+  floorPaint: Array<{ key: number; color: string }>;
+}
+
+function serializeLot(): SerializedLot {
+  const inst = lotInstances.map((i) => ({
     iffName: i.obj.iffName,
     worldX: i.worldX,
     worldY: i.worldY,
@@ -1341,6 +1430,9 @@ function serializeLot(): SerializedLotInstance[] {
     zoom: i.zoom,
     dgrpId: i.dgrpId,
   }));
+  const floor: Array<{ key: number; color: string }> = [];
+  for (const [k, c] of floorPaint) floor.push({ key: k, color: c });
+  return { instances: inst, floorPaint: floor };
 }
 
 async function saveLot(): Promise<void> {
@@ -1365,10 +1457,23 @@ async function loadLot(replace: boolean = true): Promise<void> {
     const res = await fetch(`/api/saves/${LOT_SAVE_ID}`);
     if (!res.ok) return; // 404 first time; that's fine.
     const text = await res.text();
-    const data: SerializedLotInstance[] = JSON.parse(text);
-    if (!Array.isArray(data)) return;
-    if (replace) lotInstances.length = 0;
-    for (const s of data) {
+    const parsed = JSON.parse(text) as unknown;
+    // Accept either the new SerializedLot shape or the legacy bare-array shape
+    // so existing user saves keep loading.
+    let instances: SerializedLotInstance[] = [];
+    let floors: Array<{ key: number; color: string }> = [];
+    if (Array.isArray(parsed)) {
+      instances = parsed as SerializedLotInstance[];
+    } else if (parsed && typeof parsed === "object") {
+      const obj = parsed as Partial<SerializedLot>;
+      if (Array.isArray(obj.instances)) instances = obj.instances;
+      if (Array.isArray(obj.floorPaint)) floors = obj.floorPaint;
+    }
+    if (replace) {
+      lotInstances.length = 0;
+      floorPaint.clear();
+    }
+    for (const s of instances) {
       try {
         const { data: iffBytes, chunks } = await readIffFromFar(objectsFarPathCache, s.iffName);
         const loaded = buildLoadedObject(wasm, s.iffName, iffBytes, chunks as IffChunkRef[]);
@@ -1381,8 +1486,13 @@ async function loadLot(replace: boolean = true): Promise<void> {
         console.warn(`[lot] re-load ${s.iffName} failed:`, err);
       }
     }
+    for (const f of floors) {
+      if (typeof f.key === "number" && typeof f.color === "string") floorPaint.set(f.key, f.color);
+    }
     composeLotScene();
-    console.info(`[lot] loaded ${lotInstances.length} instance(s) from save`);
+    console.info(
+      `[lot] loaded ${lotInstances.length} instance(s) + ${floorPaint.size} painted tile(s)`,
+    );
   } catch (err) {
     console.warn("[lot] load error:", err);
   }
