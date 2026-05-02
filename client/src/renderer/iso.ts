@@ -35,6 +35,22 @@ export interface IsoSceneSprite {
   worldY: number;
 }
 
+/** Non-sprite entity rendered with a procedural shape — used for the Sim
+ *  placeholder (we don't have CMX/BCF parsing yet) and any debug markers.
+ *  Fractional `worldX`/`worldY` are honoured so a walking Sim slides smoothly
+ *  between tiles. */
+export interface IsoEntity {
+  worldX: number;
+  worldY: number;
+  /** Visual shape. "sim" draws a head+body capsule; "marker" draws a small
+   *  diamond useful for debugging. */
+  kind: "sim" | "marker";
+  /** Body fill (head is auto-derived to a slightly lighter shade). */
+  color: string;
+  /** Optional one-line text rendered above the entity. */
+  label?: string;
+}
+
 export interface IsoCamera {
   /** Tile diamond width in pixels. Height = width / 2. */
   tileWidth: number;
@@ -51,6 +67,9 @@ export interface IsoScene {
   /** Lot extent in tiles (square). */
   gridSize: number;
   sprites: IsoSceneSprite[];
+  /** Procedural shapes (Sim placeholder, debug markers) rendered after the
+   *  sprites in painter's order. */
+  entities?: IsoEntity[];
   camera: IsoCamera;
 }
 
@@ -192,9 +211,9 @@ export function renderIso(canvas: HTMLCanvasElement, scene: IsoScene): void {
     }
   }
 
-  // Sort sprites by depth in *rotated* tile space. Rotation flips which axis
-  // is "back" — without re-projecting we'd render objects in the wrong order
-  // after a 180° camera spin.
+  // Sort sprites *and* entities together by depth in *rotated* tile space.
+  // Rotation flips which axis is "back" — without re-projecting we'd render
+  // objects in the wrong order after a 180° camera spin.
   const depthOf = (worldX: number, worldY: number): number => {
     let lx = worldX - cam.centerX;
     let ly = worldY - cam.centerY;
@@ -206,14 +225,106 @@ export function renderIso(canvas: HTMLCanvasElement, scene: IsoScene): void {
     }
     return lx + ly;
   };
-  const sorted = [...scene.sprites].sort(
-    (a, b) => depthOf(a.worldX, a.worldY) - depthOf(b.worldX, b.worldY),
-  );
-
-  for (const s of sorted) {
-    const { sx, sy } = projectTile(s.worldX, s.worldY, cam, canvas);
-    drawDgrpSprite(ctx, s, sx, sy);
+  type Drawable =
+    | { type: "sprite"; ref: IsoSceneSprite; depth: number }
+    | { type: "entity"; ref: IsoEntity; depth: number };
+  const drawables: Drawable[] = [];
+  for (const s of scene.sprites) {
+    drawables.push({ type: "sprite", ref: s, depth: depthOf(s.worldX, s.worldY) });
   }
+  for (const e of scene.entities ?? []) {
+    drawables.push({ type: "entity", ref: e, depth: depthOf(e.worldX, e.worldY) });
+  }
+  drawables.sort((a, b) => a.depth - b.depth);
+
+  for (const d of drawables) {
+    if (d.type === "sprite") {
+      const { sx, sy } = projectTile(d.ref.worldX, d.ref.worldY, cam, canvas);
+      drawDgrpSprite(ctx, d.ref, sx, sy);
+    } else {
+      const { sx, sy } = projectTile(d.ref.worldX, d.ref.worldY, cam, canvas);
+      drawEntity(ctx, d.ref, sx, sy, cam.tileWidth);
+    }
+  }
+}
+
+/** Procedural Sim placeholder: a vertical capsule with a head, scaled to the
+ *  current tile size so it looks roughly proportional at any zoom level. */
+function drawEntity(
+  ctx: CanvasRenderingContext2D,
+  e: IsoEntity,
+  cx: number,
+  cy: number,
+  tileWidth: number,
+): void {
+  if (e.kind === "marker") {
+    const r = Math.max(3, tileWidth / 8);
+    ctx.beginPath();
+    ctx.arc(cx, cy, r, 0, Math.PI * 2);
+    ctx.fillStyle = e.color;
+    ctx.fill();
+    ctx.strokeStyle = "rgba(0,0,0,.5)";
+    ctx.lineWidth = 1;
+    ctx.stroke();
+    return;
+  }
+  // "sim" — a 1.5-tile-tall capsule with a separate head circle.
+  const bodyW = Math.max(6, tileWidth * 0.30);
+  const bodyH = Math.max(14, tileWidth * 0.75);
+  const headR = Math.max(4, tileWidth * 0.18);
+  const baseY = cy + tileWidth / 8;
+  const topY = baseY - bodyH;
+  // Soft drop shadow under the feet.
+  ctx.fillStyle = "rgba(0,0,0,.35)";
+  ctx.beginPath();
+  ctx.ellipse(cx, baseY + 1, bodyW * 0.7, bodyW * 0.25, 0, 0, Math.PI * 2);
+  ctx.fill();
+  // Body (rounded rect approx).
+  ctx.fillStyle = e.color;
+  ctx.beginPath();
+  const r = bodyW / 2;
+  ctx.moveTo(cx - r, baseY - r);
+  ctx.lineTo(cx - r, topY + r);
+  ctx.arc(cx, topY + r, r, Math.PI, 0, false);
+  ctx.lineTo(cx + r, baseY - r);
+  ctx.arc(cx, baseY - r, r, 0, Math.PI, false);
+  ctx.closePath();
+  ctx.fill();
+  ctx.strokeStyle = "rgba(0,0,0,.4)";
+  ctx.lineWidth = 1;
+  ctx.stroke();
+  // Head — slightly lighter shade.
+  ctx.fillStyle = lightenHex(e.color, 0.25);
+  ctx.beginPath();
+  ctx.arc(cx, topY - headR + 1, headR, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.stroke();
+  if (e.label) {
+    ctx.font = "11px ui-sans-serif, system-ui, sans-serif";
+    const text = e.label;
+    const metrics = ctx.measureText(text);
+    const padX = 4;
+    const lblY = topY - headR * 2 - 6;
+    ctx.fillStyle = "rgba(0,0,0,.65)";
+    ctx.fillRect(cx - metrics.width / 2 - padX, lblY - 11, metrics.width + padX * 2, 14);
+    ctx.fillStyle = "#cde";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText(text, cx, lblY - 4);
+    ctx.textAlign = "start";
+    ctx.textBaseline = "alphabetic";
+  }
+}
+
+/** Mix a "#rrggbb" colour towards white by `t` (0..1). */
+function lightenHex(hex: string, t: number): string {
+  if (!hex.startsWith("#") || hex.length !== 7) return hex;
+  const r = parseInt(hex.slice(1, 3), 16);
+  const g = parseInt(hex.slice(3, 5), 16);
+  const b = parseInt(hex.slice(5, 7), 16);
+  const mix = (c: number): number => Math.round(c + (255 - c) * t);
+  const hh = (n: number): string => n.toString(16).padStart(2, "0");
+  return `#${hh(mix(r))}${hh(mix(g))}${hh(mix(b))}`;
 }
 
 /** Composite a single SPR2 frame onto the canvas at the projected screen pos.

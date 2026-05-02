@@ -1,6 +1,13 @@
 import { engine } from "./engine/wasm.js";
 import { fetchManifest, readFarManifest, readIffFromFar, readStandaloneIff } from "./engine/assets.js";
-import { renderIso, projectTileToScreen, screenToTile, type IsoScene, type IsoSceneSprite } from "./renderer/iso.js";
+import {
+  renderIso,
+  projectTileToScreen,
+  screenToTile,
+  type IsoScene,
+  type IsoSceneSprite,
+  type IsoEntity,
+} from "./renderer/iso.js";
 
 function findCanvas(): HTMLCanvasElement {
   const el = document.getElementById("game");
@@ -16,8 +23,128 @@ const canvas = findCanvas();
 const lotScene: IsoScene = {
   gridSize: 16,
   sprites: [],
+  entities: [],
   camera: { tileWidth: 64, centerX: 8, centerY: 8, rotation: 0 },
 };
+
+// ============================================================================
+// Sim placeholder — a single tracked entity rendered as a procedural capsule.
+// Walks between tiles via a fractional position interpolated over time.
+// ============================================================================
+
+interface SimState {
+  name: string;
+  /** Current rendered position (fractional tile coords). */
+  fx: number;
+  fy: number;
+  /** Active walk animation, or null if idle. */
+  walk: {
+    fromX: number;
+    fromY: number;
+    toX: number;
+    toY: number;
+    startMs: number;
+    durMs: number;
+  } | null;
+  /** Optional hook fired when the Sim arrives at the walk target. */
+  onArrive: (() => void) | null;
+}
+
+const simState: SimState = {
+  name: "Sim",
+  fx: 8,
+  fy: 8,
+  walk: null,
+  onArrive: null,
+};
+
+/** "Play" lets clicks walk the Sim and trigger interactions; "Build" lets the
+ *  user place new objects on empty tiles. Build is the legacy default for the
+ *  dev viewer; Play is the new game-feel default. */
+type LotMode = "play" | "build";
+let lotMode: LotMode = "play";
+
+function startWalk(toX: number, toY: number, onArrive: (() => void) | null = null): void {
+  // Manhattan-ish duration: 350 ms per tile travelled, capped to keep responsiveness.
+  const dist = Math.hypot(toX - simState.fx, toY - simState.fy);
+  const durMs = Math.max(180, Math.min(2000, dist * 350));
+  simState.walk = {
+    fromX: simState.fx,
+    fromY: simState.fy,
+    toX,
+    toY,
+    startMs: performance.now(),
+    durMs,
+  };
+  simState.onArrive = onArrive;
+  ensureRenderLoop();
+}
+
+let renderLoopHandle: number | null = null;
+function ensureRenderLoop(): void {
+  if (renderLoopHandle !== null) return;
+  const tick = (now: number): void => {
+    let alive = false;
+    if (simState.walk) {
+      const w = simState.walk;
+      const t = Math.min(1, (now - w.startMs) / w.durMs);
+      // Smoothstep ease so the Sim doesn't jerk on start/stop.
+      const eased = t * t * (3 - 2 * t);
+      simState.fx = w.fromX + (w.toX - w.fromX) * eased;
+      simState.fy = w.fromY + (w.toY - w.fromY) * eased;
+      if (t >= 1) {
+        simState.walk = null;
+        const cb = simState.onArrive;
+        simState.onArrive = null;
+        cb?.();
+      } else {
+        alive = true;
+      }
+    }
+    composeLotScene();
+    if (alive) {
+      renderLoopHandle = requestAnimationFrame(tick);
+    } else {
+      renderLoopHandle = null;
+    }
+  };
+  renderLoopHandle = requestAnimationFrame(tick);
+}
+
+function simEntity(): IsoEntity {
+  return {
+    worldX: simState.fx,
+    worldY: simState.fy,
+    kind: "sim",
+    color: "#7ab8ff",
+    label: simState.name,
+  };
+}
+
+/** Find an empty tile adjacent to (objX, objY) the Sim can stand on. Returns
+ *  the closest such tile to the Sim's current position; falls back to the
+ *  object tile itself if every neighbour is occupied or off-grid. */
+function adjacentTileFor(objX: number, objY: number): { x: number; y: number } {
+  const N = lotScene.gridSize;
+  const candidates = [
+    [objX - 1, objY],
+    [objX + 1, objY],
+    [objX, objY - 1],
+    [objX, objY + 1],
+  ].filter(([x, y]) => {
+    if (x === undefined || y === undefined) return false;
+    if (x < 0 || y < 0 || x >= N || y >= N) return false;
+    return !lotInstances.some((i) => i.worldX === x && i.worldY === y);
+  });
+  if (candidates.length === 0) return { x: objX, y: objY };
+  candidates.sort(([ax, ay], [bx, by]) => {
+    const da = Math.hypot((ax ?? 0) - simState.fx, (ay ?? 0) - simState.fy);
+    const db = Math.hypot((bx ?? 0) - simState.fx, (by ?? 0) - simState.fy);
+    return da - db;
+  });
+  const [x, y] = candidates[0]!;
+  return { x: x ?? objX, y: y ?? objY };
+}
 
 /** Camera controls. tileWidth presets matching TS1's three zoom levels. */
 const CAMERA_TILE_WIDTHS = [32, 64, 128] as const;
@@ -60,8 +187,12 @@ function mountCameraControls(): void {
     <button data-cam-zoom="1">mid</button>
     <button data-cam-zoom="2">near</button>
     <span style="opacity:.5;">·</span>
-    <button data-cam-action="save" title="Save current lot to server">save lot</button>
-    <button data-cam-action="load" title="Reload lot from server">load lot</button>
+    <span style="opacity:.7;">mode</span>
+    <button data-cam-action="mode-play" title="Click walks the Sim & triggers interactions">play</button>
+    <button data-cam-action="mode-build" title="Click places the viewer object on empty tiles">build</button>
+    <span style="opacity:.5;">·</span>
+    <button data-cam-action="save" title="Save current lot to server">save</button>
+    <button data-cam-action="load" title="Reload lot from server">load</button>
     <button data-cam-action="reset" title="Clear all placed objects">reset</button>
   `;
   document.body.appendChild(bar);
@@ -77,6 +208,13 @@ function mountCameraControls(): void {
     if (action === "reset") clearLot();
     else if (action === "save") void saveLot();
     else if (action === "load") void loadLot(true);
+    else if (action === "mode-play") {
+      lotMode = "play";
+      updateModeButtonHighlights();
+    } else if (action === "mode-build") {
+      lotMode = "build";
+      updateModeButtonHighlights();
+    }
   });
   // Help blurb directly under the camera bar.
   const help = document.createElement("div");
@@ -84,7 +222,7 @@ function mountCameraControls(): void {
   help.style.cssText =
     "position:fixed;top:46px;right:8px;background:rgba(0,0,0,.55);padding:4px 8px;border-radius:4px;font:11px/1.4 ui-monospace,monospace;color:#9ad;max-width:220px;text-align:right;";
   help.innerHTML =
-    "click object: pie menu<br/>click empty tile: place viewer obj<br/>right-click: rotate object<br/>shift+click: remove<br/>Q/E rotate camera · +/- zoom";
+    "<b>play</b>: click ground = walk Sim · click obj = walk + interact<br/><b>build</b>: click ground = place viewer obj<br/>right-click: rotate · shift+click: remove<br/>Q/E rotate camera · +/- zoom";
   document.body.appendChild(help);
   updateCameraButtonHighlights();
 }
@@ -100,6 +238,17 @@ function updateCameraButtonHighlights(): void {
     } else if (btn.dataset["cam"]) {
       btn.style.cssText = controlButtonStyle(false);
     }
+  }
+  updateModeButtonHighlights();
+}
+
+function updateModeButtonHighlights(): void {
+  const bar = document.getElementById("camera-controls");
+  if (!bar) return;
+  for (const btn of bar.querySelectorAll<HTMLButtonElement>("button[data-cam-action]")) {
+    const action = btn.dataset["camAction"];
+    if (action === "mode-play") btn.style.cssText = controlButtonStyle(lotMode === "play");
+    else if (action === "mode-build") btn.style.cssText = controlButtonStyle(lotMode === "build");
   }
 }
 
@@ -677,6 +826,7 @@ function composeLotScene(): void {
     }
   }
   lotScene.sprites = sprites;
+  lotScene.entities = [simEntity()];
   renderLot();
 }
 
@@ -728,12 +878,19 @@ function onLotCanvasClick(ev: MouseEvent): void {
       return;
     }
     selectedInstanceId = inst.id;
-    onLotInstanceSelected(inst, cx, cy);
+    if (lotMode === "play") {
+      // Walk the Sim to an adjacent tile, then open the pie menu.
+      const dest = adjacentTileFor(inst.worldX, inst.worldY);
+      startWalk(dest.x, dest.y, () => {
+        const projected = projectTileToScreen(inst.worldX, inst.worldY, lotScene.camera, canvas);
+        onLotInstanceSelected(inst, projected.sx, projected.sy);
+      });
+    } else {
+      onLotInstanceSelected(inst, cx, cy);
+    }
     return;
   }
-  // Empty tile: place the viewer's currently-selected object there. This is
-  // the smallest possible Build mode — pick something in the side panel, then
-  // click on the lot to drop it.
+  // Empty tile.
   const tile = screenToTile(cx, cy, lotScene.camera, canvas);
   if (
     tile.worldX < 0 ||
@@ -744,19 +901,25 @@ function onLotCanvasClick(ev: MouseEvent): void {
     closeInteractionMenuImpl();
     return;
   }
-  const obj = viewerState.current;
-  if (!obj) {
+  if (lotMode === "build") {
+    // Place the viewer's currently-selected object on the empty tile.
+    const obj = viewerState.current;
+    if (!obj) {
+      closeInteractionMenuImpl();
+      return;
+    }
+    if (lotInstances.some((i) => i.worldX === tile.worldX && i.worldY === tile.worldY)) {
+      closeInteractionMenuImpl();
+      return;
+    }
+    placeOnLot(obj, tile.worldX, tile.worldY, viewerState.direction, viewerState.zoom);
+    composeLotScene();
     closeInteractionMenuImpl();
     return;
   }
-  // Don't stack two instances on the same tile (would just hide the previous).
-  if (lotInstances.some((i) => i.worldX === tile.worldX && i.worldY === tile.worldY)) {
-    closeInteractionMenuImpl();
-    return;
-  }
-  placeOnLot(obj, tile.worldX, tile.worldY, viewerState.direction, viewerState.zoom);
-  composeLotScene();
+  // Play mode: walk the Sim to the clicked tile.
   closeInteractionMenuImpl();
+  startWalk(tile.worldX, tile.worldY);
 }
 
 canvas.addEventListener("click", onLotCanvasClick);
