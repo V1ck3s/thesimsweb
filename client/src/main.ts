@@ -221,7 +221,7 @@ interface RunOutput {
   actionId: number;
   exec: string;
   ticksRan: number;
-  trace: Array<{ depth: number; bhavId: number; ip: number; opcode: number; branch: string }>;
+  trace: Array<{ depth: number; bhavId: number; ip: number; opcode: number; branch: string; operand?: string }>;
   effects: VmEffectObject[];
 }
 
@@ -590,7 +590,7 @@ function setRunOutput(text: string): void {
 
 function formatTraceEntry(
   wasm: Awaited<ReturnType<typeof engine>>,
-  e: { depth: number; bhavId: number; ip: number; opcode: number; branch: string },
+  e: { depth: number; bhavId: number; ip: number; opcode: number; branch: string; operand?: string },
 ): string {
   const indent = "  ".repeat(e.depth);
   const bhavLabel = `0x${e.bhavId.toString(16).padStart(4, "0")}`;
@@ -599,7 +599,8 @@ function formatTraceEntry(
     e.opcode < 256
       ? ((wasm.primitiveName(e.opcode) as string | null) ?? `prim ${e.opcode}`)
       : `call 0x${e.opcode.toString(16).padStart(4, "0")}`;
-  return `${indent}${bhavLabel}#${e.ip} ${opLabel} → ${e.branch}`;
+  const operandPart = e.operand ? `  ${e.operand}` : "";
+  return `${indent}${bhavLabel}#${e.ip} ${opLabel}${operandPart} → ${e.branch}`;
 }
 
 async function runMain(globalsFarPath: string | null): Promise<void> {

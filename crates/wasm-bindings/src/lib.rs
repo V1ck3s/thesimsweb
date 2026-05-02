@@ -637,6 +637,24 @@ pub fn run_object_event(
         .map_err(|_| JsError::new("set exec"))?;
     set_f64(&result, "ticksRan", f64::from(ticks_ran))?;
 
+    // Cache parsed BHAVs by id so we can look up the operand for each trace entry
+    // without re-parsing for every step. Avoids O(N²) on long traces.
+    let mut bhav_cache: std::collections::BTreeMap<u16, simantics::Bhav> =
+        std::collections::BTreeMap::new();
+    let mut lookup_operand = |bhav_id: u16, ip: u16| -> Option<[u8; 8]> {
+        if let std::collections::btree_map::Entry::Vacant(slot) = bhav_cache.entry(bhav_id) {
+            let bytes = source
+                .private
+                .get(&bhav_id)
+                .or_else(|| source.semi_global.get(&bhav_id))
+                .or_else(|| source.global.get(&bhav_id))?;
+            slot.insert(simantics::Bhav::parse(bytes).ok()?);
+        }
+        let bhav = bhav_cache.get(&bhav_id)?;
+        let instr = bhav.instructions.get(ip as usize)?;
+        Some(instr.operand)
+    };
+
     let trace = Array::new();
     for entry in &vm.trace {
         let e = Object::new();
@@ -654,6 +672,12 @@ pub fn run_object_event(
         };
         Reflect::set(&e, &JsValue::from_str("branch"), &JsValue::from_str(&branch))
             .map_err(|_| JsError::new("set branch"))?;
+        if let Some(operand) = lookup_operand(entry.bhav_id, entry.ip) {
+            if let Some(decoded) = simantics::vm::format_primitive_operand(entry.opcode, operand) {
+                Reflect::set(&e, &JsValue::from_str("operand"), &JsValue::from_str(&decoded))
+                    .map_err(|_| JsError::new("set operand"))?;
+            }
+        }
         trace.push(&e);
     }
     Reflect::set(&result, &JsValue::from_str("trace"), &trace)
