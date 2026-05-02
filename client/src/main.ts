@@ -1025,6 +1025,65 @@ function refreshHitEventSelect(): void {
   }
 }
 
+function mountRadio(manifest: Awaited<ReturnType<typeof fetchManifest>>): void {
+  const stationSel = document.getElementById("radio-station-select");
+  const trackSel = document.getElementById("radio-track-select");
+  const audio = document.getElementById("radio-audio");
+  if (
+    !(stationSel instanceof HTMLSelectElement) ||
+    !(trackSel instanceof HTMLSelectElement) ||
+    !(audio instanceof HTMLAudioElement)
+  ) {
+    return;
+  }
+  const stations = new Map<string, Array<{ path: string; name: string }>>();
+  for (const f of manifest.files) {
+    const lower = f.path.toLowerCase();
+    if (!lower.endsWith(".mp3")) continue;
+    const m = lower.match(/music\/stations\/([^/]+)\//);
+    if (!m) continue;
+    const stationName = m[1];
+    if (!stationName) continue;
+    if (!stations.has(stationName)) stations.set(stationName, []);
+    const fileName = f.path.split("/").pop() ?? f.path;
+    stations.get(stationName)!.push({ path: f.path, name: fileName });
+  }
+  if (stations.size === 0) {
+    stationSel.disabled = true;
+    return;
+  }
+  const sorted = [...stations.entries()].sort((a, b) => a[0].localeCompare(b[0]));
+  stationSel.replaceChildren();
+  for (const [name] of sorted) {
+    const opt = document.createElement("option");
+    opt.value = name;
+    opt.textContent = name;
+    stationSel.appendChild(opt);
+  }
+  const refreshTracks = (): void => {
+    const tracks = stations.get(stationSel.value);
+    if (!tracks) return;
+    trackSel.replaceChildren();
+    for (const t of tracks) {
+      const opt = document.createElement("option");
+      opt.value = t.path;
+      opt.textContent = t.name;
+      trackSel.appendChild(opt);
+    }
+    if (tracks.length > 0 && tracks[0]) {
+      audio.src = `/assets/${tracks[0].path}`;
+    }
+  };
+  stationSel.addEventListener("change", refreshTracks);
+  trackSel.addEventListener("change", () => {
+    audio.src = `/assets/${trackSel.value}`;
+    void audio.play().catch(() => {
+      /* user interaction needed */
+    });
+  });
+  refreshTracks();
+}
+
 // ---- Web Audio routing ----
 let sharedAudioContext: AudioContext | null = null;
 function getAudioContext(): AudioContext {
@@ -1229,6 +1288,7 @@ async function tryRenderAlarmClockObject(
   mountStaticControls();
   void mountObjectSelector(wasm, objectsFar.path);
   void tryDisasmHit(wasm, manifest);
+  mountRadio(manifest);
   await loadObjectByName(wasm, objectsFar.path, "AlarmClock.iff");
   const globalsFarPath = globalsFar ? globalsFar.path : null;
   const runBtn = document.getElementById("run-main-btn");

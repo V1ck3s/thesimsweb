@@ -73,6 +73,20 @@
           <summary style="padding:4px 8px;cursor:pointer;user-select:none;">Disasm HIT (simssound)</summary>
           <pre id="hit-output" style="margin:0;padding:6px 8px;color:#cfa;font:10.5px/1.35 ui-monospace,monospace;max-height:240px;overflow:auto;white-space:pre;"></pre>
         </details>
+        <details id="radio-wrap" style="background:rgba(0,0,0,.55);border:1px solid #444;border-radius:3px;max-width:340px;color:#9ad;font:11px/1.35 ui-monospace,monospace;">
+          <summary style="padding:4px 8px;cursor:pointer;user-select:none;">Radio</summary>
+          <div style="padding:6px 8px;display:flex;flex-direction:column;gap:6px;">
+            <div style="display:flex;gap:6px;align-items:center;">
+              <span style="opacity:.7;width:54px;">station</span>
+              <select id="radio-station-select" style="flex:1;background:#111;color:#cde;border:1px solid #444;font:inherit;padding:2px 4px;"></select>
+            </div>
+            <div style="display:flex;gap:6px;align-items:center;">
+              <span style="opacity:.7;width:54px;">track</span>
+              <select id="radio-track-select" style="flex:1;background:#111;color:#cde;border:1px solid #444;font:inherit;padding:2px 4px;"></select>
+            </div>
+            <audio id="radio-audio" controls preload="none" style="width:100%;"></audio>
+          </div>
+        </details>
         <details id="hit-sandbox-wrap" style="background:rgba(0,0,0,.55);border:1px solid #444;border-radius:3px;max-width:340px;color:#9ad;font:11px/1.35 ui-monospace,monospace;">
           <summary style="padding:4px 8px;cursor:pointer;user-select:none;">HIT Sandbox</summary>
           <div style="padding:6px 8px;display:flex;flex-direction:column;gap:6px;">
