@@ -247,6 +247,11 @@ let lastMotiveTick = performance.now();
 function startMotivesLoop(): void {
   setInterval(() => {
     const now = performance.now();
+    if (document.hidden) {
+      // Skip the elapsed window so motives don't snap-decay on tab refocus.
+      lastMotiveTick = now;
+      return;
+    }
     tickMotives(now - lastMotiveTick);
     lastMotiveTick = now;
   }, 1000);
@@ -296,6 +301,7 @@ function renderTimeFundsHud(): void {
 
 function startGameClock(): void {
   setInterval(() => {
+    if (document.hidden) return; // pause when the tab is in the background
     gameMinutes += TIME_SCALE;
     if (gameMinutes >= 24 * 60) {
       gameMinutes -= 24 * 60;
