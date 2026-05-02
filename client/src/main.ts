@@ -1,7 +1,6 @@
-import { createRenderer } from "./renderer/webgl.js";
-import { drawHelloSims } from "./renderer/hello.js";
 import { engine } from "./engine/wasm.js";
 import { fetchManifest, readFarManifest, readIffFromFar, readStandaloneIff } from "./engine/assets.js";
+import { renderIso, type IsoScene } from "./renderer/iso.js";
 
 function findCanvas(): HTMLCanvasElement {
   const el = document.getElementById("game");
@@ -12,8 +11,20 @@ function findCanvas(): HTMLCanvasElement {
 }
 
 const canvas = findCanvas();
-const renderer = createRenderer(canvas);
-drawHelloSims(renderer);
+
+/** Lot scene state — populated as objects load. */
+const lotScene: IsoScene = {
+  gridSize: 16,
+  sprites: [],
+  camera: { tileWidth: 64, centerX: 8, centerY: 8 },
+};
+
+function renderLot(): void {
+  renderIso(canvas, lotScene);
+}
+
+// Initial render: empty lot.
+renderLot();
 
 // Smoke-test the WASM bridge: load the engine, log version, run the parsers
 // against a synthetic FAR + IFF. If any of this throws the page surfaces it.
@@ -417,6 +428,15 @@ function renderViewer(): void {
     return;
   }
   composeObjectViewer(decoded);
+  // Mirror the current sprite into the lot scene at world (8, 8) so the main
+  // canvas shows the object on a tile grid. Phase 3 ramp.
+  lotScene.sprites = decoded.map((d) => ({
+    bmp: d.bmp,
+    sp: d.sp,
+    worldX: 8,
+    worldY: 8,
+  }));
+  renderLot();
   const dirLabel = DIRECTION_FLAGS.find((d) => d.flag === viewerState.direction)?.label ?? "?";
   // Show the sprite refs as `id#frame` so the user can spot when adjacent directions
   // reuse the same compiled sprite (TS1 stores e.g. only N+W and flips at render time).
@@ -1444,8 +1464,7 @@ function resize(): void {
   if (canvas.width !== w || canvas.height !== h) {
     canvas.width = w;
     canvas.height = h;
-    renderer.gl.viewport(0, 0, w, h);
-    drawHelloSims(renderer);
+    renderLot();
   }
 }
 
