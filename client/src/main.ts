@@ -192,7 +192,29 @@ interface LoadedObject {
   baseGraphicId: number;
   dgrps: DgrpChunk[];
   semiGlobalName: string | null;
+  objfEntries: Array<{ condition: number; action: number }>;
 }
+
+/** Conventional event-index names. Defined by `behavior.iff` chunk 0x00F5; this is
+ *  the de facto base game order. Indexing past this just shows "Event N". */
+const EVENT_NAMES = [
+  "Init",
+  "Main",
+  "Load",
+  "Cleanup",
+  "User Placement",
+  "Auto Placement",
+  "Wall Adjacency Changed",
+  "Room Changed",
+  "Disaster Started",
+  "Disaster Ended",
+  "Reset",
+  "Pickup",
+  "User Pickup",
+  "Level Info Request",
+  "Service Pickup",
+  "Lot Lockdown",
+];
 
 interface RunOutput {
   outcome: string;
@@ -248,6 +270,18 @@ function buildLoadedObject(
       console.warn(`[viewer] GLOB parse failed for ${iffName}:`, err);
     }
   }
+  const objfChunk = chunks.find((c) => c.kind === "OBJf");
+  let objfEntries: Array<{ condition: number; action: number }> = [];
+  if (objfChunk) {
+    try {
+      const parsed = wasm.parseObjf(
+        data.subarray(objfChunk.dataStart, objfChunk.dataStart + objfChunk.dataLen),
+      ) as { entries: Array<{ condition: number; action: number }> };
+      objfEntries = parsed.entries;
+    } catch (err) {
+      console.warn(`[viewer] OBJf parse failed for ${iffName}:`, err);
+    }
+  }
   const dgrps: DgrpChunk[] = [];
   for (const c of chunks) {
     if (c.kind !== "DGRP") continue;
@@ -261,7 +295,32 @@ function buildLoadedObject(
       console.warn(`[viewer] DGRP ${c.id} parse failed:`, err);
     }
   }
-  return { iffName, objectName, data, chunks, paltChunk, baseGraphicId, dgrps, semiGlobalName };
+  return { iffName, objectName, data, chunks, paltChunk, baseGraphicId, dgrps, semiGlobalName, objfEntries };
+}
+
+/** Refresh the event-select <option>s with this object's wired (non-zero) events. */
+function refreshEventSelector(): void {
+  const select = document.getElementById("event-select");
+  if (!(select instanceof HTMLSelectElement)) return;
+  const obj = viewerState.current;
+  select.innerHTML = "";
+  if (!obj) return;
+  let hasMain = false;
+  obj.objfEntries.forEach((entry, idx) => {
+    if (entry.action === 0 && entry.condition === 0) return;
+    const opt = document.createElement("option");
+    opt.value = String(idx);
+    const name = EVENT_NAMES[idx] ?? `Event ${idx}`;
+    opt.textContent = `${idx}: ${name} → 0x${entry.action.toString(16).padStart(4, "0")}`;
+    if (idx === 1) {
+      opt.selected = true;
+      hasMain = true;
+    }
+    select.appendChild(opt);
+  });
+  if (!hasMain && select.options.length > 0) {
+    select.options[0]!.selected = true;
+  }
 }
 
 /** "AlarmClock.iff" → "Alarm Clock". CamelCase → space-separated. */
@@ -447,6 +506,8 @@ async function loadObjectByName(
       viewerState.dgrpId = loaded.dgrps[0]?.id ?? 0;
     }
     renderViewer();
+    refreshEventSelector();
+    setRunOutput("");
   } catch (err) {
     console.warn(`[viewer] load ${iffName} failed:`, err);
     setObjectLabel(`${iffName} · load failed`);
@@ -512,6 +573,12 @@ async function runMain(globalsFarPath: string | null): Promise<void> {
     setRunOutput("(no object loaded)");
     return;
   }
+  const eventSelect = document.getElementById("event-select");
+  const eventIdx =
+    eventSelect instanceof HTMLSelectElement && eventSelect.value !== ""
+      ? Number(eventSelect.value)
+      : 1;
+  const eventName = EVENT_NAMES[eventIdx] ?? `Event ${eventIdx}`;
   setRunOutput("running…");
   let globalsBytes: Uint8Array = new Uint8Array(0);
   // When the object has no GLOB chunk, the engine falls back to `Global.iff` itself
@@ -522,10 +589,10 @@ async function runMain(globalsFarPath: string | null): Promise<void> {
     if (loaded) globalsBytes = loaded;
   }
   try {
-    const out = wasm.runObjectEvent(obj.data, globalsBytes, 1) as RunOutput;
+    const out = wasm.runObjectEvent(obj.data, globalsBytes, eventIdx) as RunOutput;
     const lines: string[] = [];
     lines.push(
-      `event=Main action=0x${out.actionId.toString(16).padStart(4, "0")} outcome=${out.outcome}${out.exec ? ` (${out.exec})` : ""}`,
+      `event=${eventIdx} (${eventName}) action=0x${out.actionId.toString(16).padStart(4, "0")} outcome=${out.outcome}${out.exec ? ` (${out.exec})` : ""}`,
     );
     if (obj.semiGlobalName) lines.push(`semi-global: ${obj.semiGlobalName} (${globalsBytes.length}B)`);
     lines.push(`trace (${out.trace.length} steps):`);
