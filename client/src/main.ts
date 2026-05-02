@@ -222,7 +222,42 @@ interface RunOutput {
   exec: string;
   ticksRan: number;
   trace: Array<{ depth: number; bhavId: number; ip: number; opcode: number; branch: string }>;
-  effects: string[];
+  effects: VmEffectObject[];
+}
+
+interface VmEffectObject {
+  kind: string;
+  [field: string]: unknown;
+}
+
+function formatEffect(ef: VmEffectObject): string {
+  switch (ef.kind) {
+    case "Sleep":
+      return `Sleep ticks=${ef["ticks"]}`;
+    case "Idle":
+      return `Idle ticks=${ef["ticks"]} interruptable=${ef["interruptable"]}`;
+    case "PlaySound":
+      return `PlaySound 0x${Number(ef["eventId"]).toString(16)}`;
+    case "AnimateSim":
+      return `AnimateSim 0x${Number(ef["animId"]).toString(16)}`;
+    case "Dialog":
+      return `Dialog ${ef["flavour"]} str=${ef["stringIndex"]}`;
+    case "PushInteraction":
+      return `PushInteraction action=0x${Number(ef["actionFunction"]).toString(16)} joining=${ef["joiningIndex"]}`;
+    case "TransferFunds":
+      return `TransferFunds Δ=${ef["delta"]}§`;
+    case "CreateObjectInstance":
+      return `CreateObjectInstance guid=0x${Number(ef["guid"]).toString(16)} id=${ef["newObjectId"]}`;
+    case "Breakpoint":
+      return `Breakpoint @0x${Number(ef["bhavId"]).toString(16)}#${ef["ip"]}`;
+    default: {
+      const fields = Object.entries(ef)
+        .filter(([k]) => k !== "kind")
+        .map(([k, v]) => `${k}=${String(v)}`)
+        .join(" ");
+      return fields ? `${ef.kind} ${fields}` : ef.kind;
+    }
+  }
 }
 
 const DIRECTION_FLAGS: Array<{ flag: number; label: string }> = [
@@ -610,7 +645,7 @@ async function runMain(globalsFarPath: string | null): Promise<void> {
     if (out.trace.length > limit) lines.push(`  … +${out.trace.length - limit} more`);
     if (out.effects.length > 0) {
       lines.push(`effects (${out.effects.length}):`);
-      for (const ef of out.effects) lines.push("  " + ef);
+      for (const ef of out.effects) lines.push("  " + formatEffect(ef));
     }
     setRunOutput(lines.join("\n"));
   } catch (err) {

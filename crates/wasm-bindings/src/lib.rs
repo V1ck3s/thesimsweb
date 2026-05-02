@@ -661,10 +661,124 @@ pub fn run_object_event(
 
     let effects = Array::new();
     for ef in &vm.effects {
-        effects.push(&JsValue::from_str(&format!("{ef:?}")));
+        effects.push(&effect_to_object(ef)?);
     }
     Reflect::set(&result, &JsValue::from_str("effects"), &effects)
         .map_err(|_| JsError::new("set effects"))?;
 
     Ok(result)
+}
+
+/// Serialize a `VmEffect` as a plain JS object `{ kind: <variant>, …fields }`.
+/// Avoids pulling in the heavy `Debug` formatter (saves ~50 KB on the WASM bundle).
+#[allow(clippy::too_many_lines)]
+fn effect_to_object(ef: &simantics::vm::VmEffect) -> Result<JsValue, JsError> {
+    use simantics::vm::{DialogFlavour, VmEffect};
+    let obj = Object::new();
+    let set_kind = |k: &str| -> Result<(), JsError> {
+        Reflect::set(&obj, &JsValue::from_str("kind"), &JsValue::from_str(k))
+            .map_err(|_| JsError::new("set kind"))?;
+        Ok(())
+    };
+    match ef {
+        VmEffect::Sleep { ticks, .. } => {
+            set_kind("Sleep")?;
+            set_f64(&obj, "ticks", f64::from(*ticks))?;
+        }
+        VmEffect::Idle { ticks, interruptable, .. } => {
+            set_kind("Idle")?;
+            set_f64(&obj, "ticks", f64::from(*ticks))?;
+            Reflect::set(
+                &obj,
+                &JsValue::from_str("interruptable"),
+                &JsValue::from_bool(*interruptable),
+            )
+            .map_err(|_| JsError::new("set interruptable"))?;
+        }
+        VmEffect::PlaySound { event_id, .. } => {
+            set_kind("PlaySound")?;
+            set_f64(&obj, "eventId", f64::from(*event_id))?;
+        }
+        VmEffect::AnimateSim { anim_id, .. } => {
+            set_kind("AnimateSim")?;
+            set_f64(&obj, "animId", f64::from(*anim_id))?;
+        }
+        VmEffect::StopAllSounds => {
+            set_kind("StopAllSounds")?;
+        }
+        VmEffect::SetBalloon { kind, .. } => {
+            set_kind("SetBalloon")?;
+            set_f64(&obj, "balloonKind", f64::from(*kind))?;
+        }
+        VmEffect::SetActionString { string_index, .. } => {
+            set_kind("SetActionString")?;
+            set_f64(&obj, "stringIndex", f64::from(*string_index))?;
+        }
+        VmEffect::NotifyOutOfIdle { sim_id } => {
+            set_kind("NotifyOutOfIdle")?;
+            set_f64(&obj, "simId", f64::from(*sim_id))?;
+        }
+        VmEffect::SpecialEffect { kind, .. } => {
+            set_kind("SpecialEffect")?;
+            set_f64(&obj, "effectKind", f64::from(*kind))?;
+        }
+        VmEffect::UiEffect { kind, .. } => {
+            set_kind("UiEffect")?;
+            set_f64(&obj, "effectKind", f64::from(*kind))?;
+        }
+        VmEffect::ShowString { kind, .. } => {
+            set_kind("ShowString")?;
+            set_f64(&obj, "stringKind", f64::from(*kind))?;
+        }
+        VmEffect::Dialog { flavour, string_index, .. } => {
+            set_kind("Dialog")?;
+            let flav = match flavour {
+                DialogFlavour::Private => "private",
+                DialogFlavour::Global => "global",
+                DialogFlavour::SemiGlobal => "semiGlobal",
+            };
+            Reflect::set(&obj, &JsValue::from_str("flavour"), &JsValue::from_str(flav))
+                .map_err(|_| JsError::new("set flavour"))?;
+            set_f64(&obj, "stringIndex", f64::from(*string_index))?;
+        }
+        VmEffect::ChangeSuit { suit_id, .. } => {
+            set_kind("ChangeSuit")?;
+            set_f64(&obj, "suitId", f64::from(*suit_id))?;
+        }
+        VmEffect::PushInteraction { pending } => {
+            set_kind("PushInteraction")?;
+            set_f64(&obj, "actionFunction", f64::from(pending.action_function))?;
+            set_f64(&obj, "joiningIndex", f64::from(pending.joining_index))?;
+        }
+        VmEffect::TransferFunds { delta, .. } => {
+            set_kind("TransferFunds")?;
+            set_f64(&obj, "delta", f64::from(*delta))?;
+        }
+        VmEffect::SpatialRequest { primitive, .. } => {
+            set_kind("SpatialRequest")?;
+            set_f64(&obj, "primitive", f64::from(*primitive))?;
+        }
+        VmEffect::RunTreeByName { name_index, .. } => {
+            set_kind("RunTreeByName")?;
+            set_f64(&obj, "nameIndex", f64::from(*name_index))?;
+        }
+        VmEffect::RemoveObjectInstance { object_id } => {
+            set_kind("RemoveObjectInstance")?;
+            set_f64(&obj, "objectId", f64::from(*object_id))?;
+        }
+        VmEffect::CreateObjectInstance { guid, new_object_id } => {
+            set_kind("CreateObjectInstance")?;
+            set_f64(&obj, "guid", f64::from(*guid))?;
+            set_f64(&obj, "newObjectId", f64::from(*new_object_id))?;
+        }
+        VmEffect::LookTowards { .. } => {
+            set_kind("LookTowards")?;
+        }
+        VmEffect::Breakpoint { bhav_id, ip } => {
+            set_kind("Breakpoint")?;
+            set_f64(&obj, "bhavId", f64::from(*bhav_id))?;
+            set_f64(&obj, "ip", f64::from(*ip))?;
+        }
+    }
+    Ok(obj.into())
 }
