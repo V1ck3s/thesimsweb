@@ -60,7 +60,9 @@ function mountCameraControls(): void {
     <button data-cam-zoom="1">mid</button>
     <button data-cam-zoom="2">near</button>
     <span style="opacity:.5;">·</span>
-    <button data-cam-action="reset" title="Clear all placed objects">reset lot</button>
+    <button data-cam-action="save" title="Save current lot to server">save lot</button>
+    <button data-cam-action="load" title="Reload lot from server">load lot</button>
+    <button data-cam-action="reset" title="Clear all placed objects">reset</button>
   `;
   document.body.appendChild(bar);
   bar.addEventListener("click", (ev) => {
@@ -73,6 +75,8 @@ function mountCameraControls(): void {
     if (zoomStr !== undefined) setCameraZoom(parseInt(zoomStr, 10));
     const action = t.dataset["camAction"];
     if (action === "reset") clearLot();
+    else if (action === "save") void saveLot();
+    else if (action === "load") void loadLot(true);
   });
   // Help blurb directly under the camera bar.
   const help = document.createElement("div");
@@ -772,6 +776,79 @@ function clearLot(): void {
   selectedInstanceId = null;
   composeLotScene();
   closeInteractionMenuImpl();
+}
+
+// ============================================================================
+// Lot persistence — serializes the placed instances to /api/saves/current-lot.
+// ============================================================================
+
+interface SerializedLotInstance {
+  iffName: string;
+  worldX: number;
+  worldY: number;
+  direction: number;
+  zoom: number;
+  dgrpId: number;
+}
+
+const LOT_SAVE_ID = "current-lot";
+
+let objectsFarPathCache: string | null = null;
+
+function serializeLot(): SerializedLotInstance[] {
+  return lotInstances.map((i) => ({
+    iffName: i.obj.iffName,
+    worldX: i.worldX,
+    worldY: i.worldY,
+    direction: i.direction,
+    zoom: i.zoom,
+    dgrpId: i.dgrpId,
+  }));
+}
+
+async function saveLot(): Promise<void> {
+  const payload = JSON.stringify(serializeLot());
+  try {
+    const res = await fetch(`/api/saves/${LOT_SAVE_ID}?name=Current%20Lot`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: payload,
+    });
+    if (res.ok) console.info(`[lot] saved ${lotInstances.length} instance(s) (${payload.length}B)`);
+    else console.warn(`[lot] save failed: ${res.status}`);
+  } catch (err) {
+    console.warn("[lot] save error:", err);
+  }
+}
+
+async function loadLot(replace: boolean = true): Promise<void> {
+  const wasm = viewerState.wasm;
+  if (!wasm || !objectsFarPathCache) return;
+  try {
+    const res = await fetch(`/api/saves/${LOT_SAVE_ID}`);
+    if (!res.ok) return; // 404 first time; that's fine.
+    const text = await res.text();
+    const data: SerializedLotInstance[] = JSON.parse(text);
+    if (!Array.isArray(data)) return;
+    if (replace) lotInstances.length = 0;
+    for (const s of data) {
+      try {
+        const { data: iffBytes, chunks } = await readIffFromFar(objectsFarPathCache, s.iffName);
+        const loaded = buildLoadedObject(wasm, s.iffName, iffBytes, chunks as IffChunkRef[]);
+        if (loaded && loaded.dgrps.length > 0) {
+          const inst = placeOnLot(loaded, s.worldX, s.worldY, s.direction, s.zoom);
+          if (loaded.dgrps.some((d) => d.id === s.dgrpId)) inst.dgrpId = s.dgrpId;
+          inst.decoded = null; // re-decode at next render in case dgrpId changed
+        }
+      } catch (err) {
+        console.warn(`[lot] re-load ${s.iffName} failed:`, err);
+      }
+    }
+    composeLotScene();
+    console.info(`[lot] loaded ${lotInstances.length} instance(s) from save`);
+  } catch (err) {
+    console.warn("[lot] load error:", err);
+  }
 }
 
 /** Hook for the pie-menu task: shows the interactions of the selected instance. */
@@ -1951,9 +2028,19 @@ async function tryRenderAlarmClockObject(
   mountRadio(manifest);
   await loadObjectByName(wasm, objectsFar.path, "AlarmClock.iff");
   lotGlobalsFarPath = globalsFar ? globalsFar.path : null;
-  // Pre-populate the lot with a handful of demo objects so the click-select +
-  // pie menu features have something to interact with at boot.
-  void mountLotDemo(wasm, objectsFar.path);
+  objectsFarPathCache = objectsFar.path;
+  // Try to restore the user's last lot first; if there is none, fall back to
+  // the bundled demo placements so the page is never empty on boot.
+  try {
+    const saveRes = await fetch(`/api/saves/${LOT_SAVE_ID}`, { method: "HEAD" });
+    if (saveRes.ok) {
+      await loadLot(true);
+    } else {
+      void mountLotDemo(wasm, objectsFar.path);
+    }
+  } catch {
+    void mountLotDemo(wasm, objectsFar.path);
+  }
   const globalsFarPath = globalsFar ? globalsFar.path : null;
   const runBtn = document.getElementById("run-main-btn");
   if (runBtn instanceof HTMLButtonElement) {
