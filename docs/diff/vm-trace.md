@@ -81,16 +81,46 @@ just diff-vm  # convenience recipe (TODO)
 
 ## Status
 
-The format is implemented (`crates/simantics/examples/trace_json.rs`).
+Two layers of testing:
 
-We do **not** ship an oracle yet. To produce one:
-1. Build FreeSO from `https://github.com/riperiperi/FreeSO` (.NET 6+).
-2. Patch the `VMSimanticsThread::Run` loop to emit the JSONL schema above
-   on each BHAV instruction. (~30 lines of C# — straightforward but out of
-   scope for this sandbox.)
-3. Run a known interaction (e.g. AlarmClock event 1) and capture stdout
-   into `oracle/<object>-event<n>.jsonl`.
-4. Run `scripts/diff/vm.sh` to compare.
+### Self-regression (active)
 
-Without that oracle the differential test cannot run, but the contract is
-locked: any oracle that emits this schema can be plugged in.
+`crates/simantics/tests/trace_golden.rs` runs `trace_json` on
+`AlarmClock.iff` and `unsnacker.iff` event 1 and compares against frozen
+goldens in `tests/golden/vm/`. Catches accidental changes to the JSONL
+schema or the VM's deterministic step ordering. Run via:
+
+```bash
+cargo test --release -p simantics --test trace_golden
+```
+
+To regenerate goldens after an intentional VM behaviour change:
+
+```bash
+cargo run --release -p simantics --example trace_json -- \
+  samples/iff/AlarmClock.iff --event 1 \
+  > tests/golden/vm/alarmclock_event1.jsonl
+cargo run --release -p simantics --example trace_json -- \
+  samples/iff/unsnacker.iff --event 1 \
+  > tests/golden/vm/unsnacker_event1.jsonl
+```
+
+### FreeSO oracle (deferred — toolchain blocker)
+
+We do **not** ship a FreeSO-side oracle. The blocker is genuinely
+non-trivial:
+
+- FreeSO targets .NET Framework 4.5 with MonoGame XNA — the VM source
+  (`TSOClient/tso.simantics/VM.cs`) imports `Microsoft.Xna.Framework`,
+  `FSO.LotView.Components`, `FSO.SimAntics.NetPlay.Drivers`, etc. (30+
+  namespaces).
+- Migrating the project to .NET 9 (which we have locally) means resolving
+  XNA → MonoGame.Framework + extracting just the VM core out of the
+  netplay/drivers/marshals tangle. Multi-day yak-shave.
+- Once isolated, patch `VMSimanticsThread::Run` to emit the JSONL schema
+  above (~30 lines of C# wrapping the `bhav.Instructions[ip]` access).
+
+The contract is locked: any oracle that emits this schema can be plugged
+into `scripts/diff/vm.sh` to validate our VM byte-for-byte against
+FreeSO/Simitone. Until then, the self-regression goldens guard against
+accidental drift.

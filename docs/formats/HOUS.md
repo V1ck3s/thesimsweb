@@ -35,43 +35,119 @@ Parser: `simantics::Hous::parse(data) -> Result<Hous, _>`. WASM:
 
 ## FLRm — floor material assignments
 
-Variable-length list of records. **Not parsed**.
-
-Empirical structure (`House90.iff/FLRm[id=0]`, 232 data bytes):
+Layout (parsed by `simantics::Flrm`, algorithm cross-checked against
+FreeSO's `WALm.cs`):
 
 ```
-[0..8]    8 zero bytes (reserved?)
+[0..4]    reserved zero
+[4..8]    version u32 LE (= 0)
 [8..12]   "mRLF" magic (= "FLRm" reversed)
-[12..16]  version u32 LE = 6
-[16..]    repeating records, each:
-            C-string (floor IFF filename, e.g. "floormagictuscantileceramic.flr\0")
-            ~10 bytes of metadata (count? id? hash?)
+[12..16]  entry count u32 LE
+[16..]    entries (variable size):
+            NUL-terminated C-string (filename, e.g. "floormagictuscantileceramic.flr")
+            optional 1 pad byte if filename length (excluding NUL) is even
+              (16-bit alignment after the NUL)
+            u32 unknown1 (= 1 in samples)
+            u8 id  (sub-index, e.g. 21, 23, 28 for distinct floors)
+            (5 + chunk_id * 2) trailing bytes (chunk_id is the IFF chunk's id)
 ```
 
-A House lot has 2 FLRm chunks (id=0 and id=1, possibly two floor levels —
-ground and second story). The records list every distinct floor material
-referenced by the lot's tile array.
+A House lot has 2 FLRm chunks (`id=0` ground floor, `id=1` second story).
+On `House90.iff`: 6 entries each, mapping ids 21, 23, 28, 30, 31, 34 to the
+six distinct `.flr` filenames the lot references.
 
 ## WALm — wall material assignments
 
-Same shape as `FLRm` but for wall textures (e.g. `wallpaperflowery.wll`).
-Two WALm chunks (id=0 / id=1) per house, 402 + 420 data bytes in
-House90.iff. **Not parsed**.
+Identical layout to `FLRm` (FreeSO models them as the same class). Filenames
+are `.wll` instead of `.flr`. House90.iff exposes 9 unique walls per
+chunk, mapping ids 3, 5, 6, 7, 12, 16, 19, 31, 37 to filenames like
+`wallmagictuscanstuccowoodwainscoting.wll`.
+
+Same parser: `simantics::Flrm::parse(data, chunk_id)` (the magic check
+accepts both `mRLF` and `mLAW`).
 
 ## Arry — tile arrays (the actual geometry)
 
-The big payload chunks (3 374 + 24 + 474 + … + 40 516 bytes in House90.iff).
-**Not parsed — this is the heart of the reverse work.**
+64×64 RLE-compressed grids. Header layout (parsed by `simantics::Arry`):
 
-Niotso doesn't document the layout. Plausible interpretation given the
-sizes:
-- `id=0` (3 374 B) = the **floor tile array**: a 2D grid of (material id,
-  flags) tuples. For a 64×64 lot at 1 byte each that's 4 096 B — close.
-- `id=12` (40 516 B) = the **wall edge array**: tile-edge keyed list of
-  (material id, flags, segment kind) — fits a 64×64 grid with 2 edges per
-  tile and ~4 bytes per edge.
-- Other Arry IDs likely cover roofs, lights, water, plants, doors,
-  windows.
+```
+[0..4]    reserved zero
+[4..8]    width u32 LE  (= 64 for TS1 standard lots)
+[8..12]   height u32 LE (= 64)
+[12..16]  type u32 LE — bytes per tile
+            1 = floor material id   (well-known)
+            2 = object reference    (well-known)
+            4 = altitude            (well-known)
+            8 = walls (4 edge × 2B) (well-known)
+            14 = rich tile data     (TS1-only, content TBD)
+[16..20]  unknown u32 LE (= 1)
+[20..]    RLE bit-stream
+```
+
+RLE algorithm (copied from FreeSO `ARRY.cs`, BSD):
+- Read u16 `flre`. Stop on 0.
+- High bit clear → raw fill: copy `flre` bytes to the output. If `flre` is
+  odd, skip 1 pad byte (16-bit alignment).
+- High bit set → run-fill: skip `flre & 0x7FFF` positions, fill them with
+  the next byte, then 1 alignment byte, then a u16 size and copy `size`
+  raw bytes. Negative size signals end.
+
+Result: a row-major byte buffer of length `width * height * type`.
+
+Per-Arry-id meaning empirically observed on House90.iff (64×64 lot, all
+chunks decode without error):
+
+| chunk id | type | bytes/tile | nonzero | guess                            |
+| -------- | ---- | ---------- | ------- | -------------------------------- |
+| 0        | 4    | altitude   | 9007    | terrain heightmap                |
+| 1        | 1    | floor id   | 180     | ground floor materials           |
+| 2        | 8    | walls      | 4213    | wall edges per tile (4×2B)       |
+| 3        | 2    | objects    | 416     | objects placed (ground level)    |
+| 4        | 1    | floor id   | 0       | second-floor materials (empty)   |
+| 6, 7     | 1    | floor id   | 4069    | base ground / room flags         |
+| 8        | 1    | floor id   | 2426    | grass / pool / water flags       |
+| 11       | 2    | objects    | 358     | objects (alt level?)             |
+| 12       | 14   | unknown    | 13276   | rich per-tile (room id + flags?) |
+| 101..112 | mix  | mix        | varies  | second-story copies of 1..12     |
+
+The well-known types (1/2/4/8) are documented; type 14 needs further reverse.
+
+## ObjM / objt — placed objects
+
+`ObjM` likely holds per-object metadata (name, owner, motive contributions),
+`objt` the placement records (GUID, tile, rotation). **Not parsed.**
+
+## THMB / BMP_ — thumbnails
+
+The lot preview shown in the neighborhood selector. `THMB` is probably a
+header pointing into one or more `BMP_` chunks. **Not parsed** — not
+required to render the lot.
+
+## SIMI — Sim metadata
+
+One per lot, lists the Sims living there (32-bit instance ids, names,
+needs, current activity). **Not parsed.**
+
+## Path to actually rendering a House.iff
+
+A self-honest plan:
+
+1. **HOUS lot name** — DONE.
+2. **FLRm / WALm material list decode** — DONE.
+3. **Arry (well-known types 1/2/4/8)** — DONE (RLE decoder ported from
+   FreeSO).
+4. **Arry type 14** — TODO (multi-day, oracle TS1 sous Wine).
+5. **ObjM / objt** — TODO (objects list with GUID + tile + rotation).
+6. **Wire client renderer** — TODO. The Rust + WASM side now exposes
+   `parseHous`, `parseFlrm`, `parseArry`. The client must:
+   - Add `/api/templates` endpoint listing `.iff` files in
+     `TemplateMagictown/` (server-side).
+   - Add a "Load House" button that fetches the IFF, parses HOUS + FLRm[0]
+     + Arry[id=1] (floor materials) + Arry[id=2] (walls), and populates the
+     existing `floorPaint` Map / `wallsN` / `wallsW` sets so the iso
+     renderer picks them up automatically.
+   - Map FLRm `id` field → `.flr` filename → some preview color (until the
+     SPR2 inside each `.flr` is decoded too).
 
 ## ObjM / objt — placed objects
 
