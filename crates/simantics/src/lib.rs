@@ -64,6 +64,8 @@ pub enum SimAnticsError {
     HitExportTruncated,
     #[error("SLOT bad magic (want \"TOLS\", got 0x{0:08X})")]
     SlotBadMagic(u32),
+    #[error("FLRm/WALm bad magic (want \"mRLF\" or \"mLAW\", got 0x{0:08X})")]
+    FlrmBadMagic(u32),
 }
 
 // ---- BHAV ----
@@ -796,20 +798,95 @@ impl TtabHeader {
     }
 }
 
+/// Field-encoded bit reader used by TTAB v9 / v10. Each call to
+/// [`FieldReader::decode`] reads one optional value from the bit-stream:
+///
+/// * 1-bit flag (`0` → field absent, return 0),
+/// * 2-bit prefix → width selected from a per-field-type 4-entry table,
+/// * `width` bits MSB-first, then sign-extended.
+///
+/// Width tables are flat: `[u16-widths..., u32-widths...]` =
+/// `[5, 8, 13, 16, 6, 11, 21, 32]`. Field type 0 = `i16`, field type 1 = `i32`.
+///
+/// Implementation cross-checked against
+/// `Other/tools/Iffinator/Iffinator/Flash/FieldReader.cs` in the FreeSO
+/// repository (BSD-style licence, lecture-référence only — algorithm copied,
+/// not code).
+struct FieldReader<'a> {
+    data: &'a [u8],
+    /// Bit offset from the MSB of `data[0]`, i.e. position 0 = MSB of byte 0.
+    bit_pos: usize,
+}
+
+const FIELD_WIDTHS: [u8; 8] = [5, 8, 13, 16, 6, 11, 21, 32];
+
+impl<'a> FieldReader<'a> {
+    fn new(data: &'a [u8]) -> Self {
+        Self { data, bit_pos: 0 }
+    }
+
+    /// Read `n` bits MSB-first, advancing the cursor. Returns 0 if we run out
+    /// of bits — TTAB v9 chunks empirically pad with trailing zero bytes for
+    /// fields that use the largest widths but encode small values.
+    fn read_bits(&mut self, n: u8) -> u64 {
+        let mut value: u64 = 0;
+        for _ in 0..n {
+            let byte_idx = self.bit_pos / 8;
+            if byte_idx >= self.data.len() {
+                value <<= 1;
+                continue;
+            }
+            let bit_in_byte = 7 - (self.bit_pos % 8);
+            let bit = (self.data[byte_idx] >> bit_in_byte) & 1;
+            value = (value << 1) | u64::from(bit);
+            self.bit_pos += 1;
+        }
+        value
+    }
+
+    /// Decode one field. `field_type` is 0 for 2-byte fields (u16/i16) and 1
+    /// for 4-byte fields (u32/i32). The returned `i64` is sign-extended from
+    /// the encoding width.
+    fn decode(&mut self, field_type: u8) -> i64 {
+        let flag = self.read_bits(1);
+        if flag == 0 {
+            return 0;
+        }
+        let prefix = self.read_bits(2) as usize;
+        let width = FIELD_WIDTHS[field_type as usize * 4 + prefix];
+        let raw = self.read_bits(width);
+        // Sign-extend.
+        let sign_bit = 1u64 << (width - 1);
+        if raw & sign_bit != 0 {
+            (raw | (!0u64 << width)) as i64
+        } else {
+            raw as i64
+        }
+    }
+}
+
 impl Ttab {
-    /// Parse a TTAB chunk's data payload. Supports v5 and v8 (uncompressed). v9+ uses
-    /// field encoding compression we don't decode yet — caller should expect
-    /// `TtabUnsupportedVersion` for those.
+    /// Parse a TTAB chunk's data payload. Supports v5 and v8 (uncompressed
+    /// fixed layout) and v9 / v10 (field-encoded bit-stream).
+    ///
+    /// v9 / v10 algorithm follows the FreeSO `FieldReader` reference: each
+    /// field starts with a 1-bit flag (0 ⇒ field absent / value 0), then a
+    /// 2-bit prefix selects a width from `{5, 8, 13, 16}` for 2-byte fields
+    /// or `{6, 11, 21, 32}` for 4-byte fields. The value is read MSB-first
+    /// and sign-extended.
     ///
     /// # Errors
-    /// Returns `TtabUnsupportedVersion` for v9..=v11 (compressed) or any other
-    /// unrecognized version, and `TooShort` if the buffer is truncated.
+    /// Returns `TtabUnsupportedVersion` for any version outside 5 / 8 / 9 / 10,
+    /// and `TooShort` if the buffer is truncated.
     pub fn parse(data: &[u8]) -> Result<Self, SimAnticsError> {
         if data.len() < 4 {
             return Err(SimAnticsError::TooShort);
         }
         let count = read_u16_le(data, 0)?;
         let version = read_u16_le(data, 2)?;
+        if matches!(version, 9 | 10) {
+            return Self::parse_field_encoded(data, count, version);
+        }
         let v7_plus = match version {
             5 => false,
             8 => true,
@@ -864,6 +941,72 @@ impl Ttab {
                         personality_modifier: 0,
                     });
                 }
+            }
+            interactions.push(TtabInteraction {
+                action_function,
+                guard_function,
+                motive_entry_count,
+                flags,
+                ttas_index,
+                attenuation_code,
+                attenuation_value,
+                autonomy_threshold,
+                joining_index,
+                motives,
+            });
+        }
+        Ok(Self { version, interactions })
+    }
+
+    /// v9 / v10 field-encoded decoder. Layout: byte 0 is the compression code
+    /// (always 1), then a packed bit-stream of `count` interaction records.
+    ///
+    /// Per interaction (in order): action_function (i16), guard_function
+    /// (i16), motive_entry_count (i32), flags (i32), ttas_index (i32),
+    /// attenuation_code (i32), attenuation_value (i32 reinterpreted as f32 via
+    /// `f32::from_bits`), autonomy_threshold (i32), joining_index (i32). Then
+    /// `motive_entry_count` motives, each with effect_min (i16), effect_max
+    /// (i16), personality_modifier (i16). v10 adds an i32 `unknown` per
+    /// motive (we read and discard it).
+    fn parse_field_encoded(
+        data: &[u8],
+        count: u16,
+        version: u16,
+    ) -> Result<Self, SimAnticsError> {
+        if data.len() < 5 {
+            return Err(SimAnticsError::TooShort);
+        }
+        // data[4] = compression code, always 1 in TS1/TSO. Skip it.
+        let stream = &data[5..];
+        let mut reader = FieldReader::new(stream);
+        let mut interactions = Vec::with_capacity(count as usize);
+        for _ in 0..count {
+            let action_function = reader.decode(0) as u16;
+            let guard_function = reader.decode(0) as u16;
+            let motive_entry_count = reader.decode(1) as u32;
+            let flags = reader.decode(1) as u32;
+            let ttas_index = reader.decode(1) as u32;
+            let attenuation_code = reader.decode(1) as u32;
+            let attenuation_value_bits = reader.decode(1) as u32;
+            let attenuation_value = f32::from_bits(attenuation_value_bits);
+            let autonomy_threshold = reader.decode(1) as u32;
+            let joining_index = reader.decode(1) as i32;
+            let mut motives = Vec::with_capacity(motive_entry_count as usize);
+            // Cap the loop at a sane upper bound so a corrupt count can't
+            // hang us; Niotso says it's "always 16" in practice.
+            let motive_loops = (motive_entry_count as usize).min(64);
+            for _ in 0..motive_loops {
+                let effect_min = reader.decode(0) as i16;
+                let effect_max = reader.decode(0) as i16;
+                let personality_modifier = reader.decode(0) as u16;
+                if version == 10 {
+                    let _unknown = reader.decode(1);
+                }
+                motives.push(MotiveEntry {
+                    effect_min,
+                    effect_max,
+                    personality_modifier,
+                });
             }
             interactions.push(TtabInteraction {
                 action_function,
@@ -1052,6 +1195,267 @@ impl Hous {
         let name = alloc::string::String::from_utf8_lossy(&name_bytes).into_owned();
         let trailing = data[cursor..].to_vec();
         Ok(Self { version, name, trailing })
+    }
+}
+
+// ---- FLRm / WALm ----
+
+/// One entry in a `FLRm` (floor) or `WALm` (wall) material table.
+///
+/// `filename` is the lowercase name of a `.flr` (floor) or `.wll` (wall) IFF
+/// referenced by the lot's `Arry` tile-array chunks. The trailing `unknown`
+/// fields are kept raw — Niotso doesn't document them and FreeSO marks them
+/// as unknown ("usually 1" then a single byte ID, then 5 + chunk_id*2 bytes).
+#[derive(Debug, Clone)]
+pub struct FlrmEntry {
+    pub filename: alloc::string::String,
+    /// `unknown1` field, "usually 1" per FreeSO comments. Read as u32 LE.
+    pub unknown1: u32,
+    /// One-byte sub-index that distinguishes per-floor / per-wall variants.
+    pub id: u8,
+    /// Chunk-ID-dependent trailing bytes (`5 + chunk_id * 2` long).
+    pub trailing: alloc::vec::Vec<u8>,
+}
+
+/// `FLRm` (floor materials) or `WALm` (wall materials) chunk — both share an
+/// identical layout (FreeSO models them as the same class). Maps each
+/// floor/wall material slot to a `.flr` / `.wll` IFF filename so the
+/// neighbouring `Arry` chunks can index into the result.
+///
+/// Layout (little-endian throughout):
+/// ```text
+///   [0..4]    reserved zero
+///   [4..8]    version u32 (= 0)
+///   [8..12]   magic "mRLF" (= "FLRm" reversed) or "mLAW" (= "WALm" reversed)
+///   [12..16]  entry count u32
+///   [16..]    entries
+/// ```
+///
+/// Each entry: NUL-terminated filename, optional 1-byte pad if the filename
+/// length (excluding NUL) is even, u32 unknown, u8 id, then `5 + chunk_id * 2`
+/// trailing bytes. `chunk_id` is the IFF chunk's id (0 for ground floor, 1
+/// for second story in TS1 templates).
+///
+/// Algorithm copied from
+/// `TSOClient/tso.files/Formats/IFF/Chunks/WALm.cs` in FreeSO (BSD-style
+/// licence, lecture-référence only).
+#[derive(Debug, Clone)]
+pub struct Flrm {
+    pub version: u32,
+    pub entries: alloc::vec::Vec<FlrmEntry>,
+}
+
+impl Flrm {
+    pub const HEADER_SIZE: usize = 16;
+
+    /// Parse an FLRm or WALm chunk's data payload. `chunk_id` is the parent
+    /// chunk's IFF ID (0 / 1 in TS1 lots), which controls the trailing-byte
+    /// width per entry.
+    ///
+    /// # Errors
+    /// Returns `TooShort` if the buffer is truncated, or `FlrmBadMagic` if
+    /// the magic at bytes 8..12 isn't `"mRLF"` or `"mLAW"`.
+    pub fn parse(data: &[u8], chunk_id: u32) -> Result<Self, SimAnticsError> {
+        if data.len() < Self::HEADER_SIZE {
+            return Err(SimAnticsError::TooShort);
+        }
+        let version = read_u32_le(data, 4)?;
+        let magic = &data[8..12];
+        if magic != b"mRLF" && magic != b"mLAW" {
+            return Err(SimAnticsError::FlrmBadMagic(read_u32_le(data, 8)?));
+        }
+        let count = read_u32_le(data, 12)? as usize;
+        let trailing_len = 5usize.saturating_add((chunk_id as usize).saturating_mul(2));
+        let mut cursor = Self::HEADER_SIZE;
+        let mut entries = Vec::with_capacity(count);
+        for _ in 0..count {
+            let name_bytes = read_cstring(data, &mut cursor).unwrap_or_default();
+            let name_len = name_bytes.len();
+            // Pad to short width when the filename (excluding NUL) is even.
+            if name_len.is_multiple_of(2) {
+                cursor = cursor.saturating_add(1);
+            }
+            if cursor.saturating_add(5).saturating_add(trailing_len) > data.len() {
+                return Err(SimAnticsError::TooShort);
+            }
+            let unknown1 = read_u32_le(data, cursor)?;
+            cursor += 4;
+            let id = data[cursor];
+            cursor += 1;
+            let trailing = data[cursor..cursor + trailing_len].to_vec();
+            cursor += trailing_len;
+            let filename = alloc::string::String::from_utf8_lossy(&name_bytes).into_owned();
+            entries.push(FlrmEntry { filename, unknown1, id, trailing });
+        }
+        Ok(Self { version, entries })
+    }
+}
+
+// ---- ARRY ----
+
+/// Element size (bytes per tile) for an [`Arry`] grid.
+///
+/// FreeSO's `ARRYType` enum names four well-known values: 1 = floor /
+/// ground / pool / water, 2 = objects, 4 = altitude, 8 = walls. TS1 lots
+/// occasionally use other values (e.g. 14 in House90.iff/12,112) — we treat
+/// the raw integer as the per-tile stride and round-trip it verbatim.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ArryType(pub u32);
+
+impl ArryType {
+    pub const FLOOR: Self = Self(1);
+    pub const OBJECTS: Self = Self(2);
+    pub const ALTITUDE: Self = Self(4);
+    pub const WALLS: Self = Self(8);
+
+    pub const fn byte_size(self) -> usize {
+        self.0 as usize
+    }
+
+    pub fn well_known_label(self) -> Option<&'static str> {
+        match self.0 {
+            1 => Some("floor"),
+            2 => Some("objects"),
+            4 => Some("altitude"),
+            8 => Some("walls"),
+            _ => None,
+        }
+    }
+}
+
+/// `Arry` chunk — a width × height grid of per-tile data, RLE-encoded.
+///
+/// Each lot has many `Arry` chunks: one for the floor material array, one for
+/// the wall edge array, one for objects, one for altitude, one per
+/// floor-level for room IDs, etc. The IFF chunk ID disambiguates them (a
+/// House90.iff sample has IDs 0, 1, 2, 3, 4, 6, 7, 8, 9, 10, 11, 12, 101–112).
+///
+/// Header (little-endian): 4 zero, 4 width, 4 height, 4 type, 4 unknown.
+/// Body is RLE-compressed; the decoder produces `width * height * type` raw
+/// bytes.
+///
+/// RLE algorithm (copied from FreeSO's `ARRY.cs`):
+/// - Read u16 `flre`. Stop on 0.
+/// - High bit clear → raw fill: copy `flre` bytes to the output. If `flre` is
+///   odd, skip 1 pad byte (16-bit alignment).
+/// - High bit set → run-fill: skip `flre & 0x7FFF` positions in the output,
+///   read 1 pad byte to use for the skipped tiles, then 1 alignment byte,
+///   then a u16 size and copy `size` raw bytes. Negative size signals end.
+#[derive(Debug, Clone)]
+pub struct Arry {
+    pub width: u32,
+    pub height: u32,
+    pub kind: ArryType,
+    /// Raw header field after type — meaning unclear (FreeSO calls it
+    /// "unknown"). Carried through verbatim for downstream analysis.
+    pub unknown: u32,
+    /// Decoded grid data, length = `width * height * kind.byte_size()`.
+    /// Row-major: `data[(y * width + x) * stride .. + stride]` is the tile.
+    pub data: alloc::vec::Vec<u8>,
+}
+
+impl Arry {
+    pub const HEADER_SIZE: usize = 20;
+
+    /// Parse an `Arry` chunk's data payload.
+    ///
+    /// # Errors
+    /// Returns `TooShort` if the buffer can't fit the 20-byte header.
+    pub fn parse(data: &[u8]) -> Result<Self, SimAnticsError> {
+        if data.len() < Self::HEADER_SIZE {
+            return Err(SimAnticsError::TooShort);
+        }
+        let width = read_u32_le(data, 4)?;
+        let height = read_u32_le(data, 8)?;
+        let kind = ArryType(read_u32_le(data, 12)?);
+        let unknown = read_u32_le(data, 16)?;
+        let stride = kind.byte_size();
+        let total = (width as usize)
+            .saturating_mul(height as usize)
+            .saturating_mul(stride);
+        let mut out = alloc::vec![0u8; total];
+        let body = &data[Self::HEADER_SIZE..];
+        decode_arry_rle(body, &mut out);
+        Ok(Self { width, height, kind, unknown, data: out })
+    }
+}
+
+fn decode_arry_rle(body: &[u8], out: &mut [u8]) {
+    let mut cursor = 0usize;
+    let mut pos = 0usize;
+    let total = out.len();
+    while cursor + 2 <= body.len() {
+        let flre = u16::from_le_bytes([body[cursor], body[cursor + 1]]);
+        cursor += 2;
+        if flre == 0 {
+            break;
+        }
+        if flre & 0x8000 == 0 {
+            // Raw fill: copy `flre` bytes verbatim.
+            let n = flre as usize;
+            for _ in 0..n {
+                if cursor >= body.len() || pos >= total {
+                    return;
+                }
+                out[pos] = body[cursor];
+                cursor += 1;
+                pos += 1;
+            }
+            // 16-bit alignment pad after odd-length runs.
+            if n & 1 == 1 && cursor < body.len() {
+                cursor += 1;
+            }
+            continue;
+        }
+        // Run-fill: skip `(flre & 0x7FFF)` positions filled with the next byte.
+        let last_pos = pos;
+        let skip = (flre & 0x7FFF) as usize;
+        pos = pos.saturating_add(skip);
+        if total > 0 {
+            pos %= total;
+        }
+        if pos == 0 {
+            return;
+        }
+        if cursor >= body.len() {
+            return;
+        }
+        let pad = body[cursor];
+        cursor += 1;
+        if cursor >= body.len() {
+            return;
+        }
+        cursor += 1; // 16-bit pad
+        let mut i = last_pos;
+        while i < pos && i < total {
+            out[i] = pad;
+            i += 1;
+        }
+        if cursor + 2 > body.len() {
+            return;
+        }
+        let size = i16::from_le_bytes([body[cursor], body[cursor + 1]]);
+        if size < 0 {
+            // Negative size = end-of-stream marker; rewind so the outer loop
+            // can read it as the next opcode (matches FreeSO's behaviour).
+            continue;
+        }
+        cursor += 2;
+        let size = size as usize;
+        for _ in 0..size {
+            if cursor >= body.len() || pos >= total {
+                return;
+            }
+            out[pos] = body[cursor];
+            cursor += 1;
+            pos += 1;
+            if total > 0 {
+                pos %= total;
+            }
+        }
+        if size & 1 == 1 && cursor < body.len() {
+            cursor += 1;
+        }
     }
 }
 
@@ -1991,14 +2395,73 @@ mod tests {
     }
 
     #[test]
-    fn ttab_rejects_v9_compressed() {
+    fn ttab_v9_zero_interactions_just_compression_code() {
+        // count=0, version=9, code=1 → empty body, no interactions decoded.
         let mut buf = Vec::new();
-        buf.extend_from_slice(&0u16.to_le_bytes()); // count = 0
-        buf.extend_from_slice(&9u16.to_le_bytes()); // version 9
-        assert!(matches!(
-            Ttab::parse(&buf),
-            Err(SimAnticsError::TtabUnsupportedVersion(9))
-        ));
+        buf.extend_from_slice(&0u16.to_le_bytes());
+        buf.extend_from_slice(&9u16.to_le_bytes());
+        buf.push(1);
+        let t = Ttab::parse(&buf).unwrap();
+        assert_eq!(t.version, 9);
+        assert!(t.interactions.is_empty());
+    }
+
+    #[test]
+    fn ttab_v9_field_reader_width_8_unsigned_value() {
+        // Encode 18 at width 8 (prefix 01). Bits MSB-first: 1 01 00010010 =
+        // 1010_0010 0100_0000 = 0xA2 0x40.
+        let mut r = FieldReader::new(&[0xA2, 0x40]);
+        assert_eq!(r.decode(0), 18);
+    }
+
+    #[test]
+    fn ttab_v9_field_reader_width_5_sign_extends() {
+        // Width 5 sign-bit set: bit pattern 0b10010 → -14 after sign
+        // extension. Bits: 1 (flag) 00 (prefix=width 5) 10010 = 1001_0010 = 0x92.
+        let mut r = FieldReader::new(&[0x92]);
+        assert_eq!(r.decode(0), -14);
+    }
+
+    #[test]
+    fn ttab_v9_field_reader_sign_extends_negative() {
+        // Width 5 with the MSB set: encode value 0b11111 (= -1 after sign
+        // extension). Bits: 1 00 11111 = 0b1001_1111 = 0x9F.
+        let mut r = FieldReader::new(&[0x9F]);
+        assert_eq!(r.decode(0), -1);
+    }
+
+    #[test]
+    fn ttab_v9_field_reader_flag_zero_returns_zero() {
+        // Single zero bit means the field is absent / value 0.
+        let mut r = FieldReader::new(&[0x00]);
+        assert_eq!(r.decode(0), 0);
+        // Cursor advanced by 1 bit only (no prefix, no value bits read).
+        assert_eq!(r.bit_pos, 1);
+    }
+
+    #[test]
+    fn ttab_v9_decodes_carstd_first_interaction() {
+        // CarStd.iff TTAB id=129 captured from the real catalog: count=1
+        // version=9, body 0x01 then 18 bytes of bit-stream. The decode should
+        // yield action=0x2003 (a global BHAV), guard=0x2004, motive_count=16,
+        // attenuation_code ∈ [1..4], autonomy_threshold=50 or 100.
+        let bytes: [u8; 22] = [
+            0x01, 0x00, // count = 1
+            0x09, 0x00, // version = 9
+            0x01, // compression code
+            // bit-stream (18 bytes, identical to CarSUV.iff/129 captured):
+            0xe4, 0x00, 0x7c, 0x80, 0x12, 0x21, 0x41, 0x8a, 0x06, 0xa0, 0xca, 0x7e,
+            0x00, 0x00, 0x00, 0x00, 0x00,
+        ];
+        let t = Ttab::parse(&bytes).unwrap();
+        assert_eq!(t.version, 9);
+        assert_eq!(t.interactions.len(), 1);
+        let it = &t.interactions[0];
+        assert_eq!(it.action_function, 0x2003);
+        assert_eq!(it.guard_function, 0x2004);
+        assert_eq!(it.motive_entry_count, 16);
+        assert!(it.attenuation_code <= 4);
+        assert!(matches!(it.autonomy_threshold, 50 | 100));
     }
 
     #[test]
@@ -2361,5 +2824,111 @@ mod tests {
         assert_eq!(hit.exports.len(), 2);
         assert_eq!(hit.exports[0], HitExport { track_id: 100, address: 0x40 });
         assert_eq!(hit.exports[1], HitExport { track_id: 200, address: 0x80 });
+    }
+
+    #[test]
+    fn flrm_parses_two_entries_with_pad() {
+        // Header (16B) + entry "abc.flr" (odd len, no pad) + meta + entry
+        // "ab.flr" (even len, +1 pad) + meta. chunk_id=0 → trailing 5B per
+        // entry.
+        let mut buf = Vec::new();
+        // Header: 4 zero, 4 version, 4 magic, 4 count.
+        buf.extend_from_slice(&[0u8; 4]);
+        buf.extend_from_slice(&0u32.to_le_bytes());
+        buf.extend_from_slice(b"mRLF");
+        buf.extend_from_slice(&2u32.to_le_bytes());
+        // Entry 1: filename "abc.flr" (7 chars, odd → no pad).
+        buf.extend_from_slice(b"abc.flr\0");
+        buf.extend_from_slice(&1u32.to_le_bytes()); // unknown1
+        buf.push(0x10); // id
+        buf.extend_from_slice(&[0xAA, 0xBB, 0xCC, 0xDD, 0xEE]); // 5B trailing
+        // Entry 2: filename "ab.flr" (6 chars, even → +1 pad after NUL).
+        buf.extend_from_slice(b"ab.flr\0");
+        buf.push(0); // pad
+        buf.extend_from_slice(&1u32.to_le_bytes());
+        buf.push(0x20);
+        buf.extend_from_slice(&[0x11, 0x22, 0x33, 0x44, 0x55]);
+
+        let f = Flrm::parse(&buf, 0).unwrap();
+        assert_eq!(f.entries.len(), 2);
+        assert_eq!(f.entries[0].filename, "abc.flr");
+        assert_eq!(f.entries[0].id, 0x10);
+        assert_eq!(f.entries[0].trailing, vec![0xAA, 0xBB, 0xCC, 0xDD, 0xEE]);
+        assert_eq!(f.entries[1].filename, "ab.flr");
+        assert_eq!(f.entries[1].id, 0x20);
+        assert_eq!(f.entries[1].trailing, vec![0x11, 0x22, 0x33, 0x44, 0x55]);
+    }
+
+    #[test]
+    fn flrm_rejects_bad_magic() {
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&[0u8; 4]);
+        buf.extend_from_slice(&0u32.to_le_bytes());
+        buf.extend_from_slice(b"XXXX");
+        buf.extend_from_slice(&0u32.to_le_bytes());
+        assert!(matches!(Flrm::parse(&buf, 0), Err(SimAnticsError::FlrmBadMagic(_))));
+    }
+
+    #[test]
+    fn arry_decodes_raw_run() {
+        // Header: 0, width=2, height=2, type=1 (1B/tile), unknown=0.
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&[0u8; 4]);
+        buf.extend_from_slice(&2u32.to_le_bytes());
+        buf.extend_from_slice(&2u32.to_le_bytes());
+        buf.extend_from_slice(&1u32.to_le_bytes());
+        buf.extend_from_slice(&0u32.to_le_bytes());
+        // Body: u16 flre = 4 (raw fill, even count, no pad), then 4 bytes.
+        buf.extend_from_slice(&4u16.to_le_bytes());
+        buf.extend_from_slice(&[0x10, 0x20, 0x30, 0x40]);
+        // Terminator (u16 0).
+        buf.extend_from_slice(&0u16.to_le_bytes());
+        let a = Arry::parse(&buf).unwrap();
+        assert_eq!(a.width, 2);
+        assert_eq!(a.height, 2);
+        assert_eq!(a.kind, ArryType::FLOOR);
+        assert_eq!(a.data, vec![0x10, 0x20, 0x30, 0x40]);
+    }
+
+    #[test]
+    fn arry_decodes_skip_run() {
+        // 4×1 grid of 1B/tile. RLE: skip 2 positions filling with 0xFF, then
+        // raw 2 bytes [0xAA, 0xBB].
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&[0u8; 4]);
+        buf.extend_from_slice(&4u32.to_le_bytes());
+        buf.extend_from_slice(&1u32.to_le_bytes());
+        buf.extend_from_slice(&1u32.to_le_bytes());
+        buf.extend_from_slice(&0u32.to_le_bytes());
+        // flre = 0x8002 (high bit set, skip 2)
+        buf.extend_from_slice(&0x8002u16.to_le_bytes());
+        buf.push(0xFF); // pad
+        buf.push(0); // 16-bit pad
+        buf.extend_from_slice(&2i16.to_le_bytes()); // size = 2
+        buf.extend_from_slice(&[0xAA, 0xBB]);
+        // Pad after odd? 2 is even, no pad.
+        buf.extend_from_slice(&0u16.to_le_bytes()); // terminator
+        let a = Arry::parse(&buf).unwrap();
+        assert_eq!(a.data, vec![0xFF, 0xFF, 0xAA, 0xBB]);
+    }
+
+    #[test]
+    fn arry_round_trips_real_house_lot() {
+        // Sanity check on a known real layout: TS1 lots are 64×64. We just
+        // verify the parser tolerates the unusual stride values seen in the
+        // catalog (e.g. 14 bytes/tile in the secondary array chunks) without
+        // returning an error.
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&[0u8; 4]);
+        buf.extend_from_slice(&64u32.to_le_bytes());
+        buf.extend_from_slice(&64u32.to_le_bytes());
+        buf.extend_from_slice(&14u32.to_le_bytes()); // unusual stride
+        buf.extend_from_slice(&0u32.to_le_bytes());
+        // Empty body (terminator only).
+        buf.extend_from_slice(&0u16.to_le_bytes());
+        let a = Arry::parse(&buf).unwrap();
+        assert_eq!(a.kind, ArryType(14));
+        assert_eq!(a.data.len(), 64 * 64 * 14);
+        assert!(a.data.iter().all(|&b| b == 0));
     }
 }
