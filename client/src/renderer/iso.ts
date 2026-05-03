@@ -49,6 +49,10 @@ export interface IsoEntity {
   color: string;
   /** Optional one-line text rendered above the entity. */
   label?: string;
+  /** Cardinal facing direction, used to orient a face dot on the head. 0 = +x
+   *  (east in unrotated tile space), then CCW: 1 = -y (north), 2 = -x (west),
+   *  3 = +y (south). Undefined = no face dot. */
+  facing?: 0 | 1 | 2 | 3;
 }
 
 export interface IsoCamera {
@@ -77,6 +81,15 @@ export interface IsoScene {
   /** Per-tile floor color override. Key = `y * gridSize + x`. Tiles without
    *  an entry use the default checker pattern. */
   floorPaint?: Map<number, string>;
+  /** Walls on the *north* edge of tile (x, y), keyed by `y * (gridSize + 1) + x`.
+   *  y ∈ [0, gridSize] (gridSize = south boundary). x ∈ [0, gridSize - 1]. */
+  wallsN?: Set<number>;
+  /** Walls on the *west* edge of tile (x, y), same key scheme as `wallsN`.
+   *  x ∈ [0, gridSize] (gridSize = east boundary). y ∈ [0, gridSize - 1]. */
+  wallsW?: Set<number>;
+  /** Optional ghost wall (orientation + tile coords) drawn semi-transparent so
+   *  the user can see where their next click will land in wall-place mode. */
+  ghostWall?: { orientation: "n" | "w"; tileX: number; tileY: number } | null;
 }
 
 const SKY = "#1f3340";
@@ -242,7 +255,8 @@ export function renderIso(canvas: HTMLCanvasElement, scene: IsoScene): void {
   };
   type Drawable =
     | { type: "sprite"; ref: IsoSceneSprite; depth: number }
-    | { type: "entity"; ref: IsoEntity; depth: number };
+    | { type: "entity"; ref: IsoEntity; depth: number }
+    | { type: "wall"; orientation: "n" | "w"; tileX: number; tileY: number; depth: number; ghost: boolean };
   const drawables: Drawable[] = [];
   for (const s of scene.sprites) {
     drawables.push({ type: "sprite", ref: s, depth: depthOf(s.worldX, s.worldY) });
@@ -250,15 +264,44 @@ export function renderIso(canvas: HTMLCanvasElement, scene: IsoScene): void {
   for (const e of scene.entities ?? []) {
     drawables.push({ type: "entity", ref: e, depth: depthOf(e.worldX, e.worldY) });
   }
+  if (scene.wallsN) {
+    for (const key of scene.wallsN) {
+      const x = key % (N + 1);
+      const y = Math.floor(key / (N + 1));
+      drawables.push({ type: "wall", orientation: "n", tileX: x, tileY: y, depth: depthOf(x, y - 0.5), ghost: false });
+    }
+  }
+  if (scene.wallsW) {
+    for (const key of scene.wallsW) {
+      const x = key % (N + 1);
+      const y = Math.floor(key / (N + 1));
+      drawables.push({ type: "wall", orientation: "w", tileX: x, tileY: y, depth: depthOf(x - 0.5, y), ghost: false });
+    }
+  }
+  if (scene.ghostWall) {
+    const g = scene.ghostWall;
+    const dx = g.orientation === "n" ? 0 : -0.5;
+    const dy = g.orientation === "n" ? -0.5 : 0;
+    drawables.push({
+      type: "wall",
+      orientation: g.orientation,
+      tileX: g.tileX,
+      tileY: g.tileY,
+      depth: depthOf(g.tileX + dx, g.tileY + dy),
+      ghost: true,
+    });
+  }
   drawables.sort((a, b) => a.depth - b.depth);
 
   for (const d of drawables) {
     if (d.type === "sprite") {
       const { sx, sy } = projectTile(d.ref.worldX, d.ref.worldY, cam, canvas);
       drawDgrpSprite(ctx, d.ref, sx, sy);
-    } else {
+    } else if (d.type === "entity") {
       const { sx, sy } = projectTile(d.ref.worldX, d.ref.worldY, cam, canvas);
-      drawEntity(ctx, d.ref, sx, sy, cam.tileWidth);
+      drawEntity(ctx, d.ref, sx, sy, cam.tileWidth, cam.rotation ?? 0);
+    } else {
+      drawWall(ctx, d.orientation, d.tileX, d.tileY, cam, canvas, d.ghost);
     }
   }
 
@@ -285,13 +328,16 @@ export function renderIso(canvas: HTMLCanvasElement, scene: IsoScene): void {
 }
 
 /** Procedural Sim placeholder: a vertical capsule with a head, scaled to the
- *  current tile size so it looks roughly proportional at any zoom level. */
+ *  current tile size so it looks roughly proportional at any zoom level.
+ *  `camRotation` is needed to flip the face dot so a Sim facing world-east
+ *  still appears to look east on screen after a 90° camera spin. */
 function drawEntity(
   ctx: CanvasRenderingContext2D,
   e: IsoEntity,
   cx: number,
   cy: number,
   tileWidth: number,
+  camRotation: 0 | 1 | 2 | 3,
 ): void {
   if (e.kind === "marker") {
     const r = Math.max(3, tileWidth / 8);
@@ -330,11 +376,34 @@ function drawEntity(
   ctx.lineWidth = 1;
   ctx.stroke();
   // Head — slightly lighter shade.
+  const headCY = topY - headR + 1;
   ctx.fillStyle = lightenHex(e.color, 0.25);
   ctx.beginPath();
-  ctx.arc(cx, topY - headR + 1, headR, 0, Math.PI * 2);
+  ctx.arc(cx, headCY, headR, 0, Math.PI * 2);
   ctx.fill();
   ctx.stroke();
+  // Face dot — orient the head so the user sees which way the Sim is looking.
+  // Walking direction is in tile-space; project a unit vector through the same
+  // rotation the renderer applies so screen-east stays screen-east.
+  if (e.facing !== undefined) {
+    const facingRad = (e.facing * Math.PI) / 2;
+    let dx = Math.cos(facingRad);
+    let dy = -Math.sin(facingRad);
+    switch (camRotation) {
+      case 1: { const t = dx; dx = -dy; dy = t; break; }
+      case 2: dx = -dx; dy = -dy; break;
+      case 3: { const t = dx; dx = dy; dy = -t; break; }
+      default: break;
+    }
+    const isoDX = (dx - dy) * 0.5;
+    const isoDY = (dx + dy) * 0.25;
+    const fr = headR * 0.55;
+    const norm = Math.hypot(isoDX, isoDY) || 1;
+    ctx.fillStyle = "rgba(0,0,0,.7)";
+    ctx.beginPath();
+    ctx.arc(cx + (isoDX / norm) * fr, headCY + (isoDY / norm) * fr, headR * 0.18, 0, Math.PI * 2);
+    ctx.fill();
+  }
   if (e.label) {
     ctx.font = "11px ui-sans-serif, system-ui, sans-serif";
     const text = e.label;
@@ -361,6 +430,64 @@ function lightenHex(hex: string, t: number): string {
   const mix = (c: number): number => Math.round(c + (255 - c) * t);
   const hh = (n: number): string => n.toString(16).padStart(2, "0");
   return `#${hh(mix(r))}${hh(mix(g))}${hh(mix(b))}`;
+}
+
+/** Wall on the north or west edge of tile (x, y). Drawn as a parallelogram
+ *  rising from the floor by `WALL_HEIGHT_RATIO * tileWidth` screen pixels. The
+ *  floor edge is projected from the two tile-space corners; the top edge is
+ *  the same minus a vertical screen-y offset so the wall stays cardinal-axis
+ *  upright regardless of camera rotation. */
+function drawWall(
+  ctx: CanvasRenderingContext2D,
+  orientation: "n" | "w",
+  x: number,
+  y: number,
+  cam: IsoCamera,
+  canvas: HTMLCanvasElement,
+  ghost: boolean,
+): void {
+  const tw = cam.tileWidth;
+  const wallH = tw * 0.6;
+  let p1x: number;
+  let p1y: number;
+  let p2x: number;
+  let p2y: number;
+  if (orientation === "n") {
+    p1x = x - 0.5; p1y = y - 0.5;
+    p2x = x + 0.5; p2y = y - 0.5;
+  } else {
+    p1x = x - 0.5; p1y = y - 0.5;
+    p2x = x - 0.5; p2y = y + 0.5;
+  }
+  const a = projectTile(p1x, p1y, cam, canvas);
+  const b = projectTile(p2x, p2y, cam, canvas);
+  const fillSide = ghost ? "rgba(180,140,110,.45)" : "#a8826a";
+  const fillTop = ghost ? "rgba(220,190,160,.55)" : "#cba98b";
+  const stroke = ghost ? "rgba(60,40,30,.5)" : "#5a3e2c";
+  // Side face.
+  ctx.beginPath();
+  ctx.moveTo(a.sx, a.sy);
+  ctx.lineTo(a.sx, a.sy - wallH);
+  ctx.lineTo(b.sx, b.sy - wallH);
+  ctx.lineTo(b.sx, b.sy);
+  ctx.closePath();
+  ctx.fillStyle = fillSide;
+  ctx.fill();
+  ctx.strokeStyle = stroke;
+  ctx.lineWidth = 1;
+  ctx.stroke();
+  // Top stripe (a flat thin ribbon along the wall summit, slightly lighter so
+  // the wall reads as 3D instead of a flat rectangle).
+  ctx.beginPath();
+  ctx.moveTo(a.sx, a.sy - wallH);
+  ctx.lineTo(b.sx, b.sy - wallH);
+  ctx.lineTo(b.sx, b.sy - wallH - 3);
+  ctx.lineTo(a.sx, a.sy - wallH - 3);
+  ctx.closePath();
+  ctx.fillStyle = fillTop;
+  ctx.fill();
+  ctx.strokeStyle = stroke;
+  ctx.stroke();
 }
 
 /** Composite a single SPR2 frame onto the canvas at the projected screen pos.

@@ -54,6 +54,9 @@ interface SimState {
   bubble: { text: string; expiresAtMs: number } | null;
   /** Per-Sim motive bars [-100, +100] in TS1 order (Hunger/Comfort/.../Room). */
   motives: number[];
+  /** Cardinal facing in tile-space: 0 = +x, 1 = -y, 2 = -x, 3 = +y. Updated at
+   *  the start of every walk segment so the renderer can spin a face dot. */
+  facing: 0 | 1 | 2 | 3;
 }
 
 const SIM_PALETTE = [
@@ -77,6 +80,7 @@ const sims: SimState[] = [
     onArrive: null,
     bubble: null,
     motives: defaultMotives(),
+    facing: 3,
   },
 ];
 let selectedSimIdx = 0;
@@ -323,8 +327,13 @@ type LotMode = "play" | "build";
 let lotMode: LotMode = "play";
 
 /** When in Build mode, the build sub-tool. */
-type BuildTool = "place" | "paint";
+type BuildTool = "place" | "paint" | "wall";
 let buildTool: BuildTool = "place";
+
+/** Walls live on tile *edges*. North / west edge sets are keyed by
+ *  `y * (gridSize + 1) + x` — same convention the renderer expects. */
+const wallsN: Set<number> = new Set();
+const wallsW: Set<number> = new Set();
 
 const FLOOR_PAINT_PRESETS = [
   { id: "grass", color: "#3b6e3b", label: "grass" },
@@ -336,6 +345,44 @@ let activePaintId: (typeof FLOOR_PAINT_PRESETS)[number]["id"] = "tile";
 
 /** Initialise the floor-paint map only once; reused across scene composes. */
 const floorPaint: Map<number, string> = new Map();
+
+/** Wall edge keys are `y * (N + 1) + x`. The wall *between* two adjacent tiles
+ *  can be either side's edge depending on direction. This helper tests whether
+ *  a 4-neighbour move from (x1, y1) to (x2, y2) crosses a wall in either set. */
+function wallBetween(x1: number, y1: number, x2: number, y2: number): boolean {
+  const N = lotScene.gridSize;
+  if (x1 === x2 && y2 === y1 - 1) return wallsN.has(y1 * (N + 1) + x1);
+  if (x1 === x2 && y2 === y1 + 1) return wallsN.has(y2 * (N + 1) + x1);
+  if (y1 === y2 && x2 === x1 - 1) return wallsW.has(y1 * (N + 1) + x1);
+  if (y1 === y2 && x2 === x1 + 1) return wallsW.has(y1 * (N + 1) + x2);
+  return false;
+}
+
+/** Snap a fractional tile-space cursor to the nearest tile edge. Returns the
+ *  edge identity in the canonical (orientation, x, y) form used by `wallsN` /
+ *  `wallsW` (where the wall belongs to the *south/east* tile of the pair). */
+function nearestEdge(
+  fx: number,
+  fy: number,
+): { orientation: "n" | "w"; x: number; y: number } | null {
+  const N = lotScene.gridSize;
+  const tx = Math.round(fx);
+  const ty = Math.round(fy);
+  if (tx < 0 || ty < 0 || tx >= N || ty >= N) return null;
+  const dx = fx - tx;
+  const dy = fy - ty;
+  // Pick the dominant axis. If horizontal offset is bigger, snap to a vertical
+  // edge (west/east); otherwise snap to a horizontal edge (north/south). The
+  // "south/east" pair-mate is folded into the canonical (n, x, y+1) /
+  // (w, x+1, y) so we never need a third sign bit at storage time.
+  if (Math.abs(dx) > Math.abs(dy)) {
+    if (dx >= 0) return { orientation: "w", x: tx + 1, y: ty };
+    return { orientation: "w", x: tx, y: ty };
+  } else {
+    if (dy >= 0) return { orientation: "n", x: tx, y: ty + 1 };
+    return { orientation: "n", x: tx, y: ty };
+  }
+}
 
 /** A* on the 16x16 grid, routing around placed instances. Returns a list of
  *  tile coordinates from the start tile to the goal (inclusive of both).
@@ -405,6 +452,7 @@ function findPath(
       const nk = ny * N + nx;
       if (closed.has(nk)) continue;
       if (blocked.has(nk)) continue;
+      if (wallBetween(best.x, best.y, nx, ny)) continue;
       const tentativeG = best.g + 1;
       const existing = open.get(nk);
       if (existing && existing.g <= tentativeG) continue;
@@ -456,6 +504,14 @@ function walkSegmentForSim(
     startMs: performance.now(),
     durMs,
   };
+  // Snap facing to whichever cardinal axis dominates this segment. Stays put
+  // if the move is degenerate (zero-length walk arrives instantly).
+  const dx = toX - sim.fx;
+  const dy = toY - sim.fy;
+  if (Math.abs(dx) > 1e-6 || Math.abs(dy) > 1e-6) {
+    if (Math.abs(dx) >= Math.abs(dy)) sim.facing = dx >= 0 ? 0 : 2;
+    else sim.facing = dy >= 0 ? 3 : 1;
+  }
   sim.onArrive = onArrive;
   ensureRenderLoop();
 }
@@ -552,6 +608,7 @@ function allSimEntities(): IsoEntity[] {
       // Mark selected with a small chevron prefix so the user always knows
       // which Sim a click controls.
       label: isSelected ? `▸ ${label}` : label,
+      facing: sim.facing,
     });
   }
   return out;
@@ -603,6 +660,25 @@ function setCameraZoom(idx: number): void {
   if (typeof tw === "number") lotScene.camera.tileWidth = tw;
   renderLot();
   updateCameraButtonHighlights();
+}
+
+/** Pan keeps the world in view by clamping center to a generous overshoot
+ *  band — enough to peek at corners during rotation but not so much the lot
+ *  scrolls completely off-screen. */
+function panCamera(dx: number, dy: number): void {
+  const cam = lotScene.camera;
+  const N = lotScene.gridSize;
+  const limit = N; // half-lot of slack on each side
+  cam.centerX = Math.max(-limit / 2, Math.min(N + limit / 2, cam.centerX + dx));
+  cam.centerY = Math.max(-limit / 2, Math.min(N + limit / 2, cam.centerY + dy));
+  renderLot();
+}
+
+function recenterCamera(): void {
+  const N = lotScene.gridSize;
+  lotScene.camera.centerX = N / 2;
+  lotScene.camera.centerY = N / 2;
+  renderLot();
 }
 
 function mountCameraControls(): void {
@@ -670,17 +746,19 @@ function mountCameraControls(): void {
     <span style="opacity:.7;">tool</span>
     <button data-build-tool="place">place obj</button>
     <button data-build-tool="paint">paint floor</button>
+    <button data-build-tool="wall">wall</button>
     <span style="opacity:.5;">·</span>
     <span style="opacity:.7;">color</span>
     ${swatches}
     <button data-paint-action="clear" title="Erase all painted tiles">clear floor</button>
+    <button data-wall-action="clear" title="Remove all walls">clear walls</button>
   `;
   document.body.appendChild(buildBar);
   buildBar.addEventListener("click", (ev) => {
     const t = ev.target;
     if (!(t instanceof HTMLButtonElement)) return;
     const tool = t.dataset["buildTool"];
-    if (tool === "place" || tool === "paint") {
+    if (tool === "place" || tool === "paint" || tool === "wall") {
       buildTool = tool;
       updateBuildToolHighlights();
     }
@@ -694,6 +772,11 @@ function mountCameraControls(): void {
       floorPaint.clear();
       composeLotScene();
     }
+    if (t.dataset["wallAction"] === "clear") {
+      wallsN.clear();
+      wallsW.clear();
+      composeLotScene();
+    }
   });
 
   // Help blurb directly under the camera bar.
@@ -702,7 +785,7 @@ function mountCameraControls(): void {
   help.style.cssText =
     "position:fixed;top:46px;right:8px;background:rgba(0,0,0,.55);padding:4px 8px;border-radius:4px;font:11px/1.4 ui-monospace,monospace;color:#9ad;max-width:220px;text-align:right;";
   help.innerHTML =
-    "<b>play</b>: click ground = walk Sim · click obj = walk + interact · click another Sim = select it<br/><b>build</b>: click ground = place obj or paint floor<br/>right-click: rotate · shift+click: remove<br/>Q/E rotate camera · +/- zoom";
+    "<b>play</b>: click ground = walk Sim · click obj = walk + interact · click another Sim = select it<br/><b>build</b>: place obj · paint floor · wall = click an edge<br/>right-click: rotate · shift+click: remove (wall too)<br/>Q/E rotate · +/- zoom · ↑↓←→ pan · R recenter";
   document.body.appendChild(help);
   updateCameraButtonHighlights();
 }
@@ -752,6 +835,11 @@ function updateBuildToolHighlights(): void {
 
 window.addEventListener("keydown", (ev) => {
   if (ev.target instanceof HTMLInputElement || ev.target instanceof HTMLTextAreaElement) return;
+  // Pan in *screen* directions (the user expects ↑ to move the visible world
+  // up regardless of camera rotation). The (1, 1) / (-1, -1) screen axes map
+  // to the iso (+x, +y) / (-x, -y) tile diagonals; rotation is folded back in
+  // by panCamera via the camera transform applied at render time.
+  const PAN_STEP = 1.5;
   switch (ev.key) {
     case "q":
     case "Q":
@@ -769,11 +857,45 @@ window.addEventListener("keydown", (ev) => {
     case "_":
       setCameraZoom(cameraZoomIdx - 1);
       break;
+    case "ArrowUp":
+      panCamera(...rotatedPan(0, -PAN_STEP));
+      break;
+    case "ArrowDown":
+      panCamera(...rotatedPan(0, PAN_STEP));
+      break;
+    case "ArrowLeft":
+      panCamera(...rotatedPan(-PAN_STEP, 0));
+      break;
+    case "ArrowRight":
+      panCamera(...rotatedPan(PAN_STEP, 0));
+      break;
+    case "r":
+    case "R":
+      recenterCamera();
+      break;
     default:
       return;
   }
   ev.preventDefault();
 });
+
+/** Convert a screen-space pan vector (where (1, 0) is "right on screen" and
+ *  (0, 1) is "down on screen") into a tile-space pan that survives rotation.
+ *  Pre-rotation: screen (sx, sy) ≈ tile (sx + sy, -sx + sy) / 2 in iso. Post-
+ *  rotation we undo the camera spin so the user's "up" stays up regardless of
+ *  the current `cam.rotation`. */
+function rotatedPan(screenDX: number, screenDY: number): [number, number] {
+  // Inverse iso projection at unit scale: tile (lx, ly) = (sdx + 2*sdy, -sdx + 2*sdy)/2.
+  let lx = (screenDX + 2 * screenDY) / 2;
+  let ly = (-screenDX + 2 * screenDY) / 2;
+  switch (lotScene.camera.rotation ?? 0) {
+    case 1: { const t = lx; lx = ly; ly = -t; break; }
+    case 2: lx = -lx; ly = -ly; break;
+    case 3: { const t = lx; lx = -ly; ly = t; break; }
+    default: break;
+  }
+  return [lx, ly];
+}
 
 mountCameraControls();
 // Initial render: empty lot.
@@ -1326,6 +1448,8 @@ function composeLotScene(): void {
   lotScene.sprites = sprites;
   lotScene.entities = allSimEntities();
   lotScene.floorPaint = floorPaint;
+  lotScene.wallsN = wallsN;
+  lotScene.wallsW = wallsW;
   renderLot();
 }
 
@@ -1389,6 +1513,22 @@ function onLotCanvasClick(ev: MouseEvent): void {
   const rect = canvas.getBoundingClientRect();
   const cx = (ev.clientX - rect.left) * (canvas.width / rect.width);
   const cy = (ev.clientY - rect.top) * (canvas.height / rect.height);
+  // In wall-paint mode every click is an edge action — skip the sim/instance
+  // hit-tests so a wall placed on top of an object's tile still registers.
+  if (lotMode === "build" && buildTool === "wall") {
+    const tile = screenToTile(cx, cy, lotScene.camera, canvas);
+    const edge = nearestEdge(tile.fx, tile.fy);
+    if (edge) {
+      const N = lotScene.gridSize;
+      const k = edge.y * (N + 1) + edge.x;
+      const set = edge.orientation === "n" ? wallsN : wallsW;
+      if (ev.shiftKey) set.delete(k);
+      else set.add(k);
+      composeLotScene();
+    }
+    closeInteractionMenuImpl();
+    return;
+  }
   // Sim hit-test wins over instance hit-test so the user can grab a Sim
   // even when it's standing on top of an object.
   const simIdx = pickSimIndex(cx, cy);
@@ -1440,6 +1580,8 @@ function onLotCanvasClick(ev: MouseEvent): void {
       closeInteractionMenuImpl();
       return;
     }
+    // (wall sub-tool is handled at the top of this function so it bypasses
+    //  the instance/sim hit-tests entirely.)
     // Place the viewer's currently-selected object on the empty tile.
     const obj = viewerState.current;
     if (!obj) {
@@ -1461,33 +1603,77 @@ function onLotCanvasClick(ev: MouseEvent): void {
 }
 
 canvas.addEventListener("click", onLotCanvasClick);
+
+// Middle-mouse drag pans the camera. We track the last cursor pos and convert
+// pixel deltas to tile-space deltas via `rotatedPan` (already takes care of
+// the inverse iso projection + camera rotation). `auxclick` would fire on
+// release but we want continuous pan, so we use mousedown/move/up directly.
+let panDrag: { lastX: number; lastY: number } | null = null;
+canvas.addEventListener("mousedown", (ev) => {
+  if (ev.button !== 1) return;
+  ev.preventDefault();
+  panDrag = { lastX: ev.clientX, lastY: ev.clientY };
+});
+window.addEventListener("mousemove", (ev) => {
+  if (!panDrag) return;
+  const dx = ev.clientX - panDrag.lastX;
+  const dy = ev.clientY - panDrag.lastY;
+  panDrag.lastX = ev.clientX;
+  panDrag.lastY = ev.clientY;
+  // Drag should *follow* the cursor (drag right → world scrolls right under
+  // the cursor → camera centre moves left). Negate the delta and scale by
+  // tileWidth so a 1-tile drag yields a 1-tile pan at any zoom.
+  const tw = lotScene.camera.tileWidth;
+  const [lx, ly] = rotatedPan(-dx / (tw / 2), -dy / (tw / 4));
+  panCamera(lx, ly);
+});
+window.addEventListener("mouseup", (ev) => {
+  if (ev.button === 1) panDrag = null;
+});
+canvas.addEventListener("auxclick", (ev) => {
+  if (ev.button === 1) ev.preventDefault();
+});
 canvas.addEventListener("mousemove", (ev) => {
   const rect = canvas.getBoundingClientRect();
   const cx = (ev.clientX - rect.left) * (canvas.width / rect.width);
   const cy = (ev.clientY - rect.top) * (canvas.height / rect.height);
   const tile = screenToTile(cx, cy, lotScene.camera, canvas);
   const N = lotScene.gridSize;
-  if (tile.worldX < 0 || tile.worldY < 0 || tile.worldX >= N || tile.worldY >= N) {
-    if (lotScene.hoverTile) {
-      lotScene.hoverTile = null;
-      renderLot();
-    }
-    return;
-  }
-  if (
+  const inBounds = tile.worldX >= 0 && tile.worldY >= 0 && tile.worldX < N && tile.worldY < N;
+  let dirty = false;
+  if (!inBounds) {
+    if (lotScene.hoverTile) { lotScene.hoverTile = null; dirty = true; }
+  } else if (
     !lotScene.hoverTile ||
     lotScene.hoverTile.worldX !== tile.worldX ||
     lotScene.hoverTile.worldY !== tile.worldY
   ) {
     lotScene.hoverTile = { worldX: tile.worldX, worldY: tile.worldY };
-    renderLot();
+    dirty = true;
   }
+  // Ghost wall preview when wall tool is active.
+  const wantGhost = inBounds && lotMode === "build" && buildTool === "wall";
+  const newGhost = wantGhost ? nearestEdge(tile.fx, tile.fy) : null;
+  const oldGhost = lotScene.ghostWall ?? null;
+  const ghostsDiffer =
+    (newGhost === null) !== (oldGhost === null) ||
+    (newGhost !== null && oldGhost !== null &&
+      (newGhost.orientation !== oldGhost.orientation ||
+        newGhost.x !== oldGhost.tileX ||
+        newGhost.y !== oldGhost.tileY));
+  if (ghostsDiffer) {
+    lotScene.ghostWall = newGhost
+      ? { orientation: newGhost.orientation, tileX: newGhost.x, tileY: newGhost.y }
+      : null;
+    dirty = true;
+  }
+  if (dirty) renderLot();
 });
 canvas.addEventListener("mouseleave", () => {
-  if (lotScene.hoverTile) {
-    lotScene.hoverTile = null;
-    renderLot();
-  }
+  let dirty = false;
+  if (lotScene.hoverTile) { lotScene.hoverTile = null; dirty = true; }
+  if (lotScene.ghostWall) { lotScene.ghostWall = null; dirty = true; }
+  if (dirty) renderLot();
 });
 
 // Right-click on a placed instance cycles through the 4 DGRP directions so
@@ -1523,6 +1709,8 @@ function removeFromLot(instanceId: number): void {
 
 function clearLot(): void {
   lotInstances.length = 0;
+  wallsN.clear();
+  wallsW.clear();
   selectedInstanceId = null;
   composeLotScene();
   closeInteractionMenuImpl();
@@ -1555,6 +1743,7 @@ function spawnSim(): void {
     onArrive: null,
     bubble: null,
     motives: defaultMotives(),
+    facing: 3,
   });
   selectedSimIdx = idx;
   renderMotivesHud();
@@ -1593,6 +1782,8 @@ interface SerializedLot {
   funds?: number;
   gameMinutes?: number;
   gameDayIdx?: number;
+  wallsN?: number[];
+  wallsW?: number[];
 }
 
 function serializeLot(): SerializedLot {
@@ -1620,6 +1811,8 @@ function serializeLot(): SerializedLot {
     funds,
     gameMinutes,
     gameDayIdx,
+    wallsN: [...wallsN],
+    wallsW: [...wallsW],
   };
 }
 
@@ -1660,6 +1853,8 @@ async function loadLot(replace: boolean = true): Promise<void> {
     if (replace) {
       lotInstances.length = 0;
       floorPaint.clear();
+      wallsN.clear();
+      wallsW.clear();
     }
     if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
       const obj = parsed as SerializedLot;
@@ -1675,6 +1870,7 @@ async function loadLot(replace: boolean = true): Promise<void> {
             bubble: null,
             motives:
               Array.isArray(s.motives) && s.motives.length === 8 ? [...s.motives] : defaultMotives(),
+            facing: 3,
           });
         }
         selectedSimIdx = Math.max(0, Math.min(sims.length - 1, obj.selectedSim ?? 0));
@@ -1682,6 +1878,8 @@ async function loadLot(replace: boolean = true): Promise<void> {
       if (typeof obj.funds === "number") funds = obj.funds;
       if (typeof obj.gameMinutes === "number") gameMinutes = obj.gameMinutes;
       if (typeof obj.gameDayIdx === "number") gameDayIdx = obj.gameDayIdx;
+      if (Array.isArray(obj.wallsN)) for (const k of obj.wallsN) if (typeof k === "number") wallsN.add(k);
+      if (Array.isArray(obj.wallsW)) for (const k of obj.wallsW) if (typeof k === "number") wallsW.add(k);
       renderTimeFundsHud();
     }
     for (const s of instances) {
@@ -1702,7 +1900,7 @@ async function loadLot(replace: boolean = true): Promise<void> {
     }
     composeLotScene();
     console.info(
-      `[lot] loaded ${lotInstances.length} instance(s) + ${floorPaint.size} painted tile(s)`,
+      `[lot] loaded ${lotInstances.length} instance(s) + ${floorPaint.size} painted tile(s) + ${wallsN.size + wallsW.size} wall(s)`,
     );
   } catch (err) {
     console.warn("[lot] load error:", err);
