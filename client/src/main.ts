@@ -312,6 +312,10 @@ function startGameClock(): void {
       gameDayIdx += 1;
     }
     renderTimeFundsHud();
+    // Sky tint depends on gameMinutes — keep it in sync without recomposing
+    // sprites (which would re-decode every instance for nothing).
+    lotScene.timeMinutes = gameMinutes;
+    renderLot();
   }, 1000);
 }
 
@@ -327,13 +331,17 @@ type LotMode = "play" | "build";
 let lotMode: LotMode = "play";
 
 /** When in Build mode, the build sub-tool. */
-type BuildTool = "place" | "paint" | "wall";
+type BuildTool = "place" | "paint" | "wall" | "door";
 let buildTool: BuildTool = "place";
 
 /** Walls live on tile *edges*. North / west edge sets are keyed by
  *  `y * (gridSize + 1) + x` — same convention the renderer expects. */
 const wallsN: Set<number> = new Set();
 const wallsW: Set<number> = new Set();
+/** Doors share the wall key scheme; a door at edge K is passable to A* even
+ *  if a wall is also present at K, and the renderer draws a doorframe. */
+const doorsN: Set<number> = new Set();
+const doorsW: Set<number> = new Set();
 
 const FLOOR_PAINT_PRESETS = [
   { id: "grass", color: "#3b6e3b", label: "grass" },
@@ -351,11 +359,17 @@ const floorPaint: Map<number, string> = new Map();
  *  a 4-neighbour move from (x1, y1) to (x2, y2) crosses a wall in either set. */
 function wallBetween(x1: number, y1: number, x2: number, y2: number): boolean {
   const N = lotScene.gridSize;
-  if (x1 === x2 && y2 === y1 - 1) return wallsN.has(y1 * (N + 1) + x1);
-  if (x1 === x2 && y2 === y1 + 1) return wallsN.has(y2 * (N + 1) + x1);
-  if (y1 === y2 && x2 === x1 - 1) return wallsW.has(y1 * (N + 1) + x1);
-  if (y1 === y2 && x2 === x1 + 1) return wallsW.has(y1 * (N + 1) + x2);
-  return false;
+  let key = -1;
+  let nSet = false;
+  if (x1 === x2 && y2 === y1 - 1) { key = y1 * (N + 1) + x1; nSet = true; }
+  else if (x1 === x2 && y2 === y1 + 1) { key = y2 * (N + 1) + x1; nSet = true; }
+  else if (y1 === y2 && x2 === x1 - 1) { key = y1 * (N + 1) + x1; nSet = false; }
+  else if (y1 === y2 && x2 === x1 + 1) { key = y1 * (N + 1) + x2; nSet = false; }
+  else return false;
+  // Doors override walls — even if a wall is present, a door at the same edge
+  // makes the move legal.
+  if (nSet) return wallsN.has(key) && !doorsN.has(key);
+  return wallsW.has(key) && !doorsW.has(key);
 }
 
 /** Snap a fractional tile-space cursor to the nearest tile edge. Returns the
@@ -593,13 +607,23 @@ function ensureRenderLoop(): void {
 
 function allSimEntities(): IsoEntity[] {
   const out: IsoEntity[] = [];
+  const now = performance.now();
   for (let i = 0; i < sims.length; i += 1) {
     const sim = sims[i]!;
     const isSelected = i === selectedSimIdx;
     const label =
-      sim.bubble && sim.bubble.expiresAtMs > performance.now()
+      sim.bubble && sim.bubble.expiresAtMs > now
         ? sim.bubble.text
         : sim.name;
+    // Walk bob — sinusoid on segment progress, ~2 steps per tile (2 full
+    // cycles of "down-up-down" per tile of travel). Negative = up on screen.
+    let bob = 0;
+    if (sim.walk) {
+      const t = Math.min(1, (now - sim.walk.startMs) / sim.walk.durMs);
+      const dist = Math.hypot(sim.walk.toX - sim.walk.fromX, sim.walk.toY - sim.walk.fromY);
+      const cycles = Math.max(1, dist * 2);
+      bob = -Math.abs(Math.sin(t * Math.PI * cycles)) * 3;
+    }
     out.push({
       worldX: sim.fx,
       worldY: sim.fy,
@@ -609,6 +633,7 @@ function allSimEntities(): IsoEntity[] {
       // which Sim a click controls.
       label: isSelected ? `▸ ${label}` : label,
       facing: sim.facing,
+      verticalOffset: bob,
     });
   }
   return out;
@@ -747,6 +772,7 @@ function mountCameraControls(): void {
     <button data-build-tool="place">place obj</button>
     <button data-build-tool="paint">paint floor</button>
     <button data-build-tool="wall">wall</button>
+    <button data-build-tool="door">door</button>
     <span style="opacity:.5;">·</span>
     <span style="opacity:.7;">color</span>
     ${swatches}
@@ -758,7 +784,7 @@ function mountCameraControls(): void {
     const t = ev.target;
     if (!(t instanceof HTMLButtonElement)) return;
     const tool = t.dataset["buildTool"];
-    if (tool === "place" || tool === "paint" || tool === "wall") {
+    if (tool === "place" || tool === "paint" || tool === "wall" || tool === "door") {
       buildTool = tool;
       updateBuildToolHighlights();
     }
@@ -775,6 +801,8 @@ function mountCameraControls(): void {
     if (t.dataset["wallAction"] === "clear") {
       wallsN.clear();
       wallsW.clear();
+      doorsN.clear();
+      doorsW.clear();
       composeLotScene();
     }
   });
@@ -785,7 +813,7 @@ function mountCameraControls(): void {
   help.style.cssText =
     "position:fixed;top:46px;right:8px;background:rgba(0,0,0,.55);padding:4px 8px;border-radius:4px;font:11px/1.4 ui-monospace,monospace;color:#9ad;max-width:220px;text-align:right;";
   help.innerHTML =
-    "<b>play</b>: click ground = walk Sim · click obj = walk + interact · click another Sim = select it<br/><b>build</b>: place obj · paint floor · wall = click an edge<br/>right-click: rotate · shift+click: remove (wall too)<br/>Q/E rotate · +/- zoom · ↑↓←→ pan · R recenter";
+    "<b>play</b>: click ground = walk Sim · click obj = walk + interact · click another Sim = select it<br/><b>build</b>: place obj · paint floor · wall (drag!) · door (click edge)<br/>right-click: rotate · shift+click/drag: remove · doors are passable<br/>Q/E rotate · +/- zoom · ↑↓←→ pan · R recenter · middle-drag pan";
   document.body.appendChild(help);
   updateCameraButtonHighlights();
 }
@@ -1450,6 +1478,9 @@ function composeLotScene(): void {
   lotScene.floorPaint = floorPaint;
   lotScene.wallsN = wallsN;
   lotScene.wallsW = wallsW;
+  lotScene.doorsN = doorsN;
+  lotScene.doorsW = doorsW;
+  lotScene.timeMinutes = gameMinutes;
   renderLot();
 }
 
@@ -1513,16 +1544,22 @@ function onLotCanvasClick(ev: MouseEvent): void {
   const rect = canvas.getBoundingClientRect();
   const cx = (ev.clientX - rect.left) * (canvas.width / rect.width);
   const cy = (ev.clientY - rect.top) * (canvas.height / rect.height);
-  // In wall-paint mode every click is an edge action — skip the sim/instance
-  // hit-tests so a wall placed on top of an object's tile still registers.
+  // Wall sub-tool is fully handled by mousedown/move/up so the user can drag
+  // out a multi-edge segment in one stroke. The click event still fires after
+  // the drag, but we ignore it here.
   if (lotMode === "build" && buildTool === "wall") {
+    closeInteractionMenuImpl();
+    return;
+  }
+  // Door sub-tool is single-click; toggle a door at the nearest edge.
+  if (lotMode === "build" && buildTool === "door") {
     const tile = screenToTile(cx, cy, lotScene.camera, canvas);
     const edge = nearestEdge(tile.fx, tile.fy);
     if (edge) {
       const N = lotScene.gridSize;
       const k = edge.y * (N + 1) + edge.x;
-      const set = edge.orientation === "n" ? wallsN : wallsW;
-      if (ev.shiftKey) set.delete(k);
+      const set = edge.orientation === "n" ? doorsN : doorsW;
+      if (ev.shiftKey || set.has(k)) set.delete(k);
       else set.add(k);
       composeLotScene();
     }
@@ -1603,6 +1640,47 @@ function onLotCanvasClick(ev: MouseEvent): void {
 }
 
 canvas.addEventListener("click", onLotCanvasClick);
+
+// Wall drag — left-button drag in build/wall mode paints every edge the
+// cursor crosses. `lastKey` deduplicates so we don't recompose the scene per
+// pixel of motion.
+let wallDrag: { erase: boolean; lastKey: string | null } | null = null;
+
+function paintWallEdgeAtClient(clientX: number, clientY: number, erase: boolean): void {
+  if (!wallDrag) return;
+  const rect = canvas.getBoundingClientRect();
+  const cx = (clientX - rect.left) * (canvas.width / rect.width);
+  const cy = (clientY - rect.top) * (canvas.height / rect.height);
+  const tile = screenToTile(cx, cy, lotScene.camera, canvas);
+  const N = lotScene.gridSize;
+  if (tile.worldX < 0 || tile.worldY < 0 || tile.worldX >= N || tile.worldY >= N) return;
+  const edge = nearestEdge(tile.fx, tile.fy);
+  if (!edge) return;
+  const key = `${edge.orientation}:${edge.x},${edge.y}`;
+  if (wallDrag.lastKey === key) return;
+  wallDrag.lastKey = key;
+  const k = edge.y * (N + 1) + edge.x;
+  const set = edge.orientation === "n" ? wallsN : wallsW;
+  if (erase) set.delete(k);
+  else set.add(k);
+  composeLotScene();
+}
+
+canvas.addEventListener("mousedown", (ev) => {
+  if (ev.button !== 0) return;
+  if (lotMode !== "build" || buildTool !== "wall") return;
+  ev.preventDefault();
+  wallDrag = { erase: ev.shiftKey, lastKey: null };
+  paintWallEdgeAtClient(ev.clientX, ev.clientY, wallDrag.erase);
+});
+window.addEventListener("mousemove", (ev) => {
+  if (!wallDrag) return;
+  paintWallEdgeAtClient(ev.clientX, ev.clientY, wallDrag.erase);
+});
+window.addEventListener("mouseup", (ev) => {
+  if (ev.button !== 0) return;
+  wallDrag = null;
+});
 
 // Middle-mouse drag pans the camera. We track the last cursor pos and convert
 // pixel deltas to tile-space deltas via `rotatedPan` (already takes care of
@@ -1711,6 +1789,8 @@ function clearLot(): void {
   lotInstances.length = 0;
   wallsN.clear();
   wallsW.clear();
+  doorsN.clear();
+  doorsW.clear();
   selectedInstanceId = null;
   composeLotScene();
   closeInteractionMenuImpl();
@@ -1784,6 +1864,8 @@ interface SerializedLot {
   gameDayIdx?: number;
   wallsN?: number[];
   wallsW?: number[];
+  doorsN?: number[];
+  doorsW?: number[];
 }
 
 function serializeLot(): SerializedLot {
@@ -1813,6 +1895,8 @@ function serializeLot(): SerializedLot {
     gameDayIdx,
     wallsN: [...wallsN],
     wallsW: [...wallsW],
+    doorsN: [...doorsN],
+    doorsW: [...doorsW],
   };
 }
 
@@ -1855,6 +1939,8 @@ async function loadLot(replace: boolean = true): Promise<void> {
       floorPaint.clear();
       wallsN.clear();
       wallsW.clear();
+      doorsN.clear();
+      doorsW.clear();
     }
     if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
       const obj = parsed as SerializedLot;
@@ -1880,6 +1966,8 @@ async function loadLot(replace: boolean = true): Promise<void> {
       if (typeof obj.gameDayIdx === "number") gameDayIdx = obj.gameDayIdx;
       if (Array.isArray(obj.wallsN)) for (const k of obj.wallsN) if (typeof k === "number") wallsN.add(k);
       if (Array.isArray(obj.wallsW)) for (const k of obj.wallsW) if (typeof k === "number") wallsW.add(k);
+      if (Array.isArray(obj.doorsN)) for (const k of obj.doorsN) if (typeof k === "number") doorsN.add(k);
+      if (Array.isArray(obj.doorsW)) for (const k of obj.doorsW) if (typeof k === "number") doorsW.add(k);
       renderTimeFundsHud();
     }
     for (const s of instances) {
