@@ -58,6 +58,12 @@ diff-far archive:
 diff-iff:
     ./scripts/diff/iff.sh
 
+# differential test: compare our SimAntics VM trace against an oracle JSONL.
+# See docs/diff/vm-trace.md for the schema. Needs a FreeSO/Simitone-emitted
+# oracle file (not bundled).
+diff-vm object oracle event="1" *globals_far="":
+    ./scripts/diff/vm.sh --object {{object}} --oracle {{oracle}} --event {{event}} {{ if globals_far != "" { "--globals-far " + globals_far } else { "" } }}
+
 # transcode TS1 .avi intro/cutscene videos to web-friendly .webm + .mp4.
 # Outputs land under server/assets/converted/intro/ (gitignored).
 transcode-videos *args:
