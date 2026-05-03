@@ -438,6 +438,23 @@ pub fn parse_glob(data: &[u8]) -> Result<Object, JsError> {
     Ok(obj)
 }
 
+/// Parse a `HOUS` chunk's data payload. Returns `{ version, name,
+/// trailingLen }`. Geometry chunks (`FLRm`, `WALm`, `Arry`) are NOT decoded;
+/// see `docs/formats/HOUS.md` for the multi-day reverse status.
+///
+/// # Errors
+/// Returns a `JsError` for short buffers or bad magic.
+#[wasm_bindgen(js_name = parseHous)]
+pub fn parse_hous(data: &[u8]) -> Result<Object, JsError> {
+    let h = simantics::Hous::parse(data).map_err(|e| JsError::new(&e.to_string()))?;
+    let obj = Object::new();
+    set_f64(&obj, "version", f64::from(h.version))?;
+    Reflect::set(&obj, &JsValue::from_str("name"), &JsValue::from_str(&h.name))
+        .map_err(|_| JsError::new("set name"))?;
+    set_f64(&obj, "trailingLen", h.trailing.len() as f64)?;
+    Ok(obj)
+}
+
 /// Parse a single SLOT chunk payload. Returns `{ version, count }` —
 /// per-slot record decoding is not yet implemented (records returned raw
 /// length only).

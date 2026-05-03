@@ -1006,6 +1006,55 @@ impl Glob {
     }
 }
 
+// ---- HOUS ----
+
+/// `HOUS` chunk — house/lot metadata header.
+///
+/// Empirical layout (House90.iff, House91.iff in `TemplateMagictown/`):
+/// ```text
+///   [0..4]   reserved (always 0)
+///   [4..8]   version u32 LE (`0x49` = 73 in samples)
+///   [8..12]  magic "SUOH" (= "HOUS" reversed)
+///   [12..]   NUL-terminated C-string with the lot's display name
+///            ("The Girls' House"), followed by opaque trailing bytes
+///            (room counts? room temperatures? — multi-day reverse).
+/// ```
+///
+/// We currently expose only the lot name. Trailing bytes are kept raw for
+/// later analysis.
+#[derive(Debug, Clone)]
+pub struct Hous {
+    pub version: u32,
+    pub name: alloc::string::String,
+    pub trailing: alloc::vec::Vec<u8>,
+}
+
+impl Hous {
+    pub const HEADER_SIZE: usize = 12;
+    pub const MAGIC_BYTES: &'static [u8; 4] = b"SUOH";
+
+    /// Parse a `HOUS` chunk's data payload.
+    ///
+    /// # Errors
+    /// Returns `TooShort` if the buffer can't fit the 12-byte header,
+    /// `SlotBadMagic` if the `"SUOH"` magic doesn't match (we reuse the
+    /// `SlotBadMagic` variant — same general "bad reversed magic" idea).
+    pub fn parse(data: &[u8]) -> Result<Self, SimAnticsError> {
+        if data.len() < Self::HEADER_SIZE {
+            return Err(SimAnticsError::TooShort);
+        }
+        let version = read_u32_le(data, 4)?;
+        if &data[8..12] != Self::MAGIC_BYTES {
+            return Err(SimAnticsError::SlotBadMagic(read_u32_le(data, 8)?));
+        }
+        let mut cursor = Self::HEADER_SIZE;
+        let name_bytes = read_cstring(data, &mut cursor).unwrap_or_default();
+        let name = alloc::string::String::from_utf8_lossy(&name_bytes).into_owned();
+        let trailing = data[cursor..].to_vec();
+        Ok(Self { version, name, trailing })
+    }
+}
+
 // ---- SLOT ----
 
 /// `SLOT` chunk — describes the routing slots an object exposes (where a Sim
@@ -2071,6 +2120,27 @@ mod tests {
         assert!(matches!(Fwav::parse(&[]), Err(SimAnticsError::FwavEmpty)));
         // All zero bytes — no string at all.
         assert!(matches!(Fwav::parse(&[0u8; 16]), Err(SimAnticsError::FwavEmpty)));
+    }
+
+    #[test]
+    fn hous_parses_header_and_name() {
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&0u32.to_le_bytes()); // reserved
+        buf.extend_from_slice(&73u32.to_le_bytes()); // version
+        buf.extend_from_slice(b"SUOH"); // magic
+        buf.extend_from_slice(b"My Lot\0"); // C string
+        buf.extend_from_slice(&[0xAA; 8]); // trailing opaque bytes
+        let h = Hous::parse(&buf).unwrap();
+        assert_eq!(h.version, 73);
+        assert_eq!(h.name, "My Lot");
+        assert_eq!(h.trailing.len(), 8);
+    }
+
+    #[test]
+    fn hous_rejects_bad_magic() {
+        let mut buf = vec![0u8; 12];
+        buf[8..12].copy_from_slice(b"WRNG");
+        assert!(matches!(Hous::parse(&buf), Err(SimAnticsError::SlotBadMagic(_))));
     }
 
     #[test]
