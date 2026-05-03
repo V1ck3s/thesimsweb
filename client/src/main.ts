@@ -1670,6 +1670,10 @@ function pickSimIndex(canvasX: number, canvasY: number): number | null {
 }
 
 function onLotCanvasClick(ev: MouseEvent): void {
+  if (suppressNextLotClick) {
+    suppressNextLotClick = false;
+    return;
+  }
   const rect = canvas.getBoundingClientRect();
   const cx = (ev.clientX - rect.left) * (canvas.width / rect.width);
   const cy = (ev.clientY - rect.top) * (canvas.height / rect.height);
@@ -1807,20 +1811,77 @@ function paintWallEdgeAtClient(clientX: number, clientY: number, erase: boolean)
   composeLotScene();
 }
 
+// Move drag — in build/place mode, mousedown on an existing instance starts
+// a relocation; the click handler is suppressed so we don't double-place.
+let moveDrag: { instId: number; origX: number; origY: number } | null = null;
+let suppressNextLotClick = false;
+
 canvas.addEventListener("mousedown", (ev) => {
   if (ev.button !== 0) return;
-  if (lotMode !== "build" || buildTool !== "wall") return;
-  ev.preventDefault();
-  wallDrag = { erase: ev.shiftKey, lastKey: null };
-  paintWallEdgeAtClient(ev.clientX, ev.clientY, wallDrag.erase);
+  if (lotMode !== "build") return;
+  if (buildTool === "wall") {
+    ev.preventDefault();
+    wallDrag = { erase: ev.shiftKey, lastKey: null };
+    paintWallEdgeAtClient(ev.clientX, ev.clientY, wallDrag.erase);
+    return;
+  }
+  if (buildTool === "place") {
+    const rect = canvas.getBoundingClientRect();
+    const cx = (ev.clientX - rect.left) * (canvas.width / rect.width);
+    const cy = (ev.clientY - rect.top) * (canvas.height / rect.height);
+    const inst = pickInstance(cx, cy);
+    if (inst && !ev.shiftKey) {
+      ev.preventDefault();
+      moveDrag = { instId: inst.id, origX: inst.worldX, origY: inst.worldY };
+    }
+  }
 });
 window.addEventListener("mousemove", (ev) => {
-  if (!wallDrag) return;
-  paintWallEdgeAtClient(ev.clientX, ev.clientY, wallDrag.erase);
+  if (!wallDrag && !moveDrag) return;
+  if (wallDrag) paintWallEdgeAtClient(ev.clientX, ev.clientY, wallDrag.erase);
+  if (moveDrag) {
+    const rect = canvas.getBoundingClientRect();
+    const cx = (ev.clientX - rect.left) * (canvas.width / rect.width);
+    const cy = (ev.clientY - rect.top) * (canvas.height / rect.height);
+    const tile = screenToTile(cx, cy, lotScene.camera, canvas);
+    const N = lotScene.gridSize;
+    if (tile.worldX < 0 || tile.worldY < 0 || tile.worldX >= N || tile.worldY >= N) return;
+    const inst = lotInstances.find((i) => i.id === moveDrag!.instId);
+    if (!inst) return;
+    if (inst.worldX === tile.worldX && inst.worldY === tile.worldY) return;
+    inst.worldX = tile.worldX;
+    inst.worldY = tile.worldY;
+    composeLotScene();
+  }
 });
 window.addEventListener("mouseup", (ev) => {
   if (ev.button !== 0) return;
   wallDrag = null;
+  if (moveDrag) {
+    const inst = lotInstances.find((i) => i.id === moveDrag!.instId);
+    if (inst) {
+      // Drop on a tile already occupied by another instance → revert.
+      const collision = lotInstances.some(
+        (i) => i.id !== inst.id && i.worldX === inst.worldX && i.worldY === inst.worldY,
+      );
+      if (collision) {
+        inst.worldX = moveDrag.origX;
+        inst.worldY = moveDrag.origY;
+        composeLotScene();
+      }
+    }
+    // Suppress the click event that follows mouseup so the placement handler
+    // doesn't drop a duplicate on the destination tile.
+    if (
+      moveDrag &&
+      lotInstances.some(
+        (i) => i.id === moveDrag!.instId && (i.worldX !== moveDrag!.origX || i.worldY !== moveDrag!.origY),
+      )
+    ) {
+      suppressNextLotClick = true;
+    }
+    moveDrag = null;
+  }
 });
 
 // Middle-mouse drag pans the camera. We track the last cursor pos and convert
@@ -1856,6 +1917,10 @@ canvas.addEventListener("mousemove", (ev) => {
   const rect = canvas.getBoundingClientRect();
   const cx = (ev.clientX - rect.left) * (canvas.width / rect.width);
   const cy = (ev.clientY - rect.top) * (canvas.height / rect.height);
+  // Object hover tooltip — show name + price if cursor is over a placed
+  // instance. Cheap because pickInstance is already O(N) and the tooltip is
+  // a single DOM mutation.
+  showInstanceTooltip(cx, cy, ev.clientX, ev.clientY);
   const tile = screenToTile(cx, cy, lotScene.camera, canvas);
   const N = lotScene.gridSize;
   const inBounds = tile.worldX >= 0 && tile.worldY >= 0 && tile.worldX < N && tile.worldY < N;
@@ -1897,7 +1962,30 @@ canvas.addEventListener("mousemove", (ev) => {
     }
   }
 });
+let instanceTooltipEl: HTMLDivElement | null = null;
+function showInstanceTooltip(cx: number, cy: number, screenX: number, screenY: number): void {
+  if (!instanceTooltipEl) {
+    const el = document.createElement("div");
+    el.id = "instance-tooltip";
+    el.style.cssText =
+      "position:fixed;display:none;z-index:48;background:rgba(20,28,40,.95);border:1px solid #345;border-radius:4px;padding:4px 8px;font:11px/1.4 ui-sans-serif,system-ui,sans-serif;color:#cde;pointer-events:none;white-space:nowrap;";
+    document.body.appendChild(el);
+    instanceTooltipEl = el;
+  }
+  const inst = pickInstance(cx, cy);
+  if (!inst) {
+    instanceTooltipEl.style.display = "none";
+    return;
+  }
+  const tag = inst.obj.price > 0 ? `  ·  §${inst.obj.price}` : "";
+  instanceTooltipEl.textContent = `${inst.obj.objectName}${tag}`;
+  instanceTooltipEl.style.left = `${screenX + 14}px`;
+  instanceTooltipEl.style.top = `${screenY + 14}px`;
+  instanceTooltipEl.style.display = "block";
+}
+
 canvas.addEventListener("mouseleave", () => {
+  if (instanceTooltipEl) instanceTooltipEl.style.display = "none";
   let dirty = false;
   if (lotScene.hoverTile) { lotScene.hoverTile = null; dirty = true; }
   if (lotScene.ghostWall) { lotScene.ghostWall = null; dirty = true; }
