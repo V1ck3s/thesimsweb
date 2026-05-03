@@ -101,6 +101,10 @@ export interface IsoScene {
   /** Game clock minutes-of-day (0..1440). When set, the sky background blends
    *  through dawn → day → dusk → night based on this value. */
   timeMinutes?: number;
+  /** Wall visibility mode. "full" = solid (default). "low" = half-height +
+   *  dim (lets you peek into rooms). "off" = wall geometry hidden entirely
+   *  but A* still respects them server-side. */
+  wallMode?: "full" | "low" | "off";
 }
 
 const SKY = "#1f3340";
@@ -337,8 +341,10 @@ export function renderIso(canvas: HTMLCanvasElement, scene: IsoScene): void {
       }
     }
   };
-  collectEdges(scene.wallsN, scene.doorsN, "n");
-  collectEdges(scene.wallsW, scene.doorsW, "w");
+  if (scene.wallMode !== "off") {
+    collectEdges(scene.wallsN, scene.doorsN, "n");
+    collectEdges(scene.wallsW, scene.doorsW, "w");
+  }
   if (scene.ghostWall) {
     const g = scene.ghostWall;
     const dx = g.orientation === "n" ? 0 : -0.5;
@@ -363,7 +369,7 @@ export function renderIso(canvas: HTMLCanvasElement, scene: IsoScene): void {
       const { sx, sy } = projectTile(d.ref.worldX, d.ref.worldY, cam, canvas);
       drawEntity(ctx, d.ref, sx, sy, cam.tileWidth, cam.rotation ?? 0);
     } else {
-      drawWall(ctx, d.orientation, d.tileX, d.tileY, cam, canvas, d.ghost, d.door);
+      drawWall(ctx, d.orientation, d.tileX, d.tileY, cam, canvas, d.ghost, d.door, scene.wallMode ?? "full");
     }
   }
 
@@ -511,9 +517,16 @@ function drawWall(
   canvas: HTMLCanvasElement,
   ghost: boolean,
   door: boolean,
+  wallMode: "full" | "low" | "off",
 ): void {
+  if (wallMode === "off") return;
   const tw = cam.tileWidth;
-  const wallH = tw * 0.6;
+  const baseH = tw * 0.6;
+  const wallH = wallMode === "low" ? baseH * 0.35 : baseH;
+  const dim = wallMode === "low" && !ghost;
+  const prevAlpha = ctx.globalAlpha;
+  if (dim) ctx.globalAlpha = 0.55;
+  try {
   let p1x: number;
   let p1y: number;
   let p2x: number;
@@ -591,6 +604,9 @@ function drawWall(
   ctx.fill();
   ctx.strokeStyle = stroke;
   ctx.stroke();
+  } finally {
+    ctx.globalAlpha = prevAlpha;
+  }
 }
 
 /** Composite a single SPR2 frame onto the canvas at the projected screen pos.

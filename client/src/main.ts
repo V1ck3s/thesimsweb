@@ -159,8 +159,9 @@ function tickMotives(deltaMs: number): void {
 
 function applyMotiveEffects(
   ttabMotives: Array<{ effectMin: number; effectMax: number; personalityModifier: number }>,
+  targetSim?: SimState,
 ): void {
-  const target = sims[selectedSimIdx];
+  const target = targetSim ?? sims[selectedSimIdx];
   if (!target) return;
   for (let i = 0; i < ttabMotives.length && i < target.motives.length; i += 1) {
     const m = ttabMotives[i];
@@ -537,10 +538,64 @@ function startWalk(toX: number, toY: number, onArrive: (() => void) | null = nul
   startWalkForSim(sim, toX, toY, onArrive);
 }
 
+/** Look across every placed instance for an interaction whose TTAB row bumps
+ *  the requested motive index by a positive avg of effectMin/effectMax. The
+ *  best (largest delta) match wins. Returns null if no instance helps. */
+interface AutonomyTarget {
+  inst: LotInstance;
+  row: InteractionMenuRow;
+  bestDelta: number;
+}
+function findBestInteractionForMotive(motiveIdx: number): AutonomyTarget | null {
+  if (!viewerState.wasm) return null;
+  let best: AutonomyTarget | null = null;
+  for (const inst of lotInstances) {
+    let rows: InteractionMenuRow[];
+    try {
+      rows = buildInteractionRows(viewerState.wasm, inst);
+    } catch {
+      continue;
+    }
+    for (const row of rows) {
+      const m = row.ttabMotives;
+      if (!m) continue;
+      const slot = m[motiveIdx];
+      if (!slot) continue;
+      const avg = (slot.effectMin + slot.effectMax) / 2;
+      if (avg <= 0) continue;
+      if (!best || avg > best.bestDelta) best = { inst, row, bestDelta: avg };
+    }
+  }
+  return best;
+}
+
+/** Walk a Sim to an instance and run the chosen interaction on arrival. The
+ *  motive bump uses the *target* Sim, not the selected one, so auto-walking
+ *  Sims actually feed themselves. Audio + bubbles are skipped to avoid
+ *  cluttering the UI when several Sims act simultaneously. */
+function runAutonomousInteraction(sim: SimState, target: AutonomyTarget): void {
+  if (target.row.ttabMotives) {
+    applyMotiveEffects(target.row.ttabMotives, sim);
+  }
+}
+
 /** Pick a random reachable tile within `radius` of `sim` and walk it there.
  *  Used by the auto-wander loop so non-selected Sims aren't statues. */
 function autoWanderSim(sim: SimState): void {
   if (sim.walk) return; // already moving
+  // Need-driven: any motive < -40 → walk to the best instance that boosts it
+  // and run that interaction on arrival.
+  for (let i = 0; i < sim.motives.length; i += 1) {
+    const v = sim.motives[i] ?? 0;
+    if (v >= -40) continue;
+    const target = findBestInteractionForMotive(i);
+    if (!target) continue;
+    const dest = adjacentTileFor(target.inst.worldX, target.inst.worldY);
+    const path = findPath(Math.round(sim.fx), Math.round(sim.fy), dest.x, dest.y);
+    if (!path || path.length === 0) continue;
+    startWalkForSim(sim, dest.x, dest.y, () => runAutonomousInteraction(sim, target));
+    return;
+  }
   const N = lotScene.gridSize;
   const startX = Math.round(sim.fx);
   const startY = Math.round(sim.fy);
@@ -668,6 +723,17 @@ function adjacentTileFor(objX: number, objY: number): { x: number; y: number } {
 const CAMERA_TILE_WIDTHS = [32, 64, 128] as const;
 let cameraZoomIdx = 1;
 
+/** Wall visibility cycle: full → low (peek inside) → off. A* pathing always
+ *  obeys the actual wall sets regardless of this display mode. */
+const WALL_MODES = ["full", "low", "off"] as const;
+let wallModeIdx = 0;
+function cycleWallMode(): void {
+  wallModeIdx = (wallModeIdx + 1) % WALL_MODES.length;
+  lotScene.wallMode = WALL_MODES[wallModeIdx] ?? "full";
+  renderLot();
+  updateCameraButtonHighlights();
+}
+
 function renderLot(): void {
   renderIso(canvas, lotScene);
 }
@@ -724,6 +790,8 @@ function mountCameraControls(): void {
     <button data-cam-zoom="1">mid</button>
     <button data-cam-zoom="2">near</button>
     <span style="opacity:.5;">·</span>
+    <button data-cam-action="walls" title="Toggle wall visibility (full / low / off)">walls: full</button>
+    <span style="opacity:.5;">·</span>
     <span style="opacity:.7;">mode</span>
     <button data-cam-action="mode-play" title="Click walks the Sim & triggers interactions">play</button>
     <button data-cam-action="mode-build" title="Click places the viewer object on empty tiles">build</button>
@@ -748,6 +816,7 @@ function mountCameraControls(): void {
     else if (action === "save") void saveLot();
     else if (action === "load") void loadLot(true);
     else if (action === "add-sim") spawnSim();
+    else if (action === "walls") cycleWallMode();
     else if (action === "mode-play") {
       lotMode = "play";
       updateModeButtonHighlights();
@@ -840,6 +909,10 @@ function updateModeButtonHighlights(): void {
     const action = btn.dataset["camAction"];
     if (action === "mode-play") btn.style.cssText = controlButtonStyle(lotMode === "play");
     else if (action === "mode-build") btn.style.cssText = controlButtonStyle(lotMode === "build");
+    else if (action === "walls") {
+      btn.textContent = `walls: ${WALL_MODES[wallModeIdx]}`;
+      btn.style.cssText = controlButtonStyle(wallModeIdx !== 0);
+    }
   }
   const buildBar = document.getElementById("build-tools");
   if (buildBar instanceof HTMLDivElement) {
