@@ -501,6 +501,14 @@ pub enum VmEffect {
     /// In real TS1 this writes to a developer log; for our VM it's a no-op
     /// other than the trace effect.
     Syslog { string_index: u16, operand: [u8; 8] },
+    /// Generic engine-hook effect for primitives whose semantics aren't yet
+    /// modeled in this crate but need to be observable in the trace. The
+    /// `primitive` field carries the BHAV opcode (4 grab, 5 drop, 9 burn, 14
+    /// Find Best Object for Function, 16 Find Location For, 26 Relationship,
+    /// 33 Find 5 Worst Motives, 37 Test Sim Interacting With, 43 drop onto,
+    /// 63 Get Terrain Info, 65 Find Best Action, 66 Set Dynamic Object Name).
+    /// All branch true so BHAVs walk past them.
+    EngineHook { primitive: u8, operand: [u8; 8] },
 }
 
 /// Flavour of dialog primitive — selects the STR# table the engine reads from.
@@ -684,6 +692,9 @@ impl<'a> Vm<'a> {
         match instr.opcode {
             0 => self.exec_sleep(instr.operand),
             2 => self.exec_expression(instr.operand),
+            4 | 5 | 9 | 14 | 16 | 26 | 33 | 37 | 43 | 63 | 65 | 66 => {
+                self.exec_engine_hook(u8::try_from(instr.opcode).unwrap_or(0), instr.operand)
+            }
             6 => self.exec_change_suit(instr.operand),
             7 => Self::exec_refresh(),
             8 => self.exec_random_number(instr.operand),
@@ -717,6 +728,15 @@ impl<'a> Vm<'a> {
             50 => self.exec_set_action_string(instr.operand),
             _ => DispatchOutcome::Branch(true),
         }
+    }
+
+    /// Effect-log shim for primitives whose engine semantics we don't yet
+    /// model. Records an `EngineHook` with the primitive opcode + raw operand
+    /// and branches true so the BHAV walks past. This makes ~12 additional
+    /// primitives observable in traces without inventing fake state.
+    fn exec_engine_hook(&mut self, primitive: u8, operand: [u8; 8]) -> DispatchOutcome {
+        self.effects.push(VmEffect::EngineHook { primitive, operand });
+        DispatchOutcome::Branch(true)
     }
 
     fn exec_sleep(&mut self, operand: [u8; 8]) -> DispatchOutcome {
@@ -1900,6 +1920,29 @@ mod tests {
         );
         let r2 = vm.call(0x1000, Vec::new(), 0, 0x20).unwrap();
         assert_eq!(r2, ExecResult::Returned(false));
+    }
+
+    #[test]
+    fn engine_hook_records_effect_for_unimplemented_primitives() {
+        // Each opcode in the routed-to-EngineHook list should produce one
+        // effect with the primitive number preserved.
+        let opcodes: &[u8] = &[4, 5, 9, 14, 16, 26, 33, 37, 43, 63, 65, 66];
+        for &opcode in opcodes {
+            let body = one_instr(
+                u16::from(opcode),
+                [0; 8],
+                Instruction::RETURN_TRUE,
+                Instruction::RETURN_ERROR,
+            );
+            let src = source(&[(0x1000, body)]);
+            let mut vm = Vm::new(&src);
+            let r = vm.call(0x1000, Vec::new(), 0, 0).unwrap();
+            assert_eq!(r, ExecResult::Returned(true));
+            assert!(
+                vm.effects.iter().any(|e| matches!(e, VmEffect::EngineHook { primitive, .. } if *primitive == opcode)),
+                "opcode {opcode} did not emit EngineHook"
+            );
+        }
     }
 
     #[test]

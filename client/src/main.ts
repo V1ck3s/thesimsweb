@@ -1457,6 +1457,8 @@ function formatEffect(ef: VmEffectObject): string {
       return `Breakpoint @0x${Number(ef["bhavId"]).toString(16)}#${ef["ip"]}`;
     case "Syslog":
       return `Syslog str=${ef["stringIndex"]}`;
+    case "EngineHook":
+      return `EngineHook #${ef["primitive"]} ${ef["name"] ?? ""}`;
     default: {
       const fields = Object.entries(ef)
         .filter(([k]) => k !== "kind")

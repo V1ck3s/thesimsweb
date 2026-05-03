@@ -1015,6 +1015,13 @@ fn effect_to_object(ef: &simantics::vm::VmEffect) -> Result<JsValue, JsError> {
             set_kind("Syslog")?;
             set_f64(&obj, "stringIndex", f64::from(*string_index))?;
         }
+        VmEffect::EngineHook { primitive, .. } => {
+            set_kind("EngineHook")?;
+            set_f64(&obj, "primitive", f64::from(*primitive))?;
+            let name = simantics::primitive_name(u16::from(*primitive)).unwrap_or("?");
+            Reflect::set(&obj, &JsValue::from_str("name"), &JsValue::from_str(name))
+                .map_err(|_| JsError::new("set name"))?;
+        }
     }
     Ok(obj.into())
 }
