@@ -54,6 +54,10 @@ test:
 diff-far archive:
     ./scripts/diff/far.sh {{archive}}
 
+# regression test: re-dump every sample IFF in samples/iff/ and diff against goldens.
+diff-iff:
+    ./scripts/diff/iff.sh
+
 # transcode TS1 .avi intro/cutscene videos to web-friendly .webm + .mp4.
 # Outputs land under server/assets/converted/intro/ (gitignored).
 transcode-videos *args:

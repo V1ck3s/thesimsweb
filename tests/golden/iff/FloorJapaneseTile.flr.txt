@@ -1,0 +1,10 @@
+version: V2_5  rsmp_offset: 0x3ce1  size: 15904 B
+offset     size   id     flags  data_len   kind
+0x00000040 476    1      0x0010 400        SPR2
+0x0000021c 1356   257    0x0010 1280       SPR2
+0x00000768 4652   513    0x0010 4576       SPR2
+0x00001994 860    1      0x0000 784        PALT
+0x00001cf0 8177   0      0x0010 8101       STR#
+0x00003ce1 174    0      0x0010 98         rsmp
+0x00003d8f 145    59716  0x0004 69         XXXX
+7 chunks
