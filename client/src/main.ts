@@ -805,7 +805,43 @@ function cycleWallMode(): void {
   updateCameraButtonHighlights();
 }
 
+// Opt-in WebGL2 floor renderer via `?webgl` URL flag. The WebGL2 path is a
+// scaffold today: it draws the floor grid only, so when enabled we still
+// composite the full Canvas2D scene on top for sprites/walls/entities.
+const WEBGL_ENABLED = new URLSearchParams(globalThis.location?.search ?? "").has("webgl");
+let webglCanvas: HTMLCanvasElement | null = null;
+let webglRenderer: ((c: HTMLCanvasElement, s: typeof lotScene) => void) | null = null;
+if (WEBGL_ENABLED) {
+  webglCanvas = document.createElement("canvas");
+  webglCanvas.id = "lot-canvas-webgl";
+  webglCanvas.style.cssText = "position:absolute;left:0;top:0;width:100%;height:100%;pointer-events:none;z-index:0";
+  webglCanvas.width = canvas.width;
+  webglCanvas.height = canvas.height;
+  canvas.parentElement?.insertBefore(webglCanvas, canvas);
+  // Make the foreground canvas transparent over the WebGL one.
+  canvas.style.background = "transparent";
+  void import("./renderer/iso_webgl.js").then((mod) => {
+    webglRenderer = mod.renderIsoWebGL;
+    renderLot();
+    console.info("[render] WebGL2 floor renderer enabled (scaffold — sprites/walls still on Canvas2D)");
+  }).catch((err) => {
+    console.warn("[render] WebGL2 init failed; staying on Canvas2D:", err);
+  });
+}
+
 function renderLot(): void {
+  if (webglCanvas && webglRenderer) {
+    if (webglCanvas.width !== canvas.width || webglCanvas.height !== canvas.height) {
+      webglCanvas.width = canvas.width;
+      webglCanvas.height = canvas.height;
+    }
+    try {
+      webglRenderer(webglCanvas, lotScene);
+    } catch (err) {
+      console.warn("[render] WebGL2 frame failed, switching back to Canvas2D:", err);
+      webglRenderer = null;
+    }
+  }
   renderIso(canvas, lotScene);
 }
 
