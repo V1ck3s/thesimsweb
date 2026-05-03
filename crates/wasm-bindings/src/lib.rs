@@ -509,6 +509,63 @@ pub fn objd_footprint(iff_data: &[u8], master_id: u32) -> Result<js_sys::Array, 
     Ok(arr)
 }
 
+/// Parse a single FLRm or WALm chunk payload (the layout is identical — both
+/// list `.flr` / `.wll` filenames referenced by the lot's `Arry` chunks).
+///
+/// `chunkId` is the parent IFF chunk ID (0 / 1 in TS1 lots) and controls the
+/// trailing-byte width per entry.
+///
+/// Returns `{ version, entries: [{ filename, unknown1, id, trailingLen }, ...] }`.
+///
+/// # Errors
+/// Returns a `JsError` for short buffers or unrecognised magic.
+#[wasm_bindgen(js_name = parseFlrm)]
+pub fn parse_flrm(data: &[u8], chunk_id: u32) -> Result<Object, JsError> {
+    let f = simantics::Flrm::parse(data, chunk_id).map_err(|e| JsError::new(&e.to_string()))?;
+    let obj = Object::new();
+    set_f64(&obj, "version", f64::from(f.version))?;
+    let arr = js_sys::Array::new();
+    for e in &f.entries {
+        let cell = Object::new();
+        Reflect::set(&cell, &JsValue::from_str("filename"), &JsValue::from_str(&e.filename))
+            .map_err(|_| JsError::new("set filename"))?;
+        set_f64(&cell, "unknown1", f64::from(e.unknown1))?;
+        set_f64(&cell, "id", f64::from(e.id))?;
+        set_f64(&cell, "trailingLen", e.trailing.len() as f64)?;
+        arr.push(&cell);
+    }
+    Reflect::set(&obj, &JsValue::from_str("entries"), &arr)
+        .map_err(|_| JsError::new("set entries"))?;
+    Ok(obj)
+}
+
+/// Parse and RLE-decode a single Arry chunk payload.
+///
+/// Returns `{ width, height, kind, kindLabel, unknown, data: Uint8Array }`.
+/// `data` is row-major `width * height * kind` bytes — caller maps it to the
+/// concrete per-tile interpretation (1=floor material id, 2=object id pair,
+/// 4=altitude, 8=walls).
+///
+/// # Errors
+/// Returns a `JsError` for short buffers.
+#[wasm_bindgen(js_name = parseArry)]
+pub fn parse_arry(data: &[u8]) -> Result<Object, JsError> {
+    let a = simantics::Arry::parse(data).map_err(|e| JsError::new(&e.to_string()))?;
+    let obj = Object::new();
+    set_f64(&obj, "width", f64::from(a.width))?;
+    set_f64(&obj, "height", f64::from(a.height))?;
+    set_f64(&obj, "kind", a.kind.0 as f64)?;
+    let label = a.kind.well_known_label().unwrap_or("unknown");
+    Reflect::set(&obj, &JsValue::from_str("kindLabel"), &JsValue::from_str(label))
+        .map_err(|_| JsError::new("set kindLabel"))?;
+    set_f64(&obj, "unknown", f64::from(a.unknown))?;
+    let bytes = js_sys::Uint8Array::new_with_length(a.data.len() as u32);
+    bytes.copy_from(&a.data);
+    Reflect::set(&obj, &JsValue::from_str("data"), &bytes)
+        .map_err(|_| JsError::new("set data"))?;
+    Ok(obj)
+}
+
 /// Parse a single FWAV chunk payload (event-name C string with leading NUL pad).
 /// Returns `{ eventName: string }`.
 ///
