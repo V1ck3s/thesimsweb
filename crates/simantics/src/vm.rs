@@ -443,6 +443,11 @@ pub enum VmEffect {
     /// Primitive 32 — opaque marker recorded so debugging traces can highlight an
     /// explicit break-point in a BHAV. Branch always taken.
     Breakpoint { bhav_id: u16, ip: u16 },
+    /// Primitive 30 — Syslog: write a debug-log line. The operand encodes a
+    /// string table index in bytes 0..2; we just record both for inspection.
+    /// In real TS1 this writes to a developer log; for our VM it's a no-op
+    /// other than the trace effect.
+    Syslog { string_index: u16, operand: [u8; 8] },
 }
 
 /// Flavour of dialog primitive — selects the STR# table the engine reads from.
@@ -643,6 +648,7 @@ impl<'a> Vm<'a> {
             27 | 45 | 46 | 47 => self.exec_spatial_request(u8::try_from(instr.opcode).unwrap_or(0), instr.operand),
             28 => self.exec_run_tree_by_name(instr.operand),
             29 => self.exec_set_motive_change(instr.operand),
+            30 => self.exec_syslog(instr.operand),
             32 => self.exec_test_object_type(instr.operand),
             31 => self.exec_set_to_next(instr.operand),
             34 => self.exec_ui_effect(instr.operand),
@@ -689,6 +695,15 @@ impl<'a> Vm<'a> {
     fn exec_animate_sim(&mut self, operand: [u8; 8]) -> DispatchOutcome {
         let anim_id = u16::from_le_bytes([operand[0], operand[1]]);
         self.effects.push(VmEffect::AnimateSim { anim_id, operand });
+        DispatchOutcome::Branch(true)
+    }
+
+    /// Primitive 30 — Syslog. Niotso just lists this as "debug log"; we emit
+    /// a `Syslog` effect with the operand and string index so traces can pick
+    /// it up. Pure side-effect — branch always true.
+    fn exec_syslog(&mut self, operand: [u8; 8]) -> DispatchOutcome {
+        let string_index = u16::from_le_bytes([operand[0], operand[1]]);
+        self.effects.push(VmEffect::Syslog { string_index, operand });
         DispatchOutcome::Branch(true)
     }
 

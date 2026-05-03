@@ -962,6 +962,10 @@ fn effect_to_object(ef: &simantics::vm::VmEffect) -> Result<JsValue, JsError> {
             set_f64(&obj, "bhavId", f64::from(*bhav_id))?;
             set_f64(&obj, "ip", f64::from(*ip))?;
         }
+        VmEffect::Syslog { string_index, .. } => {
+            set_kind("Syslog")?;
+            set_f64(&obj, "stringIndex", f64::from(*string_index))?;
+        }
     }
     Ok(obj.into())
 }
