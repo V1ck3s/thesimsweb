@@ -269,8 +269,9 @@ let lastMotiveTick = performance.now();
 function startMotivesLoop(): void {
   setInterval(() => {
     const now = performance.now();
-    if (document.hidden) {
-      // Skip the elapsed window so motives don't snap-decay on tab refocus.
+    if (document.hidden || gamePaused) {
+      // Skip the elapsed window so motives don't snap-decay on tab refocus
+      // or after a long pause.
       lastMotiveTick = now;
       return;
     }
@@ -289,6 +290,7 @@ const TIME_SCALE = 1; // 1 in-game minute per real second
 let gameMinutes = 8 * 60; // 08:00 day 0
 let gameDayIdx = 0;
 let funds = 20000;
+let gamePaused = false;
 const TIME_HUD_ID = "time-funds-hud";
 
 let timeHudEl: HTMLDivElement | null = null;
@@ -299,10 +301,12 @@ function ensureTimeFundsHud(): HTMLDivElement {
   el.style.cssText =
     "position:fixed;top:8px;left:50%;transform:translateX(-50%);background:rgba(0,0,0,.55);padding:6px 14px;border-radius:6px;font:12px/1.3 ui-sans-serif,system-ui,sans-serif;color:#cde;display:flex;gap:18px;align-items:center;";
   el.innerHTML = `
+    <button data-th-pause title="Pause / resume (space)" style="background:transparent;border:1px solid #345;color:#cde;border-radius:4px;padding:2px 8px;cursor:pointer;font:inherit;">▶ play</button>
     <span><span data-th-day style="color:#9ad;">Mon</span> <span data-th-time>08:00</span></span>
     <span style="opacity:.4;">·</span>
     <span><span style="color:#cfa;">§</span><span data-th-funds style="font-variant-numeric:tabular-nums;">20000</span></span>
   `;
+  el.querySelector("button[data-th-pause]")?.addEventListener("click", () => togglePause());
   document.body.appendChild(el);
   timeHudEl = el;
   return el;
@@ -316,14 +320,21 @@ function renderTimeFundsHud(): void {
   const dEl = root.querySelector<HTMLSpanElement>("span[data-th-day]");
   const tEl = root.querySelector<HTMLSpanElement>("span[data-th-time]");
   const fEl = root.querySelector<HTMLSpanElement>("span[data-th-funds]");
+  const pEl = root.querySelector<HTMLButtonElement>("button[data-th-pause]");
   if (dEl) dEl.textContent = day;
   if (tEl) tEl.textContent = `${hh}:${mm}`;
   if (fEl) fEl.textContent = funds.toLocaleString("en-US");
+  if (pEl) pEl.textContent = gamePaused ? "⏸ paused" : "▶ play";
+}
+
+function togglePause(): void {
+  gamePaused = !gamePaused;
+  renderTimeFundsHud();
 }
 
 function startGameClock(): void {
   setInterval(() => {
-    if (document.hidden) return; // pause when the tab is in the background
+    if (document.hidden || gamePaused) return; // pause when the tab is in the background
     gameMinutes += TIME_SCALE;
     if (gameMinutes >= 24 * 60) {
       gameMinutes -= 24 * 60;
@@ -654,6 +665,7 @@ function autoWanderSim(sim: SimState): void {
 
 function startAutoWanderLoop(): void {
   setInterval(() => {
+    if (gamePaused) return;
     for (let i = 0; i < sims.length; i += 1) {
       if (i === selectedSimIdx) continue;
       const sim = sims[i];
@@ -820,6 +832,122 @@ function recenterCamera(): void {
   renderLot();
 }
 
+let minimapCanvas: HTMLCanvasElement | null = null;
+const MINIMAP_SIZE = 128;
+function mountMinimap(): void {
+  const existing = document.getElementById("minimap");
+  existing?.remove();
+  const wrap = document.createElement("div");
+  wrap.id = "minimap";
+  wrap.style.cssText =
+    "position:fixed;top:200px;right:8px;background:rgba(0,0,0,.55);padding:6px;border-radius:6px;display:flex;flex-direction:column;gap:4px;align-items:center;font:10px/1.2 ui-monospace,monospace;color:#9ad;";
+  wrap.innerHTML = `<canvas id="minimap-canvas" width="${MINIMAP_SIZE}" height="${MINIMAP_SIZE}" style="image-rendering:pixelated;cursor:crosshair;border:1px solid #345;"></canvas><span style="opacity:.7;">click to pan</span>`;
+  document.body.appendChild(wrap);
+  const c = wrap.querySelector<HTMLCanvasElement>("#minimap-canvas");
+  if (!c) return;
+  minimapCanvas = c;
+  c.addEventListener("click", (ev) => {
+    const rect = c.getBoundingClientRect();
+    const N = lotScene.gridSize;
+    const cellPx = MINIMAP_SIZE / N;
+    const tx = (ev.clientX - rect.left) / cellPx;
+    const ty = (ev.clientY - rect.top) / cellPx;
+    lotScene.camera.centerX = Math.max(0, Math.min(N, tx));
+    lotScene.camera.centerY = Math.max(0, Math.min(N, ty));
+    renderLot();
+    drawMinimap();
+  });
+}
+
+function drawMinimap(): void {
+  if (!minimapCanvas) return;
+  const ctx = minimapCanvas.getContext("2d");
+  if (!ctx) return;
+  const N = lotScene.gridSize;
+  const cell = MINIMAP_SIZE / N;
+  // Dark background.
+  ctx.fillStyle = "#0a1422";
+  ctx.fillRect(0, 0, MINIMAP_SIZE, MINIMAP_SIZE);
+  // Floor checker (mute).
+  for (let y = 0; y < N; y += 1) {
+    for (let x = 0; x < N; x += 1) {
+      const painted = floorPaint.get(y * N + x);
+      if (painted) {
+        ctx.fillStyle = painted;
+        ctx.fillRect(x * cell, y * cell, cell, cell);
+      } else if ((x + y) % 2 === 0) {
+        ctx.fillStyle = "#1a2a18";
+        ctx.fillRect(x * cell, y * cell, cell, cell);
+      }
+    }
+  }
+  // Walls — north & west edges as dark lines.
+  ctx.strokeStyle = "#5a3e2c";
+  ctx.lineWidth = 1.5;
+  for (const k of wallsN) {
+    const x = k % (N + 1);
+    const y = Math.floor(k / (N + 1));
+    ctx.beginPath();
+    ctx.moveTo(x * cell, y * cell);
+    ctx.lineTo((x + 1) * cell, y * cell);
+    ctx.stroke();
+  }
+  for (const k of wallsW) {
+    const x = k % (N + 1);
+    const y = Math.floor(k / (N + 1));
+    ctx.beginPath();
+    ctx.moveTo(x * cell, y * cell);
+    ctx.lineTo(x * cell, (y + 1) * cell);
+    ctx.stroke();
+  }
+  // Doors — same edges in green.
+  ctx.strokeStyle = "#5dbc4d";
+  ctx.lineWidth = 2;
+  for (const k of doorsN) {
+    const x = k % (N + 1);
+    const y = Math.floor(k / (N + 1));
+    ctx.beginPath();
+    ctx.moveTo(x * cell + cell * 0.25, y * cell);
+    ctx.lineTo(x * cell + cell * 0.75, y * cell);
+    ctx.stroke();
+  }
+  for (const k of doorsW) {
+    const x = k % (N + 1);
+    const y = Math.floor(k / (N + 1));
+    ctx.beginPath();
+    ctx.moveTo(x * cell, y * cell + cell * 0.25);
+    ctx.lineTo(x * cell, y * cell + cell * 0.75);
+    ctx.stroke();
+  }
+  // Placed objects as small white squares.
+  ctx.fillStyle = "#cdd";
+  for (const inst of lotInstances) {
+    ctx.fillRect(inst.worldX * cell + 1, inst.worldY * cell + 1, cell - 2, cell - 2);
+  }
+  // Sims as palette-coloured dots, selected one bigger.
+  for (let i = 0; i < sims.length; i += 1) {
+    const sim = sims[i]!;
+    const cx = sim.fx * cell + cell / 2;
+    const cy = sim.fy * cell + cell / 2;
+    const r = i === selectedSimIdx ? Math.max(2.5, cell * 0.5) : Math.max(1.5, cell * 0.35);
+    ctx.fillStyle = simColorOf(i);
+    ctx.beginPath();
+    ctx.arc(cx, cy, r, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = "#000";
+    ctx.lineWidth = 1;
+    ctx.stroke();
+  }
+  // Camera viewport rectangle (approximate — just a marker at the rotated
+  // centre, since the iso projection doesn't map cleanly to a rect).
+  const cam = lotScene.camera;
+  ctx.strokeStyle = "rgba(255,255,255,.8)";
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.arc(cam.centerX * cell, cam.centerY * cell, 4, 0, Math.PI * 2);
+  ctx.stroke();
+}
+
 function mountCameraControls(): void {
   // Render a small bar in the top-right of the canvas with rotation + zoom buttons.
   const existing = document.getElementById("camera-controls");
@@ -928,6 +1056,8 @@ function mountCameraControls(): void {
     }
   });
 
+  // Mini-map under the camera bar — tiny top-down view of the whole lot.
+  mountMinimap();
   // Help blurb directly under the camera bar.
   const help = document.createElement("div");
   help.id = "lot-help";
@@ -1036,6 +1166,10 @@ window.addEventListener("keydown", (ev) => {
     case "r":
     case "R":
       recenterCamera();
+      break;
+    case " ":
+    case "Spacebar":
+      togglePause();
       break;
     default:
       return;
@@ -1643,6 +1777,7 @@ function composeLotScene(): void {
   lotScene.windowsW = windowsW;
   lotScene.timeMinutes = gameMinutes;
   renderLot();
+  drawMinimap();
 }
 
 /** Hit-test a click on the main canvas against every placed instance.
