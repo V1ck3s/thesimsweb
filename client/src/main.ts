@@ -57,6 +57,10 @@ interface SimState {
   /** Cardinal facing in tile-space: 0 = +x, 1 = -y, 2 = -x, 3 = +y. Updated at
    *  the start of every walk segment so the renderer can spin a face dot. */
   facing: 0 | 1 | 2 | 3;
+  /** Sim is napping on the floor — no decay, energy ticks up, can't be walked
+   *  by autonomy. Toggled when energy hits a critical floor with no bed in
+   *  reach. */
+  sleeping: boolean;
 }
 
 const SIM_PALETTE = [
@@ -81,6 +85,7 @@ const sims: SimState[] = [
     bubble: null,
     motives: defaultMotives(),
     facing: 3,
+    sleeping: false,
   },
 ];
 let selectedSimIdx = 0;
@@ -145,11 +150,23 @@ function clampMotive(v: number): number {
   return Math.max(-100, Math.min(100, v));
 }
 
+const MOTIVE_ENERGY_IDX = 4;
+
 function tickMotives(deltaMs: number): void {
   const dec = MOTIVE_DECAY_PER_S * (deltaMs / 1000);
   // Decay every Sim's motives, not just the selected one — they all live on
-  // the lot and get hungry/tired in parallel.
+  // the lot and get hungry/tired in parallel. Sleeping Sims don't decay and
+  // their Energy regenerates at +2 / s; they wake when Energy crosses +20.
   for (const sim of sims) {
+    if (sim.sleeping) {
+      const e = sim.motives[MOTIVE_ENERGY_IDX] ?? 0;
+      sim.motives[MOTIVE_ENERGY_IDX] = clampMotive(e + 2 * (deltaMs / 1000));
+      if ((sim.motives[MOTIVE_ENERGY_IDX] ?? 0) >= 20) {
+        sim.sleeping = false;
+        sim.bubble = null;
+      }
+      continue;
+    }
     for (let i = 0; i < sim.motives.length; i += 1) {
       sim.motives[i] = clampMotive((sim.motives[i] ?? 0) - dec);
     }
@@ -587,6 +604,7 @@ function runAutonomousInteraction(sim: SimState, target: AutonomyTarget): void {
  *  Used by the auto-wander loop so non-selected Sims aren't statues. */
 function autoWanderSim(sim: SimState): void {
   if (sim.walk) return; // already moving
+  if (sim.sleeping) return; // napping; tickMotives handles wake-up
   // Need-driven: any motive < -40 → walk to the best instance that boosts it
   // and run that interaction on arrival.
   for (let i = 0; i < sim.motives.length; i += 1) {
@@ -599,6 +617,20 @@ function autoWanderSim(sim: SimState): void {
     if (!path || path.length === 0) continue;
     startWalkForSim(sim, dest.x, dest.y, () => runAutonomousInteraction(sim, target));
     return;
+  }
+  // Energy critically low + no bed reachable → nap on floor right where we
+  // are. tickMotives will tick energy back up and clear `sleeping` automatically.
+  const energy = sim.motives[MOTIVE_ENERGY_IDX] ?? 0;
+  if (energy < -60) {
+    sim.sleeping = true;
+    sim.bubble = { text: "💤 sleeping…", expiresAtMs: performance.now() + 60000 };
+    return;
+  }
+  // Hunger critical with no fridge target → flash a thought-bubble so the user
+  // knows the Sim is starving. Doesn't change behaviour beyond random wander.
+  const hunger = sim.motives[0] ?? 0;
+  if (hunger < -60 && (!sim.bubble || sim.bubble.expiresAtMs < performance.now())) {
+    sim.bubble = { text: "🍽 hungry…", expiresAtMs: performance.now() + 1500 };
   }
   const N = lotScene.gridSize;
   const startX = Math.round(sim.fx);
@@ -2079,6 +2111,7 @@ function spawnSim(): void {
     bubble: null,
     motives: defaultMotives(),
     facing: 3,
+    sleeping: false,
   });
   selectedSimIdx = idx;
   renderMotivesHud();
@@ -2218,6 +2251,7 @@ async function loadLot(replace: boolean = true): Promise<void> {
             motives:
               Array.isArray(s.motives) && s.motives.length === 8 ? [...s.motives] : defaultMotives(),
             facing: 3,
+            sleeping: false,
           });
         }
         selectedSimIdx = Math.max(0, Math.min(sims.length - 1, obj.selectedSim ?? 0));
