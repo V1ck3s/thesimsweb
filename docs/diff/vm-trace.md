@@ -105,22 +105,16 @@ cargo run --release -p simantics --example trace_json -- \
   > tests/golden/vm/unsnacker_event1.jsonl
 ```
 
-### FreeSO oracle (deferred — toolchain blocker)
+### FreeSO oracle — **abandoned**
 
-We do **not** ship a FreeSO-side oracle. The blocker is genuinely
-non-trivial:
+Decision recorded in `PLAN.md` §11 (2026-05-04). Building a FreeSO-side
+oracle requires migrating their project off .NET Framework 4.5 + MonoGame
+XNA, extracting the VM core out of the NetPlay / Drivers / LotView /
+Marshals tangle (30+ namespaces in `VM.cs` alone), and instrumenting the
+step loop. Multi-day yak-shave for marginal value over the existing test
+stack.
 
-- FreeSO targets .NET Framework 4.5 with MonoGame XNA — the VM source
-  (`TSOClient/tso.simantics/VM.cs`) imports `Microsoft.Xna.Framework`,
-  `FSO.LotView.Components`, `FSO.SimAntics.NetPlay.Drivers`, etc. (30+
-  namespaces).
-- Migrating the project to .NET 9 (which we have locally) means resolving
-  XNA → MonoGame.Framework + extracting just the VM core out of the
-  netplay/drivers/marshals tangle. Multi-day yak-shave.
-- Once isolated, patch `VMSimanticsThread::Run` to emit the JSONL schema
-  above (~30 lines of C# wrapping the `bhav.Instructions[ip]` access).
-
-The contract is locked: any oracle that emits this schema can be plugged
-into `scripts/diff/vm.sh` to validate our VM byte-for-byte against
-FreeSO/Simitone. Until then, the self-regression goldens guard against
-accidental drift.
+The JSONL schema above and `scripts/diff/vm.sh` remain as plug points: if
+an oracle that emits this format ever materialises (someone instruments
+Simitone, an emulator dumps it, …), we can wire it in without rewriting
+anything. We just don't actively chase it.
