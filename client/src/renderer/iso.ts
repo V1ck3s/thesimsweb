@@ -95,6 +95,10 @@ export interface IsoScene {
    *  draws only the door frame (passable visualisation). */
   doorsN?: Set<number>;
   doorsW?: Set<number>;
+  /** Windows share the wall key scheme. Render as a wall with an upper opening
+   *  + glass tint; A* still treats the underlying edge as blocked. */
+  windowsN?: Set<number>;
+  windowsW?: Set<number>;
   /** Optional ghost wall (orientation + tile coords) drawn semi-transparent so
    *  the user can see where their next click will land in wall-place mode. */
   ghostWall?: { orientation: "n" | "w"; tileX: number; tileY: number } | null;
@@ -301,10 +305,11 @@ export function renderIso(canvas: HTMLCanvasElement, scene: IsoScene): void {
     }
     return lx + ly;
   };
+  type WallKind = "plain" | "door" | "window";
   type Drawable =
     | { type: "sprite"; ref: IsoSceneSprite; depth: number }
     | { type: "entity"; ref: IsoEntity; depth: number }
-    | { type: "wall"; orientation: "n" | "w"; tileX: number; tileY: number; depth: number; ghost: boolean; door: boolean };
+    | { type: "wall"; orientation: "n" | "w"; tileX: number; tileY: number; depth: number; ghost: boolean; kind: WallKind };
   const drawables: Drawable[] = [];
   for (const s of scene.sprites) {
     drawables.push({ type: "sprite", ref: s, depth: depthOf(s.worldX, s.worldY) });
@@ -318,32 +323,28 @@ export function renderIso(canvas: HTMLCanvasElement, scene: IsoScene): void {
   const collectEdges = (
     walls: Set<number> | undefined,
     doors: Set<number> | undefined,
+    windows: Set<number> | undefined,
     orient: "n" | "w",
   ): void => {
     const seen = new Set<number>();
-    if (walls) {
-      for (const k of walls) {
-        seen.add(k);
-        const x = k % (N + 1);
-        const y = Math.floor(k / (N + 1));
-        const d = orient === "n" ? depthOf(x, y - 0.5) : depthOf(x - 0.5, y);
-        const isDoor = doors?.has(k) ?? false;
-        drawables.push({ type: "wall", orientation: orient, tileX: x, tileY: y, depth: d, ghost: false, door: isDoor });
-      }
+    const push = (k: number, kind: WallKind): void => {
+      if (seen.has(k)) return;
+      seen.add(k);
+      const x = k % (N + 1);
+      const y = Math.floor(k / (N + 1));
+      const d = orient === "n" ? depthOf(x, y - 0.5) : depthOf(x - 0.5, y);
+      drawables.push({ type: "wall", orientation: orient, tileX: x, tileY: y, depth: d, ghost: false, kind });
+    };
+    if (walls) for (const k of walls) {
+      const kind: WallKind = doors?.has(k) ? "door" : windows?.has(k) ? "window" : "plain";
+      push(k, kind);
     }
-    if (doors) {
-      for (const k of doors) {
-        if (seen.has(k)) continue;
-        const x = k % (N + 1);
-        const y = Math.floor(k / (N + 1));
-        const d = orient === "n" ? depthOf(x, y - 0.5) : depthOf(x - 0.5, y);
-        drawables.push({ type: "wall", orientation: orient, tileX: x, tileY: y, depth: d, ghost: false, door: true });
-      }
-    }
+    if (doors) for (const k of doors) push(k, "door");
+    if (windows) for (const k of windows) push(k, "window");
   };
   if (scene.wallMode !== "off") {
-    collectEdges(scene.wallsN, scene.doorsN, "n");
-    collectEdges(scene.wallsW, scene.doorsW, "w");
+    collectEdges(scene.wallsN, scene.doorsN, scene.windowsN, "n");
+    collectEdges(scene.wallsW, scene.doorsW, scene.windowsW, "w");
   }
   if (scene.ghostWall) {
     const g = scene.ghostWall;
@@ -356,7 +357,7 @@ export function renderIso(canvas: HTMLCanvasElement, scene: IsoScene): void {
       tileY: g.tileY,
       depth: depthOf(g.tileX + dx, g.tileY + dy),
       ghost: true,
-      door: false,
+      kind: "plain",
     });
   }
   drawables.sort((a, b) => a.depth - b.depth);
@@ -369,7 +370,7 @@ export function renderIso(canvas: HTMLCanvasElement, scene: IsoScene): void {
       const { sx, sy } = projectTile(d.ref.worldX, d.ref.worldY, cam, canvas);
       drawEntity(ctx, d.ref, sx, sy, cam.tileWidth, cam.rotation ?? 0);
     } else {
-      drawWall(ctx, d.orientation, d.tileX, d.tileY, cam, canvas, d.ghost, d.door, scene.wallMode ?? "full");
+      drawWall(ctx, d.orientation, d.tileX, d.tileY, cam, canvas, d.ghost, d.kind, scene.wallMode ?? "full");
     }
   }
 
@@ -516,9 +517,11 @@ function drawWall(
   cam: IsoCamera,
   canvas: HTMLCanvasElement,
   ghost: boolean,
-  door: boolean,
+  kind: "plain" | "door" | "window",
   wallMode: "full" | "low" | "off",
 ): void {
+  const door = kind === "door";
+  const isWindow = kind === "window";
   if (wallMode === "off") return;
   const tw = cam.tileWidth;
   const baseH = tw * 0.6;
@@ -604,6 +607,35 @@ function drawWall(
   ctx.fill();
   ctx.strokeStyle = stroke;
   ctx.stroke();
+  // Window: punch a glass square in the upper-middle of the wall. The base
+  // wall stays opaque so A* still treats the edge as blocked and the player
+  // sees the wall is solid; the cutout reads as a window.
+  if (isWindow && !ghost) {
+    const wFrac = 0.55;
+    const wMargin = (1 - wFrac) / 2;
+    const w1 = { sx: a.sx + (b.sx - a.sx) * wMargin, sy: a.sy + (b.sy - a.sy) * wMargin };
+    const w2 = { sx: a.sx + (b.sx - a.sx) * (1 - wMargin), sy: a.sy + (b.sy - a.sy) * (1 - wMargin) };
+    const top = wallH * 0.85;
+    const bot = wallH * 0.45;
+    ctx.beginPath();
+    ctx.moveTo(w1.sx, w1.sy - bot);
+    ctx.lineTo(w1.sx, w1.sy - top);
+    ctx.lineTo(w2.sx, w2.sy - top);
+    ctx.lineTo(w2.sx, w2.sy - bot);
+    ctx.closePath();
+    ctx.fillStyle = "rgba(160,210,235,.6)"; // glass tint
+    ctx.fill();
+    ctx.strokeStyle = stroke;
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+    // Cross mullion (vertical bar in the middle of the pane).
+    const midX = (w1.sx + w2.sx) / 2;
+    const midY = (w1.sy + w2.sy) / 2;
+    ctx.beginPath();
+    ctx.moveTo(midX, midY - bot);
+    ctx.lineTo(midX, midY - top);
+    ctx.stroke();
+  }
   } finally {
     ctx.globalAlpha = prevAlpha;
   }

@@ -332,7 +332,7 @@ type LotMode = "play" | "build";
 let lotMode: LotMode = "play";
 
 /** When in Build mode, the build sub-tool. */
-type BuildTool = "place" | "paint" | "wall" | "door";
+type BuildTool = "place" | "paint" | "wall" | "door" | "window";
 let buildTool: BuildTool = "place";
 
 /** Walls live on tile *edges*. North / west edge sets are keyed by
@@ -343,6 +343,10 @@ const wallsW: Set<number> = new Set();
  *  if a wall is also present at K, and the renderer draws a doorframe. */
 const doorsN: Set<number> = new Set();
 const doorsW: Set<number> = new Set();
+/** Windows share the wall key scheme. A window at K does NOT make the edge
+ *  passable (still blocks A*), but renders as a wall with a glass cutout. */
+const windowsN: Set<number> = new Set();
+const windowsW: Set<number> = new Set();
 
 const FLOOR_PAINT_PRESETS = [
   { id: "grass", color: "#3b6e3b", label: "grass" },
@@ -629,10 +633,11 @@ function startAutoWanderLoop(): void {
 }
 
 let renderLoopHandle: number | null = null;
+let lastIdleRender = 0;
 function ensureRenderLoop(): void {
   if (renderLoopHandle !== null) return;
   const tick = (now: number): void => {
-    let alive = false;
+    let walkAlive = false;
     // Advance every Sim's walk independently so multi-Sim lots all animate.
     for (const sim of sims) {
       if (!sim.walk) continue;
@@ -647,15 +652,20 @@ function ensureRenderLoop(): void {
         sim.onArrive = null;
         cb?.();
       } else {
-        alive = true;
+        walkAlive = true;
       }
     }
-    composeLotScene();
-    if (alive) {
-      renderLoopHandle = requestAnimationFrame(tick);
-    } else {
-      renderLoopHandle = null;
+    if (walkAlive) {
+      composeLotScene();
+      lastIdleRender = now;
+    } else if (now - lastIdleRender > 100) {
+      // Idle frame — drive breath animation at ~10 fps so the loop is cheap.
+      composeLotScene();
+      lastIdleRender = now;
     }
+    // Loop forever as long as there's at least one Sim, so idle breath keeps
+    // animating. Pauses when the tab is hidden (rAF naturally throttles).
+    renderLoopHandle = requestAnimationFrame(tick);
   };
   renderLoopHandle = requestAnimationFrame(tick);
 }
@@ -672,12 +682,18 @@ function allSimEntities(): IsoEntity[] {
         : sim.name;
     // Walk bob — sinusoid on segment progress, ~2 steps per tile (2 full
     // cycles of "down-up-down" per tile of travel). Negative = up on screen.
+    // Idle breath — slow ~3 s sin wave with a per-Sim phase offset so a row of
+    // Sims doesn't breathe in lockstep. Tiny amplitude (1px) so it reads as
+    // "alive" instead of "rocking".
     let bob = 0;
     if (sim.walk) {
       const t = Math.min(1, (now - sim.walk.startMs) / sim.walk.durMs);
       const dist = Math.hypot(sim.walk.toX - sim.walk.fromX, sim.walk.toY - sim.walk.fromY);
       const cycles = Math.max(1, dist * 2);
       bob = -Math.abs(Math.sin(t * Math.PI * cycles)) * 3;
+    } else {
+      const phase = i * 0.7;
+      bob = Math.sin((now / 1000) * (2 * Math.PI / 3) + phase) * 1;
     }
     out.push({
       worldX: sim.fx,
@@ -842,6 +858,8 @@ function mountCameraControls(): void {
     <button data-build-tool="paint">paint floor</button>
     <button data-build-tool="wall">wall</button>
     <button data-build-tool="door">door</button>
+    <button data-build-tool="window">window</button>
+    <span data-build-selected style="opacity:.85;color:#cde;border-left:1px solid #345;padding-left:8px;display:none;"></span>
     <span style="opacity:.5;">·</span>
     <span style="opacity:.7;">color</span>
     ${swatches}
@@ -853,7 +871,7 @@ function mountCameraControls(): void {
     const t = ev.target;
     if (!(t instanceof HTMLButtonElement)) return;
     const tool = t.dataset["buildTool"];
-    if (tool === "place" || tool === "paint" || tool === "wall" || tool === "door") {
+    if (tool === "place" || tool === "paint" || tool === "wall" || tool === "door" || tool === "window") {
       buildTool = tool;
       updateBuildToolHighlights();
     }
@@ -872,6 +890,8 @@ function mountCameraControls(): void {
       wallsW.clear();
       doorsN.clear();
       doorsW.clear();
+      windowsN.clear();
+      windowsW.clear();
       composeLotScene();
     }
   });
@@ -931,6 +951,17 @@ function updateBuildToolHighlights(): void {
   for (const btn of bar.querySelectorAll<HTMLButtonElement>("button[data-paint-id]")) {
     const id = btn.dataset["paintId"];
     btn.style.outline = id === activePaintId ? "2px solid #cde" : "none";
+  }
+  const sel = bar.querySelector<HTMLSpanElement>("span[data-build-selected]");
+  if (sel) {
+    const obj = viewerState.current;
+    if (buildTool === "place" && obj) {
+      const tag = obj.price > 0 ? `§${obj.price}` : "—";
+      sel.textContent = `→ ${obj.objectName}  ${tag}`;
+      sel.style.display = "inline";
+    } else {
+      sel.style.display = "none";
+    }
   }
 }
 
@@ -1180,6 +1211,11 @@ interface LoadedObject {
   dgrps: DgrpChunk[];
   semiGlobalName: string | null;
   objfEntries: Array<{ condition: number; action: number }>;
+  /** OBJD §price (field 16). 0 = free / not for sale. */
+  price: number;
+  /** OBJD initial depreciation (field 33). Newly-bought objects lose this on
+   *  first placement; current sell value floors at `priceLimit`. */
+  initialDepreciation: number;
 }
 
 /** Conventional event-index names. Defined by `behavior.iff` chunk 0x00F5; this is
@@ -1284,6 +1320,10 @@ function buildLoadedObject(
     data.subarray(objdChunk.dataStart, objdChunk.dataStart + objdChunk.dataLen),
   ) as { fields: number[] };
   const baseGraphicId = objd.fields[1] ?? 0;
+  // OBJD prices are stored as u16; treat 0 / -1 as "no price".
+  const rawPrice = objd.fields[16] ?? 0;
+  const price = rawPrice > 0 && rawPrice < 0xffff ? rawPrice : 0;
+  const initialDepreciation = objd.fields[33] ?? 0;
   // Prefer the OBJD chunk's 64-byte label (Maxis stores the human-readable name there);
   // fall back to humanizing the IFF filename.
   const labelTrimmed = objdChunk.label.trim();
@@ -1326,7 +1366,7 @@ function buildLoadedObject(
       console.warn(`[viewer] DGRP ${c.id} parse failed:`, err);
     }
   }
-  return { iffName, objectName, data, chunks, paltChunk, baseGraphicId, dgrps, semiGlobalName, objfEntries };
+  return { iffName, objectName, data, chunks, paltChunk, baseGraphicId, dgrps, semiGlobalName, objfEntries, price, initialDepreciation };
 }
 
 /** Refresh the event-select <option>s with this object's wired (non-zero) events. */
@@ -1528,22 +1568,36 @@ function composeLotScene(): void {
       sprites.push({ bmp: d.bmp, sp: d.sp, worldX: inst.worldX, worldY: inst.worldY });
     }
   }
-  // Viewer's current selection at the centre tile, as a one-off (no entry in
-  // `lotInstances` so it doesn't pollute click hit-tests).
+  // Viewer's current selection — anchored to the hover tile when the user is
+  // about to place it (so they see exactly where it lands), or to the lot
+  // centre as a passive preview otherwise.
   const viewerObj = viewerState.current;
   if (viewerObj) {
+    let anchorX = 8;
+    let anchorY = 8;
+    if (
+      lotMode === "build" &&
+      buildTool === "place" &&
+      lotScene.hoverTile &&
+      !lotInstances.some(
+        (i) => i.worldX === lotScene.hoverTile!.worldX && i.worldY === lotScene.hoverTile!.worldY,
+      )
+    ) {
+      anchorX = lotScene.hoverTile.worldX;
+      anchorY = lotScene.hoverTile.worldY;
+    }
     const transient: LotInstance = {
       id: 0,
       obj: viewerObj,
-      worldX: 8,
-      worldY: 8,
+      worldX: anchorX,
+      worldY: anchorY,
       direction: viewerState.direction,
       zoom: viewerState.zoom,
       dgrpId: viewerState.dgrpId,
       decoded: null,
     };
     for (const d of decodeInstanceSprites(wasm, transient)) {
-      sprites.push({ bmp: d.bmp, sp: d.sp, worldX: 8, worldY: 8 });
+      sprites.push({ bmp: d.bmp, sp: d.sp, worldX: anchorX, worldY: anchorY });
     }
   }
   lotScene.sprites = sprites;
@@ -1553,6 +1607,8 @@ function composeLotScene(): void {
   lotScene.wallsW = wallsW;
   lotScene.doorsN = doorsN;
   lotScene.doorsW = doorsW;
+  lotScene.windowsN = windowsN;
+  lotScene.windowsW = windowsW;
   lotScene.timeMinutes = gameMinutes;
   renderLot();
 }
@@ -1624,14 +1680,17 @@ function onLotCanvasClick(ev: MouseEvent): void {
     closeInteractionMenuImpl();
     return;
   }
-  // Door sub-tool is single-click; toggle a door at the nearest edge.
-  if (lotMode === "build" && buildTool === "door") {
+  // Door / window sub-tools are single-click; toggle at the nearest edge.
+  if (lotMode === "build" && (buildTool === "door" || buildTool === "window")) {
     const tile = screenToTile(cx, cy, lotScene.camera, canvas);
     const edge = nearestEdge(tile.fx, tile.fy);
     if (edge) {
       const N = lotScene.gridSize;
       const k = edge.y * (N + 1) + edge.x;
-      const set = edge.orientation === "n" ? doorsN : doorsW;
+      const set =
+        buildTool === "door"
+          ? edge.orientation === "n" ? doorsN : doorsW
+          : edge.orientation === "n" ? windowsN : windowsW;
       if (ev.shiftKey || set.has(k)) set.delete(k);
       else set.add(k);
       composeLotScene();
@@ -1702,7 +1761,16 @@ function onLotCanvasClick(ev: MouseEvent): void {
       closeInteractionMenuImpl();
       return;
     }
+    if (obj.price > 0 && funds < obj.price) {
+      showBubble(`§${obj.price} — not enough funds`);
+      closeInteractionMenuImpl();
+      return;
+    }
     placeOnLot(obj, tile.worldX, tile.worldY, viewerState.direction, viewerState.zoom);
+    if (obj.price > 0) {
+      adjustFunds(-obj.price);
+      showBubble(`-§${obj.price} ${obj.objectName}`);
+    }
     composeLotScene();
     closeInteractionMenuImpl();
     return;
@@ -1818,13 +1886,28 @@ canvas.addEventListener("mousemove", (ev) => {
       : null;
     dirty = true;
   }
-  if (dirty) renderLot();
+  if (dirty) {
+    // In place mode the viewer-current sprite follows the cursor, so we have
+    // to recompose (cheap — sprites are cached per instance) instead of just
+    // re-rendering. Other modes only need the hover outline updated.
+    if (lotMode === "build" && buildTool === "place" && viewerState.current) {
+      composeLotScene();
+    } else {
+      renderLot();
+    }
+  }
 });
 canvas.addEventListener("mouseleave", () => {
   let dirty = false;
   if (lotScene.hoverTile) { lotScene.hoverTile = null; dirty = true; }
   if (lotScene.ghostWall) { lotScene.ghostWall = null; dirty = true; }
-  if (dirty) renderLot();
+  if (dirty) {
+    if (lotMode === "build" && buildTool === "place" && viewerState.current) {
+      composeLotScene();
+    } else {
+      renderLot();
+    }
+  }
 });
 
 // Right-click on a placed instance cycles through the 4 DGRP directions so
@@ -1851,8 +1934,17 @@ function rotateInstance(inst: LotInstance): void {
 function removeFromLot(instanceId: number): void {
   const idx = lotInstances.findIndex((i) => i.id === instanceId);
   if (idx >= 0) {
+    const inst = lotInstances[idx]!;
+    // Sell value = price minus initial depreciation (as if bought new and
+    // sold immediately). Maxis later applies daily depreciation; we don't
+    // track the in-lot age yet so this is the floor.
+    const sellValue = Math.max(0, inst.obj.price - inst.obj.initialDepreciation);
     lotInstances.splice(idx, 1);
     if (selectedInstanceId === instanceId) selectedInstanceId = null;
+    if (sellValue > 0) {
+      adjustFunds(sellValue);
+      showBubble(`+§${sellValue} sold ${inst.obj.objectName}`);
+    }
     composeLotScene();
     closeInteractionMenuImpl();
   }
@@ -1864,6 +1956,8 @@ function clearLot(): void {
   wallsW.clear();
   doorsN.clear();
   doorsW.clear();
+  windowsN.clear();
+  windowsW.clear();
   selectedInstanceId = null;
   composeLotScene();
   closeInteractionMenuImpl();
@@ -1939,6 +2033,8 @@ interface SerializedLot {
   wallsW?: number[];
   doorsN?: number[];
   doorsW?: number[];
+  windowsN?: number[];
+  windowsW?: number[];
 }
 
 function serializeLot(): SerializedLot {
@@ -1970,6 +2066,8 @@ function serializeLot(): SerializedLot {
     wallsW: [...wallsW],
     doorsN: [...doorsN],
     doorsW: [...doorsW],
+    windowsN: [...windowsN],
+    windowsW: [...windowsW],
   };
 }
 
@@ -2014,6 +2112,8 @@ async function loadLot(replace: boolean = true): Promise<void> {
       wallsW.clear();
       doorsN.clear();
       doorsW.clear();
+      windowsN.clear();
+      windowsW.clear();
     }
     if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
       const obj = parsed as SerializedLot;
@@ -2041,6 +2141,8 @@ async function loadLot(replace: boolean = true): Promise<void> {
       if (Array.isArray(obj.wallsW)) for (const k of obj.wallsW) if (typeof k === "number") wallsW.add(k);
       if (Array.isArray(obj.doorsN)) for (const k of obj.doorsN) if (typeof k === "number") doorsN.add(k);
       if (Array.isArray(obj.doorsW)) for (const k of obj.doorsW) if (typeof k === "number") doorsW.add(k);
+      if (Array.isArray(obj.windowsN)) for (const k of obj.windowsN) if (typeof k === "number") windowsN.add(k);
+      if (Array.isArray(obj.windowsW)) for (const k of obj.windowsW) if (typeof k === "number") windowsW.add(k);
       renderTimeFundsHud();
     }
     for (const s of instances) {
@@ -2242,7 +2344,8 @@ function showInteractionMenuImpl(inst: LotInstance, cx: number, cy: number): voi
   const menu = ensureMenuEl();
   menu.innerHTML = "";
   const header = document.createElement("div");
-  header.textContent = `${inst.obj.objectName}  ·  ${rows.length} interaction${rows.length === 1 ? "" : "s"}`;
+  const priceTag = inst.obj.price > 0 ? `  ·  §${inst.obj.price}` : "";
+  header.textContent = `${inst.obj.objectName}${priceTag}  ·  ${rows.length} interaction${rows.length === 1 ? "" : "s"}`;
   header.style.cssText = "padding:4px 10px;border-bottom:1px solid #345;color:#9ad;opacity:.8;";
   menu.appendChild(header);
   if (rows.length === 0) {
@@ -2531,6 +2634,7 @@ async function loadObjectByName(
     renderViewer();
     refreshEventSelector();
     setRunOutput("");
+    updateBuildToolHighlights();
     viewerState.onObjectLoaded?.();
   } catch (err) {
     console.warn(`[viewer] load ${iffName} failed:`, err);
@@ -3298,6 +3402,8 @@ async function tryRenderAlarmClockObject(
   renderTimeFundsHud();
   startGameClock();
   startAutoWanderLoop();
+  // Kick the render loop so idle breath animates from the start.
+  ensureRenderLoop();
   // Try to restore the user's last lot first; if there is none, fall back to
   // the bundled demo placements so the page is never empty on boot.
   try {
