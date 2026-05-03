@@ -149,12 +149,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Push as a pending interaction and run the scheduler.
     let mut vm = Vm::new(&source);
     vm.trace_enabled = true;
-    vm.world.interaction_queue.push(PendingInteraction {
-        sim_id: 0xAA,
-        stack_object_id: 0xBB,
-        action_function: entry.action,
-        joining_index: if entry.condition == 0 { -1 } else { i32::from(entry.condition) },
-    });
+    vm.world.push_interaction(PendingInteraction::new(
+        0xAA,
+        0xBB,
+        entry.action,
+        if entry.condition == 0 { -1 } else { i32::from(entry.condition) },
+    ));
 
     println!();
     let outcome = vm.tick()?;

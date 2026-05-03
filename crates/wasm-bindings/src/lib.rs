@@ -695,16 +695,16 @@ pub fn run_object_event(
         .dispatch(event as usize)
         .ok_or_else(|| JsError::new("OBJf event has no handler (or pair is (0,0))"))?;
 
-    let pending = simantics::vm::PendingInteraction {
-        sim_id: 0xAA,
-        stack_object_id: 0xBB,
-        action_function: entry.action,
-        joining_index: if entry.condition == 0 {
+    let pending = simantics::vm::PendingInteraction::new(
+        0xAA,
+        0xBB,
+        entry.action,
+        if entry.condition == 0 {
             -1
         } else {
             i32::from(entry.condition)
         },
-    };
+    );
     run_pending_and_serialize(&source, pending, max_ticks)
 }
 
@@ -742,12 +742,7 @@ pub fn run_interaction(
         }
     }
     let action = u16::try_from(action_function & 0xFFFF).unwrap_or(0);
-    let pending = simantics::vm::PendingInteraction {
-        sim_id: 0xAA,
-        stack_object_id: 0xBB,
-        action_function: action,
-        joining_index,
-    };
+    let pending = simantics::vm::PendingInteraction::new(0xAA, 0xBB, action, joining_index);
     run_pending_and_serialize(&source, pending, max_ticks)
 }
 
@@ -762,7 +757,7 @@ fn run_pending_and_serialize(
 ) -> Result<Object, JsError> {
     let mut vm = simantics::vm::Vm::new(source);
     vm.trace_enabled = true;
-    vm.world.interaction_queue.push(pending);
+    vm.world.push_interaction(pending);
     let first = vm.tick().map_err(|e| JsError::new(&e.to_string()))?;
     let mut ticks_ran: u32 = match &first {
         simantics::vm::TickOutcome::Idle => 0,
