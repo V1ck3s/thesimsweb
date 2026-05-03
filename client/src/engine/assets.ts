@@ -7,6 +7,14 @@
  */
 
 import { engine } from "./wasm.js";
+import {
+  idbGetFarEntry,
+  idbGetFarManifest,
+  idbGetIffFile,
+  idbPutFarEntry,
+  idbPutFarManifest,
+  idbPutIffFile,
+} from "./idb.js";
 
 export interface ManifestFile {
   path: string;
@@ -58,6 +66,8 @@ export async function readFarManifest(farPath: string): Promise<FarEntryInfo[]> 
   let cached = farManifestCache.get(farPath);
   if (!cached) {
     cached = (async () => {
+      const persisted = (await idbGetFarManifest(farPath)) as FarEntryInfo[] | null;
+      if (Array.isArray(persisted)) return persisted;
       const wasm = await engine();
       const head = await fetchRange(farPath, 0, FAR_HEADER_SIZE - 1);
       if (!wasm.checkFarMagic(head)) {
@@ -85,6 +95,7 @@ export async function readFarManifest(farPath: string): Promise<FarEntryInfo[]> 
       const entries = wasm.parseFarManifest(fake) as FarEntryInfo[];
       // Entries point into the original archive; their `offset` is absolute in the
       // un-truncated archive, which matches what we want for downstream Range requests.
+      void idbPutFarManifest(farPath, entries);
       return entries;
     })();
     farManifestCache.set(farPath, cached);
@@ -100,6 +111,8 @@ export async function readFarEntry(farPath: string, entryName: string): Promise<
   let cached = entryCache.get(cacheKey);
   if (!cached) {
     cached = (async () => {
+      const persisted = await idbGetFarEntry(farPath, entryName);
+      if (persisted) return persisted;
       const entries = await readFarManifest(farPath);
       const target = entries.find(
         (e) => e.filename.toLowerCase() === entryName.toLowerCase(),
@@ -109,7 +122,9 @@ export async function readFarEntry(farPath: string, entryName: string): Promise<
       }
       const start = target.offset;
       const end = start + target.sizeCompressed - 1;
-      return fetchRange(farPath, start, end);
+      const bytes = await fetchRange(farPath, start, end);
+      void idbPutFarEntry(farPath, entryName, bytes);
+      return bytes;
     })();
     entryCache.set(cacheKey, cached);
   }
@@ -146,9 +161,13 @@ export async function readStandaloneIff(
   path: string,
 ): Promise<{ data: Uint8Array; chunks: IffChunkInfo[] }> {
   const wasm = await engine();
-  const res = await fetch(`${ASSETS_BASE}${path}`);
-  if (!res.ok) throw new Error(`${path}: ${res.status}`);
-  const data = new Uint8Array(await res.arrayBuffer());
+  let data = await idbGetIffFile(path);
+  if (!data) {
+    const res = await fetch(`${ASSETS_BASE}${path}`);
+    if (!res.ok) throw new Error(`${path}: ${res.status}`);
+    data = new Uint8Array(await res.arrayBuffer());
+    void idbPutIffFile(path, data);
+  }
   const chunks = wasm.parseIffChunks(data) as IffChunkInfo[];
   return { data, chunks };
 }
