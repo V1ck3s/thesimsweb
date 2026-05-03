@@ -520,7 +520,14 @@ function startWalkForSim(
   const startY = Math.round(sim.fy);
   const path = findPath(startX, startY, toX, toY);
   if (!path || path.length === 0) {
-    walkSegmentForSim(sim, toX, toY, onArrive);
+    // Unreachable — don't teleport through walls. Surface a "can't reach"
+    // bubble on the targeted Sim instead. Skip if start == goal already.
+    if (startX !== toX || startY !== toY) {
+      sim.bubble = { text: "🚫 can't reach", expiresAtMs: performance.now() + 1500 };
+      ensureRenderLoop();
+    } else {
+      onArrive?.();
+    }
     return;
   }
   let i = path[0]!.x === startX && path[0]!.y === startY ? 1 : 0;
