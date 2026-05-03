@@ -1439,6 +1439,8 @@ function formatEffect(ef: VmEffectObject): string {
       return `CreateObjectInstance guid=0x${Number(ef["guid"]).toString(16)} id=${ef["newObjectId"]}`;
     case "Breakpoint":
       return `Breakpoint @0x${Number(ef["bhavId"]).toString(16)}#${ef["ip"]}`;
+    case "Syslog":
+      return `Syslog str=${ef["stringIndex"]}`;
     default: {
       const fields = Object.entries(ef)
         .filter(([k]) => k !== "kind")
