@@ -632,6 +632,23 @@ pub fn parse_ttab(data: &[u8]) -> Result<Object, JsError> {
     Ok(obj)
 }
 
+/// Parse a TTAB chunk's *header only* — count + version. Succeeds for any
+/// version including the compressed v9+ that `parseTtab` rejects. Returns
+/// `{ count, version }`. Use this as a fallback in catalog viewers when
+/// `parseTtab` errors so the user sees "8 interactions (v9, decoding
+/// deferred)" instead of nothing.
+///
+/// # Errors
+/// Returns a `JsError` for buffers shorter than 4 bytes.
+#[wasm_bindgen(js_name = parseTtabHeader)]
+pub fn parse_ttab_header(data: &[u8]) -> Result<Object, JsError> {
+    let h = simantics::TtabHeader::parse(data).map_err(|e| JsError::new(&e.to_string()))?;
+    let obj = Object::new();
+    set_f64(&obj, "count", f64::from(h.count))?;
+    set_f64(&obj, "version", f64::from(h.version))?;
+    Ok(obj)
+}
+
 /// Parse a `.hit` (Hit Item Table) audio bytecode file.
 ///
 /// Returns `{ major, minor, codeLen, exports: Array<{trackId, address}> }`. The

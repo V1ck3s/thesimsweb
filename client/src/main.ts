@@ -2612,7 +2612,27 @@ function buildInteractionRows(
     ) as { interactions: TtabInteraction[] };
   } catch (err) {
     // TTAB v9+ uses field-encoded compression we don't decode yet.
-    console.info(`[pie] TTAB v9+ on ${inst.obj.iffName} (${(err as Error).message})`);
+    // Fall back to header-only so the pie menu still shows a single
+    // "(N v9 interactions — decoder TODO)" stub row instead of nothing.
+    try {
+      const header = wasm.parseTtabHeader(
+        inst.obj.data.subarray(ttabChunk.dataStart, ttabChunk.dataStart + ttabChunk.dataLen),
+      ) as { count: number; version: number };
+      console.info(`[pie] TTAB v${header.version} on ${inst.obj.iffName}: ${header.count} interactions (decoder TODO)`);
+      if (header.count > 0) {
+        return [
+          {
+            label: `${header.count} v${header.version} interactions — decoder TODO`,
+            actionFunction: 0,
+            joiningIndex: -1,
+            guardFunction: 0,
+            ttabMotives: [],
+          },
+        ];
+      }
+    } catch (err2) {
+      console.info(`[pie] TTAB header parse failed on ${inst.obj.iffName}: ${(err2 as Error).message}`);
+    }
     return [];
   }
   let ttas: { entries: TtasEntry[] } = { entries: [] };

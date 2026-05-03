@@ -761,6 +761,41 @@ pub struct Ttab {
     pub interactions: Vec<TtabInteraction>,
 }
 
+/// Header-only view of a TTAB chunk, succeeds for *any* version including
+/// the compressed v9+ which `Ttab::parse` rejects.
+///
+/// Used by callers (UI viewers, audits) that need to know "how many
+/// interactions does this object expose" without paying the cost of
+/// decoding each interaction's fields. Empirical reverse of v9's
+/// "field encoding" remains incomplete — see [`docs/formats/SimAntics.md`](../../../docs/formats/SimAntics.md).
+#[derive(Debug, Clone)]
+pub struct TtabHeader {
+    pub count: u16,
+    pub version: u16,
+    /// Bytes after the count + version u16s. For v5/v8 these are
+    /// fixed-layout interaction records. For v9 the first byte is
+    /// empirically `0x01` (likely a "field-encoded" flag), followed by
+    /// variable-size per-interaction records of as little as 15 bytes.
+    pub raw_payload: alloc::vec::Vec<u8>,
+}
+
+impl TtabHeader {
+    /// Parse the count + version u16 prefix and return the rest of the
+    /// chunk verbatim.
+    ///
+    /// # Errors
+    /// Returns `TooShort` if fewer than 4 bytes are available.
+    pub fn parse(data: &[u8]) -> Result<Self, SimAnticsError> {
+        if data.len() < 4 {
+            return Err(SimAnticsError::TooShort);
+        }
+        let count = read_u16_le(data, 0)?;
+        let version = read_u16_le(data, 2)?;
+        let raw_payload = data[4..].to_vec();
+        Ok(Self { count, version, raw_payload })
+    }
+}
+
 impl Ttab {
     /// Parse a TTAB chunk's data payload. Supports v5 and v8 (uncompressed). v9+ uses
     /// field encoding compression we don't decode yet — caller should expect

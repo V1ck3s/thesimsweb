@@ -195,9 +195,44 @@ Same as v8 but **without** `attenuation_code`, `attenuation_value`, and the moti
 
 Per-interaction size in v5 = `4 + 20 + 32 = 56` bytes.
 
-### v9+ — *not parsed*
+### v9+ — partially parsed (header only)
 
-v9, v10, v11 introduce a **field encoding** compression: a leading `compression_code: u8 = 1`, then each fixed-width field is replaced by a variable-width bit stream (Niotso: u16 widths ∈ `{5,8,13,16}`, i32 widths ∈ `{6,11,21,32}`). The actual bit layout is **not** documented in the Niotso wiki and we have no first-party reference; until we reverse it from samples, the parser returns `TtabUnsupportedVersion(9..=11)` and the upstream caller may fall back to "no autonomous interactions" for those objects.
+v9, v10, v11 introduce a **field encoding** compression: a leading
+`compression_code: u8 = 1`, then each fixed-width field is replaced by a
+variable-width bit stream (Niotso: u16 widths ∈ `{5,8,13,16}`, i32 widths ∈
+`{6,11,21,32}`). The actual bit layout is **not** documented in the Niotso
+wiki and we have no first-party reference; reversing it requires running TS1
+under Wine and capturing pie-menu labels per object as an oracle (multi-day
+empirical work).
+
+What we **do** decode today (`TtabHeader::parse`):
+
+- `count: u16`, `version: u16` — works for any version.
+- `compression_code: u8 = 1` — the byte right after the header in v9
+  samples. Confirmed on every v9 chunk we audited.
+
+What's still **unknown** (per-interaction bit stream):
+
+- Empirical record sizes from a 124-IFF audit of `Objects.far`:
+  - `count=0` → 1 byte (just the compression flag).
+  - `count=1` → 15..20 bytes per interaction (varies by sample).
+  - `count=8` → ~22 bytes per interaction average.
+- The first byte of each record varies (`e2`, `e4`, `e0`, `bc`, …) which is
+  consistent with a **field-presence bitmask** preceding the values.
+- Without a TS1-running oracle to cross-check decoded `action_function` IDs
+  against pie-menu labels, we can't bisect bit widths confidently.
+
+Coverage today (v9 catalog audit, 124 objects):
+
+| TTAB version | Count | Decoded? |
+|--------------|-------|----------|
+| v5           | 3     | yes (interactions list) |
+| v8           | 24    | yes (interactions list) |
+| v9           | 72    | header only (count, version) |
+| v2 (HelpSystem) | 1 | rejected — non-game version |
+
+Until v9 is reversed, the catalog viewer falls back to *"this object exposes
+N interactions, decoding deferred"* for ~58% of TS1 objects.
 
 ## TTAs — pie-menu labels
 
