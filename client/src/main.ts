@@ -180,14 +180,39 @@ function applyMotiveEffects(
 ): void {
   const target = targetSim ?? sims[selectedSimIdx];
   if (!target) return;
+  const flashes: Array<{ idx: number; delta: number }> = [];
   for (let i = 0; i < ttabMotives.length && i < target.motives.length; i += 1) {
     const m = ttabMotives[i];
     if (!m) continue;
     if (m.effectMin === 0 && m.effectMax === 0) continue;
     const avg = (m.effectMin + m.effectMax) / 2;
     target.motives[i] = clampMotive((target.motives[i] ?? 0) + avg);
+    flashes.push({ idx: i, delta: avg });
   }
   renderMotivesHud();
+  if (target === sims[selectedSimIdx]) {
+    for (const f of flashes) flashMotiveRow(f.idx, f.delta);
+  }
+}
+
+function flashMotiveRow(idx: number, delta: number): void {
+  const root = motivesHudEl;
+  if (!root) return;
+  const row = root.querySelector<HTMLDivElement>(`div[data-motive-idx="${idx}"]`);
+  if (!row) return;
+  const flash = document.createElement("span");
+  flash.textContent = `${delta > 0 ? "+" : ""}${Math.round(delta)}`;
+  flash.style.cssText =
+    `position:absolute;right:34px;font-weight:600;color:${delta >= 0 ? "#9be08a" : "#ff8a78"};` +
+    "pointer-events:none;opacity:1;transition:opacity .8s linear,transform .8s ease-out;";
+  row.style.position = "relative";
+  row.appendChild(flash);
+  // Kick off the transition next frame.
+  requestAnimationFrame(() => {
+    flash.style.opacity = "0";
+    flash.style.transform = "translateY(-10px)";
+  });
+  setTimeout(() => flash.remove(), 850);
 }
 
 let motivesHudEl: HTMLDivElement | null = null;
@@ -805,9 +830,10 @@ function cycleWallMode(): void {
   updateCameraButtonHighlights();
 }
 
-// Opt-in WebGL2 floor renderer via `?webgl` URL flag. The WebGL2 path is a
-// scaffold today: it draws the floor grid only, so when enabled we still
-// composite the full Canvas2D scene on top for sprites/walls/entities.
+// Opt-in WebGL2 renderer via `?webgl` URL flag. The WebGL2 path now owns the
+// sky, floor, and batched sprite atlas (per-pixel `gl_FragDepth` Z-buffer).
+// Walls / entities / hover / ghosts continue to render on the 2D overlay
+// above this layer.
 const WEBGL_ENABLED = new URLSearchParams(globalThis.location?.search ?? "").has("webgl");
 let webglCanvas: HTMLCanvasElement | null = null;
 let webglRenderer: ((c: HTMLCanvasElement, s: typeof lotScene) => void) | null = null;
@@ -823,13 +849,14 @@ if (WEBGL_ENABLED) {
   void import("./renderer/iso_webgl.js").then((mod) => {
     webglRenderer = mod.renderIsoWebGL;
     renderLot();
-    console.info("[render] WebGL2 floor renderer enabled (scaffold — sprites/walls still on Canvas2D)");
+    console.info("[render] WebGL2 renderer enabled — floor + sprites with per-pixel Z-buffer on GPU; walls/entities on 2D overlay");
   }).catch((err) => {
     console.warn("[render] WebGL2 init failed; staying on Canvas2D:", err);
   });
 }
 
 function renderLot(): void {
+  let webglOk = false;
   if (webglCanvas && webglRenderer) {
     if (webglCanvas.width !== canvas.width || webglCanvas.height !== canvas.height) {
       webglCanvas.width = canvas.width;
@@ -837,12 +864,16 @@ function renderLot(): void {
     }
     try {
       webglRenderer(webglCanvas, lotScene);
+      webglOk = true;
     } catch (err) {
       console.warn("[render] WebGL2 frame failed, switching back to Canvas2D:", err);
       webglRenderer = null;
     }
   }
-  renderIso(canvas, lotScene);
+  // When the WebGL2 path drew floor + sprites, tell the 2D path to skip them
+  // and clear to transparent so the WebGL canvas behind shows through. Walls /
+  // entities / hover / ghosts always render on the 2D overlay.
+  renderIso(canvas, lotScene, webglOk ? { skipSkyAndFloor: true, skipSprites: true } : {});
 }
 
 function rotateCamera(deltaQuarters: 1 | -1): void {
@@ -2647,18 +2678,19 @@ function buildInteractionRows(
       inst.obj.data.subarray(ttabChunk.dataStart, ttabChunk.dataStart + ttabChunk.dataLen),
     ) as { interactions: TtabInteraction[] };
   } catch (err) {
-    // TTAB v9+ uses field-encoded compression we don't decode yet.
-    // Fall back to header-only so the pie menu still shows a single
-    // "(N v9 interactions — decoder TODO)" stub row instead of nothing.
+    // v5 / v8 / v9 / v10 are all supported by the Rust decoder. Anything that
+    // still fails is a v11 chunk (TSO-only, not present in TS1) or a corrupt
+    // payload. Fall back to header-only so the pie menu shows the count
+    // instead of nothing.
     try {
       const header = wasm.parseTtabHeader(
         inst.obj.data.subarray(ttabChunk.dataStart, ttabChunk.dataStart + ttabChunk.dataLen),
       ) as { count: number; version: number };
-      console.info(`[pie] TTAB v${header.version} on ${inst.obj.iffName}: ${header.count} interactions (decoder TODO)`);
+      console.info(`[pie] TTAB v${header.version} on ${inst.obj.iffName}: ${header.count} interactions (decoder unsupported)`);
       if (header.count > 0) {
         return [
           {
-            label: `${header.count} v${header.version} interactions — decoder TODO`,
+            label: `${header.count} v${header.version} interactions — decoder unsupported`,
             actionFunction: 0,
             joiningIndex: -1,
             guardFunction: 0,
@@ -2728,7 +2760,7 @@ function showInteractionMenuImpl(inst: LotInstance, cx: number, cy: number): voi
   menu.appendChild(header);
   if (rows.length === 0) {
     const empty = document.createElement("div");
-    empty.textContent = "(TTAB v9 not yet decoded — try a vanilla TS1 object)";
+    empty.textContent = "(no interactions defined for this object)";
     empty.style.cssText = "padding:6px 10px;opacity:.6;";
     menu.appendChild(empty);
   } else {

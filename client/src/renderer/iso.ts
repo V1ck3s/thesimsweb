@@ -255,41 +255,61 @@ function drawTile(
   ctx.stroke();
 }
 
+export interface RenderIsoOptions {
+  /** When the WebGL2 path painted the sky + floor, the 2D layer skips them
+   *  to avoid double-drawing. Walls / entities / hover always live on the 2D
+   *  overlay regardless. */
+  skipSkyAndFloor?: boolean;
+  /** When the WebGL2 path painted sprites, the 2D layer skips them. */
+  skipSprites?: boolean;
+}
+
 /** Render an iso scene. Sky background + checkerboard floor + sprites sorted
  *  back-to-front by world (x + y) so painter's algorithm puts closer items
  *  on top. */
-export function renderIso(canvas: HTMLCanvasElement, scene: IsoScene): void {
+export function renderIso(
+  canvas: HTMLCanvasElement,
+  scene: IsoScene,
+  opts: RenderIsoOptions = {},
+): void {
   const ctx = canvas.getContext("2d");
   if (!ctx) return;
   ctx.imageSmoothingEnabled = false;
 
-  // Sky — clock-driven if `timeMinutes` is provided, else the default navy.
-  ctx.fillStyle = scene.timeMinutes !== undefined ? skyColorForMinutes(scene.timeMinutes) : SKY;
-  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  if (opts.skipSkyAndFloor) {
+    // The WebGL2 path already painted sky + floor; clear the 2D canvas to
+    // transparent so the WebGL canvas underneath shows through.
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+  } else {
+    // Sky — clock-driven if `timeMinutes` is provided, else the default navy.
+    ctx.fillStyle = scene.timeMinutes !== undefined ? skyColorForMinutes(scene.timeMinutes) : SKY;
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-  // Floor: draw tiles in back-to-front order (greater (x+y) on top).
-  const cam = scene.camera;
-  const N = scene.gridSize;
-  for (let y = 0; y < N; y += 1) {
-    for (let x = 0; x < N; x += 1) {
-      const { sx, sy } = projectTile(x, y, cam, canvas);
-      // Painted floor tiles override everything; otherwise we keep the
-      // checker pattern with the gold/rust orientation strips so camera
-      // rotation stays visible.
-      let fill: string;
-      const painted = scene.floorPaint?.get(y * N + x);
-      if (painted) {
-        fill = painted;
-      } else if (y === 0) {
-        fill = TILE_NORTH;
-      } else if (x === N - 1) {
-        fill = TILE_EAST;
-      } else {
-        fill = (x + y) % 2 === 0 ? TILE_LIGHT : TILE_DARK;
+    // Floor: draw tiles in back-to-front order (greater (x+y) on top).
+    const N0 = scene.gridSize;
+    for (let y = 0; y < N0; y += 1) {
+      for (let x = 0; x < N0; x += 1) {
+        const { sx, sy } = projectTile(x, y, scene.camera, canvas);
+        // Painted floor tiles override everything; otherwise we keep the
+        // checker pattern with the gold/rust orientation strips so camera
+        // rotation stays visible.
+        let fill: string;
+        const painted = scene.floorPaint?.get(y * N0 + x);
+        if (painted) {
+          fill = painted;
+        } else if (y === 0) {
+          fill = TILE_NORTH;
+        } else if (x === N0 - 1) {
+          fill = TILE_EAST;
+        } else {
+          fill = (x + y) % 2 === 0 ? TILE_LIGHT : TILE_DARK;
+        }
+        drawTile(ctx, sx, sy, scene.camera.tileWidth, fill);
       }
-      drawTile(ctx, sx, sy, cam.tileWidth, fill);
     }
   }
+  const cam = scene.camera;
+  const N = scene.gridSize;
 
   // Sort sprites *and* entities together by depth in *rotated* tile space.
   // Rotation flips which axis is "back" — without re-projecting we'd render
@@ -311,8 +331,10 @@ export function renderIso(canvas: HTMLCanvasElement, scene: IsoScene): void {
     | { type: "entity"; ref: IsoEntity; depth: number }
     | { type: "wall"; orientation: "n" | "w"; tileX: number; tileY: number; depth: number; ghost: boolean; kind: WallKind };
   const drawables: Drawable[] = [];
-  for (const s of scene.sprites) {
-    drawables.push({ type: "sprite", ref: s, depth: depthOf(s.worldX, s.worldY) });
+  if (!opts.skipSprites) {
+    for (const s of scene.sprites) {
+      drawables.push({ type: "sprite", ref: s, depth: depthOf(s.worldX, s.worldY) });
+    }
   }
   for (const e of scene.entities ?? []) {
     drawables.push({ type: "entity", ref: e, depth: depthOf(e.worldX, e.worldY) });
