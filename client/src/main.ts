@@ -1945,6 +1945,18 @@ window.addEventListener("mouseup", (ev) => {
 canvas.addEventListener("auxclick", (ev) => {
   if (ev.button === 1) ev.preventDefault();
 });
+
+// Wheel zoom — wheel up = zoom in (closer), wheel down = zoom out. We swallow
+// the page-scroll default whenever the cursor is over the lot canvas.
+canvas.addEventListener(
+  "wheel",
+  (ev) => {
+    ev.preventDefault();
+    if (ev.deltaY < 0) setCameraZoom(cameraZoomIdx + 1);
+    else if (ev.deltaY > 0) setCameraZoom(cameraZoomIdx - 1);
+  },
+  { passive: false },
+);
 canvas.addEventListener("mousemove", (ev) => {
   const rect = canvas.getBoundingClientRect();
   const cx = (ev.clientX - rect.left) * (canvas.width / rect.width);
