@@ -445,12 +445,16 @@ function findPath(
   if (fromX === toX && fromY === toY) return [{ x: toX, y: toY }];
   const blocked = new Set<number>();
   for (const inst of lotInstances) {
-    const k = inst.worldY * N + inst.worldX;
-    // Don't block the goal tile (the user clicked an object => stand there)
-    // nor the start tile (Sim starts on it).
-    if ((inst.worldX === toX && inst.worldY === toY)) continue;
-    if ((inst.worldX === fromX && inst.worldY === fromY)) continue;
-    blocked.add(k);
+    for (const cell of inst.obj.footprint) {
+      const tx = inst.worldX + cell.x;
+      const ty = inst.worldY + cell.y;
+      // Don't block the goal tile (the user clicked an object => stand there)
+      // nor the start tile (Sim starts on it).
+      if (tx === toX && ty === toY) continue;
+      if (tx === fromX && ty === fromY) continue;
+      if (tx < 0 || ty < 0 || tx >= N || ty >= N) continue;
+      blocked.add(ty * N + tx);
+    }
   }
   const heuristic = (x: number, y: number): number =>
     Math.abs(x - toX) + Math.abs(y - toY);
@@ -1389,6 +1393,11 @@ interface LoadedObject {
   /** OBJD initial depreciation (field 33). Newly-bought objects lose this on
    *  first placement; current sell value floors at `priceLimit`. */
   initialDepreciation: number;
+  /** Multi-tile master ID (OBJD field 8). 0 = single-tile. */
+  masterId: number;
+  /** Tile offsets (relative to anchor) blocked by this object. `[(0, 0)]` for
+   *  single-tile; multi-tile objects expand from OBJD master_id + sub_index. */
+  footprint: Array<{ x: number; y: number }>;
 }
 
 /** Conventional event-index names. Defined by `behavior.iff` chunk 0x00F5; this is
@@ -1499,6 +1508,16 @@ function buildLoadedObject(
   const rawPrice = objd.fields[16] ?? 0;
   const price = rawPrice > 0 && rawPrice < 0xffff ? rawPrice : 0;
   const initialDepreciation = objd.fields[33] ?? 0;
+  const masterId = objd.fields[8] ?? 0;
+  let footprint: Array<{ x: number; y: number }> = [{ x: 0, y: 0 }];
+  if (masterId !== 0) {
+    try {
+      const tiles = wasm.objdFootprint(data, masterId) as Array<{ x: number; y: number }>;
+      if (tiles.length > 0) footprint = tiles;
+    } catch (err) {
+      console.warn(`[viewer] objdFootprint(${masterId}) failed for ${iffName}:`, err);
+    }
+  }
   // Prefer the OBJD chunk's 64-byte label (Maxis stores the human-readable name there);
   // fall back to humanizing the IFF filename.
   const labelTrimmed = objdChunk.label.trim();
@@ -1541,7 +1560,7 @@ function buildLoadedObject(
       console.warn(`[viewer] DGRP ${c.id} parse failed:`, err);
     }
   }
-  return { iffName, objectName, data, chunks, paltChunk, baseGraphicId, dgrps, semiGlobalName, objfEntries, price, initialDepreciation };
+  return { iffName, objectName, data, chunks, paltChunk, baseGraphicId, dgrps, semiGlobalName, objfEntries, price, initialDepreciation, masterId, footprint };
 }
 
 /** Refresh the event-select <option>s with this object's wired (non-zero) events. */
@@ -1654,6 +1673,30 @@ interface LotInstance {
 const lotInstances: LotInstance[] = [];
 let nextLotInstanceId = 1;
 let selectedInstanceId: number | null = null;
+
+/** True when every tile of `obj`'s footprint anchored at `(ax, ay)` is in-bounds
+ *  and free of other instances. `ignoreInstanceId` lets the move-drag handler
+ *  exclude the instance currently being moved from the occupancy check. */
+function canPlaceFootprintAt(
+  obj: LoadedObject,
+  ax: number,
+  ay: number,
+  ignoreInstanceId: number | null = null,
+): boolean {
+  const N = lotScene.gridSize;
+  for (const cell of obj.footprint) {
+    const tx = ax + cell.x;
+    const ty = ay + cell.y;
+    if (tx < 0 || ty < 0 || tx >= N || ty >= N) return false;
+    for (const inst of lotInstances) {
+      if (inst.id === ignoreInstanceId) continue;
+      for (const c of inst.obj.footprint) {
+        if (inst.worldX + c.x === tx && inst.worldY + c.y === ty) return false;
+      }
+    }
+  }
+  return true;
+}
 
 function placeOnLot(
   obj: LoadedObject,
@@ -1937,7 +1980,8 @@ function onLotCanvasClick(ev: MouseEvent): void {
       closeInteractionMenuImpl();
       return;
     }
-    if (lotInstances.some((i) => i.worldX === tile.worldX && i.worldY === tile.worldY)) {
+    if (!canPlaceFootprintAt(obj, tile.worldX, tile.worldY)) {
+      showBubble("can't place — tiles occupied or off-grid");
       closeInteractionMenuImpl();
       return;
     }
@@ -2036,11 +2080,9 @@ window.addEventListener("mouseup", (ev) => {
   if (moveDrag) {
     const inst = lotInstances.find((i) => i.id === moveDrag!.instId);
     if (inst) {
-      // Drop on a tile already occupied by another instance → revert.
-      const collision = lotInstances.some(
-        (i) => i.id !== inst.id && i.worldX === inst.worldX && i.worldY === inst.worldY,
-      );
-      if (collision) {
+      // Drop on tiles already occupied by another instance → revert. Uses the
+      // full footprint so multi-tile objects can't drop onto a partial cover.
+      if (!canPlaceFootprintAt(inst.obj, inst.worldX, inst.worldY, inst.id)) {
         inst.worldX = moveDrag.origX;
         inst.worldY = moveDrag.origY;
         composeLotScene();

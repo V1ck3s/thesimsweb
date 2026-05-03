@@ -10,7 +10,7 @@
 use std::path::PathBuf;
 
 use iff::Iff;
-use simantics::{Dgrp, Objd, Objf, StrEntry, StrTable, Ttab, objd_field};
+use simantics::{Dgrp, Objd, Objf, Slot, StrEntry, StrTable, Ttab, objd_field};
 
 fn sample_path(name: &str) -> PathBuf {
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
@@ -143,4 +143,50 @@ fn alarm_clock_dgrp_v20004_has_12_images() {
             );
         }
     }
+}
+
+#[test]
+fn alarm_clock_slot_is_v10_with_two_routing_slots() {
+    let Ok(data) = std::fs::read(sample_path("AlarmClock.iff")) else {
+        eprintln!("skipping: samples/iff/AlarmClock.iff missing");
+        return;
+    };
+    let iff_file = Iff::parse(&data).expect("valid IFF");
+    let chunks: Vec<_> = iff_file.chunks().collect::<Result<_, _>>().unwrap();
+    let slot_chunks: Vec<_> = chunks.iter().filter(|c| &c.kind == b"SLOT").collect();
+    assert_eq!(slot_chunks.len(), 1);
+    let slot = Slot::parse(slot_chunks[0].data).expect("SLOT decodes");
+    assert_eq!(slot.version, 10);
+    assert_eq!(slot.count, 2);
+    assert_eq!(slot.raw_records.len(), 140); // 156 data bytes - 16 header
+}
+
+#[test]
+fn unsnacker_slot_is_v6_with_one_routing_slot() {
+    let Ok(data) = std::fs::read(sample_path("unsnacker.iff")) else {
+        eprintln!("skipping: samples/iff/unsnacker.iff missing");
+        return;
+    };
+    let iff_file = Iff::parse(&data).expect("valid IFF");
+    let chunks: Vec<_> = iff_file.chunks().collect::<Result<_, _>>().unwrap();
+    let slot_chunks: Vec<_> = chunks.iter().filter(|c| &c.kind == b"SLOT").collect();
+    assert_eq!(slot_chunks.len(), 1);
+    let slot = Slot::parse(slot_chunks[0].data).expect("SLOT decodes");
+    assert_eq!(slot.version, 6);
+    assert_eq!(slot.count, 1);
+    assert_eq!(slot.raw_records.len(), 54); // 70 data bytes - 16 header
+}
+
+#[test]
+fn alarm_clock_objd_master_id_is_zero_single_tile() {
+    let Ok(data) = std::fs::read(sample_path("AlarmClock.iff")) else {
+        eprintln!("skipping: samples/iff/AlarmClock.iff missing");
+        return;
+    };
+    let iff_file = Iff::parse(&data).expect("valid IFF");
+    let chunks: Vec<_> = iff_file.chunks().collect::<Result<_, _>>().unwrap();
+    let objd_chunks: Vec<_> = chunks.iter().filter(|c| &c.kind == b"OBJD").collect();
+    let objd = Objd::parse(objd_chunks[0].data).unwrap();
+    assert_eq!(objd.master_id(), 0, "alarm clock is single-tile");
+    assert_eq!(objd.sub_index_xy(), None);
 }

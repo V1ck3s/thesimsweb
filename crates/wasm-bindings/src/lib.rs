@@ -438,6 +438,60 @@ pub fn parse_glob(data: &[u8]) -> Result<Object, JsError> {
     Ok(obj)
 }
 
+/// Parse a single SLOT chunk payload. Returns `{ version, count }` —
+/// per-slot record decoding is not yet implemented (records returned raw
+/// length only).
+///
+/// # Errors
+/// Returns a `JsError` for malformed chunks or unsupported magic.
+#[wasm_bindgen(js_name = parseSlot)]
+pub fn parse_slot(data: &[u8]) -> Result<Object, JsError> {
+    let slot = simantics::Slot::parse(data).map_err(|e| JsError::new(&e.to_string()))?;
+    let obj = Object::new();
+    Reflect::set(&obj, &JsValue::from_str("version"), &JsValue::from(slot.version))
+        .map_err(|_| JsError::new("set version"))?;
+    Reflect::set(&obj, &JsValue::from_str("count"), &JsValue::from(slot.count))
+        .map_err(|_| JsError::new("set count"))?;
+    Reflect::set(
+        &obj,
+        &JsValue::from_str("rawRecordsLen"),
+        &JsValue::from(slot.raw_records.len() as u32),
+    )
+    .map_err(|_| JsError::new("set rawRecordsLen"))?;
+    Ok(obj)
+}
+
+/// Compute the footprint of a multi-tile object in an IFF.
+///
+/// Walks every OBJD chunk, filters by `master_id`, and returns the `(x, y)`
+/// tile offsets as `[{ x, y }, ...]`. Returns `[]` for single-tile or
+/// non-master IFFs.
+///
+/// # Errors
+/// Returns a `JsError` if the IFF can't be parsed.
+#[wasm_bindgen(js_name = objdFootprint)]
+pub fn objd_footprint(iff_data: &[u8], master_id: u32) -> Result<js_sys::Array, JsError> {
+    let parsed = iff::Iff::parse(iff_data).map_err(|e| JsError::new(&e.to_string()))?;
+    let payloads: Vec<&[u8]> = parsed
+        .chunks()
+        .flatten()
+        .filter(|c| &c.kind == b"OBJD")
+        .map(|c| c.data)
+        .collect();
+    let master = u16::try_from(master_id & 0xFFFF).unwrap_or(0);
+    let tiles = simantics::objd_footprint_from_chunks(&payloads, master);
+    let arr = js_sys::Array::new();
+    for (x, y) in tiles {
+        let cell = Object::new();
+        Reflect::set(&cell, &JsValue::from_str("x"), &JsValue::from(i32::from(x)))
+            .map_err(|_| JsError::new("set x"))?;
+        Reflect::set(&cell, &JsValue::from_str("y"), &JsValue::from(i32::from(y)))
+            .map_err(|_| JsError::new("set y"))?;
+        arr.push(&cell);
+    }
+    Ok(arr)
+}
+
 /// Parse a single FWAV chunk payload (event-name C string with leading NUL pad).
 /// Returns `{ eventName: string }`.
 ///

@@ -62,6 +62,8 @@ pub enum SimAnticsError {
     HitMissingTrax,
     #[error("HIT export table truncated")]
     HitExportTruncated,
+    #[error("SLOT bad magic (want \"TOLS\", got 0x{0:08X})")]
+    SlotBadMagic(u32),
 }
 
 // ---- BHAV ----
@@ -663,6 +665,67 @@ impl Objd {
         let hi = u32::from(self.field(objd_field::GUID_HI).unwrap_or(0));
         (hi << 16) | lo
     }
+
+    /// Multi-tile group ID (`0` for single-tile objects). When non-zero, every
+    /// tile of the same multi-tile object shares this ID across separate OBJD
+    /// chunks in the same IFF.
+    #[must_use]
+    pub fn master_id(&self) -> u16 {
+        self.field(objd_field::MASTER_ID).unwrap_or(0)
+    }
+
+    /// `(x, y)` tile offset of this OBJD within its multi-tile master, or
+    /// `None` for the master itself or for single-tile objects.
+    ///
+    /// Niotso encodes the sub-index as `(y << 8) | x`. The sentinel `0xFFFF`
+    /// marks the master tile and returns `None`.
+    #[must_use]
+    pub fn sub_index_xy(&self) -> Option<(i8, i8)> {
+        let raw = self.field(objd_field::SUB_INDEX)?;
+        if raw == 0xFFFF || self.master_id() == 0 {
+            return None;
+        }
+        let x = (raw & 0xFF) as i8;
+        let y = ((raw >> 8) & 0xFF) as i8;
+        Some((x, y))
+    }
+}
+
+/// Multi-tile footprint resolved from a list of OBJD payloads.
+///
+/// Given the OBJD chunk-data slices in the same IFF and a `master_id`, scans
+/// every OBJD sharing that ID and collects the `(x, y)` offsets of each
+/// sub-tile. The master tile (sub_index = 0xFFFF) sits at offset `(0, 0)` by
+/// convention; sub-tiles use the `(y << 8) | x` field directly.
+///
+/// Returns an empty vector for single-tile objects (`master_id == 0`). The
+/// returned tiles are deduplicated and sorted lexicographically.
+///
+/// `simantics` is `no_std` and intentionally does not depend on the `iff`
+/// crate at runtime — the caller is expected to enumerate the OBJD chunks
+/// themselves and pass the raw payloads in.
+#[must_use]
+pub fn objd_footprint_from_chunks(objd_payloads: &[&[u8]], master_id: u16) -> alloc::vec::Vec<(i8, i8)> {
+    use alloc::collections::BTreeSet;
+    if master_id == 0 {
+        return alloc::vec::Vec::new();
+    }
+    let mut tiles: BTreeSet<(i8, i8)> = BTreeSet::new();
+    for payload in objd_payloads {
+        let Ok(objd) = Objd::parse(payload) else { continue };
+        if objd.master_id() != master_id {
+            continue;
+        }
+        match objd.sub_index_xy() {
+            Some(xy) => {
+                tiles.insert(xy);
+            }
+            None => {
+                tiles.insert((0, 0));
+            }
+        }
+    }
+    tiles.into_iter().collect()
 }
 
 // ---- TTAB ----
@@ -905,6 +968,69 @@ impl Glob {
         };
         let semi_global_name = alloc::string::String::from_utf8_lossy(trimmed).into_owned();
         Ok(Self { semi_global_name })
+    }
+}
+
+// ---- SLOT ----
+
+/// `SLOT` chunk — describes the routing slots an object exposes (where a Sim
+/// can stand to interact: in-front, behind, sit-here, sleep-here, …).
+///
+/// Two layouts coexist in TS1:
+/// - **v6**: 58 bytes per slot, used by simple objects (e.g. `unsnacker.iff`).
+/// - **v10**: 72 bytes per slot, used by interactive objects with richer
+///   routing (e.g. `AlarmClock.iff`).
+///
+/// We don't decode individual slot fields here — empirical reverse of the
+/// per-slot record is in [`docs/formats/SLOT.md`](../../../docs/formats/SLOT.md)
+/// and was insufficient to drive routing without cross-referencing FreeSO/Simitone
+/// (out of scope this session). What this parser *does* expose:
+/// - the magic + version + slot count, for diagnostics and consistency checks;
+/// - raw per-slot bytes, so downstream code can decode opportunistically.
+#[derive(Debug, Clone)]
+pub struct Slot {
+    pub version: u32,
+    /// Number of slot records (0..=N). Each record is `version`-sized.
+    pub count: u32,
+    /// Raw per-slot bytes (concatenated). Length = `count * record_size(version)`
+    /// when the chunk is well-formed; we don't enforce that, the caller can.
+    pub raw_records: alloc::vec::Vec<u8>,
+}
+
+impl Slot {
+    /// Header bytes consumed before the per-slot records: 4 (reserved) + 4
+    /// (version) + 4 (magic) + 4 (count) = 16.
+    pub const HEADER_SIZE: usize = 16;
+
+    /// Magic bytes — ASCII "TOLS" little-endian (i.e. "SLOT" reversed).
+    pub const MAGIC_BYTES: &'static [u8; 4] = b"TOLS";
+
+    /// Parse a `SLOT` chunk's data payload.
+    ///
+    /// Layout (empirical, confirmed against `AlarmClock.iff` v10 and
+    /// `unsnacker.iff` v6):
+    /// ```text
+    ///   [0..4]   reserved (always 0)
+    ///   [4..8]   version u32 LE (6 or 10)
+    ///   [8..12]  magic "TOLS"
+    ///   [12..16] count u32 LE
+    ///   [16..]   per-slot records (58 B for v6, 72 B for v10)
+    /// ```
+    ///
+    /// # Errors
+    /// Returns `TooShort` if the buffer cannot hold the 16-byte header, or
+    /// `SlotBadMagic` if the magic bytes don't match `"TOLS"`.
+    pub fn parse(data: &[u8]) -> Result<Self, SimAnticsError> {
+        if data.len() < Self::HEADER_SIZE {
+            return Err(SimAnticsError::TooShort);
+        }
+        let version = read_u32_le(data, 4)?;
+        if &data[8..12] != Self::MAGIC_BYTES {
+            return Err(SimAnticsError::SlotBadMagic(read_u32_le(data, 8)?));
+        }
+        let count = read_u32_le(data, 12)?;
+        let raw_records = data[Self::HEADER_SIZE..].to_vec();
+        Ok(Self { version, count, raw_records })
     }
 }
 
@@ -1910,6 +2036,75 @@ mod tests {
         assert!(matches!(Fwav::parse(&[]), Err(SimAnticsError::FwavEmpty)));
         // All zero bytes — no string at all.
         assert!(matches!(Fwav::parse(&[0u8; 16]), Err(SimAnticsError::FwavEmpty)));
+    }
+
+    #[test]
+    fn slot_v6_round_trip() {
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&0u32.to_le_bytes()); // reserved
+        buf.extend_from_slice(&6u32.to_le_bytes()); // version
+        buf.extend_from_slice(b"TOLS");
+        buf.extend_from_slice(&3u32.to_le_bytes()); // count
+        buf.extend_from_slice(&[0xAA; 58 * 3]); // 3 records of 58 bytes
+        let s = Slot::parse(&buf).unwrap();
+        assert_eq!(s.version, 6);
+        assert_eq!(s.count, 3);
+        assert_eq!(s.raw_records.len(), 58 * 3);
+    }
+
+    #[test]
+    fn slot_rejects_bad_magic() {
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&0u32.to_le_bytes());
+        buf.extend_from_slice(&6u32.to_le_bytes());
+        buf.extend_from_slice(b"WRNG");
+        buf.extend_from_slice(&0u32.to_le_bytes());
+        assert!(matches!(Slot::parse(&buf), Err(SimAnticsError::SlotBadMagic(_))));
+    }
+
+    #[test]
+    fn slot_rejects_truncated_header() {
+        assert!(matches!(Slot::parse(&[0u8; 12]), Err(SimAnticsError::TooShort)));
+    }
+
+    #[test]
+    fn objd_master_id_and_sub_index_decoded() {
+        // Build an OBJD with master_id=42, sub_index = 0x0203 (x=3, y=2).
+        let mut fields = vec![0u16; 38];
+        fields[objd_field::MASTER_ID] = 42;
+        fields[objd_field::SUB_INDEX] = 0x0203;
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&138u32.to_le_bytes());
+        for f in &fields {
+            buf.extend_from_slice(&f.to_le_bytes());
+        }
+        let o = Objd::parse(&buf).unwrap();
+        assert_eq!(o.master_id(), 42);
+        assert_eq!(o.sub_index_xy(), Some((3, 2)));
+
+        // Master tile (sub_index = 0xFFFF) returns None even with master_id != 0.
+        let mut fields2 = fields.clone();
+        fields2[objd_field::SUB_INDEX] = 0xFFFF;
+        let mut buf2 = Vec::new();
+        buf2.extend_from_slice(&138u32.to_le_bytes());
+        for f in &fields2 {
+            buf2.extend_from_slice(&f.to_le_bytes());
+        }
+        let o2 = Objd::parse(&buf2).unwrap();
+        assert_eq!(o2.master_id(), 42);
+        assert_eq!(o2.sub_index_xy(), None);
+
+        // Single-tile (master_id=0): always None.
+        let mut fields3 = vec![0u16; 38];
+        fields3[objd_field::SUB_INDEX] = 0x0203;
+        let mut buf3 = Vec::new();
+        buf3.extend_from_slice(&138u32.to_le_bytes());
+        for f in &fields3 {
+            buf3.extend_from_slice(&f.to_le_bytes());
+        }
+        let o3 = Objd::parse(&buf3).unwrap();
+        assert_eq!(o3.master_id(), 0);
+        assert_eq!(o3.sub_index_xy(), None);
     }
 
     #[test]
