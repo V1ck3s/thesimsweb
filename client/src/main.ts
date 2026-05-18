@@ -3309,6 +3309,10 @@ function openCasModal(): void {
   };
   panel.querySelector<HTMLButtonElement>("button[data-cas-cancel]")!.addEventListener("click", close);
   panel.querySelector<HTMLButtonElement>("button[data-cas-submit]")!.addEventListener("click", () => {
+    // Belt-and-suspenders: re-check the budget here in case a handler bypassed
+    // the disabled state via the keyboard or accessibility tools.
+    const sum = draft.traits.reduce((a, b) => a + b, 0);
+    if (sum > 25) return;
     addSimFromCas(draft);
     close();
   });
@@ -3578,6 +3582,9 @@ async function loadLot(replace: boolean = true, saveId: string = activeSaveId): 
     if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
       const obj = parsed as SerializedLot;
       if (Array.isArray(obj.sims) && obj.sims.length > 0) {
+        // Replace the family — also wipe the greet cooldown map so we don't
+        // hold references to deleted sim ids forever.
+        lastGreetByIdMs.clear();
         sims.length = 0;
         for (const s of obj.sims) {
           const fallback = SIM_PALETTE[sims.length % SIM_PALETTE.length]!;
