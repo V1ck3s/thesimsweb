@@ -59,6 +59,51 @@ const viewerState: {
 };
 
 // ============================================================================
+// Debug-panel toggle. The static panels in index.html (sprite overlay, BHAV /
+// HIT disassemblers, HIT sandbox, manifest HUD) are gated behind `.debug-only`
+// CSS and only revealed when the user presses F9 / Ctrl+Shift+D or clicks the
+// small "D" button bottom-right. Also respects `?debug=1` in the URL.
+// ============================================================================
+
+function setDebugMode(on: boolean): void {
+  document.body.classList.toggle("debug-mode", on);
+  try {
+    localStorage.setItem("thesimsweb:debug", on ? "1" : "0");
+  } catch {
+    // localStorage may be unavailable in private mode — best-effort only.
+  }
+}
+
+(function initDebugToggle(): void {
+  const params = new URLSearchParams(window.location.search);
+  let stored: string | null = null;
+  try {
+    stored = localStorage.getItem("thesimsweb:debug");
+  } catch {
+    // ignored
+  }
+  if (params.get("debug") === "1" || stored === "1") setDebugMode(true);
+  const btn = document.getElementById("debug-toggle");
+  btn?.addEventListener("click", () => {
+    setDebugMode(!document.body.classList.contains("debug-mode"));
+  });
+  window.addEventListener("keydown", (ev) => {
+    if (ev.target instanceof HTMLInputElement || ev.target instanceof HTMLTextAreaElement) return;
+    if (ev.key === "F9" || (ev.key === "D" && ev.ctrlKey && ev.shiftKey)) {
+      setDebugMode(!document.body.classList.contains("debug-mode"));
+      ev.preventDefault();
+    }
+  });
+})();
+
+function dismissBootSplash(): void {
+  const splash = document.getElementById("boot-splash");
+  if (!splash) return;
+  splash.classList.add("hidden");
+  setTimeout(() => splash.remove(), 500);
+}
+
+// ============================================================================
 // Sim placeholder — a single tracked entity rendered as a procedural capsule.
 // Walks between tiles via a fractional position interpolated over time.
 // ============================================================================
@@ -1550,8 +1595,16 @@ void engine().then((wasm) => {
   console.info(
     `[engine] v${wasm.engine_version()} · far ${manifest.length} entries (${manifest[0]?.filename}, ${payload.length}B) · iff v${wasm.parseIffHeader(fakeIff)}, ${chunks.length} chunks (${chunks.map((c) => c.kind).join(",")}) · spr2 ${sprite.width}x${sprite.height} (${sprite.rgba.length}B RGBA)`,
   );
+  dismissBootSplash();
   void runRealAssetSmokeTest(wasm);
+}).catch((err) => {
+  console.error("[engine] init failed:", err);
+  dismissBootSplash();
 });
+
+// Safety net: if neither the success nor the failure path of engine init fires
+// within 8 s, drop the splash anyway so the user isn't stuck staring at it.
+setTimeout(dismissBootSplash, 8000);
 
 const HUD = document.getElementById("hud");
 const SPRITE_CANVAS = document.getElementById("sprite-overlay") as HTMLCanvasElement | null;
