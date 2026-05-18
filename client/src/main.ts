@@ -772,14 +772,25 @@ function runAutonomousInteraction(sim: SimState, target: AutonomyTarget): void {
   }
 }
 
+/** Map sim.id → last greet timestamp, used to cool down social interactions
+ *  so two idle Sims don't trade +22 bumps every 2.5 s autonomy tick. */
+const lastGreetByIdMs = new Map<number, number>();
+const GREET_COOLDOWN_MS = 25_000;
+
 /** Find a Sim-Sim "Greet" target: another non-sleeping Sim within reach that
- *  also has low-ish Social. Returns null if nobody qualifies. */
+ *  also has low-ish Social and isn't on cooldown with us. Returns null if
+ *  nobody qualifies. */
 function findSocialPartner(self: SimState): SimState | null {
+  const now = performance.now();
+  const selfLast = lastGreetByIdMs.get(self.id) ?? 0;
+  if (now - selfLast < GREET_COOLDOWN_MS) return null;
   let best: SimState | null = null;
   let bestScore = Infinity; // lower social = better candidate
   for (const other of sims) {
     if (other === self) continue;
     if (other.sleeping || other.walk) continue;
+    const otherLast = lastGreetByIdMs.get(other.id) ?? 0;
+    if (now - otherLast < GREET_COOLDOWN_MS) continue;
     const dist = Math.hypot(other.fx - self.fx, other.fy - self.fy);
     if (dist > 10) continue;
     const otherSocial = other.motives[MOTIVE_SOCIAL_IDX] ?? 0;
@@ -792,7 +803,7 @@ function findSocialPartner(self: SimState): SimState | null {
 }
 
 /** Drop a Social bump on both Sims when they meet up. Emits matching bubbles
- *  so the user sees the interaction. */
+ *  so the user sees the interaction and records a cooldown so they don't loop. */
 function runSocialGreeting(initiator: SimState, partner: SimState): void {
   const bump = 22;
   initiator.motives[MOTIVE_SOCIAL_IDX] = clampMotive(
@@ -805,6 +816,8 @@ function runSocialGreeting(initiator: SimState, partner: SimState): void {
   const now = performance.now();
   initiator.bubble = { text: `💬 hi ${partner.name}!`, expiresAtMs: now + 1500 };
   partner.bubble = { text: `💬 hi ${initiator.name}!`, expiresAtMs: now + 1500 };
+  lastGreetByIdMs.set(initiator.id, now);
+  lastGreetByIdMs.set(partner.id, now);
   renderMotivesHud();
   ensureRenderLoop();
 }
@@ -3262,9 +3275,25 @@ function openCasModal(): void {
   };
   const refreshPoints = (): void => {
     const sum = draft.traits.reduce((a, b) => a + b, 0);
-    const tilt = sum - 25; // 25 = neutral midpoint
-    pointsEl.textContent = `Σ ${sum} ${tilt > 0 ? `(+${tilt})` : tilt < 0 ? `(${tilt})` : "(balanced)"}`;
-    pointsEl.style.color = Math.abs(tilt) > 5 ? "#d8a13a" : "#5fb86b";
+    const submitBtn = panel.querySelector<HTMLButtonElement>("button[data-cas-submit]");
+    if (sum > 25) {
+      pointsEl.textContent = `Σ ${sum} (over budget — max 25)`;
+      pointsEl.style.color = "#d8533a";
+      if (submitBtn) {
+        submitBtn.disabled = true;
+        submitBtn.style.opacity = "0.4";
+        submitBtn.style.cursor = "not-allowed";
+      }
+    } else {
+      const remaining = 25 - sum;
+      pointsEl.textContent = `Σ ${sum} / 25${remaining > 0 ? ` · ${remaining} left` : " · maxed"}`;
+      pointsEl.style.color = sum < 15 ? "#d8a13a" : "#5fb86b";
+      if (submitBtn) {
+        submitBtn.disabled = false;
+        submitBtn.style.opacity = "1";
+        submitBtn.style.cursor = "pointer";
+      }
+    }
   };
 
   refreshGender();
@@ -3510,7 +3539,7 @@ async function saveLot(): Promise<void> {
 }
 
 async function saveLotAs(name: string): Promise<void> {
-  const id = slugifySaveId(name);
+  const id = await slugifySaveId(name);
   activeSaveId = id;
   activeSaveName = name;
   await saveLot();
@@ -3584,7 +3613,19 @@ async function loadLot(replace: boolean = true, saveId: string = activeSaveId): 
       if (typeof obj.funds === "number") funds = obj.funds;
       if (typeof obj.gameMinutes === "number") gameMinutes = obj.gameMinutes;
       if (typeof obj.gameDayIdx === "number") gameDayIdx = obj.gameDayIdx;
-      if (typeof obj.lotPath === "string") currentLotPath = obj.lotPath;
+      // Re-apply the House.iff template *first* so its floor palette/walls
+      // become the base; user edits saved below then overlay on top.
+      if (typeof obj.lotPath === "string" && obj.lotPath.length > 0) {
+        try {
+          const loaded = await loadHouseTemplate(obj.lotPath, lotScene.gridSize);
+          for (const [k, v] of loaded.floorPaint) floorPaint.set(k, v);
+          for (const k of loaded.wallsN) wallsN.add(k);
+          for (const k of loaded.wallsW) wallsW.add(k);
+          currentLotPath = obj.lotPath;
+        } catch (err) {
+          console.warn(`[lot] re-apply template ${obj.lotPath} failed:`, err);
+        }
+      }
       if (Array.isArray(obj.wallsN)) for (const k of obj.wallsN) if (typeof k === "number") wallsN.add(k);
       if (Array.isArray(obj.wallsW)) for (const k of obj.wallsW) if (typeof k === "number") wallsW.add(k);
       if (Array.isArray(obj.doorsN)) for (const k of obj.doorsN) if (typeof k === "number") doorsN.add(k);

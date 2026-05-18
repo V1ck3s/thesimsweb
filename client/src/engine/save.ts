@@ -3,7 +3,32 @@
  * endpoint in sync. Writes go to both; reads prefer IDB and fall back to the
  * server (and back-fill IDB) so the page works offline once it's been opened
  * online at least once.
+ *
+ * Identity: until proper auth is in place, every browser picks a random UUID
+ * on first boot and stashes it in `localStorage`. The server's saves table is
+ * keyed by this id, so two browsers don't accidentally share a save bucket.
  */
+
+const USER_ID_KEY = "thesimsweb:userId";
+
+function getUserId(): string {
+  try {
+    const existing = localStorage.getItem(USER_ID_KEY);
+    if (existing) return existing;
+    const fresh =
+      typeof crypto !== "undefined" && "randomUUID" in crypto
+        ? crypto.randomUUID()
+        : `u-${Math.random().toString(36).slice(2, 10)}-${Date.now().toString(36)}`;
+    localStorage.setItem(USER_ID_KEY, fresh);
+    return fresh;
+  } catch {
+    return "anonymous";
+  }
+}
+
+function authHeaders(): Record<string, string> {
+  return { "x-user": getUserId() };
+}
 
 import {
   idbDeleteSave,
@@ -31,7 +56,7 @@ interface ServerSaveListItem {
 
 async function fetchServerList(): Promise<ServerSaveListItem[] | null> {
   try {
-    const res = await fetch("/api/saves");
+    const res = await fetch("/api/saves", { headers: authHeaders() });
     if (!res.ok) return null;
     const json = (await res.json()) as { saves?: ServerSaveListItem[] };
     return Array.isArray(json.saves) ? json.saves : [];
@@ -95,7 +120,7 @@ export async function putSave(id: string, name: string, payload: string): Promis
       `/api/saves/${encodeURIComponent(id)}?name=${encodeURIComponent(name)}`,
       {
         method: "PUT",
-        headers: { "Content-Type": "application/octet-stream" },
+        headers: { "Content-Type": "application/octet-stream", ...authHeaders() },
         body: new TextEncoder().encode(payload),
       },
     );
@@ -112,7 +137,7 @@ export async function getSave(id: string): Promise<{ name: string; payload: stri
   const local = await idbGetSave(id);
   if (local) return { name: local.name, payload: local.payload };
   try {
-    const res = await fetch(`/api/saves/${encodeURIComponent(id)}`);
+    const res = await fetch(`/api/saves/${encodeURIComponent(id)}`, { headers: authHeaders() });
     if (!res.ok) return null;
     const payload = await res.text();
     const name = res.headers.get("X-Save-Name") ?? id;
@@ -136,19 +161,32 @@ export async function deleteSave(id: string): Promise<void> {
     console.warn("[save] idb delete failed:", err);
   }
   try {
-    await fetch(`/api/saves/${encodeURIComponent(id)}`, { method: "DELETE" });
+    await fetch(`/api/saves/${encodeURIComponent(id)}`, {
+      method: "DELETE",
+      headers: authHeaders(),
+    });
   } catch (err) {
     console.warn("[save] server delete failed:", err);
   }
 }
 
 /** Generate a fresh kebab-cased id from a free-text save name. Falls back to a
- *  timestamp tail if the slug ends up empty (all-emoji name etc.). */
-export function slugifySaveId(name: string): string {
-  const slug = name
+ *  timestamp tail if the slug ends up empty (all-emoji name etc.). When the
+ *  slug would collide with an existing save, append `-2`, `-3`, etc. so the
+ *  user never overwrites a save silently. */
+export async function slugifySaveId(name: string): Promise<string> {
+  const base = name
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/(^-|-$)/g, "")
-    .slice(0, 48);
-  return slug || `save-${Date.now()}`;
+    .slice(0, 48) || `save-${Date.now()}`;
+  // Check for collisions against both IDB and the server.
+  const existing = await listSaves();
+  const taken = new Set(existing.map((s) => s.id));
+  if (!taken.has(base)) return base;
+  for (let i = 2; i < 100; i += 1) {
+    const candidate = `${base.slice(0, 44)}-${i}`;
+    if (!taken.has(candidate)) return candidate;
+  }
+  return `${base}-${Date.now()}`;
 }
