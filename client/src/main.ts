@@ -1,6 +1,7 @@
 import { engine } from "./engine/wasm.js";
 import { fetchManifest, readFarManifest, readIffFromFar, readStandaloneIff } from "./engine/assets.js";
 import { fetchTemplates, loadHouseTemplate, type TemplateEntry } from "./engine/house.js";
+import { fetchNeighborhoodMap, type NeighborhoodLot } from "./engine/neighborhood.js";
 import {
   renderIso,
   projectTileToScreen,
@@ -2649,6 +2650,10 @@ async function mountTemplatePicker(buildBar: HTMLElement): Promise<void> {
   }
 }
 
+/** Path of the currently-loaded House.iff, so the active save knows which
+ *  lot to point to on reload. Null = the user's hand-built lot (no template). */
+let currentLotPath: string | null = null;
+
 async function loadAndApplyHouse(path: string, buildBar: HTMLElement): Promise<void> {
   const statusEl = buildBar.querySelector<HTMLSpanElement>("span[data-house-status]");
   if (statusEl) {
@@ -2669,6 +2674,7 @@ async function loadAndApplyHouse(path: string, buildBar: HTMLElement): Promise<v
     doorsW.clear();
     windowsN.clear();
     windowsW.clear();
+    currentLotPath = path;
     composeLotScene();
     if (statusEl) {
       statusEl.style.color = "#9bd09b";
@@ -2687,6 +2693,135 @@ async function loadAndApplyHouse(path: string, buildBar: HTMLElement): Promise<v
     }
     console.error("[house] load failed", err);
   }
+}
+
+// ============================================================================
+// Neighborhood modal — picks one of the 10 Magictown lots and "moves" the
+// family in. The Sim list and motives carry over; placed instances are wiped
+// (TS1 wouldn't physically port your sofas either when you moved house).
+// ============================================================================
+
+let neighborhoodCache: NeighborhoodLot[] | null = null;
+let neighborhoodModalEl: HTMLDivElement | null = null;
+
+async function openNeighborhoodModal(): Promise<void> {
+  if (neighborhoodModalEl) return;
+  const overlay = document.createElement("div");
+  overlay.id = "neighborhood-modal";
+  overlay.style.cssText =
+    "position:fixed;inset:0;background:rgba(0,0,0,.65);z-index:1000;display:flex;align-items:center;justify-content:center;font:13px/1.4 ui-sans-serif,system-ui,sans-serif;color:#cde;";
+  const panel = document.createElement("div");
+  panel.style.cssText =
+    "background:#181c24;border:1px solid #345;border-radius:8px;padding:18px 22px;width:640px;max-width:94vw;max-height:88vh;overflow:auto;display:flex;flex-direction:column;gap:12px;box-shadow:0 8px 32px rgba(0,0,0,.5);";
+  panel.innerHTML = `
+    <div style="font-size:15px;color:#9ad;font-weight:600;display:flex;align-items:center;gap:10px;">
+      <span>Neighborhood — Magic Town</span>
+      <span data-nb-current style="opacity:.6;font-size:12px;font-weight:normal;"></span>
+    </div>
+    <div data-nb-grid style="display:grid;grid-template-columns:repeat(5,1fr);gap:10px;"></div>
+    <div data-nb-status style="opacity:.6;font-size:11px;min-height:1em;"></div>
+    <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:4px;">
+      <button data-nb-close style="background:#222;color:#cde;border:1px solid #345;font:inherit;padding:6px 14px;border-radius:3px;cursor:pointer;">Close</button>
+    </div>
+  `;
+  overlay.appendChild(panel);
+  document.body.appendChild(overlay);
+  neighborhoodModalEl = overlay;
+
+  const close = (): void => {
+    overlay.remove();
+    neighborhoodModalEl = null;
+  };
+  panel.querySelector<HTMLButtonElement>("button[data-nb-close]")!.addEventListener("click", close);
+  overlay.addEventListener("click", (ev) => {
+    if (ev.target === overlay) close();
+  });
+
+  const grid = panel.querySelector<HTMLDivElement>("div[data-nb-grid]")!;
+  const status = panel.querySelector<HTMLDivElement>("div[data-nb-status]")!;
+  const current = panel.querySelector<HTMLSpanElement>("span[data-nb-current]")!;
+  current.textContent = currentLotPath ? `· current: ${currentLotPath.split("/").pop()}` : "";
+
+  grid.innerHTML = "<div style='opacity:.6;'>loading lots…</div>";
+  try {
+    if (!neighborhoodCache) neighborhoodCache = await fetchNeighborhoodMap();
+    grid.innerHTML = "";
+    for (const lot of neighborhoodCache) {
+      const tile = document.createElement("button");
+      const isCurrent = lot.path === currentLotPath;
+      tile.style.cssText =
+        `background:${isCurrent ? "rgba(120,170,230,.18)" : "#111"};color:#cde;border:1px solid ${isCurrent ? "#69f" : "#345"};` +
+        `border-radius:4px;padding:10px;display:flex;flex-direction:column;gap:6px;cursor:pointer;font:inherit;text-align:left;` +
+        `transition:transform .1s;`;
+      tile.addEventListener("mouseenter", () => (tile.style.transform = "scale(1.03)"));
+      tile.addEventListener("mouseleave", () => (tile.style.transform = "scale(1)"));
+      tile.title = `${lot.path}\n${(lot.size / 1024).toFixed(1)} KiB`;
+      // ASCII isometric house icon — cheap, no asset needed.
+      tile.innerHTML = `
+        <div style="font-family:ui-monospace,monospace;font-size:13px;color:${isCurrent ? "#9be08a" : "#9ad"};text-align:center;line-height:1.05;">
+          <pre style="margin:0;">▟▙
+██</pre>
+        </div>
+        <div style="font-weight:600;font-size:12px;">${escapeHtml(lot.name)}</div>
+        <div style="opacity:.55;font-size:10px;">${escapeHtml(lot.path.split("/").slice(-2).join("/"))}</div>
+      `;
+      tile.addEventListener("click", async () => {
+        if (lot.path === currentLotPath) {
+          status.textContent = `${lot.name} is already the active lot.`;
+          status.style.color = "#9ad";
+          return;
+        }
+        const ok = confirm(
+          `Move family (${sims.length} Sim${sims.length === 1 ? "" : "s"}) into "${lot.name}"?\n` +
+            `The current house contents (furniture/walls) will be replaced.`,
+        );
+        if (!ok) return;
+        status.textContent = "moving family…";
+        status.style.color = "#cde";
+        try {
+          // Wipe placed instances — the new lot's geometry takes over.
+          lotInstances.length = 0;
+          // loadAndApplyHouse will wipe walls/floor/doors/windows and set
+          // currentLotPath. The Sim list survives.
+          const buildBar =
+            document.getElementById("build-tools") ?? document.createElement("div");
+          await loadAndApplyHouse(lot.path, buildBar);
+          // Re-spawn each Sim at a fresh empty tile so they don't end up
+          // inside a wall in the new lot.
+          for (const sim of sims) {
+            const { x, y } = findEmptyLotTile();
+            sim.fx = x;
+            sim.fy = y;
+            sim.walk = null;
+            sim.onArrive = null;
+          }
+          composeLotScene();
+          status.textContent = `moved in: ${lot.name}.`;
+          status.style.color = "#9bd09b";
+          current.textContent = `· current: ${lot.path.split("/").pop()}`;
+          // Refresh tile highlights.
+          for (const t of grid.querySelectorAll<HTMLButtonElement>("button")) {
+            t.style.background = "#111";
+            t.style.borderColor = "#345";
+          }
+          tile.style.background = "rgba(120,170,230,.18)";
+          tile.style.borderColor = "#69f";
+        } catch (err) {
+          status.textContent = `error: ${err instanceof Error ? err.message : "?"}`;
+          status.style.color = "#d8a13a";
+        }
+      });
+      grid.appendChild(tile);
+    }
+  } catch (err) {
+    grid.innerHTML = `<div style='color:#d8a13a;'>error: ${escapeHtml(err instanceof Error ? err.message : "?")}</div>`;
+  }
+}
+
+function escapeHtml(s: string): string {
+  return s.replace(/[&<>"']/g, (c) =>
+    c === "&" ? "&amp;" : c === "<" ? "&lt;" : c === ">" ? "&gt;" : c === '"' ? "&quot;" : "&#39;",
+  );
 }
 
 interface CasInput {
@@ -2814,18 +2949,26 @@ function renderFamilyHud(): void {
     root.appendChild(row);
   }
   const actions = document.createElement("div");
-  actions.style.cssText = "display:flex;gap:4px;margin-top:4px;";
+  actions.style.cssText = "display:flex;gap:4px;margin-top:4px;flex-wrap:wrap;";
   const casBtn = document.createElement("button");
-  casBtn.textContent = "Create-A-Sim";
+  casBtn.textContent = "+ Sim";
+  casBtn.title = "Open Create-A-Sim";
   casBtn.style.cssText =
     "flex:1;background:#3b6;color:#000;border:1px solid #444;font:inherit;padding:3px 6px;cursor:pointer;border-radius:2px;";
   casBtn.addEventListener("click", () => openCasModal());
   actions.appendChild(casBtn);
+  const nbBtn = document.createElement("button");
+  nbBtn.textContent = "Neighborhood";
+  nbBtn.title = "Move family to another Magic Town lot";
+  nbBtn.style.cssText =
+    "flex:1;background:#3a78c0;color:#fff;border:1px solid #444;font:inherit;padding:3px 6px;cursor:pointer;border-radius:2px;";
+  nbBtn.addEventListener("click", () => void openNeighborhoodModal());
+  actions.appendChild(nbBtn);
   if (sims.length > 1) {
     const delBtn = document.createElement("button");
     delBtn.textContent = "Remove";
     delBtn.style.cssText =
-      "background:#222;color:#d88;border:1px solid #533;font:inherit;padding:3px 6px;cursor:pointer;border-radius:2px;";
+      "flex:1;background:#222;color:#d88;border:1px solid #533;font:inherit;padding:3px 6px;cursor:pointer;border-radius:2px;";
     delBtn.addEventListener("click", () => removeSelectedSim());
     actions.appendChild(delBtn);
   }
@@ -3104,6 +3247,8 @@ interface SerializedLot {
   doorsW?: number[];
   windowsN?: number[];
   windowsW?: number[];
+  /** Path of the active House.iff template — null/missing for hand-built lots. */
+  lotPath?: string | null;
 }
 
 function serializeLot(): SerializedLot {
@@ -3144,6 +3289,7 @@ function serializeLot(): SerializedLot {
     doorsW: [...doorsW],
     windowsN: [...windowsN],
     windowsW: [...windowsW],
+    lotPath: currentLotPath,
   };
 }
 
@@ -3229,6 +3375,7 @@ async function loadLot(replace: boolean = true): Promise<void> {
       if (typeof obj.funds === "number") funds = obj.funds;
       if (typeof obj.gameMinutes === "number") gameMinutes = obj.gameMinutes;
       if (typeof obj.gameDayIdx === "number") gameDayIdx = obj.gameDayIdx;
+      if (typeof obj.lotPath === "string") currentLotPath = obj.lotPath;
       if (Array.isArray(obj.wallsN)) for (const k of obj.wallsN) if (typeof k === "number") wallsN.add(k);
       if (Array.isArray(obj.wallsW)) for (const k of obj.wallsW) if (typeof k === "number") wallsW.add(k);
       if (Array.isArray(obj.doorsN)) for (const k of obj.doorsN) if (typeof k === "number") doorsN.add(k);
