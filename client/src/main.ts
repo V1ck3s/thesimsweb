@@ -197,6 +197,27 @@ function clampMotive(v: number): number {
 }
 
 const MOTIVE_ENERGY_IDX = 4;
+const MOTIVE_SOCIAL_IDX = 6;
+const MOTIVE_ROOM_IDX = 7;
+
+/** Compute a target value for the Room motive from the current lot's quality.
+ *  Walls give the strongest signal — an unwalled lot is "open camping" and
+ *  caps Room around 0; full enclosure with floor/objects pushes toward +80. */
+function computeRoomTarget(): number {
+  const N = lotScene.gridSize;
+  const wallCount = wallsN.size + wallsW.size;
+  const floorCount = floorPaint.size;
+  const objCount = lotInstances.length;
+  // Normalize: an enclosed 10×10 needs ≈ 40 wall edges, 100 floor tiles,
+  // and 6+ objects to feel "homey". Each component contributes up to ~25.
+  const wallScore = Math.min(1, wallCount / 40) * 30;
+  const floorScore = Math.min(1, floorCount / (N * N * 0.4)) * 25;
+  const objScore = Math.min(1, objCount / 8) * 25;
+  // Penalty for visible litter: > 0.6 of motives critical drags everyone down.
+  const tired = sims.filter((s) => (s.motives[MOTIVE_ENERGY_IDX] ?? 0) < -30).length;
+  const penalty = Math.min(20, tired * 5);
+  return Math.max(-50, Math.min(80, wallScore + floorScore + objScore - penalty - 10));
+}
 
 /** Per-motive decay multiplier driven by personality traits.
  *  Each axis (0..10, 5 = neutral) tilts a specific motive ±20% at the extremes.
@@ -229,6 +250,7 @@ function traitDecayMultiplier(traits: Traits, motiveIdx: number): number {
 
 function tickMotives(deltaMs: number): void {
   const dec = MOTIVE_DECAY_PER_S * (deltaMs / 1000);
+  const roomTarget = computeRoomTarget();
   // Decay every Sim's motives, not just the selected one — they all live on
   // the lot and get hungry/tired in parallel. Sleeping Sims don't decay and
   // their Energy regenerates at +2 / s; they wake when Energy crosses +20.
@@ -243,6 +265,17 @@ function tickMotives(deltaMs: number): void {
       continue;
     }
     for (let i = 0; i < sim.motives.length; i += 1) {
+      if (i === MOTIVE_ROOM_IDX) {
+        // Room drifts toward the lot's quality target at ~3 pts/s, biased by
+        // the Nice trait (axis 4: nicer Sims forgive a messy lot faster).
+        const current = sim.motives[i] ?? 0;
+        const traitTilt = ((sim.traits[4] ?? 5) - 5) / 5; // -1..+1
+        const driftRate = 3 * (1 + 0.3 * traitTilt) * (deltaMs / 1000);
+        const diff = roomTarget - current;
+        const step = Math.sign(diff) * Math.min(Math.abs(diff), driftRate);
+        sim.motives[i] = clampMotive(current + step);
+        continue;
+      }
       const mult = traitDecayMultiplier(sim.traits, i);
       sim.motives[i] = clampMotive((sim.motives[i] ?? 0) - dec * mult);
     }
@@ -731,11 +764,65 @@ function runAutonomousInteraction(sim: SimState, target: AutonomyTarget): void {
   }
 }
 
+/** Find a Sim-Sim "Greet" target: another non-sleeping Sim within reach that
+ *  also has low-ish Social. Returns null if nobody qualifies. */
+function findSocialPartner(self: SimState): SimState | null {
+  let best: SimState | null = null;
+  let bestScore = Infinity; // lower social = better candidate
+  for (const other of sims) {
+    if (other === self) continue;
+    if (other.sleeping || other.walk) continue;
+    const dist = Math.hypot(other.fx - self.fx, other.fy - self.fy);
+    if (dist > 10) continue;
+    const otherSocial = other.motives[MOTIVE_SOCIAL_IDX] ?? 0;
+    if (otherSocial < bestScore) {
+      bestScore = otherSocial;
+      best = other;
+    }
+  }
+  return best;
+}
+
+/** Drop a Social bump on both Sims when they meet up. Emits matching bubbles
+ *  so the user sees the interaction. */
+function runSocialGreeting(initiator: SimState, partner: SimState): void {
+  const bump = 22;
+  initiator.motives[MOTIVE_SOCIAL_IDX] = clampMotive(
+    (initiator.motives[MOTIVE_SOCIAL_IDX] ?? 0) + bump,
+  );
+  partner.motives[MOTIVE_SOCIAL_IDX] = clampMotive(
+    (partner.motives[MOTIVE_SOCIAL_IDX] ?? 0) + bump,
+  );
+  // Show a chat bubble on both so the social interaction is visible.
+  const now = performance.now();
+  initiator.bubble = { text: `💬 hi ${partner.name}!`, expiresAtMs: now + 1500 };
+  partner.bubble = { text: `💬 hi ${initiator.name}!`, expiresAtMs: now + 1500 };
+  renderMotivesHud();
+  ensureRenderLoop();
+}
+
 /** Pick a random reachable tile within `radius` of `sim` and walk it there.
  *  Used by the auto-wander loop so non-selected Sims aren't statues. */
 function autoWanderSim(sim: SimState): void {
   if (sim.walk) return; // already moving
   if (sim.sleeping) return; // napping; tickMotives handles wake-up
+  // Social need: if low and another Sim is around, walk to them and greet on
+  // arrival. Cheaper than searching every TTAB and gives multi-Sim lots life.
+  const socialVal = sim.motives[MOTIVE_SOCIAL_IDX] ?? 0;
+  if (socialVal < -20) {
+    const partner = findSocialPartner(sim);
+    if (partner) {
+      const targetX = Math.round(partner.fx);
+      const targetY = Math.round(partner.fy);
+      // Stop one tile short so we don't overlap.
+      const dest = adjacentTileFor(targetX, targetY);
+      const path = findPath(Math.round(sim.fx), Math.round(sim.fy), dest.x, dest.y);
+      if (path && path.length > 0) {
+        startWalkForSim(sim, dest.x, dest.y, () => runSocialGreeting(sim, partner));
+        return;
+      }
+    }
+  }
   // Need-driven: any motive < -40 → walk to the best instance that boosts it
   // and run that interaction on arrival.
   for (let i = 0; i < sim.motives.length; i += 1) {
