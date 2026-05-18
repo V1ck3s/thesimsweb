@@ -33,8 +33,34 @@ const lotScene: IsoScene = {
 // Walks between tiles via a fractional position interpolated over time.
 // ============================================================================
 
+/** TS1 personality has 5 axes; each is 0..10 with 5 = neutral. The pair labels
+ *  match the in-game Create-A-Sim mapping (low end → high end).
+ *  Index → (low, high):
+ *    0: Sloppy  ↔ Neat
+ *    1: Shy     ↔ Outgoing
+ *    2: Lazy    ↔ Active
+ *    3: Serious ↔ Playful
+ *    4: Grouchy ↔ Nice
+ *  Total points are capped at 25 in the original CAS but we don't enforce that
+ *  client-side — the UI keeps the sum visible so the user can self-cap. */
+export type Traits = readonly [number, number, number, number, number];
+
 interface SimState {
+  /** Stable id assigned at creation. Used as IsoEntity id and save key. */
+  id: number;
   name: string;
+  gender: "F" | "M";
+  /** TS1 ships adult-only Sims for the base game. We expose the axis so neighborhood
+   *  ageing makes sense, but mechanically only "Adult" has full behaviour today. */
+  age: "Child" | "Adult" | "Elder";
+  /** Optional free-text biography surfaced in the Sim selector. */
+  bio: string;
+  /** Personality 0..10 per axis. */
+  traits: Traits;
+  /** CSS color used for the head dot in the iso renderer. */
+  headColor: string;
+  /** CSS color used for the body bar in the iso renderer. */
+  bodyColor: string;
   /** Current rendered position (fractional tile coords). */
   fx: number;
   fy: number;
@@ -65,20 +91,38 @@ interface SimState {
 }
 
 const SIM_PALETTE = [
-  { name: "Bella", color: "#7ab8ff" },
-  { name: "Mortimer", color: "#d8a13a" },
-  { name: "Cassandra", color: "#cf6dd1" },
-  { name: "Don", color: "#5fb86b" },
-  { name: "Jeff", color: "#d8533a" },
+  { name: "Bella", color: "#7ab8ff", body: "#3a78c0" },
+  { name: "Mortimer", color: "#d8a13a", body: "#9a6a1e" },
+  { name: "Cassandra", color: "#cf6dd1", body: "#8a3f8c" },
+  { name: "Don", color: "#5fb86b", body: "#3a8048" },
+  { name: "Jeff", color: "#d8533a", body: "#9a3520" },
 ] as const;
+
+function defaultTraits(): Traits {
+  return [5, 5, 5, 5, 5];
+}
 
 function defaultMotives(): number[] {
   return [60, 60, 60, 60, 60, 50, 50, 50];
 }
 
+let nextSimId = 1;
+function allocSimId(): number {
+  const id = nextSimId;
+  nextSimId += 1;
+  return id;
+}
+
 const sims: SimState[] = [
   {
+    id: allocSimId(),
     name: SIM_PALETTE[0]!.name,
+    gender: "F",
+    age: "Adult",
+    bio: "Founding Sim — created at boot.",
+    traits: defaultTraits(),
+    headColor: SIM_PALETTE[0]!.color,
+    bodyColor: SIM_PALETTE[0]!.body,
     fx: 8,
     fy: 8,
     walk: null,
@@ -153,6 +197,35 @@ function clampMotive(v: number): number {
 
 const MOTIVE_ENERGY_IDX = 4;
 
+/** Per-motive decay multiplier driven by personality traits.
+ *  Each axis (0..10, 5 = neutral) tilts a specific motive ±20% at the extremes.
+ *  Mapping (intentionally simple, matches the original CAS "feel" loosely):
+ *    Neat (axis 0 high)     → Hygiene/Bladder decay slower
+ *    Active (axis 2 high)   → Energy decay faster but Fun decay slower
+ *    Playful (axis 3 high)  → Fun decay faster, Comfort decay faster
+ *    Outgoing (axis 1 high) → Social decay faster (they crave interaction)
+ *    Nice (axis 4 high)     → Room decay slower (they're easy to please)
+ *  These factors are deliberately mild; they nudge autonomy priority without
+ *  making "Active" Sims unplayable. */
+function traitDecayMultiplier(traits: Traits, motiveIdx: number): number {
+  const tilt = (t: number): number => (t - 5) / 5; // -1..+1
+  switch (motiveIdx) {
+    case 2: // Hygiene
+    case 3: // Bladder
+      return 1 - 0.2 * tilt(traits[0] ?? 5);
+    case 4: // Energy
+      return 1 + 0.2 * tilt(traits[2] ?? 5);
+    case 5: // Fun
+      return 1 + 0.2 * tilt(traits[3] ?? 5) - 0.1 * tilt(traits[2] ?? 5);
+    case 6: // Social
+      return 1 + 0.25 * tilt(traits[1] ?? 5);
+    case 7: // Room
+      return 1 - 0.15 * tilt(traits[4] ?? 5);
+    default:
+      return 1;
+  }
+}
+
 function tickMotives(deltaMs: number): void {
   const dec = MOTIVE_DECAY_PER_S * (deltaMs / 1000);
   // Decay every Sim's motives, not just the selected one — they all live on
@@ -169,7 +242,8 @@ function tickMotives(deltaMs: number): void {
       continue;
     }
     for (let i = 0; i < sim.motives.length; i += 1) {
-      sim.motives[i] = clampMotive((sim.motives[i] ?? 0) - dec);
+      const mult = traitDecayMultiplier(sim.traits, i);
+      sim.motives[i] = clampMotive((sim.motives[i] ?? 0) - dec * mult);
     }
   }
   renderMotivesHud();
@@ -788,7 +862,7 @@ function allSimEntities(): IsoEntity[] {
       worldX: sim.fx,
       worldY: sim.fy,
       kind: "sim",
-      color: simColorOf(i),
+      color: sim.bodyColor || simColorOf(i),
       // Mark selected with a small chevron prefix so the user always knows
       // which Sim a click controls.
       label: isSelected ? `▸ ${label}` : label,
@@ -2615,27 +2689,56 @@ async function loadAndApplyHouse(path: string, buildBar: HTMLElement): Promise<v
   }
 }
 
-function spawnSim(): void {
+interface CasInput {
+  name: string;
+  gender: "F" | "M";
+  age: "Child" | "Adult" | "Elder";
+  bio: string;
+  traits: Traits;
+  headColor: string;
+  bodyColor: string;
+}
+
+function findEmptyLotTile(): { x: number; y: number } {
   const N = lotScene.gridSize;
-  // Pick the first empty tile we find (simple deterministic spawn). If the lot
-  // is fully packed, spawn on top of the centre.
-  let x = 4;
-  let y = 4;
-  outer: for (let iy = 1; iy < N - 1; iy += 1) {
+  for (let iy = 1; iy < N - 1; iy += 1) {
     for (let ix = 1; ix < N - 1; ix += 1) {
       const occupiedByObj = lotInstances.some((i) => i.worldX === ix && i.worldY === iy);
       const occupiedBySim = sims.some((s) => Math.round(s.fx) === ix && Math.round(s.fy) === iy);
-      if (!occupiedByObj && !occupiedBySim) {
-        x = ix;
-        y = iy;
-        break outer;
-      }
+      if (!occupiedByObj && !occupiedBySim) return { x: ix, y: iy };
     }
   }
+  return { x: 4, y: 4 };
+}
+
+/** Add a Sim using the palette defaults (legacy quick-spawn). */
+function spawnSim(): void {
   const idx = sims.length;
   const palette = SIM_PALETTE[idx % SIM_PALETTE.length]!;
-  sims.push({
+  addSimFromCas({
     name: palette.name,
+    gender: idx % 2 === 0 ? "F" : "M",
+    age: "Adult",
+    bio: `Auto-spawned via "+Sim" button.`,
+    traits: defaultTraits(),
+    headColor: palette.color,
+    bodyColor: palette.body,
+  });
+}
+
+/** Add a Sim from the Create-A-Sim form. Returns the new Sim's index. */
+function addSimFromCas(cas: CasInput): number {
+  const { x, y } = findEmptyLotTile();
+  const idx = sims.length;
+  sims.push({
+    id: allocSimId(),
+    name: cas.name,
+    gender: cas.gender,
+    age: cas.age,
+    bio: cas.bio,
+    traits: cas.traits,
+    headColor: cas.headColor,
+    bodyColor: cas.bodyColor,
     fx: x,
     fy: y,
     walk: null,
@@ -2647,7 +2750,312 @@ function spawnSim(): void {
   });
   selectedSimIdx = idx;
   renderMotivesHud();
+  renderFamilyHud();
   composeLotScene();
+  return idx;
+}
+
+// ============================================================================
+// Family HUD — lists the lot's Sims with avatars, lets the user switch the
+// selected Sim and open Create-A-Sim. Mounted left side, under the motives HUD.
+// ============================================================================
+
+const TRAIT_PAIRS: ReadonlyArray<readonly [string, string]> = [
+  ["Sloppy", "Neat"],
+  ["Shy", "Outgoing"],
+  ["Lazy", "Active"],
+  ["Serious", "Playful"],
+  ["Grouchy", "Nice"],
+];
+
+let familyHudEl: HTMLDivElement | null = null;
+function ensureFamilyHud(): HTMLDivElement {
+  if (familyHudEl) return familyHudEl;
+  const el = document.createElement("div");
+  el.id = "family-hud";
+  el.style.cssText =
+    "position:fixed;top:240px;left:8px;width:200px;background:rgba(0,0,0,.55);padding:8px 10px;border-radius:6px;font:11px/1.4 ui-sans-serif,system-ui,sans-serif;color:#cde;display:flex;flex-direction:column;gap:4px;";
+  document.body.appendChild(el);
+  familyHudEl = el;
+  return el;
+}
+
+function renderFamilyHud(): void {
+  const root = ensureFamilyHud();
+  root.innerHTML = "";
+  const title = document.createElement("div");
+  title.textContent = "Family";
+  title.style.cssText = "color:#9ad;opacity:.85;margin-bottom:3px;";
+  root.appendChild(title);
+  for (let i = 0; i < sims.length; i += 1) {
+    const sim = sims[i]!;
+    const row = document.createElement("button");
+    row.style.cssText =
+      `display:grid;grid-template-columns:18px 1fr 14px;gap:6px;align-items:center;` +
+      `background:${i === selectedSimIdx ? "rgba(120,170,230,.18)" : "transparent"};` +
+      `border:1px solid ${i === selectedSimIdx ? "#345" : "transparent"};color:#cde;` +
+      `font:inherit;padding:3px 4px;border-radius:3px;cursor:pointer;text-align:left;`;
+    const swatch = document.createElement("span");
+    swatch.style.cssText = `width:14px;height:14px;border-radius:50%;background:${sim.headColor};display:inline-block;border:1px solid rgba(255,255,255,.3);`;
+    const name = document.createElement("span");
+    name.textContent = sim.name;
+    name.style.cssText = "overflow:hidden;text-overflow:ellipsis;white-space:nowrap;";
+    const tag = document.createElement("span");
+    tag.textContent = sim.gender;
+    tag.style.cssText = "opacity:.55;font-size:10px;";
+    row.append(swatch, name, tag);
+    row.title = sim.bio || "";
+    row.addEventListener("click", () => {
+      selectedSimIdx = i;
+      renderMotivesHud();
+      renderFamilyHud();
+      composeLotScene();
+    });
+    root.appendChild(row);
+  }
+  const actions = document.createElement("div");
+  actions.style.cssText = "display:flex;gap:4px;margin-top:4px;";
+  const casBtn = document.createElement("button");
+  casBtn.textContent = "Create-A-Sim";
+  casBtn.style.cssText =
+    "flex:1;background:#3b6;color:#000;border:1px solid #444;font:inherit;padding:3px 6px;cursor:pointer;border-radius:2px;";
+  casBtn.addEventListener("click", () => openCasModal());
+  actions.appendChild(casBtn);
+  if (sims.length > 1) {
+    const delBtn = document.createElement("button");
+    delBtn.textContent = "Remove";
+    delBtn.style.cssText =
+      "background:#222;color:#d88;border:1px solid #533;font:inherit;padding:3px 6px;cursor:pointer;border-radius:2px;";
+    delBtn.addEventListener("click", () => removeSelectedSim());
+    actions.appendChild(delBtn);
+  }
+  root.appendChild(actions);
+}
+
+function removeSelectedSim(): void {
+  if (sims.length <= 1) return;
+  sims.splice(selectedSimIdx, 1);
+  selectedSimIdx = Math.max(0, Math.min(sims.length - 1, selectedSimIdx));
+  renderMotivesHud();
+  renderFamilyHud();
+  composeLotScene();
+}
+
+// ============================================================================
+// Create-A-Sim modal — full form with name/gender/age/traits/bio + colors.
+// Resolves on submit; cancel closes without adding.
+// ============================================================================
+
+const CAS_HEAD_PRESETS = [
+  "#f0c8a8",
+  "#d8a982",
+  "#b0825a",
+  "#7a543a",
+  "#4e3624",
+  "#7ab8ff",
+  "#cf6dd1",
+  "#5fb86b",
+] as const;
+
+const CAS_BODY_PRESETS = [
+  "#3a78c0",
+  "#9a6a1e",
+  "#8a3f8c",
+  "#3a8048",
+  "#9a3520",
+  "#444",
+  "#cdb",
+  "#ddd",
+] as const;
+
+let casModalEl: HTMLDivElement | null = null;
+
+function openCasModal(): void {
+  if (casModalEl) return;
+  const draft: CasInput = {
+    name: `Sim ${sims.length + 1}`,
+    gender: sims.length % 2 === 0 ? "F" : "M",
+    age: "Adult",
+    bio: "",
+    traits: defaultTraits(),
+    headColor: CAS_HEAD_PRESETS[0]!,
+    bodyColor: CAS_BODY_PRESETS[0]!,
+  };
+  const overlay = document.createElement("div");
+  overlay.id = "cas-modal";
+  overlay.style.cssText =
+    "position:fixed;inset:0;background:rgba(0,0,0,.65);z-index:1000;display:flex;align-items:center;justify-content:center;font:13px/1.4 ui-sans-serif,system-ui,sans-serif;color:#cde;";
+  const panel = document.createElement("div");
+  panel.style.cssText =
+    "background:#181c24;border:1px solid #345;border-radius:8px;padding:18px 22px;width:420px;max-width:92vw;max-height:88vh;overflow:auto;display:flex;flex-direction:column;gap:10px;box-shadow:0 8px 32px rgba(0,0,0,.5);";
+
+  panel.innerHTML = `
+    <div style="font-size:15px;color:#9ad;font-weight:600;">Create-A-Sim</div>
+    <label style="display:grid;grid-template-columns:80px 1fr;gap:8px;align-items:center;">
+      <span style="opacity:.8;">Name</span>
+      <input data-cas-name type="text" maxlength="32" style="background:#111;color:#cde;border:1px solid #345;font:inherit;padding:4px 6px;border-radius:3px;" />
+    </label>
+    <div style="display:grid;grid-template-columns:80px 1fr;gap:8px;align-items:center;">
+      <span style="opacity:.8;">Gender</span>
+      <div data-cas-gender style="display:flex;gap:6px;"></div>
+    </div>
+    <div style="display:grid;grid-template-columns:80px 1fr;gap:8px;align-items:center;">
+      <span style="opacity:.8;">Age</span>
+      <div data-cas-age style="display:flex;gap:6px;"></div>
+    </div>
+    <div style="display:grid;grid-template-columns:80px 1fr;gap:8px;align-items:center;">
+      <span style="opacity:.8;">Skin</span>
+      <div data-cas-head style="display:flex;gap:5px;flex-wrap:wrap;"></div>
+    </div>
+    <div style="display:grid;grid-template-columns:80px 1fr;gap:8px;align-items:center;">
+      <span style="opacity:.8;">Outfit</span>
+      <div data-cas-body style="display:flex;gap:5px;flex-wrap:wrap;"></div>
+    </div>
+    <div style="margin-top:4px;border-top:1px solid #2a3144;padding-top:8px;">
+      <div style="opacity:.8;margin-bottom:6px;">Personality <span data-cas-points style="opacity:.6;float:right;font-variant-numeric:tabular-nums;"></span></div>
+      <div data-cas-traits style="display:flex;flex-direction:column;gap:4px;"></div>
+    </div>
+    <label style="display:grid;grid-template-columns:80px 1fr;gap:8px;align-items:start;">
+      <span style="opacity:.8;padding-top:4px;">Bio</span>
+      <textarea data-cas-bio rows="2" maxlength="240" style="background:#111;color:#cde;border:1px solid #345;font:inherit;padding:4px 6px;border-radius:3px;resize:vertical;"></textarea>
+    </label>
+    <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:6px;">
+      <button data-cas-cancel style="background:#222;color:#cde;border:1px solid #345;font:inherit;padding:6px 14px;border-radius:3px;cursor:pointer;">Cancel</button>
+      <button data-cas-submit style="background:#3b6;color:#000;border:1px solid #2a4;font:inherit;padding:6px 14px;border-radius:3px;cursor:pointer;font-weight:600;">Add to family</button>
+    </div>
+  `;
+  overlay.appendChild(panel);
+  document.body.appendChild(overlay);
+  casModalEl = overlay;
+
+  const nameInput = panel.querySelector<HTMLInputElement>("input[data-cas-name]")!;
+  const bioInput = panel.querySelector<HTMLTextAreaElement>("textarea[data-cas-bio]")!;
+  const genderHost = panel.querySelector<HTMLDivElement>("div[data-cas-gender]")!;
+  const ageHost = panel.querySelector<HTMLDivElement>("div[data-cas-age]")!;
+  const headHost = panel.querySelector<HTMLDivElement>("div[data-cas-head]")!;
+  const bodyHost = panel.querySelector<HTMLDivElement>("div[data-cas-body]")!;
+  const traitsHost = panel.querySelector<HTMLDivElement>("div[data-cas-traits]")!;
+  const pointsEl = panel.querySelector<HTMLSpanElement>("span[data-cas-points]")!;
+
+  nameInput.value = draft.name;
+  bioInput.value = draft.bio;
+  nameInput.addEventListener("input", () => (draft.name = nameInput.value.trim() || "Sim"));
+  bioInput.addEventListener("input", () => (draft.bio = bioInput.value));
+
+  const segButton = (label: string, active: boolean): HTMLButtonElement => {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.textContent = label;
+    b.style.cssText =
+      `background:${active ? "rgba(120,170,230,.18)" : "#111"};color:#cde;border:1px solid ${active ? "#69f" : "#345"};font:inherit;padding:4px 10px;border-radius:3px;cursor:pointer;`;
+    return b;
+  };
+
+  const refreshGender = (): void => {
+    genderHost.innerHTML = "";
+    for (const g of ["F", "M"] as const) {
+      const b = segButton(g === "F" ? "Female" : "Male", draft.gender === g);
+      b.addEventListener("click", () => {
+        draft.gender = g;
+        refreshGender();
+      });
+      genderHost.appendChild(b);
+    }
+  };
+  const refreshAge = (): void => {
+    ageHost.innerHTML = "";
+    for (const a of ["Child", "Adult", "Elder"] as const) {
+      const b = segButton(a, draft.age === a);
+      b.addEventListener("click", () => {
+        draft.age = a;
+        refreshAge();
+      });
+      ageHost.appendChild(b);
+    }
+  };
+  const refreshSwatches = (host: HTMLDivElement, options: readonly string[], key: "headColor" | "bodyColor"): void => {
+    host.innerHTML = "";
+    for (const c of options) {
+      const s = document.createElement("button");
+      s.type = "button";
+      const active = draft[key] === c;
+      s.style.cssText =
+        `width:22px;height:22px;border-radius:50%;background:${c};border:2px solid ${active ? "#fff" : "rgba(255,255,255,.2)"};cursor:pointer;padding:0;`;
+      s.addEventListener("click", () => {
+        draft[key] = c;
+        refreshSwatches(host, options, key);
+      });
+      host.appendChild(s);
+    }
+  };
+
+  const refreshTraits = (): void => {
+    traitsHost.innerHTML = "";
+    for (let i = 0; i < TRAIT_PAIRS.length; i += 1) {
+      const [low, high] = TRAIT_PAIRS[i]!;
+      const row = document.createElement("div");
+      row.style.cssText = "display:grid;grid-template-columns:62px 1fr 62px 38px;gap:6px;align-items:center;";
+      const lowEl = document.createElement("span");
+      lowEl.textContent = low;
+      lowEl.style.cssText = "opacity:.7;text-align:right;font-size:11px;";
+      const slider = document.createElement("input");
+      slider.type = "range";
+      slider.min = "0";
+      slider.max = "10";
+      slider.step = "1";
+      slider.value = String(draft.traits[i] ?? 5);
+      slider.style.cssText = "width:100%;";
+      const highEl = document.createElement("span");
+      highEl.textContent = high;
+      highEl.style.cssText = "opacity:.7;font-size:11px;";
+      const valEl = document.createElement("span");
+      valEl.textContent = slider.value;
+      valEl.style.cssText = "text-align:center;font-variant-numeric:tabular-nums;opacity:.85;";
+      slider.addEventListener("input", () => {
+        const arr = [...draft.traits] as [number, number, number, number, number];
+        arr[i] = Number(slider.value);
+        draft.traits = arr as unknown as Traits;
+        valEl.textContent = slider.value;
+        refreshPoints();
+      });
+      row.append(lowEl, slider, highEl, valEl);
+      traitsHost.appendChild(row);
+    }
+  };
+  const refreshPoints = (): void => {
+    const sum = draft.traits.reduce((a, b) => a + b, 0);
+    const tilt = sum - 25; // 25 = neutral midpoint
+    pointsEl.textContent = `Σ ${sum} ${tilt > 0 ? `(+${tilt})` : tilt < 0 ? `(${tilt})` : "(balanced)"}`;
+    pointsEl.style.color = Math.abs(tilt) > 5 ? "#d8a13a" : "#5fb86b";
+  };
+
+  refreshGender();
+  refreshAge();
+  refreshSwatches(headHost, CAS_HEAD_PRESETS, "headColor");
+  refreshSwatches(bodyHost, CAS_BODY_PRESETS, "bodyColor");
+  refreshTraits();
+  refreshPoints();
+
+  const close = (): void => {
+    overlay.remove();
+    casModalEl = null;
+  };
+  panel.querySelector<HTMLButtonElement>("button[data-cas-cancel]")!.addEventListener("click", close);
+  panel.querySelector<HTMLButtonElement>("button[data-cas-submit]")!.addEventListener("click", () => {
+    addSimFromCas(draft);
+    close();
+  });
+  overlay.addEventListener("click", (ev) => {
+    if (ev.target === overlay) close();
+  });
+  const onKey = (ev: KeyboardEvent): void => {
+    if (ev.key === "Escape") {
+      close();
+      window.removeEventListener("keydown", onKey, true);
+    }
+  };
+  window.addEventListener("keydown", onKey, true);
+  nameInput.focus();
 }
 
 // ============================================================================
@@ -2672,6 +3080,14 @@ interface SerializedSim {
   fx: number;
   fy: number;
   motives: number[];
+  /** Added in Phase 7 — CAS data. Optional so old saves keep loading. */
+  id?: number;
+  gender?: "F" | "M";
+  age?: "Child" | "Adult" | "Elder";
+  bio?: string;
+  traits?: number[];
+  headColor?: string;
+  bodyColor?: string;
 }
 
 interface SerializedLot {
@@ -2706,6 +3122,13 @@ function serializeLot(): SerializedLot {
     fx: s.fx,
     fy: s.fy,
     motives: [...s.motives],
+    id: s.id,
+    gender: s.gender,
+    age: s.age,
+    bio: s.bio,
+    traits: [...s.traits],
+    headColor: s.headColor,
+    bodyColor: s.bodyColor,
   }));
   return {
     instances: inst,
@@ -2773,8 +3196,22 @@ async function loadLot(replace: boolean = true): Promise<void> {
       if (Array.isArray(obj.sims) && obj.sims.length > 0) {
         sims.length = 0;
         for (const s of obj.sims) {
+          const fallback = SIM_PALETTE[sims.length % SIM_PALETTE.length]!;
+          const traitsArr =
+            Array.isArray(s.traits) && s.traits.length === 5
+              ? (s.traits.map((t) => (typeof t === "number" ? t : 5)) as unknown as Traits)
+              : defaultTraits();
+          const id = typeof s.id === "number" ? s.id : allocSimId();
+          if (typeof s.id === "number" && s.id >= nextSimId) nextSimId = s.id + 1;
           sims.push({
+            id,
             name: s.name ?? "Sim",
+            gender: s.gender === "M" ? "M" : "F",
+            age: s.age === "Child" || s.age === "Elder" ? s.age : "Adult",
+            bio: typeof s.bio === "string" ? s.bio : "",
+            traits: traitsArr,
+            headColor: typeof s.headColor === "string" ? s.headColor : fallback.color,
+            bodyColor: typeof s.bodyColor === "string" ? s.bodyColor : fallback.body,
             fx: s.fx ?? 8,
             fy: s.fy ?? 8,
             walk: null,
@@ -2787,6 +3224,7 @@ async function loadLot(replace: boolean = true): Promise<void> {
           });
         }
         selectedSimIdx = Math.max(0, Math.min(sims.length - 1, obj.selectedSim ?? 0));
+        renderFamilyHud();
       }
       if (typeof obj.funds === "number") funds = obj.funds;
       if (typeof obj.gameMinutes === "number") gameMinutes = obj.gameMinutes;
@@ -4073,6 +4511,7 @@ async function tryRenderAlarmClockObject(
   lotGlobalsFarPath = globalsFar ? globalsFar.path : null;
   objectsFarPathCache = objectsFar.path;
   renderMotivesHud();
+  renderFamilyHud();
   startMotivesLoop();
   renderTimeFundsHud();
   startGameClock();
