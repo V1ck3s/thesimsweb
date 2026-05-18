@@ -37,6 +37,27 @@ const lotScene: IsoScene = {
   camera: { tileWidth: 64, centerX: 8, centerY: 8, rotation: 0 },
 };
 
+/** Viewer state hoisted to the top of the module so any function reached
+ *  during top-level evaluation (key listeners, render path) can safely
+ *  reference `viewerState.wasm` etc. without hitting the TDZ. TypeScript
+ *  interfaces are hoisted at the type level, so `LoadedObject` resolves
+ *  even though its declaration is below. */
+const viewerState: {
+  current: LoadedObject | null;
+  direction: number;
+  zoom: number;
+  dgrpId: number;
+  wasm: Awaited<ReturnType<typeof engine>> | null;
+  onObjectLoaded: (() => void) | null;
+} = {
+  current: null,
+  direction: 0x10,
+  zoom: 3,
+  dgrpId: 0,
+  wasm: null,
+  onObjectLoaded: null,
+};
+
 // ============================================================================
 // Sim placeholder — a single tracked entity rendered as a procedural capsule.
 // Walks between tiles via a fractional position interpolated over time.
@@ -1766,22 +1787,6 @@ const DIRECTION_FLAGS: Array<{ flag: number; label: string }> = [
   { flag: 0x04, label: "W" },
 ];
 const ZOOM_LEVELS = [1, 2, 3];
-
-const viewerState: {
-  current: LoadedObject | null;
-  direction: number;
-  zoom: number;
-  dgrpId: number;
-  wasm: Awaited<ReturnType<typeof engine>> | null;
-  onObjectLoaded: (() => void) | null;
-} = {
-  current: null,
-  direction: 0x10,
-  zoom: 3,
-  dgrpId: 0,
-  wasm: null,
-  onObjectLoaded: null,
-};
 
 /** Build a `LoadedObject` snapshot for an IFF: parse OBJD + every DGRP once. */
 function buildLoadedObject(
