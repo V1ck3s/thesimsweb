@@ -3,6 +3,14 @@ import { fetchManifest, readFarManifest, readIffFromFar, readStandaloneIff } fro
 import { fetchTemplates, loadHouseTemplate, type TemplateEntry } from "./engine/house.js";
 import { fetchNeighborhoodMap, type NeighborhoodLot } from "./engine/neighborhood.js";
 import {
+  deleteSave,
+  getSave,
+  listSaves,
+  putSave,
+  slugifySaveId,
+  type SaveDescriptor,
+} from "./engine/save.js";
+import {
   renderIso,
   projectTileToScreen,
   screenToTile,
@@ -3289,6 +3297,108 @@ function openCasModal(): void {
 }
 
 // ============================================================================
+// Saves panel — lists local + server saves, lets the user Save / Save As /
+// Load / Delete and shows which save is currently active.
+// ============================================================================
+
+let savesHudEl: HTMLDivElement | null = null;
+
+function ensureSavesHud(): HTMLDivElement {
+  if (savesHudEl) return savesHudEl;
+  const el = document.createElement("div");
+  el.id = "saves-hud";
+  el.style.cssText =
+    "position:fixed;bottom:12px;left:12px;width:240px;max-height:42vh;background:rgba(0,0,0,.6);padding:8px 10px;border-radius:6px;font:11px/1.4 ui-sans-serif,system-ui,sans-serif;color:#cde;display:flex;flex-direction:column;gap:5px;border:1px solid #345;";
+  document.body.appendChild(el);
+  savesHudEl = el;
+  return el;
+}
+
+function timeAgo(ts: number): string {
+  if (!ts) return "—";
+  const diff = Math.floor((Date.now() - ts) / 1000);
+  if (diff < 60) return `${diff}s ago`;
+  if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;
+  if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`;
+  return `${Math.floor(diff / 86400)}d ago`;
+}
+
+let savesRenderToken = 0;
+async function renderSavesHud(): Promise<void> {
+  const root = ensureSavesHud();
+  const myToken = ++savesRenderToken;
+  // Render the static frame immediately so the panel never blinks.
+  if (root.childElementCount === 0) {
+    root.innerHTML = `
+      <div style="display:flex;align-items:center;gap:6px;margin-bottom:2px;">
+        <span style="color:#9ad;font-weight:600;">Saves</span>
+        <span data-saves-active style="opacity:.6;font-size:10px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;"></span>
+      </div>
+      <div style="display:flex;gap:4px;">
+        <button data-saves-save style="flex:1;background:#3b6;color:#000;border:1px solid #444;font:inherit;padding:3px 6px;cursor:pointer;border-radius:2px;">Save</button>
+        <button data-saves-saveas style="flex:1;background:#3a78c0;color:#fff;border:1px solid #444;font:inherit;padding:3px 6px;cursor:pointer;border-radius:2px;">Save As…</button>
+      </div>
+      <div data-saves-list style="overflow-y:auto;display:flex;flex-direction:column;gap:3px;max-height:30vh;"></div>
+    `;
+    root.querySelector<HTMLButtonElement>("button[data-saves-save]")!.addEventListener("click", () => void saveLot());
+    root.querySelector<HTMLButtonElement>("button[data-saves-saveas]")!.addEventListener("click", () => {
+      const name = prompt("Save name:", activeSaveName === "Current Lot" ? "My Lot" : activeSaveName);
+      if (name && name.trim()) void saveLotAs(name.trim());
+    });
+  }
+  const activeLabel = root.querySelector<HTMLSpanElement>("span[data-saves-active]");
+  if (activeLabel) activeLabel.textContent = `${activeSaveName} (${activeSaveId})`;
+  const list = root.querySelector<HTMLDivElement>("div[data-saves-list]");
+  if (!list) return;
+  let descriptors: SaveDescriptor[];
+  try {
+    descriptors = await listSaves();
+  } catch {
+    descriptors = [];
+  }
+  if (myToken !== savesRenderToken) return; // newer render took over
+  list.innerHTML = "";
+  if (descriptors.length === 0) {
+    const empty = document.createElement("div");
+    empty.textContent = "no saves yet";
+    empty.style.cssText = "opacity:.5;font-style:italic;padding:4px 2px;";
+    list.appendChild(empty);
+    return;
+  }
+  for (const d of descriptors) {
+    const row = document.createElement("div");
+    const isActive = d.id === activeSaveId;
+    row.style.cssText =
+      `display:grid;grid-template-columns:1fr auto auto;gap:5px;align-items:center;padding:4px 6px;` +
+      `background:${isActive ? "rgba(120,170,230,.18)" : "rgba(255,255,255,.03)"};border:1px solid ${isActive ? "#69f" : "transparent"};border-radius:3px;`;
+    const label = document.createElement("button");
+    label.style.cssText =
+      "background:transparent;border:none;color:#cde;font:inherit;text-align:left;cursor:pointer;padding:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;";
+    const srcTag = d.source === "both" ? "↕" : d.source === "local" ? "L" : "S";
+    label.innerHTML = `<strong>${escapeHtml(d.name)}</strong> <span style="opacity:.5;">${srcTag}</span><br><span style="opacity:.5;font-size:10px;">${timeAgo(d.updatedAt)} · ${(d.size / 1024).toFixed(1)} KiB</span>`;
+    label.title = `${d.id} — ${d.source}`;
+    label.addEventListener("click", () => void loadLot(true, d.id));
+    const del = document.createElement("button");
+    del.textContent = "✕";
+    del.title = "Delete this save";
+    del.style.cssText =
+      "background:#222;color:#d88;border:1px solid #533;font:inherit;padding:1px 6px;cursor:pointer;border-radius:2px;line-height:1.2;";
+    del.addEventListener("click", async (ev) => {
+      ev.stopPropagation();
+      if (!confirm(`Delete save "${d.name}"?`)) return;
+      await deleteSave(d.id);
+      if (d.id === activeSaveId) {
+        activeSaveId = LOT_SAVE_ID;
+        activeSaveName = "Current Lot";
+      }
+      void renderSavesHud();
+    });
+    row.append(label, del);
+    list.appendChild(row);
+  }
+}
+
+// ============================================================================
 // Lot persistence — serializes the placed instances to /api/saves/current-lot.
 // ============================================================================
 
@@ -3380,29 +3490,41 @@ function serializeLot(): SerializedLot {
   };
 }
 
+/** Current named save the user is editing — null = the auto "current-lot"
+ *  slot. When the user opens a save from the Saves panel we point this at it
+ *  so subsequent ⌘S writes back to the same slot. */
+let activeSaveId: string = LOT_SAVE_ID;
+let activeSaveName: string = "Current Lot";
+
 async function saveLot(): Promise<void> {
   const payload = JSON.stringify(serializeLot());
-  try {
-    const res = await fetch(`/api/saves/${LOT_SAVE_ID}?name=Current%20Lot`, {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: payload,
-    });
-    if (res.ok) console.info(`[lot] saved ${lotInstances.length} instance(s) (${payload.length}B)`);
-    else console.warn(`[lot] save failed: ${res.status}`);
-  } catch (err) {
-    console.warn("[lot] save error:", err);
+  const result = await putSave(activeSaveId, activeSaveName, payload);
+  if (result.idb || result.server) {
+    console.info(
+      `[lot] saved "${activeSaveName}" (${payload.length}B) — idb:${result.idb ? "ok" : "no"} server:${result.server ? "ok" : "no"}`,
+    );
+  } else {
+    console.warn(`[lot] save failed: neither idb nor server accepted the payload`);
   }
+  renderSavesHud();
 }
 
-async function loadLot(replace: boolean = true): Promise<void> {
+async function saveLotAs(name: string): Promise<void> {
+  const id = slugifySaveId(name);
+  activeSaveId = id;
+  activeSaveName = name;
+  await saveLot();
+}
+
+async function loadLot(replace: boolean = true, saveId: string = activeSaveId): Promise<void> {
   const wasm = viewerState.wasm;
   if (!wasm || !objectsFarPathCache) return;
   try {
-    const res = await fetch(`/api/saves/${LOT_SAVE_ID}`);
-    if (!res.ok) return; // 404 first time; that's fine.
-    const text = await res.text();
-    const parsed = JSON.parse(text) as unknown;
+    const fetched = await getSave(saveId);
+    if (!fetched) return; // 404 first time; that's fine.
+    activeSaveId = saveId;
+    activeSaveName = fetched.name;
+    const parsed = JSON.parse(fetched.payload) as unknown;
     // Accept either the new SerializedLot shape or the legacy bare-array shape
     // so existing user saves keep loading.
     let instances: SerializedLotInstance[] = [];
@@ -3488,8 +3610,9 @@ async function loadLot(replace: boolean = true): Promise<void> {
       if (typeof f.key === "number" && typeof f.color === "string") floorPaint.set(f.key, f.color);
     }
     composeLotScene();
+    renderSavesHud();
     console.info(
-      `[lot] loaded ${lotInstances.length} instance(s) + ${floorPaint.size} painted tile(s) + ${wallsN.size + wallsW.size} wall(s)`,
+      `[lot] loaded "${activeSaveName}" — ${lotInstances.length} instance(s) + ${floorPaint.size} painted tile(s) + ${wallsN.size + wallsW.size} wall(s)`,
     );
   } catch (err) {
     console.warn("[lot] load error:", err);
@@ -4753,10 +4876,11 @@ async function tryRenderAlarmClockObject(
   // Kick the render loop so idle breath animates from the start.
   ensureRenderLoop();
   // Try to restore the user's last lot first; if there is none, fall back to
-  // the bundled demo placements so the page is never empty on boot.
+  // the bundled demo placements so the page is never empty on boot. The save
+  // module checks IDB first so the page comes up fast even offline.
   try {
-    const saveRes = await fetch(`/api/saves/${LOT_SAVE_ID}`, { method: "HEAD" });
-    if (saveRes.ok) {
+    const stored = await getSave(LOT_SAVE_ID);
+    if (stored) {
       await loadLot(true);
     } else {
       void mountLotDemo(wasm, objectsFar.path);
@@ -4764,6 +4888,8 @@ async function tryRenderAlarmClockObject(
   } catch {
     void mountLotDemo(wasm, objectsFar.path);
   }
+  // Render the saves panel after the boot load so the active label is right.
+  renderSavesHud();
   const globalsFarPath = globalsFar ? globalsFar.path : null;
   const runBtn = document.getElementById("run-main-btn");
   if (runBtn instanceof HTMLButtonElement) {

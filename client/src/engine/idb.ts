@@ -8,11 +8,12 @@
  */
 
 const DB_NAME = "thesimsweb-assets";
-const DB_VERSION = 1;
+const DB_VERSION = 2;
 
 const STORE_FAR_MANIFEST = "farManifests";
 const STORE_FAR_ENTRY = "farEntries";
 const STORE_IFF_FILE = "iffFiles";
+const STORE_SAVES = "saves";
 
 let dbPromise: Promise<IDBDatabase | null> | null = null;
 
@@ -23,7 +24,7 @@ function openDb(): Promise<IDBDatabase | null> {
     const req = indexedDB.open(DB_NAME, DB_VERSION);
     req.onupgradeneeded = () => {
       const db = req.result;
-      for (const name of [STORE_FAR_MANIFEST, STORE_FAR_ENTRY, STORE_IFF_FILE]) {
+      for (const name of [STORE_FAR_MANIFEST, STORE_FAR_ENTRY, STORE_IFF_FILE, STORE_SAVES]) {
         if (!db.objectStoreNames.contains(name)) {
           db.createObjectStore(name);
         }
@@ -106,4 +107,61 @@ export async function clearAssetCache(): Promise<void> {
   for (const name of [STORE_FAR_MANIFEST, STORE_FAR_ENTRY, STORE_IFF_FILE]) {
     await withStore(name, "readwrite", (s) => s.clear());
   }
+}
+
+// ----------------------------------------------------------------------------
+// Saves — local mirror of the server's /api/saves endpoint. Lets the user keep
+// playing offline; sync happens lazily via engine/save.ts.
+// ----------------------------------------------------------------------------
+
+export interface LocalSaveRecord {
+  id: string;
+  name: string;
+  payload: string;
+  updatedAt: number;
+}
+
+export async function idbGetSave(id: string): Promise<LocalSaveRecord | null> {
+  const result = await withStore<unknown>(STORE_SAVES, "readonly", (s) => s.get(id));
+  if (!result || typeof result !== "object") return null;
+  const rec = result as Partial<LocalSaveRecord>;
+  if (typeof rec.id !== "string" || typeof rec.name !== "string" || typeof rec.payload !== "string") {
+    return null;
+  }
+  return {
+    id: rec.id,
+    name: rec.name,
+    payload: rec.payload,
+    updatedAt: typeof rec.updatedAt === "number" ? rec.updatedAt : 0,
+  };
+}
+
+export async function idbPutSave(rec: LocalSaveRecord): Promise<void> {
+  await withStore(STORE_SAVES, "readwrite", (s) => s.put(rec, rec.id));
+}
+
+export async function idbDeleteSave(id: string): Promise<void> {
+  await withStore(STORE_SAVES, "readwrite", (s) => s.delete(id));
+}
+
+export async function idbListSaves(): Promise<LocalSaveRecord[]> {
+  const db = await openDb();
+  if (!db) return [];
+  return new Promise((resolve) => {
+    const tx = db.transaction(STORE_SAVES, "readonly");
+    const store = tx.objectStore(STORE_SAVES);
+    const req = store.getAll();
+    req.onsuccess = () => {
+      const arr = (req.result as unknown[]).filter(
+        (r): r is LocalSaveRecord =>
+          typeof r === "object" &&
+          r !== null &&
+          typeof (r as LocalSaveRecord).id === "string" &&
+          typeof (r as LocalSaveRecord).payload === "string",
+      );
+      arr.sort((a, b) => b.updatedAt - a.updatedAt);
+      resolve(arr);
+    };
+    req.onerror = () => resolve([]);
+  });
 }
