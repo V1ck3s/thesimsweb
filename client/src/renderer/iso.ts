@@ -82,6 +82,10 @@ export interface IsoScene {
   /** Tile coordinate the cursor is currently hovering. Drawn last as a
    *  highlight outline so the user sees where their click will land. */
   hoverTile?: { worldX: number; worldY: number } | null;
+  /** Anchor tile of an active two-click stroke (wall-line/wall-rect/paint-rect).
+   *  Rendered with a coloured outline so the user can see where the stroke
+   *  originates while dragging. */
+  strokeAnchorTile?: { worldX: number; worldY: number } | null;
   /** Per-tile floor color override. Key = `y * gridSize + x`. Tiles without
    *  an entry use the default checker pattern. */
   floorPaint?: Map<number, string>;
@@ -413,6 +417,25 @@ export function renderIso(
       ctx.lineWidth = 2;
       ctx.stroke();
       ctx.fillStyle = "rgba(255,255,255,.10)";
+      ctx.fill();
+    }
+  }
+  if (scene.strokeAnchorTile) {
+    const at = scene.strokeAnchorTile;
+    if (at.worldX >= 0 && at.worldY >= 0 && at.worldX < N && at.worldY < N) {
+      const { sx, sy } = projectTile(at.worldX, at.worldY, cam, canvas);
+      const tw = cam.tileWidth;
+      const th = tw / 2;
+      ctx.beginPath();
+      ctx.moveTo(sx, sy - th / 2);
+      ctx.lineTo(sx + tw / 2, sy);
+      ctx.lineTo(sx, sy + th / 2);
+      ctx.lineTo(sx - tw / 2, sy);
+      ctx.closePath();
+      ctx.strokeStyle = "rgba(255,210,80,.95)";
+      ctx.lineWidth = 3;
+      ctx.stroke();
+      ctx.fillStyle = "rgba(255,210,80,.20)";
       ctx.fill();
     }
   }

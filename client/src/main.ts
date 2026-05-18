@@ -1281,6 +1281,14 @@ window.addEventListener("keydown", (ev) => {
     case "Spacebar":
       togglePause();
       break;
+    case "Escape":
+      // Cancel an active stroke (wall-line / wall-rect / paint-rect).
+      if (strokeAnchor) {
+        strokeAnchor = null;
+        lotScene.strokeAnchorTile = null;
+        composeLotScene();
+      }
+      break;
     default:
       return;
   }
@@ -2232,6 +2240,7 @@ function commitStroke(endX: number, endY: number): void {
     if (preset) applyPaintRect(a.worldX, a.worldY, endX, endY, preset.color, a.erase);
   }
   strokeAnchor = null;
+  lotScene.strokeAnchorTile = null;
   composeLotScene();
 }
 
@@ -2274,6 +2283,8 @@ canvas.addEventListener("mousedown", (ev) => {
     if (!t) return;
     ev.preventDefault();
     strokeAnchor = { kind: buildTool, worldX: t.x, worldY: t.y, erase: ev.shiftKey };
+    lotScene.strokeAnchorTile = { worldX: t.x, worldY: t.y };
+    composeLotScene();
     suppressNextLotClick = true;
     return;
   }
@@ -2312,7 +2323,11 @@ window.addEventListener("mouseup", (ev) => {
   if (strokeAnchor) {
     const t = tileFromClient(ev.clientX, ev.clientY);
     if (t) commitStroke(t.x, t.y);
-    else strokeAnchor = null;
+    else {
+      strokeAnchor = null;
+      lotScene.strokeAnchorTile = null;
+      composeLotScene();
+    }
   }
   if (moveDrag) {
     const inst = lotInstances.find((i) => i.id === moveDrag!.instId);
@@ -2469,6 +2484,16 @@ canvas.addEventListener("mouseleave", () => {
 // the user can re-orient an object after it's been placed. The browser's own
 // context menu is suppressed only when the right-click hits an instance.
 canvas.addEventListener("contextmenu", (ev) => {
+  // Right-click during a stroke (wall-line / wall-rect / paint-rect) cancels
+  // it. Otherwise the anchor would leak and commit to whatever tile the next
+  // left-click mouseup happens on.
+  if (strokeAnchor) {
+    ev.preventDefault();
+    strokeAnchor = null;
+    lotScene.strokeAnchorTile = null;
+    composeLotScene();
+    return;
+  }
   const rect = canvas.getBoundingClientRect();
   const cx = (ev.clientX - rect.left) * (canvas.width / rect.width);
   const cy = (ev.clientY - rect.top) * (canvas.height / rect.height);
