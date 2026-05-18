@@ -1,5 +1,6 @@
 import { engine } from "./engine/wasm.js";
 import { fetchManifest, readFarManifest, readIffFromFar, readStandaloneIff } from "./engine/assets.js";
+import { fetchTemplates, loadHouseTemplate, type TemplateEntry } from "./engine/house.js";
 import {
   renderIso,
   projectTileToScreen,
@@ -1103,8 +1104,14 @@ function mountCameraControls(): void {
     ${swatches}
     <button data-paint-action="clear" title="Erase all painted tiles">clear floor</button>
     <button data-wall-action="clear" title="Remove all walls">clear walls</button>
+    <span style="opacity:.5;">·</span>
+    <span style="opacity:.7;">house</span>
+    <select data-template-picker style="background:#1a2230;color:#cde;border:1px solid #345;border-radius:3px;padding:2px 4px;font:11px ui-monospace,monospace;max-width:140px;"><option value="">(loading…)</option></select>
+    <button data-house-action="load" title="Replace floor & walls with the chosen Magictown house">load house</button>
+    <span data-house-status style="opacity:.7;color:#9bd09b;"></span>
   `;
   document.body.appendChild(buildBar);
+  void mountTemplatePicker(buildBar);
   buildBar.addEventListener("click", (ev) => {
     const t = ev.target;
     if (!(t instanceof HTMLButtonElement)) return;
@@ -1131,6 +1138,11 @@ function mountCameraControls(): void {
       windowsN.clear();
       windowsW.clear();
       composeLotScene();
+    }
+    if (t.dataset["houseAction"] === "load") {
+      const picker = buildBar.querySelector<HTMLSelectElement>("select[data-template-picker]");
+      const path = picker?.value;
+      if (path) void loadAndApplyHouse(path, buildBar);
     }
   });
 
@@ -2348,6 +2360,78 @@ function clearLot(): void {
   selectedInstanceId = null;
   composeLotScene();
   closeInteractionMenuImpl();
+}
+
+let templateCache: TemplateEntry[] | null = null;
+
+async function mountTemplatePicker(buildBar: HTMLElement): Promise<void> {
+  const sel = buildBar.querySelector<HTMLSelectElement>("select[data-template-picker]");
+  if (!sel) return;
+  try {
+    if (!templateCache) templateCache = await fetchTemplates();
+    sel.innerHTML = "";
+    if (templateCache.length === 0) {
+      const opt = document.createElement("option");
+      opt.value = "";
+      opt.textContent = "(none found)";
+      sel.appendChild(opt);
+      sel.disabled = true;
+      return;
+    }
+    for (const t of templateCache) {
+      const opt = document.createElement("option");
+      opt.value = t.path;
+      opt.textContent = t.name;
+      sel.appendChild(opt);
+    }
+  } catch (err) {
+    sel.innerHTML = "";
+    const opt = document.createElement("option");
+    opt.value = "";
+    opt.textContent = `(error: ${err instanceof Error ? err.message : "?"})`;
+    sel.appendChild(opt);
+    sel.disabled = true;
+  }
+}
+
+async function loadAndApplyHouse(path: string, buildBar: HTMLElement): Promise<void> {
+  const statusEl = buildBar.querySelector<HTMLSpanElement>("span[data-house-status]");
+  if (statusEl) {
+    statusEl.style.color = "#cde";
+    statusEl.textContent = "loading…";
+  }
+  try {
+    const loaded = await loadHouseTemplate(path, lotScene.gridSize);
+    floorPaint.clear();
+    for (const [k, v] of loaded.floorPaint) floorPaint.set(k, v);
+    wallsN.clear();
+    for (const k of loaded.wallsN) wallsN.add(k);
+    wallsW.clear();
+    for (const k of loaded.wallsW) wallsW.add(k);
+    // Doors/windows live in custom-edit sets and shouldn't carry over from a
+    // previous house, but we never imported them — just wipe.
+    doorsN.clear();
+    doorsW.clear();
+    windowsN.clear();
+    windowsW.clear();
+    composeLotScene();
+    if (statusEl) {
+      statusEl.style.color = "#9bd09b";
+      statusEl.textContent =
+        `“${loaded.name}” · ${loaded.stats.floorPaintedTiles} tiles · ` +
+        `${loaded.stats.walls} walls · ${loaded.stats.floorPaletteEntries} mats`;
+    }
+    console.info(
+      `[house] loaded "${loaded.name}" — ${loaded.stats.floorPaintedTiles} painted, ${loaded.stats.walls} walls, palette:`,
+      loaded.floorPalette,
+    );
+  } catch (err) {
+    if (statusEl) {
+      statusEl.style.color = "#d8a13a";
+      statusEl.textContent = `error: ${err instanceof Error ? err.message : "?"}`;
+    }
+    console.error("[house] load failed", err);
+  }
 }
 
 function spawnSim(): void {

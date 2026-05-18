@@ -5,6 +5,7 @@ import fastifyCors from "@fastify/cors";
 import fastifyStatic from "@fastify/static";
 import { registerManifestRoute } from "./routes/manifest.js";
 import { registerSavesRoute } from "./routes/saves.js";
+import { registerTemplatesRoute } from "./routes/templates.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -37,6 +38,7 @@ app.get("/api/health", async () => ({ ok: true }));
 
 await registerManifestRoute(app, { assetsDir });
 await registerSavesRoute(app, { repoRoot });
+await registerTemplatesRoute(app, { assetsDir });
 
 try {
   await app.listen({ host: HOST, port: PORT });
