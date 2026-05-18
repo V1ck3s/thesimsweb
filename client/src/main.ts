@@ -404,7 +404,7 @@ function ensureMotivesHud(): HTMLDivElement {
   const el = document.createElement("div");
   el.id = "motives-hud";
   el.style.cssText =
-    "position:fixed;top:8px;left:8px;background:rgba(0,0,0,.55);padding:8px 10px;border-radius:6px;font:11px/1.4 ui-sans-serif,system-ui,sans-serif;color:#cde;width:200px;display:flex;flex-direction:column;gap:3px;";
+    "position:fixed;top:8px;left:8px;background:linear-gradient(180deg,#1a2840 0%,#0f1a2d 100%);border:1px solid #3a4a66;box-shadow:0 2px 8px rgba(0,0,0,.4);padding:8px 10px;border-radius:6px;font:11px/1.4 ui-sans-serif,system-ui,sans-serif;color:#cde;width:200px;display:flex;flex-direction:column;gap:3px;";
   document.body.appendChild(el);
   motivesHudEl = el;
   return el;
@@ -417,14 +417,63 @@ function motiveColor(value: number): string {
   return "#5fb86b";
 }
 
+/** Overall mood for a Sim — average of the 8 motives, in [-100..100]. */
+function computeMood(sim: { motives: number[] }): number {
+  if (sim.motives.length === 0) return 0;
+  let sum = 0;
+  for (const v of sim.motives) sum += v;
+  return sum / sim.motives.length;
+}
+
+/** Mix from red (-100) → amber (0) → green (+100). Returns rgb(). */
+function moodColor(value: number): string {
+  // Map [-100..100] to a 3-stop ramp.
+  const t = Math.max(-100, Math.min(100, value)) / 100; // -1..1
+  if (t < 0) {
+    const k = -t; // 0..1 toward red
+    const r = Math.round(216 + (216 - 216) * 0);
+    const g = Math.round(161 - (161 - 83) * k);
+    const b = Math.round(58 - (58 - 58) * k);
+    return `rgb(${r},${g},${b})`;
+  }
+  // 0..1 toward green
+  const r = Math.round(216 - (216 - 95) * t);
+  const g = Math.round(161 + (184 - 161) * t);
+  const b = Math.round(58 + (107 - 58) * t);
+  return `rgb(${r},${g},${b})`;
+}
+
 function renderMotivesHud(): void {
   const root = ensureMotivesHud();
-  if (root.childElementCount !== MOTIVE_NAMES.length + 1) {
+  // First-pass build: title + mood block + 8 motive rows = MOTIVE_NAMES.length + 2 children.
+  if (root.childElementCount !== MOTIVE_NAMES.length + 2) {
     root.innerHTML = "";
     const title = document.createElement("div");
-    title.textContent = `${simState.name} · motives`;
+    title.dataset["motivesTitle"] = "1";
     title.style.cssText = "color:#9ad;opacity:.85;margin-bottom:3px;";
     root.appendChild(title);
+    // Mood diamond / bar block.
+    const moodBlock = document.createElement("div");
+    moodBlock.dataset["moodBlock"] = "1";
+    moodBlock.style.cssText =
+      "display:grid;grid-template-columns:60px 1fr 32px;gap:6px;align-items:center;margin-bottom:4px;padding-bottom:5px;border-bottom:1px solid #2a3a52;";
+    const moodLabel = document.createElement("span");
+    moodLabel.textContent = "Mood";
+    moodLabel.style.cssText = "opacity:.9;font-weight:600;color:#e8eef8;";
+    const moodTrack = document.createElement("div");
+    moodTrack.style.cssText = "position:relative;height:12px;background:#1a2030;border-radius:3px;overflow:hidden;border:1px solid #2a3a52;";
+    const moodFill = document.createElement("div");
+    moodFill.dataset["moodFill"] = "1";
+    moodFill.style.cssText = "position:absolute;left:50%;top:0;bottom:0;width:0;transition:width .2s linear,background-color .3s;";
+    moodTrack.appendChild(moodFill);
+    const moodCenter = document.createElement("div");
+    moodCenter.style.cssText = "position:absolute;left:50%;top:0;bottom:0;width:1px;background:rgba(255,255,255,.2);pointer-events:none;";
+    moodTrack.appendChild(moodCenter);
+    const moodNum = document.createElement("span");
+    moodNum.dataset["moodNum"] = "1";
+    moodNum.style.cssText = "text-align:right;font-variant-numeric:tabular-nums;font-weight:600;";
+    moodBlock.append(moodLabel, moodTrack, moodNum);
+    root.appendChild(moodBlock);
     for (let i = 0; i < MOTIVE_NAMES.length; i += 1) {
       const row = document.createElement("div");
       row.dataset["motiveIdx"] = String(i);
@@ -447,9 +496,27 @@ function renderMotivesHud(): void {
   }
   const sim = sims[selectedSimIdx];
   if (!sim) return;
-  const title = root.firstChild;
-  if (title instanceof HTMLDivElement) {
-    title.textContent = `${sim.name} · motives`;
+  const title = root.querySelector<HTMLDivElement>("div[data-motives-title]");
+  if (title) title.textContent = `${sim.name}`;
+  // Mood update.
+  const mood = computeMood(sim);
+  const moodFill = root.querySelector<HTMLDivElement>("div[data-mood-fill]");
+  const moodNum = root.querySelector<HTMLSpanElement>("span[data-mood-num]");
+  if (moodFill) {
+    const half = Math.abs(mood) / 100 / 2;
+    const widthPct = half * 100;
+    if (mood >= 0) {
+      moodFill.style.left = "50%";
+      moodFill.style.width = `${widthPct}%`;
+    } else {
+      moodFill.style.left = `${50 - widthPct}%`;
+      moodFill.style.width = `${widthPct}%`;
+    }
+    moodFill.style.backgroundColor = moodColor(mood);
+  }
+  if (moodNum) {
+    moodNum.textContent = Math.round(mood).toString().padStart(3, " ");
+    moodNum.style.color = moodColor(mood);
   }
   const rows = root.querySelectorAll<HTMLDivElement>("div[data-motive-idx]");
   for (const row of rows) {
@@ -477,13 +544,13 @@ let lastMotiveTick = performance.now();
 function startMotivesLoop(): void {
   setInterval(() => {
     const now = performance.now();
-    if (document.hidden || gamePaused) {
+    if (document.hidden || gameSpeed === 0) {
       // Skip the elapsed window so motives don't snap-decay on tab refocus
       // or after a long pause.
       lastMotiveTick = now;
       return;
     }
-    tickMotives(now - lastMotiveTick);
+    tickMotives((now - lastMotiveTick) * gameSpeed);
     lastMotiveTick = now;
   }, 1000);
 }
@@ -494,11 +561,22 @@ function startMotivesLoop(): void {
 // ============================================================================
 
 const DAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"] as const;
-const TIME_SCALE = 1; // 1 in-game minute per real second
+const TIME_SCALE = 1; // 1 in-game minute per real second @ 1×
 let gameMinutes = 8 * 60; // 08:00 day 0
 let gameDayIdx = 0;
 let funds = 20000;
+// TS1-style speed: 0 = paused, 1× / 2× / 3× scale every game loop (motives,
+// clock, autonomy, walk duration). Default 1×.
+type GameSpeed = 0 | 1 | 2 | 3;
+let gameSpeed: GameSpeed = 1;
+// `gamePaused` is kept as a derived alias for legacy code paths that still
+// branch on it. New code should read `gameSpeed === 0`.
 let gamePaused = false;
+function setGameSpeed(s: GameSpeed): void {
+  gameSpeed = s;
+  gamePaused = s === 0;
+  renderTimeFundsHud();
+}
 const TIME_HUD_ID = "time-funds-hud";
 
 let timeHudEl: HTMLDivElement | null = null;
@@ -507,14 +585,27 @@ function ensureTimeFundsHud(): HTMLDivElement {
   const el = document.createElement("div");
   el.id = TIME_HUD_ID;
   el.style.cssText =
-    "position:fixed;top:8px;left:50%;transform:translateX(-50%);background:rgba(0,0,0,.55);padding:6px 14px;border-radius:6px;font:12px/1.3 ui-sans-serif,system-ui,sans-serif;color:#cde;display:flex;gap:18px;align-items:center;";
+    "position:fixed;top:8px;left:50%;transform:translateX(-50%);background:linear-gradient(180deg,#1a2840 0%,#0f1a2d 100%);border:1px solid #3a4a66;box-shadow:0 2px 8px rgba(0,0,0,.4);padding:6px 14px;border-radius:6px;font:12px/1.3 ui-sans-serif,system-ui,sans-serif;color:#cde;display:flex;gap:14px;align-items:center;";
   el.innerHTML = `
-    <button data-th-pause title="Pause / resume (space)" style="background:transparent;border:1px solid #345;color:#cde;border-radius:4px;padding:2px 8px;cursor:pointer;font:inherit;">▶ play</button>
+    <span style="display:flex;gap:3px;align-items:center;" data-th-speed-group>
+      <button data-th-speed="0" title="Pause (space)" style="background:transparent;border:1px solid #345;color:#cde;border-radius:3px;padding:2px 7px;cursor:pointer;font:inherit;">⏸</button>
+      <button data-th-speed="1" title="Normal speed (1)" style="background:transparent;border:1px solid #345;color:#cde;border-radius:3px;padding:2px 7px;cursor:pointer;font:inherit;">1×</button>
+      <button data-th-speed="2" title="Fast (2)" style="background:transparent;border:1px solid #345;color:#cde;border-radius:3px;padding:2px 7px;cursor:pointer;font:inherit;">2×</button>
+      <button data-th-speed="3" title="Ultra (3)" style="background:transparent;border:1px solid #345;color:#cde;border-radius:3px;padding:2px 7px;cursor:pointer;font:inherit;">3×</button>
+    </span>
+    <span style="opacity:.4;">·</span>
     <span><span data-th-day style="color:#9ad;">Mon</span> <span data-th-time>08:00</span></span>
     <span style="opacity:.4;">·</span>
     <span><span style="color:#cfa;">§</span><span data-th-funds style="font-variant-numeric:tabular-nums;">20000</span></span>
   `;
-  el.querySelector("button[data-th-pause]")?.addEventListener("click", () => togglePause());
+  el.querySelector("span[data-th-speed-group]")?.addEventListener("click", (ev) => {
+    const t = ev.target;
+    if (!(t instanceof HTMLButtonElement)) return;
+    const raw = t.dataset["thSpeed"];
+    if (raw === undefined) return;
+    const s = parseInt(raw, 10);
+    if (s === 0 || s === 1 || s === 2 || s === 3) setGameSpeed(s);
+  });
   document.body.appendChild(el);
   timeHudEl = el;
   return el;
@@ -528,22 +619,26 @@ function renderTimeFundsHud(): void {
   const dEl = root.querySelector<HTMLSpanElement>("span[data-th-day]");
   const tEl = root.querySelector<HTMLSpanElement>("span[data-th-time]");
   const fEl = root.querySelector<HTMLSpanElement>("span[data-th-funds]");
-  const pEl = root.querySelector<HTMLButtonElement>("button[data-th-pause]");
   if (dEl) dEl.textContent = day;
   if (tEl) tEl.textContent = `${hh}:${mm}`;
   if (fEl) fEl.textContent = funds.toLocaleString("en-US");
-  if (pEl) pEl.textContent = gamePaused ? "⏸ paused" : "▶ play";
+  // Highlight the active speed button.
+  for (const btn of root.querySelectorAll<HTMLButtonElement>("button[data-th-speed]")) {
+    const active = parseInt(btn.dataset["thSpeed"] ?? "1", 10) === gameSpeed;
+    btn.style.background = active ? "rgba(120,170,230,.30)" : "transparent";
+    btn.style.borderColor = active ? "#7ac" : "#345";
+    btn.style.color = active ? "#fff" : "#cde";
+  }
 }
 
 function togglePause(): void {
-  gamePaused = !gamePaused;
-  renderTimeFundsHud();
+  setGameSpeed(gameSpeed === 0 ? 1 : 0);
 }
 
 function startGameClock(): void {
   setInterval(() => {
-    if (document.hidden || gamePaused) return; // pause when the tab is in the background
-    gameMinutes += TIME_SCALE;
+    if (document.hidden || gameSpeed === 0) return; // pause when the tab is in the background
+    gameMinutes += TIME_SCALE * gameSpeed;
     if (gameMinutes >= 24 * 60) {
       gameMinutes -= 24 * 60;
       gameDayIdx += 1;
@@ -564,10 +659,10 @@ function adjustFunds(delta: number): void {
 /** "Play" lets clicks walk the Sim and trigger interactions; "Build" lets the
  *  user place new objects on empty tiles. Build is the legacy default for the
  *  dev viewer; Play is the new game-feel default. */
-type LotMode = "play" | "build";
+type LotMode = "play" | "buy" | "build";
 let lotMode: LotMode = "play";
 
-/** When in Build mode, the build sub-tool. */
+/** Build-mode tool ("place" lives in Buy mode now; the others stay in Build). */
 type BuildTool =
   | "place"
   | "paint"
@@ -577,7 +672,25 @@ type BuildTool =
   | "wall-rect"
   | "door"
   | "window";
-let buildTool: BuildTool = "place";
+let buildTool: BuildTool = "wall";
+
+/** Tools allowed in each mode. Used by the click-handler to gate behaviour. */
+const BUILD_TOOLS_FOR_BUILD: ReadonlySet<BuildTool> = new Set([
+  "paint",
+  "paint-rect",
+  "wall",
+  "wall-line",
+  "wall-rect",
+  "door",
+  "window",
+]);
+const BUILD_TOOLS_FOR_BUY: ReadonlySet<BuildTool> = new Set(["place"]);
+
+function defaultToolForMode(m: LotMode): BuildTool {
+  if (m === "buy") return "place";
+  if (m === "build") return "wall";
+  return buildTool; // play mode keeps whatever was last selected, doesn't use it
+}
 
 /** Walls live on tile *edges*. North / west edge sets are keyed by
  *  `y * (gridSize + 1) + x` — same convention the renderer expects. */
@@ -769,7 +882,11 @@ function walkSegmentForSim(
   onArrive: (() => void) | null,
 ): void {
   const dist = Math.hypot(toX - sim.fx, toY - sim.fy);
-  const durMs = Math.max(140, Math.min(700, dist * 280));
+  // Walk speed scales with game speed so 2×/3× make Sims visibly faster.
+  // At paused state (gameSpeed=0) we keep durMs as-is — the render loop will
+  // freeze it anyway via the lastIdleRender gate.
+  const speedMult = gameSpeed === 0 ? 1 : gameSpeed;
+  const durMs = Math.max(140, Math.min(700, dist * 280)) / speedMult;
   sim.walk = {
     fromX: sim.fx,
     fromY: sim.fy,
@@ -959,13 +1076,14 @@ function autoWanderSim(sim: SimState): void {
 
 function startAutoWanderLoop(): void {
   setInterval(() => {
-    if (gamePaused) return;
+    if (gameSpeed === 0) return;
     for (let i = 0; i < sims.length; i += 1) {
       if (i === selectedSimIdx) continue;
       const sim = sims[i];
       if (!sim) continue;
       // ~50% chance per tick to wander, so they don't all march in lockstep.
-      if (Math.random() < 0.5) autoWanderSim(sim);
+      // Scales with gameSpeed so 3× makes Sims act ~3× more often.
+      if (Math.random() < 0.5 * gameSpeed) autoWanderSim(sim);
     }
   }, 2500);
 }
@@ -1176,7 +1294,7 @@ function mountMinimap(): void {
   const wrap = document.createElement("div");
   wrap.id = "minimap";
   wrap.style.cssText =
-    "position:fixed;top:200px;right:8px;background:rgba(0,0,0,.55);padding:6px;border-radius:6px;display:flex;flex-direction:column;gap:4px;align-items:center;font:10px/1.2 ui-monospace,monospace;color:#9ad;";
+    "position:fixed;top:200px;right:8px;background:linear-gradient(180deg,#1a2840 0%,#0f1a2d 100%);border:1px solid #3a4a66;box-shadow:0 2px 8px rgba(0,0,0,.4);padding:6px;border-radius:6px;display:flex;flex-direction:column;gap:4px;align-items:center;font:10px/1.2 ui-monospace,monospace;color:#9ad;";
   wrap.innerHTML = `<canvas id="minimap-canvas" width="${MINIMAP_SIZE}" height="${MINIMAP_SIZE}" style="image-rendering:pixelated;cursor:crosshair;border:1px solid #345;"></canvas><span style="opacity:.7;">click to pan</span>`;
   document.body.appendChild(wrap);
   const c = wrap.querySelector<HTMLCanvasElement>("#minimap-canvas");
@@ -1291,7 +1409,7 @@ function mountCameraControls(): void {
   const bar = document.createElement("div");
   bar.id = "camera-controls";
   bar.style.cssText =
-    "position:fixed;top:8px;right:8px;display:flex;gap:6px;align-items:center;background:rgba(0,0,0,.55);padding:6px 8px;border-radius:4px;font:12px/1.3 ui-monospace,monospace;color:#9ad;";
+    "position:fixed;top:8px;right:8px;display:flex;gap:6px;align-items:center;background:linear-gradient(180deg,#1a2840 0%,#0f1a2d 100%);border:1px solid #3a4a66;box-shadow:0 2px 8px rgba(0,0,0,.4);padding:6px 8px;border-radius:4px;font:12px/1.3 ui-monospace,monospace;color:#9ad;";
   bar.innerHTML = `
     <span style="opacity:.7;">camera</span>
     <button data-cam="rot-l" title="Rotate left (Q)">⟲</button>
@@ -1303,16 +1421,6 @@ function mountCameraControls(): void {
     <button data-cam-zoom="2">near</button>
     <span style="opacity:.5;">·</span>
     <button data-cam-action="walls" title="Toggle wall visibility (full / low / off)">walls: full</button>
-    <span style="opacity:.5;">·</span>
-    <span style="opacity:.7;">mode</span>
-    <button data-cam-action="mode-play" title="Click walks the Sim & triggers interactions">play</button>
-    <button data-cam-action="mode-build" title="Click places the viewer object on empty tiles">build</button>
-    <span style="opacity:.5;">·</span>
-    <button data-cam-action="add-sim" title="Spawn a new Sim on the lot">+ sim</button>
-    <span style="opacity:.5;">·</span>
-    <button data-cam-action="save" title="Save current lot to server">save</button>
-    <button data-cam-action="load" title="Reload lot from server">load</button>
-    <button data-cam-action="reset" title="Clear all placed objects">reset</button>
   `;
   document.body.appendChild(bar);
   bar.addEventListener("click", (ev) => {
@@ -1329,13 +1437,9 @@ function mountCameraControls(): void {
     else if (action === "load") void loadLot(true);
     else if (action === "add-sim") spawnSim();
     else if (action === "walls") cycleWallMode();
-    else if (action === "mode-play") {
-      lotMode = "play";
-      updateModeButtonHighlights();
-    } else if (action === "mode-build") {
-      lotMode = "build";
-      updateModeButtonHighlights();
-    }
+    else if (action === "mode-play") setLotMode("play");
+    else if (action === "mode-buy") setLotMode("buy");
+    else if (action === "mode-build") setLotMode("build");
   });
   // Build sub-tool bar — only effective when lotMode === "build".
   const existingBuild = document.getElementById("build-tools");
@@ -1343,32 +1447,33 @@ function mountCameraControls(): void {
   const buildBar = document.createElement("div");
   buildBar.id = "build-tools";
   buildBar.style.cssText =
-    "position:fixed;top:46px;left:50%;transform:translateX(-50%);background:rgba(0,0,0,.55);padding:6px 10px;border-radius:6px;font:12px/1.3 ui-sans-serif,system-ui,sans-serif;color:#cde;display:none;gap:6px;align-items:center;flex-wrap:wrap;";
+    "position:fixed;top:46px;left:50%;transform:translateX(-50%);background:linear-gradient(180deg,#1a2840 0%,#0f1a2d 100%);border:1px solid #3a4a66;box-shadow:0 2px 8px rgba(0,0,0,.4);padding:6px 10px;border-radius:6px;font:12px/1.3 ui-sans-serif,system-ui,sans-serif;color:#cde;display:none;gap:6px;align-items:center;flex-wrap:wrap;";
   const swatches = FLOOR_PAINT_PRESETS.map(
     (p) =>
       `<button data-paint-id="${p.id}" title="${p.label}" style="width:22px;height:22px;background:${p.color};border:1px solid #345;border-radius:3px;cursor:pointer;"></button>`,
   ).join("");
   buildBar.innerHTML = `
-    <span style="opacity:.7;">tool</span>
-    <button data-build-tool="place">place obj</button>
-    <button data-build-tool="paint">paint floor</button>
-    <button data-build-tool="paint-rect" title="Paint a rectangle of floor (drag anchor → release)">paint rect</button>
-    <button data-build-tool="wall">wall</button>
-    <button data-build-tool="wall-line" title="Straight wall: click + drag, snaps to row or column">wall line</button>
-    <button data-build-tool="wall-rect" title="Wall rectangle (room perimeter): click + drag">wall rect</button>
-    <button data-build-tool="door">door</button>
-    <button data-build-tool="window">window</button>
+    <span data-mode-buy style="opacity:.7;">buy</span>
+    <button data-mode-buy data-build-tool="place" title="Place the selected catalog object on an empty tile">place obj</button>
     <span data-build-selected style="opacity:.85;color:#cde;border-left:1px solid #345;padding-left:8px;display:none;"></span>
-    <span style="opacity:.5;">·</span>
-    <span style="opacity:.7;">color</span>
-    ${swatches}
-    <button data-paint-action="clear" title="Erase all painted tiles">clear floor</button>
-    <button data-wall-action="clear" title="Remove all walls">clear walls</button>
-    <span style="opacity:.5;">·</span>
-    <span style="opacity:.7;">house</span>
-    <select data-template-picker style="background:#1a2230;color:#cde;border:1px solid #345;border-radius:3px;padding:2px 4px;font:11px ui-monospace,monospace;max-width:140px;"><option value="">(loading…)</option></select>
-    <button data-house-action="load" title="Replace floor & walls with the chosen Magictown house">load house</button>
-    <span data-house-status style="opacity:.7;color:#9bd09b;"></span>
+    <span data-mode-build style="opacity:.7;">build</span>
+    <button data-mode-build data-build-tool="paint">paint floor</button>
+    <button data-mode-build data-build-tool="paint-rect" title="Paint a rectangle of floor (drag anchor → release)">paint rect</button>
+    <button data-mode-build data-build-tool="wall">wall</button>
+    <button data-mode-build data-build-tool="wall-line" title="Straight wall: click + drag, snaps to row or column">wall line</button>
+    <button data-mode-build data-build-tool="wall-rect" title="Wall rectangle (room perimeter): click + drag">wall rect</button>
+    <button data-mode-build data-build-tool="door">door</button>
+    <button data-mode-build data-build-tool="window">window</button>
+    <span data-mode-build style="opacity:.5;">·</span>
+    <span data-mode-build style="opacity:.7;">color</span>
+    <span data-mode-build style="display:contents;">${swatches}</span>
+    <button data-mode-build data-paint-action="clear" title="Erase all painted tiles">clear floor</button>
+    <button data-mode-build data-wall-action="clear" title="Remove all walls">clear walls</button>
+    <span data-mode-build style="opacity:.5;">·</span>
+    <span data-mode-build style="opacity:.7;">house</span>
+    <select data-mode-build data-template-picker style="background:#1a2230;color:#cde;border:1px solid #345;border-radius:3px;padding:2px 4px;font:11px ui-monospace,monospace;max-width:140px;"><option value="">(loading…)</option></select>
+    <button data-mode-build data-house-action="load" title="Replace floor & walls with the chosen Magictown house">load house</button>
+    <span data-mode-build data-house-status style="opacity:.7;color:#9bd09b;"></span>
   `;
   document.body.appendChild(buildBar);
   void mountTemplatePicker(buildBar);
@@ -1421,11 +1526,91 @@ function mountCameraControls(): void {
   const help = document.createElement("div");
   help.id = "lot-help";
   help.style.cssText =
-    "position:fixed;top:46px;right:8px;background:rgba(0,0,0,.55);padding:4px 8px;border-radius:4px;font:11px/1.4 ui-monospace,monospace;color:#9ad;max-width:220px;text-align:right;";
+    "position:fixed;top:46px;right:8px;background:linear-gradient(180deg,#1a2840 0%,#0f1a2d 100%);border:1px solid #3a4a66;box-shadow:0 2px 8px rgba(0,0,0,.4);padding:4px 8px;border-radius:4px;font:11px/1.4 ui-monospace,monospace;color:#9ad;max-width:220px;text-align:right;";
   help.innerHTML =
-    "<b>play</b>: click ground = walk Sim · click obj = walk + interact · click another Sim = select it<br/><b>build</b>: place obj · paint floor · wall (drag!) · door (click edge)<br/>right-click: rotate · shift+click/drag: remove · doors are passable<br/>Q/E rotate · +/- zoom · ↑↓←→ pan · R recenter · middle-drag pan";
+    "<b>live</b>: click ground = walk · click obj = interact · click Sim = select<br/><b>buy</b>: pick a catalog object → click empty tile to place<br/><b>build</b>: wall (drag) · door/window (click edge) · floor paint<br/>right-click: rotate · shift+click/drag: remove<br/>Q/E rotate · +/- zoom · ↑↓←→ pan · R recenter · 1/2/3 speed · space pause";
   document.body.appendChild(help);
+  mountBottomModeBar();
   updateCameraButtonHighlights();
+}
+
+// Options modal entry point — body defined later in the file. Stored on a
+// holder so the bottom-bar click handler picks up the real impl whenever the
+// Options section installs it.
+const optionsModalHook: { open: (() => void) | null } = { open: null };
+function openOptionsModal(): void {
+  optionsModalHook.open?.();
+}
+
+// ============================================================================
+// Bottom mode bar — TS1's iconic Live / Buy / Build / Options tabs along the
+// bottom of the screen. Single source of truth for mode switching.
+// ============================================================================
+
+function mountBottomModeBar(): void {
+  const existing = document.getElementById("bottom-mode-bar");
+  existing?.remove();
+  const bar = document.createElement("div");
+  bar.id = "bottom-mode-bar";
+  bar.style.cssText =
+    "position:fixed;bottom:10px;left:50%;transform:translateX(-50%);display:flex;gap:4px;align-items:stretch;" +
+    "background:linear-gradient(180deg,#1a2840 0%,#0f1a2d 100%);" +
+    "border:1px solid #3a4a66;box-shadow:0 4px 14px rgba(0,0,0,.45);" +
+    "padding:6px 8px;border-radius:8px;z-index:60;font:13px/1.2 ui-sans-serif,system-ui,sans-serif;color:#cde;";
+  bar.innerHTML = `
+    <style>
+      #bottom-mode-bar button.mode-tab {
+        background: rgba(255,255,255,.04);
+        border: 1px solid #3a4a66;
+        color: #cde;
+        padding: 8px 16px;
+        min-width: 90px;
+        border-radius: 5px;
+        cursor: pointer;
+        font: inherit;
+        font-weight: 500;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 2px;
+        transition: background .12s, border-color .12s;
+      }
+      #bottom-mode-bar button.mode-tab:hover {
+        background: rgba(255,255,255,.10);
+        border-color: #6a8ab0;
+      }
+      #bottom-mode-bar button.mode-tab.mode-active {
+        background: linear-gradient(180deg,#3a78c0 0%,#26538a 100%);
+        border-color: #d9b76a;
+        color: #fff;
+        box-shadow: inset 0 0 8px rgba(217,183,106,.25);
+      }
+      #bottom-mode-bar .mode-icon { font-size: 18px; line-height: 1; }
+      #bottom-mode-bar .mode-label { font-size: 11px; opacity: .85; letter-spacing: .05em; text-transform: uppercase; }
+    </style>
+    <button class="mode-tab" data-mode-tab="play" title="Live mode (gameplay)">
+      <span class="mode-icon">▶</span><span class="mode-label">Live</span>
+    </button>
+    <button class="mode-tab" data-mode-tab="buy" title="Buy mode (place furniture)">
+      <span class="mode-icon">§</span><span class="mode-label">Buy</span>
+    </button>
+    <button class="mode-tab" data-mode-tab="build" title="Build mode (walls, floors, doors)">
+      <span class="mode-icon">⚒</span><span class="mode-label">Build</span>
+    </button>
+    <button class="mode-tab" data-mode-tab="options" title="Options (save/load/quit)">
+      <span class="mode-icon">⚙</span><span class="mode-label">Options</span>
+    </button>
+  `;
+  bar.addEventListener("click", (ev) => {
+    const t = ev.target;
+    if (!(t instanceof HTMLElement)) return;
+    const btn = t.closest("button.mode-tab");
+    if (!(btn instanceof HTMLButtonElement)) return;
+    const tab = btn.dataset["modeTab"];
+    if (tab === "play" || tab === "buy" || tab === "build") setLotMode(tab);
+    else if (tab === "options") openOptionsModal();
+  });
+  document.body.appendChild(bar);
 }
 
 function updateCameraButtonHighlights(): void {
@@ -1443,21 +1628,45 @@ function updateCameraButtonHighlights(): void {
   updateModeButtonHighlights();
 }
 
+function setLotMode(m: LotMode): void {
+  lotMode = m;
+  // Auto-pick a sensible default sub-tool when entering Buy/Build.
+  if (m === "buy") buildTool = "place";
+  else if (m === "build" && !BUILD_TOOLS_FOR_BUILD.has(buildTool)) buildTool = "wall";
+  updateModeButtonHighlights();
+  // Repaint so the ghost preview attaches/detaches with mode changes.
+  composeLotScene();
+}
+
 function updateModeButtonHighlights(): void {
   const bar = document.getElementById("camera-controls");
-  if (!bar) return;
-  for (const btn of bar.querySelectorAll<HTMLButtonElement>("button[data-cam-action]")) {
-    const action = btn.dataset["camAction"];
-    if (action === "mode-play") btn.style.cssText = controlButtonStyle(lotMode === "play");
-    else if (action === "mode-build") btn.style.cssText = controlButtonStyle(lotMode === "build");
-    else if (action === "walls") {
-      btn.textContent = `walls: ${WALL_MODES[wallModeIdx]}`;
-      btn.style.cssText = controlButtonStyle(wallModeIdx !== 0);
+  if (bar) {
+    for (const btn of bar.querySelectorAll<HTMLButtonElement>("button[data-cam-action]")) {
+      const action = btn.dataset["camAction"];
+      if (action === "walls") {
+        btn.textContent = `walls: ${WALL_MODES[wallModeIdx]}`;
+        btn.style.cssText = controlButtonStyle(wallModeIdx !== 0);
+      }
+    }
+  }
+  const bottomBar = document.getElementById("bottom-mode-bar");
+  if (bottomBar) {
+    for (const btn of bottomBar.querySelectorAll<HTMLButtonElement>("button[data-mode-tab]")) {
+      const tab = btn.dataset["modeTab"];
+      btn.classList.toggle("mode-active", tab === lotMode);
     }
   }
   const buildBar = document.getElementById("build-tools");
   if (buildBar instanceof HTMLDivElement) {
-    buildBar.style.display = lotMode === "build" ? "flex" : "none";
+    buildBar.style.display = lotMode === "buy" || lotMode === "build" ? "flex" : "none";
+    // Show/hide sub-tool buttons based on which mode is active.
+    for (const el of buildBar.querySelectorAll<HTMLElement>("[data-mode-buy], [data-mode-build]")) {
+      const buyOnly = el.hasAttribute("data-mode-buy");
+      const buildOnly = el.hasAttribute("data-mode-build");
+      const show =
+        (buyOnly && lotMode === "buy") || (buildOnly && lotMode === "build");
+      el.style.display = show ? "" : "none";
+    }
   }
   updateBuildToolHighlights();
 }
@@ -1529,6 +1738,15 @@ window.addEventListener("keydown", (ev) => {
     case " ":
     case "Spacebar":
       togglePause();
+      break;
+    case "1":
+      setGameSpeed(1);
+      break;
+    case "2":
+      setGameSpeed(2);
+      break;
+    case "3":
+      setGameSpeed(3);
       break;
     case "Escape":
       // Cancel an active stroke (wall-line / wall-rect / paint-rect).
@@ -2144,7 +2362,7 @@ function composeLotScene(): void {
     let anchorX = 8;
     let anchorY = 8;
     if (
-      lotMode === "build" &&
+      lotMode === "buy" &&
       buildTool === "place" &&
       lotScene.hoverTile &&
       !lotInstances.some(
@@ -2319,14 +2537,18 @@ function onLotCanvasClick(ev: MouseEvent): void {
         floorPaint.set(tile.worldY * lotScene.gridSize + tile.worldX, preset.color);
         composeLotScene();
       }
-      closeInteractionMenuImpl();
-      return;
     }
     // (wall sub-tool is handled at the top of this function so it bypasses
-    //  the instance/sim hit-tests entirely.)
-    // Place the viewer's currently-selected object on the empty tile.
+    //  the instance/sim hit-tests entirely; paint-rect/wall-line/wall-rect are
+    //  also handled via the stroke anchor pathway.)
+    closeInteractionMenuImpl();
+    return;
+  }
+  if (lotMode === "buy") {
+    // Buy mode: place the catalog-selected object on the empty tile.
     const obj = viewerState.current;
     if (!obj) {
+      showBubble("pick an object from the catalog first");
       closeInteractionMenuImpl();
       return;
     }
@@ -2675,10 +2897,10 @@ canvas.addEventListener("mousemove", (ev) => {
     dirty = true;
   }
   if (dirty) {
-    // In place mode the viewer-current sprite follows the cursor, so we have
+    // In buy mode the viewer-current sprite follows the cursor, so we have
     // to recompose (cheap — sprites are cached per instance) instead of just
     // re-rendering. Other modes only need the hover outline updated.
-    if (lotMode === "build" && buildTool === "place" && viewerState.current) {
+    if (lotMode === "buy" && buildTool === "place" && viewerState.current) {
       composeLotScene();
     } else {
       renderLot();
@@ -2713,7 +2935,7 @@ canvas.addEventListener("mouseleave", () => {
   if (lotScene.hoverTile) { lotScene.hoverTile = null; dirty = true; }
   if (lotScene.ghostWall) { lotScene.ghostWall = null; dirty = true; }
   if (dirty) {
-    if (lotMode === "build" && buildTool === "place" && viewerState.current) {
+    if (lotMode === "buy" && buildTool === "place" && viewerState.current) {
       composeLotScene();
     } else {
       renderLot();
@@ -3075,7 +3297,7 @@ function ensureFamilyHud(): HTMLDivElement {
   const el = document.createElement("div");
   el.id = "family-hud";
   el.style.cssText =
-    "position:fixed;top:240px;left:8px;width:200px;background:rgba(0,0,0,.55);padding:8px 10px;border-radius:6px;font:11px/1.4 ui-sans-serif,system-ui,sans-serif;color:#cde;display:flex;flex-direction:column;gap:4px;";
+    "position:fixed;top:240px;left:8px;width:200px;background:linear-gradient(180deg,#1a2840 0%,#0f1a2d 100%);border:1px solid #3a4a66;box-shadow:0 2px 8px rgba(0,0,0,.4);padding:8px 10px;border-radius:6px;font:11px/1.4 ui-sans-serif,system-ui,sans-serif;color:#cde;display:flex;flex-direction:column;gap:4px;";
   document.body.appendChild(el);
   familyHudEl = el;
   return el;
@@ -3388,6 +3610,165 @@ function openCasModal(): void {
 }
 
 // ============================================================================
+// Options modal — bundled "Options" tab on the bottom bar. Save / Save As /
+// Load list / Delete save / Reset lot / Help / Debug. Wired up via
+// optionsModalHook so the bottom-bar handler (defined earlier in the file)
+// can call it without a forward reference.
+// ============================================================================
+
+let optionsModalEl: HTMLDivElement | null = null;
+
+function openOptionsModalImpl(): void {
+  if (optionsModalEl) return;
+  const overlay = document.createElement("div");
+  overlay.id = "options-modal";
+  overlay.style.cssText =
+    "position:fixed;inset:0;background:rgba(0,0,0,.65);z-index:1000;display:flex;align-items:center;justify-content:center;font:13px/1.4 ui-sans-serif,system-ui,sans-serif;color:#cde;";
+  const panel = document.createElement("div");
+  panel.style.cssText =
+    "background:linear-gradient(180deg,#1a2230 0%,#0f1620 100%);border:1px solid #3a4a66;border-radius:10px;padding:18px 22px;width:520px;max-width:94vw;max-height:88vh;overflow:auto;display:flex;flex-direction:column;gap:14px;box-shadow:0 8px 32px rgba(0,0,0,.5);";
+  panel.innerHTML = `
+    <div style="font-size:15px;color:#d9b76a;font-weight:600;display:flex;align-items:center;gap:10px;">
+      <span style="font-size:18px;">⚙</span><span>Options</span>
+    </div>
+    <section data-section="saves" style="display:flex;flex-direction:column;gap:8px;">
+      <div style="color:#9ad;font-weight:600;font-size:12px;letter-spacing:.05em;text-transform:uppercase;">Game</div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap;">
+        <button data-opt="save" style="flex:1;min-width:120px;background:#3b6;color:#000;border:1px solid #2a4;font:inherit;padding:7px 10px;cursor:pointer;border-radius:4px;font-weight:600;">💾 Save</button>
+        <button data-opt="saveas" style="flex:1;min-width:120px;background:#3a78c0;color:#fff;border:1px solid #2a4d7a;font:inherit;padding:7px 10px;cursor:pointer;border-radius:4px;font-weight:600;">💾 Save As…</button>
+      </div>
+      <div data-options-saves-list style="display:flex;flex-direction:column;gap:4px;max-height:240px;overflow-y:auto;padding:4px;background:rgba(0,0,0,.25);border:1px solid #2a3a52;border-radius:4px;"></div>
+    </section>
+    <section style="display:flex;flex-direction:column;gap:8px;">
+      <div style="color:#9ad;font-weight:600;font-size:12px;letter-spacing:.05em;text-transform:uppercase;">Lot</div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap;">
+        <button data-opt="neighborhood" style="flex:1;min-width:130px;background:#2a3a52;color:#cde;border:1px solid #3a4a66;font:inherit;padding:7px 10px;cursor:pointer;border-radius:4px;">🌳 Neighborhood…</button>
+        <button data-opt="cas" style="flex:1;min-width:130px;background:#2a3a52;color:#cde;border:1px solid #3a4a66;font:inherit;padding:7px 10px;cursor:pointer;border-radius:4px;">👤 New Sim…</button>
+        <button data-opt="reset" style="flex:1;min-width:130px;background:#3a2a2a;color:#d88;border:1px solid #533;font:inherit;padding:7px 10px;cursor:pointer;border-radius:4px;">🗑 Reset Lot</button>
+      </div>
+    </section>
+    <section style="display:flex;flex-direction:column;gap:8px;">
+      <div style="color:#9ad;font-weight:600;font-size:12px;letter-spacing:.05em;text-transform:uppercase;">Help & Debug</div>
+      <div style="background:rgba(0,0,0,.25);border:1px solid #2a3a52;border-radius:4px;padding:8px 10px;font:11px/1.55 ui-monospace,monospace;color:#9bb;">
+        <b style="color:#cde;">Hotkeys</b> · Space pause · 1/2/3 speed · Q/E rotate · +/- zoom · ↑↓←→ pan · R recenter · F9 debug · Esc close
+      </div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap;">
+        <button data-opt="debug" style="flex:1;min-width:130px;background:#2a3a52;color:#cde;border:1px solid #3a4a66;font:inherit;padding:7px 10px;cursor:pointer;border-radius:4px;">🔧 Toggle Debug Panels</button>
+      </div>
+    </section>
+    <div style="display:flex;justify-content:flex-end;gap:8px;border-top:1px solid #2a3a52;padding-top:12px;">
+      <button data-opt="close" style="background:#3a78c0;color:#fff;border:1px solid #2a4d7a;font:inherit;padding:7px 18px;cursor:pointer;border-radius:4px;font-weight:600;">Close</button>
+    </div>
+  `;
+  overlay.appendChild(panel);
+  document.body.appendChild(overlay);
+  optionsModalEl = overlay;
+
+  const close = (): void => {
+    overlay.remove();
+    optionsModalEl = null;
+    window.removeEventListener("keydown", onKey, true);
+  };
+  const onKey = (ev: KeyboardEvent): void => {
+    if (ev.key === "Escape") close();
+  };
+  window.addEventListener("keydown", onKey, true);
+  overlay.addEventListener("click", (ev) => {
+    if (ev.target === overlay) close();
+  });
+
+  // Action wiring.
+  panel.querySelector<HTMLButtonElement>("button[data-opt=\"save\"]")?.addEventListener("click", () => {
+    void saveLot();
+  });
+  panel.querySelector<HTMLButtonElement>("button[data-opt=\"saveas\"]")?.addEventListener("click", () => {
+    const name = prompt("Save name:", activeSaveName === "Current Lot" ? "My Lot" : activeSaveName);
+    if (name && name.trim()) void saveLotAs(name.trim());
+  });
+  panel.querySelector<HTMLButtonElement>("button[data-opt=\"neighborhood\"]")?.addEventListener("click", () => {
+    close();
+    void openNeighborhoodModal();
+  });
+  panel.querySelector<HTMLButtonElement>("button[data-opt=\"cas\"]")?.addEventListener("click", () => {
+    close();
+    openCasModal();
+  });
+  panel.querySelector<HTMLButtonElement>("button[data-opt=\"reset\"]")?.addEventListener("click", () => {
+    if (confirm("Reset the lot? All placed objects, walls, and floors will be erased.")) {
+      clearLot();
+      close();
+    }
+  });
+  panel.querySelector<HTMLButtonElement>("button[data-opt=\"debug\"]")?.addEventListener("click", () => {
+    setDebugMode(!document.body.classList.contains("debug-mode"));
+  });
+  panel.querySelector<HTMLButtonElement>("button[data-opt=\"close\"]")?.addEventListener("click", close);
+
+  // Populate saves list.
+  void renderOptionsSavesList(panel);
+}
+
+async function renderOptionsSavesList(panel: HTMLElement): Promise<void> {
+  const list = panel.querySelector<HTMLDivElement>("div[data-options-saves-list]");
+  if (!list) return;
+  list.innerHTML = "<div style=\"opacity:.5;font-style:italic;padding:6px;\">Loading saves…</div>";
+  let descriptors: SaveDescriptor[];
+  try {
+    descriptors = await listSaves();
+  } catch {
+    descriptors = [];
+  }
+  list.innerHTML = "";
+  if (descriptors.length === 0) {
+    const empty = document.createElement("div");
+    empty.textContent = "No saves yet — use Save As to create one.";
+    empty.style.cssText = "opacity:.5;font-style:italic;padding:6px;";
+    list.appendChild(empty);
+    return;
+  }
+  for (const d of descriptors) {
+    const row = document.createElement("div");
+    const isActive = d.id === activeSaveId;
+    row.style.cssText =
+      `display:grid;grid-template-columns:1fr auto auto;gap:6px;align-items:center;padding:6px 8px;` +
+      `background:${isActive ? "rgba(120,170,230,.18)" : "rgba(255,255,255,.03)"};border:1px solid ${isActive ? "#69f" : "transparent"};border-radius:3px;`;
+    const label = document.createElement("button");
+    label.style.cssText =
+      "background:transparent;border:none;color:#cde;font:inherit;text-align:left;cursor:pointer;padding:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;";
+    const srcTag = d.source === "both" ? "↕" : d.source === "local" ? "L" : "S";
+    label.innerHTML = `<strong>${escapeHtml(d.name)}</strong> <span style="opacity:.5;">${srcTag}</span><br><span style="opacity:.5;font-size:10px;">${timeAgo(d.updatedAt)} · ${(d.size / 1024).toFixed(1)} KiB</span>`;
+    label.title = `${d.id} — ${d.source}`;
+    label.addEventListener("click", () => {
+      void loadLot(true, d.id).then(() => {
+        // Refresh active highlight inside the modal.
+        if (optionsModalEl) void renderOptionsSavesList(optionsModalEl);
+      });
+    });
+    const del = document.createElement("button");
+    del.textContent = "✕";
+    del.title = "Delete this save";
+    del.style.cssText =
+      "background:#222;color:#d88;border:1px solid #533;font:inherit;padding:2px 8px;cursor:pointer;border-radius:3px;line-height:1.2;";
+    del.addEventListener("click", async (ev) => {
+      ev.stopPropagation();
+      if (!confirm(`Delete save "${d.name}"?`)) return;
+      await deleteSave(d.id);
+      if (d.id === activeSaveId) {
+        activeSaveId = LOT_SAVE_ID;
+        activeSaveName = "Current Lot";
+      }
+      void renderSavesHud();
+      if (optionsModalEl) void renderOptionsSavesList(optionsModalEl);
+    });
+    row.append(label, del);
+    list.appendChild(row);
+  }
+}
+
+// Install the hook so the bottom-bar's Options button reaches us.
+optionsModalHook.open = openOptionsModalImpl;
+
+// ============================================================================
 // Saves panel — lists local + server saves, lets the user Save / Save As /
 // Load / Delete and shows which save is currently active.
 // ============================================================================
@@ -3399,7 +3780,7 @@ function ensureSavesHud(): HTMLDivElement {
   const el = document.createElement("div");
   el.id = "saves-hud";
   el.style.cssText =
-    "position:fixed;bottom:12px;left:12px;width:240px;max-height:42vh;background:rgba(0,0,0,.6);padding:8px 10px;border-radius:6px;font:11px/1.4 ui-sans-serif,system-ui,sans-serif;color:#cde;display:flex;flex-direction:column;gap:5px;border:1px solid #345;";
+    "position:fixed;bottom:64px;left:12px;width:240px;max-height:42vh;background:linear-gradient(180deg,#1a2840 0%,#0f1a2d 100%);border:1px solid #3a4a66;box-shadow:0 2px 8px rgba(0,0,0,.4);padding:8px 10px;border-radius:6px;font:11px/1.4 ui-sans-serif,system-ui,sans-serif;color:#cde;display:flex;flex-direction:column;gap:5px;";
   document.body.appendChild(el);
   savesHudEl = el;
   return el;
