@@ -386,7 +386,15 @@ type LotMode = "play" | "build";
 let lotMode: LotMode = "play";
 
 /** When in Build mode, the build sub-tool. */
-type BuildTool = "place" | "paint" | "wall" | "door" | "window";
+type BuildTool =
+  | "place"
+  | "paint"
+  | "paint-rect"
+  | "wall"
+  | "wall-line"
+  | "wall-rect"
+  | "door"
+  | "window";
 let buildTool: BuildTool = "place";
 
 /** Walls live on tile *edges*. North / west edge sets are keyed by
@@ -1095,7 +1103,10 @@ function mountCameraControls(): void {
     <span style="opacity:.7;">tool</span>
     <button data-build-tool="place">place obj</button>
     <button data-build-tool="paint">paint floor</button>
+    <button data-build-tool="paint-rect" title="Paint a rectangle of floor (drag anchor → release)">paint rect</button>
     <button data-build-tool="wall">wall</button>
+    <button data-build-tool="wall-line" title="Straight wall: click + drag, snaps to row or column">wall line</button>
+    <button data-build-tool="wall-rect" title="Wall rectangle (room perimeter): click + drag">wall rect</button>
     <button data-build-tool="door">door</button>
     <button data-build-tool="window">window</button>
     <span data-build-selected style="opacity:.85;color:#cde;border-left:1px solid #345;padding-left:8px;display:none;"></span>
@@ -1116,7 +1127,16 @@ function mountCameraControls(): void {
     const t = ev.target;
     if (!(t instanceof HTMLButtonElement)) return;
     const tool = t.dataset["buildTool"];
-    if (tool === "place" || tool === "paint" || tool === "wall" || tool === "door" || tool === "window") {
+    if (
+      tool === "place" ||
+      tool === "paint" ||
+      tool === "paint-rect" ||
+      tool === "wall" ||
+      tool === "wall-line" ||
+      tool === "wall-rect" ||
+      tool === "door" ||
+      tool === "window"
+    ) {
       buildTool = tool;
       updateBuildToolHighlights();
     }
@@ -2092,6 +2112,129 @@ canvas.addEventListener("click", onLotCanvasClick);
 // pixel of motion.
 let wallDrag: { erase: boolean; lastKey: string | null } | null = null;
 
+// Anchor for the two-click stroke tools (wall-line, wall-rect, paint-rect).
+// Captured on mousedown, committed on mouseup. No live preview yet —
+// commit-on-release is simple and fast enough for 16×16 lots.
+type StrokeKind = "wall-line" | "wall-rect" | "paint-rect";
+let strokeAnchor: {
+  kind: StrokeKind;
+  worldX: number;
+  worldY: number;
+  erase: boolean;
+} | null = null;
+
+/** Add (or remove if erase) one north-edge wall at edge-key (x, y). */
+function applyWallN(x: number, y: number, erase: boolean): void {
+  const N = lotScene.gridSize;
+  if (x < 0 || y < 0 || x >= N || y > N) return;
+  const k = y * (N + 1) + x;
+  if (erase) wallsN.delete(k);
+  else wallsN.add(k);
+}
+function applyWallW(x: number, y: number, erase: boolean): void {
+  const N = lotScene.gridSize;
+  if (x < 0 || y < 0 || x > N || y >= N) return;
+  const k = y * (N + 1) + x;
+  if (erase) wallsW.delete(k);
+  else wallsW.add(k);
+}
+
+/** Commit a straight wall between (x1, y1) and (x2, y2). The longer-axis wins —
+ *  if `|dx| >= |dy|` we lay a horizontal run on row y1 (north edges of row y1),
+ *  otherwise a vertical run on column x1 (west edges of column x1). */
+function applyWallLine(
+  x1: number,
+  y1: number,
+  x2: number,
+  y2: number,
+  erase: boolean,
+): void {
+  const dx = Math.abs(x2 - x1);
+  const dy = Math.abs(y2 - y1);
+  if (dx >= dy) {
+    const lo = Math.min(x1, x2);
+    const hi = Math.max(x1, x2);
+    for (let x = lo; x <= hi; x += 1) applyWallN(x, y1, erase);
+  } else {
+    const lo = Math.min(y1, y2);
+    const hi = Math.max(y1, y2);
+    for (let y = lo; y <= hi; y += 1) applyWallW(x1, y, erase);
+  }
+}
+
+/** Lay the perimeter walls of the bounding rectangle of (x1, y1) and (x2, y2). */
+function applyWallRect(
+  x1: number,
+  y1: number,
+  x2: number,
+  y2: number,
+  erase: boolean,
+): void {
+  const xa = Math.min(x1, x2);
+  const xb = Math.max(x1, x2);
+  const ya = Math.min(y1, y2);
+  const yb = Math.max(y1, y2);
+  for (let x = xa; x <= xb; x += 1) {
+    applyWallN(x, ya, erase);
+    applyWallN(x, yb + 1, erase);
+  }
+  for (let y = ya; y <= yb; y += 1) {
+    applyWallW(xa, y, erase);
+    applyWallW(xb + 1, y, erase);
+  }
+}
+
+/** Fill the floor-paint rectangle [(x1,y1) ; (x2,y2)] with `color`, or
+ *  erase if `erase` is true. */
+function applyPaintRect(
+  x1: number,
+  y1: number,
+  x2: number,
+  y2: number,
+  color: string,
+  erase: boolean,
+): void {
+  const N = lotScene.gridSize;
+  const xa = Math.max(0, Math.min(x1, x2));
+  const xb = Math.min(N - 1, Math.max(x1, x2));
+  const ya = Math.max(0, Math.min(y1, y2));
+  const yb = Math.min(N - 1, Math.max(y1, y2));
+  for (let y = ya; y <= yb; y += 1) {
+    for (let x = xa; x <= xb; x += 1) {
+      const k = y * N + x;
+      if (erase) floorPaint.delete(k);
+      else floorPaint.set(k, color);
+    }
+  }
+}
+
+/** Get the tile under a client (mouse) position, clamped to the lot. */
+function tileFromClient(clientX: number, clientY: number): { x: number; y: number } | null {
+  const rect = canvas.getBoundingClientRect();
+  const cx = (clientX - rect.left) * (canvas.width / rect.width);
+  const cy = (clientY - rect.top) * (canvas.height / rect.height);
+  const tile = screenToTile(cx, cy, lotScene.camera, canvas);
+  const N = lotScene.gridSize;
+  if (tile.worldX < 0 || tile.worldY < 0 || tile.worldX >= N || tile.worldY >= N) return null;
+  return { x: tile.worldX, y: tile.worldY };
+}
+
+/** Commit the active stroke at release. */
+function commitStroke(endX: number, endY: number): void {
+  if (!strokeAnchor) return;
+  const a = strokeAnchor;
+  if (a.kind === "wall-line") {
+    applyWallLine(a.worldX, a.worldY, endX, endY, a.erase);
+  } else if (a.kind === "wall-rect") {
+    applyWallRect(a.worldX, a.worldY, endX, endY, a.erase);
+  } else if (a.kind === "paint-rect") {
+    const preset = FLOOR_PAINT_PRESETS.find((p) => p.id === activePaintId);
+    if (preset) applyPaintRect(a.worldX, a.worldY, endX, endY, preset.color, a.erase);
+  }
+  strokeAnchor = null;
+  composeLotScene();
+}
+
 function paintWallEdgeAtClient(clientX: number, clientY: number, erase: boolean): void {
   if (!wallDrag) return;
   const rect = canvas.getBoundingClientRect();
@@ -2126,6 +2269,14 @@ canvas.addEventListener("mousedown", (ev) => {
     paintWallEdgeAtClient(ev.clientX, ev.clientY, wallDrag.erase);
     return;
   }
+  if (buildTool === "wall-line" || buildTool === "wall-rect" || buildTool === "paint-rect") {
+    const t = tileFromClient(ev.clientX, ev.clientY);
+    if (!t) return;
+    ev.preventDefault();
+    strokeAnchor = { kind: buildTool, worldX: t.x, worldY: t.y, erase: ev.shiftKey };
+    suppressNextLotClick = true;
+    return;
+  }
   if (buildTool === "place") {
     const rect = canvas.getBoundingClientRect();
     const cx = (ev.clientX - rect.left) * (canvas.width / rect.width);
@@ -2158,6 +2309,11 @@ window.addEventListener("mousemove", (ev) => {
 window.addEventListener("mouseup", (ev) => {
   if (ev.button !== 0) return;
   wallDrag = null;
+  if (strokeAnchor) {
+    const t = tileFromClient(ev.clientX, ev.clientY);
+    if (t) commitStroke(t.x, t.y);
+    else strokeAnchor = null;
+  }
   if (moveDrag) {
     const inst = lotInstances.find((i) => i.id === moveDrag!.instId);
     if (inst) {
