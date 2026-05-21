@@ -1530,20 +1530,136 @@ function renderTs1CenterSlot(): void {
   updateBuildToolHighlights();
 }
 
+// ----------------------------------------------------------------------------
+// Live center — TS1 layout: portrait + name + Job/Skills/Friends/Personality
+// tabs. Tab content renders inline; portrait and tabs are stable across
+// re-renders, only the inner content swaps. Mirrors the real game's right-side
+// panel structure.
+// ----------------------------------------------------------------------------
+
+const SKILL_NAMES = ["Cooking", "Mechanical", "Charisma", "Body", "Logic", "Creativity", "Cleaning"] as const;
+type LiveTab = "job" | "skills" | "friends" | "traits";
+let activeLiveTab: LiveTab = "job";
+
 function mountLiveCenter(slot: HTMLDivElement): void {
-  const queue = document.createElement("div");
-  queue.style.cssText =
-    "display:flex;flex-direction:column;gap:4px;font:11px/1.4 ui-sans-serif,system-ui,sans-serif;color:#cde;";
-  queue.innerHTML = `
-    <div style="display:flex;gap:6px;flex-wrap:wrap;">
-      <button data-live-action="add-sim" style="background:linear-gradient(180deg,#3a78c0 0%,#26538a 100%);color:#fff;border:1px solid #6a8ab0;padding:4px 10px;cursor:pointer;border-radius:3px;font:inherit;">+ Sim (CAS)</button>
-      <button data-live-action="neighborhood" style="background:rgba(255,255,255,.06);color:#cde;border:1px solid #3a4a66;padding:4px 10px;cursor:pointer;border-radius:3px;font:inherit;">Neighborhood</button>
+  const sim = sims[selectedSimIdx];
+  const wrap = document.createElement("div");
+  wrap.style.cssText =
+    "display:grid;grid-template-rows:auto auto 1fr;gap:5px;height:100%;font:11px/1.35 ui-sans-serif,system-ui,sans-serif;color:#cde;";
+  // Portrait + name + status row.
+  const header = document.createElement("div");
+  header.style.cssText = "display:flex;gap:8px;align-items:center;";
+  header.innerHTML = `
+    <div style="position:relative;width:36px;height:36px;border-radius:50%;background:${sim?.headColor ?? "#666"};border:2px solid #d9b76a;display:flex;align-items:center;justify-content:center;flex-shrink:0;">
+      <div style="position:absolute;bottom:-2px;left:50%;transform:translateX(-50%);width:18px;height:9px;background:${sim?.bodyColor ?? "#444"};border-radius:0 0 4px 4px;"></div>
     </div>
-    <div style="opacity:.7;margin-top:6px;">Interaction queue: <span style="opacity:.5;font-style:italic;">(idle)</span></div>
-    <div style="opacity:.7;">Tip — click ground to walk, click an object to interact, click another Sim to select them.</div>
+    <div style="min-width:0;flex:1;">
+      <div style="font-weight:600;color:#fff;font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escapeHtml(sim?.name ?? "—")}</div>
+      <div style="font-size:10px;opacity:.7;">${sim?.age ?? ""} ${sim?.gender === "F" ? "♀" : sim?.gender === "M" ? "♂" : ""} · Unemployed</div>
+    </div>
   `;
-  slot.appendChild(queue);
-  queue.addEventListener("click", (ev) => {
+  wrap.appendChild(header);
+  // Tabs row.
+  const tabs = document.createElement("div");
+  tabs.style.cssText = "display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:2px;";
+  const tabLabels: Array<[LiveTab, string]> = [
+    ["job", "Job"],
+    ["skills", "Skills"],
+    ["friends", "Friends"],
+    ["traits", "Personality"],
+  ];
+  for (const [key, label] of tabLabels) {
+    const b = document.createElement("button");
+    b.dataset["liveTab"] = key;
+    b.textContent = label;
+    const active = key === activeLiveTab;
+    b.style.cssText =
+      `background:${active ? "linear-gradient(180deg,#3a78c0 0%,#26538a 100%)" : "rgba(255,255,255,.05)"};` +
+      `border:1px solid ${active ? "#d9b76a" : "#345"};color:${active ? "#fff" : "#cde"};` +
+      `padding:3px 4px;border-radius:3px;cursor:pointer;font:10px ui-sans-serif,system-ui,sans-serif;`;
+    tabs.appendChild(b);
+  }
+  wrap.appendChild(tabs);
+  // Content area.
+  const content = document.createElement("div");
+  content.dataset["liveContent"] = "1";
+  content.style.cssText = "overflow:auto;min-height:0;";
+  wrap.appendChild(content);
+  renderLiveTabContent(content, sim);
+  // Wire tab clicks.
+  tabs.addEventListener("click", (ev) => {
+    const t = ev.target;
+    if (!(t instanceof HTMLButtonElement)) return;
+    const tab = t.dataset["liveTab"];
+    if (tab === "job" || tab === "skills" || tab === "friends" || tab === "traits") {
+      activeLiveTab = tab;
+      renderTs1CenterSlot();
+    }
+  });
+  slot.appendChild(wrap);
+}
+
+function renderLiveTabContent(host: HTMLDivElement, sim: SimState | undefined): void {
+  if (!sim) {
+    host.innerHTML = `<div style="opacity:.5;font-style:italic;">no Sim selected</div>`;
+    return;
+  }
+  if (activeLiveTab === "job") {
+    host.innerHTML = `
+      <div style="opacity:.85;">Career: <span style="color:#fff;">Unemployed</span></div>
+      <div style="opacity:.7;font-size:10px;margin-top:3px;">Read the newspaper or use the computer to find a job.</div>
+      <div style="display:flex;gap:6px;margin-top:6px;">
+        <button data-live-action="add-sim" style="flex:1;background:linear-gradient(180deg,#3a78c0 0%,#26538a 100%);color:#fff;border:1px solid #6a8ab0;padding:3px 6px;cursor:pointer;border-radius:3px;font:11px ui-sans-serif,system-ui,sans-serif;">+ Sim</button>
+        <button data-live-action="neighborhood" style="flex:1;background:rgba(255,255,255,.06);color:#cde;border:1px solid #3a4a66;padding:3px 6px;cursor:pointer;border-radius:3px;font:11px ui-sans-serif,system-ui,sans-serif;">Neighborhood</button>
+      </div>
+    `;
+  } else if (activeLiveTab === "skills") {
+    let html = "";
+    for (let i = 0; i < SKILL_NAMES.length; i += 1) {
+      const v = 0; // skills not yet tracked per-Sim; placeholder for compat with TS1 panel.
+      html += `<div style="display:grid;grid-template-columns:70px 1fr 18px;gap:5px;align-items:center;margin-bottom:2px;">
+        <span style="opacity:.85;">${SKILL_NAMES[i]}</span>
+        <div style="position:relative;height:7px;background:#1a2030;border:1px solid #2a3a52;border-radius:2px;overflow:hidden;">
+          <div style="position:absolute;left:0;top:0;bottom:0;width:${v * 10}%;background:#5fb86b;"></div>
+        </div>
+        <span style="font-variant-numeric:tabular-nums;opacity:.8;text-align:right;">${v}</span>
+      </div>`;
+    }
+    host.innerHTML = html;
+  } else if (activeLiveTab === "friends") {
+    const others = sims.filter((s) => s.id !== sim.id);
+    if (others.length === 0) {
+      host.innerHTML = `<div style="opacity:.5;font-style:italic;">no other Sims in the household</div>`;
+      return;
+    }
+    let html = "";
+    for (const other of others) {
+      html += `<div style="display:grid;grid-template-columns:14px 1fr 70px;gap:5px;align-items:center;margin-bottom:3px;">
+        <span style="width:12px;height:12px;border-radius:50%;background:${other.headColor};border:1px solid #345;"></span>
+        <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escapeHtml(other.name)}</span>
+        <span style="opacity:.6;font-size:10px;font-variant-numeric:tabular-nums;">D:0 L:0</span>
+      </div>`;
+    }
+    host.innerHTML = html;
+  } else {
+    // Personality (traits 0-10 along 5 axes).
+    let html = "";
+    for (let i = 0; i < TRAIT_PAIRS.length; i += 1) {
+      const [low, high] = TRAIT_PAIRS[i] ?? ["", ""];
+      const v = sim.traits[i] ?? 5;
+      html += `<div style="margin-bottom:4px;">
+        <div style="display:flex;justify-content:space-between;font-size:10px;opacity:.75;">
+          <span>${low}</span><span>${high}</span>
+        </div>
+        <div style="position:relative;height:7px;background:#1a2030;border:1px solid #2a3a52;border-radius:2px;overflow:hidden;">
+          <div style="position:absolute;left:0;top:0;bottom:0;width:${v * 10}%;background:#7ab8ff;"></div>
+        </div>
+      </div>`;
+    }
+    host.innerHTML = html;
+  }
+  // Click handlers for Job tab buttons.
+  host.addEventListener("click", (ev) => {
     const t = ev.target;
     if (!(t instanceof HTMLButtonElement)) return;
     const action = t.dataset["liveAction"];
@@ -3457,6 +3573,7 @@ function renderFamilyHud(): void {
       selectedSimIdx = i;
       renderMotivesHud();
       renderFamilyHud();
+      if (lotMode === "play") renderTs1CenterSlot();
       composeLotScene();
     });
     root.appendChild(row);
