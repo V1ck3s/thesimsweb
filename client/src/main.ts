@@ -1607,11 +1607,9 @@ function renderLiveTabContent(host: HTMLDivElement, sim: SimState | undefined): 
   if (activeLiveTab === "job") {
     host.innerHTML = `
       <div style="opacity:.85;">Career: <span style="color:#fff;">Unemployed</span></div>
-      <div style="opacity:.7;font-size:10px;margin-top:3px;">Read the newspaper or use the computer to find a job.</div>
-      <div style="display:flex;gap:6px;margin-top:6px;">
-        <button data-live-action="add-sim" style="flex:1;background:linear-gradient(180deg,#3a78c0 0%,#26538a 100%);color:#fff;border:1px solid #6a8ab0;padding:3px 6px;cursor:pointer;border-radius:3px;font:11px ui-sans-serif,system-ui,sans-serif;">+ Sim</button>
-        <button data-live-action="neighborhood" style="flex:1;background:rgba(255,255,255,.06);color:#cde;border:1px solid #3a4a66;padding:3px 6px;cursor:pointer;border-radius:3px;font:11px ui-sans-serif,system-ui,sans-serif;">Neighborhood</button>
-      </div>
+      <div style="opacity:.85;margin-top:3px;">Level: <span style="color:#fff;">—</span></div>
+      <div style="opacity:.85;margin-top:3px;">Salary: <span style="color:#cfa;">§0</span> /hr</div>
+      <div style="opacity:.7;font-size:10px;margin-top:6px;">Read the newspaper or use the computer to find a job.</div>
     `;
   } else if (activeLiveTab === "skills") {
     let html = "";
