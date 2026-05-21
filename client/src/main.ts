@@ -1524,10 +1524,102 @@ function renderTs1CenterSlot(): void {
   if (title) title.textContent = lotMode === "buy" ? "Buy" : lotMode === "build" ? "Build" : "Live";
   if (lotMode === "play") {
     mountLiveCenter(slot);
+  } else if (lotMode === "buy") {
+    mountBuyCenter(slot);
   } else {
-    mountBuildToolsCenter(slot);
+    mountBuildCenter(slot);
   }
   updateBuildToolHighlights();
+}
+
+// ----------------------------------------------------------------------------
+// Buy mode TS1 category strip — the 8 base-game catalog categories. Only
+// "all" (no filter) is wired today; the per-category filter needs FUNCTION GUID
+// extraction from each object's OBJD chunk (Phase 4 territory). The disabled
+// buttons keep the visual reference to TS1 without faking behaviour.
+// ----------------------------------------------------------------------------
+
+const TS1_BUY_CATEGORIES = [
+  { id: "all", label: "All", icon: "▦", enabled: true },
+  { id: "seating", label: "Seating", icon: "🪑", enabled: false },
+  { id: "surfaces", label: "Surfaces", icon: "▭", enabled: false },
+  { id: "decor", label: "Decor", icon: "✦", enabled: false },
+  { id: "electronics", label: "Electronics", icon: "📺", enabled: false },
+  { id: "appliances", label: "Appliances", icon: "🍳", enabled: false },
+  { id: "plumbing", label: "Plumbing", icon: "🚿", enabled: false },
+  { id: "lighting", label: "Lighting", icon: "💡", enabled: false },
+  { id: "misc", label: "Misc", icon: "✿", enabled: false },
+] as const;
+
+function mountBuyCenter(slot: HTMLDivElement): void {
+  // Category strip — purely visual for now (FUNCTION GUID filter pending).
+  const strip = document.createElement("div");
+  strip.style.cssText = "display:grid;grid-template-columns:repeat(9,1fr);gap:2px;margin-bottom:4px;";
+  for (const cat of TS1_BUY_CATEGORIES) {
+    const b = document.createElement("button");
+    b.title = cat.enabled ? cat.label : `${cat.label} — filter coming once OBJD function categories are parsed`;
+    b.innerHTML = `<div style="font-size:14px;line-height:1;">${cat.icon}</div><div style="font-size:9px;opacity:.75;margin-top:1px;">${cat.label}</div>`;
+    b.disabled = !cat.enabled;
+    b.style.cssText =
+      `background:${cat.enabled ? "rgba(255,255,255,.06)" : "rgba(255,255,255,.02)"};border:1px solid #3a4a66;color:${cat.enabled ? "#cde" : "#566"};padding:4px 2px;border-radius:3px;cursor:${cat.enabled ? "pointer" : "not-allowed"};font:inherit;`;
+    strip.appendChild(b);
+  }
+  slot.appendChild(strip);
+  // The rest: existing place obj + selected info + Sell hint via mountBuildToolsCenter logic, restricted to buy controls.
+  mountBuildToolsCenter(slot);
+}
+
+// ----------------------------------------------------------------------------
+// Build mode TS1 tool palette — full TS1 toolbox. Wall/Door/Window/Floor-paint
+// and the Sledgehammer (clear) are wired; Stairs/Pool/Roof/Plants/Hand-tool
+// remain visible-but-disabled until their gameplay logic lands.
+// ----------------------------------------------------------------------------
+
+const TS1_BUILD_TOOLS = [
+  { id: "wall", label: "Wall", icon: "▏", enabled: true },
+  { id: "wall-line", label: "Line", icon: "／", enabled: true },
+  { id: "wall-rect", label: "Room", icon: "▢", enabled: true },
+  { id: "wallpaper", label: "Wallpaper", icon: "▦", enabled: false },
+  { id: "paint", label: "Floor", icon: "▪", enabled: true },
+  { id: "paint-rect", label: "Floor▢", icon: "◫", enabled: true },
+  { id: "door", label: "Door", icon: "🚪", enabled: true },
+  { id: "window", label: "Window", icon: "🪟", enabled: true },
+  { id: "stairs", label: "Stairs", icon: "▟", enabled: false },
+  { id: "pool", label: "Pool", icon: "🌊", enabled: false },
+  { id: "roof", label: "Roof", icon: "▲", enabled: false },
+  { id: "garden", label: "Garden", icon: "🌿", enabled: false },
+  { id: "hand", label: "Hand", icon: "✋", enabled: false },
+  { id: "sledge", label: "Sledge", icon: "🔨", enabled: false },
+] as const;
+
+function mountBuildCenter(slot: HTMLDivElement): void {
+  // TS1 tool palette as a grid — visual reference to the full game toolbox.
+  const palette = document.createElement("div");
+  palette.style.cssText = "display:grid;grid-template-columns:repeat(7,1fr);gap:2px;margin-bottom:4px;";
+  for (const tool of TS1_BUILD_TOOLS) {
+    const b = document.createElement("button");
+    b.title = tool.enabled ? tool.label : `${tool.label} — needs gameplay logic`;
+    b.dataset["buildToolPalette"] = tool.id;
+    b.innerHTML = `<div style="font-size:13px;line-height:1;">${tool.icon}</div><div style="font-size:9px;opacity:.75;margin-top:1px;">${tool.label}</div>`;
+    b.disabled = !tool.enabled;
+    b.style.cssText =
+      `background:${tool.enabled ? "rgba(255,255,255,.06)" : "rgba(255,255,255,.02)"};border:1px solid #3a4a66;color:${tool.enabled ? "#cde" : "#566"};padding:3px 2px;border-radius:3px;cursor:${tool.enabled ? "pointer" : "not-allowed"};font:inherit;`;
+    palette.appendChild(b);
+  }
+  palette.addEventListener("click", (ev) => {
+    const t = ev.target;
+    const btn = t instanceof HTMLElement ? t.closest("button") : null;
+    if (!(btn instanceof HTMLButtonElement)) return;
+    if (btn.disabled) return;
+    const id = btn.dataset["buildToolPalette"];
+    if (id === "wall" || id === "wall-line" || id === "wall-rect" || id === "door" || id === "window" || id === "paint" || id === "paint-rect") {
+      buildTool = id;
+      updateBuildToolHighlights();
+    }
+  });
+  slot.appendChild(palette);
+  // Then the existing build sub-tool bar (paint swatches, clear, house picker).
+  mountBuildToolsCenter(slot);
 }
 
 // ----------------------------------------------------------------------------
@@ -1667,8 +1759,9 @@ function renderLiveTabContent(host: HTMLDivElement, sim: SimState | undefined): 
 }
 
 function mountBuildToolsCenter(slot: HTMLDivElement): void {
-  // Rebuild the #build-tools container inside the slot so the existing
-  // updateBuildToolHighlights() and click handlers find it by id.
+  // Secondary actions row — paint swatches, clear, house picker, selected
+  // object info. The main tool selection lives in the palette/strip above.
+  // Keeps id="build-tools" so updateBuildToolHighlights() finds it.
   const buildBar = document.createElement("div");
   buildBar.id = "build-tools";
   buildBar.style.cssText =
@@ -1678,18 +1771,10 @@ function mountBuildToolsCenter(slot: HTMLDivElement): void {
       `<button data-paint-id="${p.id}" title="${p.label}" style="width:20px;height:20px;background:${p.color};border:1px solid #345;border-radius:3px;cursor:pointer;"></button>`,
   ).join("");
   buildBar.innerHTML = `
-    <span data-mode-buy style="opacity:.7;">buy</span>
-    <button data-mode-buy data-build-tool="place" title="Place the selected catalog object on an empty tile">place obj</button>
+    <span data-mode-buy style="opacity:.7;">action</span>
+    <button data-mode-buy data-build-tool="place" title="Place the selected catalog object on an empty tile">place</button>
     <span data-build-selected style="opacity:.85;color:#cde;border-left:1px solid #345;padding-left:6px;display:none;"></span>
-    <span data-mode-build style="opacity:.7;">tools</span>
-    <button data-mode-build data-build-tool="wall">wall</button>
-    <button data-mode-build data-build-tool="wall-line" title="Straight wall: click + drag">line</button>
-    <button data-mode-build data-build-tool="wall-rect" title="Wall rectangle (room): click + drag">rect</button>
-    <button data-mode-build data-build-tool="door">door</button>
-    <button data-mode-build data-build-tool="window">win</button>
-    <button data-mode-build data-build-tool="paint">paint</button>
-    <button data-mode-build data-build-tool="paint-rect" title="Paint floor rectangle">paint□</button>
-    <span data-mode-build style="opacity:.5;">·</span>
+    <span data-mode-build style="opacity:.7;">color</span>
     <span data-mode-build style="display:contents;">${swatches}</span>
     <button data-mode-build data-paint-action="clear" title="Erase all painted tiles">clear floor</button>
     <button data-mode-build data-wall-action="clear" title="Remove all walls">clear walls</button>
