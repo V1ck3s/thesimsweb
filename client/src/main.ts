@@ -18,7 +18,7 @@ import {
   type IsoSceneSprite,
   type IsoEntity,
 } from "./renderer/iso.js";
-import { loadStrings, s as tStr, ss as tStrArr } from "./ui/i18n.js";
+import { loadStrings, s as tStr, ss as tStrArr, getLocale } from "./ui/i18n.js";
 import { mountCpanel, setCpanelMode } from "./ui/cpanel.js";
 import { UI_BASE } from "./ui/bmp.js";
 
@@ -478,78 +478,50 @@ function moodColor(value: number): string {
 
 function renderMotivesHud(): void {
   const root = ensureMotivesHud();
-  // First-pass build: title + mood block + 8 motive rows = MOTIVE_NAMES.length + 2 children.
-  if (root.childElementCount !== MOTIVE_NAMES.length + 2) {
+  // Authentic TS1 motive strip: 8 stacked rows, FR label on the left, a
+  // HouseSubBarsOff.BMP-backed bar in the middle, value on the right. No mood
+  // block (the LiveGadget portrait carries the mood ring instead).
+  if (root.childElementCount !== MOTIVE_NAMES.length) {
     root.innerHTML = "";
-    const title = document.createElement("div");
-    title.dataset["motivesTitle"] = "1";
-    title.style.cssText = "color:#9ad;opacity:.85;margin-bottom:3px;";
-    root.appendChild(title);
-    // Mood diamond / bar block.
-    const moodBlock = document.createElement("div");
-    moodBlock.dataset["moodBlock"] = "1";
-    moodBlock.style.cssText =
-      "display:grid;grid-template-columns:60px 1fr 32px;gap:6px;align-items:center;margin-bottom:4px;padding-bottom:5px;border-bottom:1px solid #2a3a52;";
-    const moodLabel = document.createElement("span");
-    moodLabel.textContent = "Mood";
-    moodLabel.style.cssText = "opacity:.9;font-weight:600;color:#e8eef8;";
-    const moodTrack = document.createElement("div");
-    moodTrack.style.cssText = "position:relative;height:12px;background:#1a2030;border-radius:3px;overflow:hidden;border:1px solid #2a3a52;";
-    const moodFill = document.createElement("div");
-    moodFill.dataset["moodFill"] = "1";
-    moodFill.style.cssText = "position:absolute;left:50%;top:0;bottom:0;width:0;transition:width .2s linear,background-color .3s;";
-    moodTrack.appendChild(moodFill);
-    const moodCenter = document.createElement("div");
-    moodCenter.style.cssText = "position:absolute;left:50%;top:0;bottom:0;width:1px;background:rgba(255,255,255,.2);pointer-events:none;";
-    moodTrack.appendChild(moodCenter);
-    const moodNum = document.createElement("span");
-    moodNum.dataset["moodNum"] = "1";
-    moodNum.style.cssText = "text-align:right;font-variant-numeric:tabular-nums;font-weight:600;";
-    moodBlock.append(moodLabel, moodTrack, moodNum);
-    root.appendChild(moodBlock);
+    // No padding between rows so 8 × 10px fits in the ~80px slot.
+    root.style.gap = "1px";
     for (let i = 0; i < MOTIVE_NAMES.length; i += 1) {
       const row = document.createElement("div");
       row.dataset["motiveIdx"] = String(i);
-      row.style.cssText = "display:grid;grid-template-columns:60px 1fr 32px;gap:6px;align-items:center;";
+      row.style.cssText =
+        "display:grid;grid-template-columns:90px 1fr 24px;gap:6px;align-items:center;height:9px;color:#ffdf80;font:9px/1 \"MS Sans Serif\",sans-serif;";
       const lbl = document.createElement("span");
       lbl.textContent = motiveLabel(i);
-      lbl.style.opacity = "0.85";
+      lbl.dataset["lbl"] = "1";
+      lbl.style.cssText = "overflow:hidden;text-overflow:ellipsis;white-space:nowrap;";
       const track = document.createElement("div");
-      track.style.cssText = "position:relative;height:8px;background:#222;border-radius:3px;overflow:hidden;";
+      track.style.cssText = [
+        "position:relative",
+        "height:8px",
+        // Centre marker only — the bar fill renders as an inset coloured rect.
+        `background:url("${UI_BASE}/Backgrounds/HouseSubBarsOff.BMP") no-repeat center center / 100% 100%`,
+        "image-rendering:pixelated",
+      ].join(";");
       const fill = document.createElement("div");
       fill.dataset["fill"] = "1";
-      fill.style.cssText = "position:absolute;left:50%;top:0;bottom:0;width:0;background:#5fb86b;transition:width .15s linear,background-color .25s;";
+      fill.style.cssText =
+        "position:absolute;left:50%;top:1px;bottom:1px;width:0;background:#5fb86b;transition:width .15s linear,background-color .25s;";
       track.appendChild(fill);
       const num = document.createElement("span");
       num.dataset["num"] = "1";
-      num.style.cssText = "text-align:right;font-variant-numeric:tabular-nums;";
+      num.style.cssText =
+        "text-align:right;font-variant-numeric:tabular-nums;font:9px/1 \"MS Sans Serif\",sans-serif;color:#ffdf80;";
       row.append(lbl, track, num);
       root.appendChild(row);
     }
   }
   const sim = sims[selectedSimIdx];
   if (!sim) return;
-  const title = root.querySelector<HTMLDivElement>("div[data-motives-title]");
-  if (title) title.textContent = `${sim.name}`;
-  // Mood update.
-  const mood = computeMood(sim);
-  const moodFill = root.querySelector<HTMLDivElement>("div[data-mood-fill]");
-  const moodNum = root.querySelector<HTMLSpanElement>("span[data-mood-num]");
-  if (moodFill) {
-    const half = Math.abs(mood) / 100 / 2;
-    const widthPct = half * 100;
-    if (mood >= 0) {
-      moodFill.style.left = "50%";
-      moodFill.style.width = `${widthPct}%`;
-    } else {
-      moodFill.style.left = `${50 - widthPct}%`;
-      moodFill.style.width = `${widthPct}%`;
-    }
-    moodFill.style.backgroundColor = moodColor(mood);
-  }
-  if (moodNum) {
-    moodNum.textContent = Math.round(mood).toString().padStart(3, " ");
-    moodNum.style.color = moodColor(mood);
+  // Refresh labels in case the locale changed since last build.
+  for (const lbl of root.querySelectorAll<HTMLSpanElement>("span[data-lbl]")) {
+    const row = lbl.parentElement;
+    const idx = parseInt(row?.dataset["motiveIdx"] ?? "-1", 10);
+    if (idx >= 0) lbl.textContent = motiveLabel(idx);
   }
   const rows = root.querySelectorAll<HTMLDivElement>("div[data-motive-idx]");
   for (const row of rows) {
@@ -558,7 +530,7 @@ function renderMotivesHud(): void {
     const fill = row.querySelector<HTMLDivElement>("div[data-fill]");
     const num = row.querySelector<HTMLSpanElement>("span[data-num]");
     if (fill) {
-      const half = Math.abs(v) / 100 / 2; // 0..0.5 of track width
+      const half = Math.abs(v) / 100 / 2;
       const widthPct = half * 100;
       if (v >= 0) {
         fill.style.left = "50%";
@@ -594,6 +566,8 @@ function startMotivesLoop(): void {
 // ============================================================================
 
 const DAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"] as const;
+const DAYS_FR = ["Lun", "Mar", "Mer", "Jeu", "Ven", "Sam", "Dim"] as const;
+const DAYS_BY_LOCALE = { 1: DAYS, 3: DAYS_FR } as const;
 const TIME_SCALE = 1; // 1 in-game minute per real second @ 1×
 let gameMinutes = 8 * 60; // 08:00 day 0
 let gameDayIdx = 0;
@@ -624,16 +598,19 @@ function ensureTimeFundsHud(): HTMLDivElement {
   el.style.cssText = inPanel
     ? "display:flex;flex-direction:column;gap:6px;font:12px/1.3 ui-sans-serif,system-ui,sans-serif;color:#cde;"
     : "position:fixed;top:8px;left:50%;transform:translateX(-50%);background:linear-gradient(180deg,#1a2840 0%,#0f1a2d 100%);border:1px solid #3a4a66;box-shadow:0 2px 8px rgba(0,0,0,.4);padding:6px 14px;border-radius:6px;font:12px/1.3 ui-sans-serif,system-ui,sans-serif;color:#cde;display:flex;gap:14px;align-items:center;";
-  // Stacked layout when in the panel, inline when standalone.
+  // Stacked layout when in the panel, inline when standalone. Inside the
+  // panel: day + clock in the iconic TS1 yellow at the top, funds in green
+  // underneath, then a row of 4 BMP-backed speed buttons (Pause + 1× + 2× + 3×).
+  const SPEED_TOOLTIPS_VCTL_IDX = { 0: 15, 1: 16, 2: 17, 3: 18 } as const;
   el.innerHTML = inPanel
     ? `
-      <div style="font-size:13px;"><span data-th-day style="color:#d9b76a;font-weight:600;">Mon</span> <span data-th-time style="font-variant-numeric:tabular-nums;">08:00</span></div>
-      <div style="font-size:16px;font-weight:600;color:#cfa;"><span style="color:#cfa;">§</span><span data-th-funds style="font-variant-numeric:tabular-nums;">20000</span></div>
-      <div data-th-speed-group style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:3px;">
-        <button data-th-speed="0" title="Pause (space)" style="background:rgba(255,255,255,.05);border:1px solid #345;color:#cde;border-radius:3px;padding:3px 0;cursor:pointer;font:11px/1 ui-sans-serif,system-ui,sans-serif;">⏸</button>
-        <button data-th-speed="1" title="Normal speed (1)" style="background:rgba(255,255,255,.05);border:1px solid #345;color:#cde;border-radius:3px;padding:3px 0;cursor:pointer;font:11px/1 ui-sans-serif,system-ui,sans-serif;">1×</button>
-        <button data-th-speed="2" title="Fast (2)" style="background:rgba(255,255,255,.05);border:1px solid #345;color:#cde;border-radius:3px;padding:3px 0;cursor:pointer;font:11px/1 ui-sans-serif,system-ui,sans-serif;">2×</button>
-        <button data-th-speed="3" title="Ultra (3)" style="background:rgba(255,255,255,.05);border:1px solid #345;color:#cde;border-radius:3px;padding:3px 0;cursor:pointer;font:11px/1 ui-sans-serif,system-ui,sans-serif;">3×</button>
+      <div style="font:bold 12px/1.1 \"MS Sans Serif\",sans-serif;color:#ffdf80;text-shadow:0 1px 0 rgba(0,0,0,0.5);"><span data-th-day>Mon</span> <span data-th-time style="font-variant-numeric:tabular-nums;">08:00</span></div>
+      <div style="font:bold 14px/1.1 \"MS Sans Serif\",sans-serif;color:#9be67a;text-shadow:0 1px 0 rgba(0,0,0,0.5);"><span style="color:#9be67a;">§</span><span data-th-funds style="font-variant-numeric:tabular-nums;">20000</span></div>
+      <div data-th-speed-group style="display:flex;gap:2px;margin-top:auto;">
+        <button data-th-speed="0" title="Pause" style="background:transparent;border:1px solid #000;border-radius:2px;padding:1px;cursor:pointer;line-height:0;"><img src="${UI_BASE}/Buttons/pause.bmp" alt="Pause" style="display:block;height:14px;image-rendering:pixelated;"/></button>
+        <button data-th-speed="1" title="Normal" style="background:transparent;border:1px solid #000;border-radius:2px;padding:1px;cursor:pointer;line-height:0;"><img src="${UI_BASE}/Buttons/Speed1.bmp" alt="1×" style="display:block;height:14px;image-rendering:pixelated;"/></button>
+        <button data-th-speed="2" title="Fast" style="background:transparent;border:1px solid #000;border-radius:2px;padding:1px;cursor:pointer;line-height:0;"><img src="${UI_BASE}/Buttons/Speed2.bmp" alt="2×" style="display:block;height:14px;image-rendering:pixelated;"/></button>
+        <button data-th-speed="3" title="Ultra" style="background:transparent;border:1px solid #000;border-radius:2px;padding:1px;cursor:pointer;line-height:0;"><img src="${UI_BASE}/Buttons/Speed3.bmp" alt="3×" style="display:block;height:14px;image-rendering:pixelated;"/></button>
       </div>
     `
     : `
@@ -648,6 +625,13 @@ function ensureTimeFundsHud(): HTMLDivElement {
       <span style="opacity:.4;">·</span>
       <span><span style="color:#cfa;">§</span><span data-th-funds style="font-variant-numeric:tabular-nums;">20000</span></span>
     `;
+  // Refresh speed tooltips to the FR strings once the i18n bundle lands.
+  if (inPanel) {
+    for (const [k, idx] of Object.entries(SPEED_TOOLTIPS_VCTL_IDX)) {
+      const btn = el.querySelector<HTMLButtonElement>(`button[data-th-speed="${k}"]`);
+      if (btn) btn.title = tStr("UIText", 138, idx, btn.title);
+    }
+  }
   el.querySelector("[data-th-speed-group]")?.addEventListener("click", (ev) => {
     const t = ev.target;
     if (!(t instanceof HTMLButtonElement)) return;
@@ -664,7 +648,9 @@ function ensureTimeFundsHud(): HTMLDivElement {
 
 function renderTimeFundsHud(): void {
   const root = ensureTimeFundsHud();
-  const day = DAYS[gameDayIdx % DAYS.length] ?? "?";
+  const locale = getLocale();
+  const daysTable = DAYS_BY_LOCALE[locale] ?? DAYS;
+  const day = daysTable[gameDayIdx % daysTable.length] ?? "?";
   const hh = Math.floor(gameMinutes / 60).toString().padStart(2, "0");
   const mm = Math.floor(gameMinutes % 60).toString().padStart(2, "0");
   const dEl = root.querySelector<HTMLSpanElement>("span[data-th-day]");
@@ -672,13 +658,14 @@ function renderTimeFundsHud(): void {
   const fEl = root.querySelector<HTMLSpanElement>("span[data-th-funds]");
   if (dEl) dEl.textContent = day;
   if (tEl) tEl.textContent = `${hh}:${mm}`;
-  if (fEl) fEl.textContent = funds.toLocaleString("en-US");
-  // Highlight the active speed button.
+  if (fEl) fEl.textContent = funds.toLocaleString(locale === 3 ? "fr-FR" : "en-US");
+  // Highlight the active speed button — the BMPs already have their own
+  // active/inactive states baked in, but a coloured ring around the active
+  // button still helps it pop on the dark panel.
   for (const btn of root.querySelectorAll<HTMLButtonElement>("button[data-th-speed]")) {
     const active = parseInt(btn.dataset["thSpeed"] ?? "1", 10) === gameSpeed;
-    btn.style.background = active ? "rgba(120,170,230,.30)" : "transparent";
-    btn.style.borderColor = active ? "#7ac" : "#345";
-    btn.style.color = active ? "#fff" : "#cde";
+    btn.style.borderColor = active ? "#ffdf80" : "#000";
+    btn.style.background = active ? "rgba(255,223,128,0.20)" : "transparent";
   }
 }
 
@@ -3651,63 +3638,79 @@ function ensureFamilyHud(): HTMLDivElement {
 
 function renderFamilyHud(): void {
   const root = ensureFamilyHud();
+  // Authentic TS1 LiveGadget: a single big portrait + the active Sim's name,
+  // with the rest of the household as small clickable swatches underneath.
+  // CAS / Neighborhood / Remove live in the Options modal (right-side patch).
   root.innerHTML = "";
-  const title = document.createElement("div");
-  title.textContent = "Family";
-  title.style.cssText = "color:#9ad;opacity:.85;margin-bottom:3px;";
-  root.appendChild(title);
-  for (let i = 0; i < sims.length; i += 1) {
-    const sim = sims[i]!;
-    const row = document.createElement("button");
-    row.style.cssText =
-      `display:grid;grid-template-columns:18px 1fr 14px;gap:6px;align-items:center;` +
-      `background:${i === selectedSimIdx ? "rgba(120,170,230,.18)" : "transparent"};` +
-      `border:1px solid ${i === selectedSimIdx ? "#345" : "transparent"};color:#cde;` +
-      `font:inherit;padding:3px 4px;border-radius:3px;cursor:pointer;text-align:left;`;
-    const swatch = document.createElement("span");
-    swatch.style.cssText = `width:14px;height:14px;border-radius:50%;background:${sim.headColor};display:inline-block;border:1px solid rgba(255,255,255,.3);`;
-    const name = document.createElement("span");
-    name.textContent = sim.name;
-    name.style.cssText = "overflow:hidden;text-overflow:ellipsis;white-space:nowrap;";
-    const tag = document.createElement("span");
-    tag.textContent = sim.gender;
-    tag.style.cssText = "opacity:.55;font-size:10px;";
-    row.append(swatch, name, tag);
-    row.title = sim.bio || "";
-    row.addEventListener("click", () => {
-      selectedSimIdx = i;
-      renderMotivesHud();
-      renderFamilyHud();
-      if (lotMode === "play") renderTs1CenterSlot();
-      composeLotScene();
-    });
-    root.appendChild(row);
-  }
-  const actions = document.createElement("div");
-  actions.style.cssText = "display:flex;gap:4px;margin-top:4px;flex-wrap:wrap;";
-  const casBtn = document.createElement("button");
-  casBtn.textContent = "+ Sim";
-  casBtn.title = "Open Create-A-Sim";
-  casBtn.style.cssText =
-    "flex:1;background:#3b6;color:#000;border:1px solid #444;font:inherit;padding:3px 6px;cursor:pointer;border-radius:2px;";
-  casBtn.addEventListener("click", () => openCasModal());
-  actions.appendChild(casBtn);
-  const nbBtn = document.createElement("button");
-  nbBtn.textContent = "Neighborhood";
-  nbBtn.title = "Move family to another Magic Town lot";
-  nbBtn.style.cssText =
-    "flex:1;background:#3a78c0;color:#fff;border:1px solid #444;font:inherit;padding:3px 6px;cursor:pointer;border-radius:2px;";
-  nbBtn.addEventListener("click", () => void openNeighborhoodModal());
-  actions.appendChild(nbBtn);
+  const sim = sims[selectedSimIdx];
+  if (!sim) return;
+  const mood = computeMood(sim);
+  // Top: portrait disc with mood-coloured halo.
+  const portrait = document.createElement("button");
+  portrait.dataset["familyPortrait"] = "1";
+  portrait.title = `${sim.name} — click to cycle to next Sim`;
+  portrait.style.cssText = [
+    "width:46px",
+    "height:46px",
+    "border-radius:50%",
+    `background:${sim.headColor}`,
+    `border:3px solid ${moodColor(mood)}`,
+    "box-shadow:0 0 6px rgba(0,0,0,0.4),inset 0 -6px 8px rgba(0,0,0,0.25)",
+    "position:relative",
+    "padding:0",
+    "cursor:pointer",
+    "flex-shrink:0",
+  ].join(";");
+  // Tiny body dot under the head — mirrors the headColor/bodyColor split used
+  // elsewhere in the renderer.
+  const body = document.createElement("span");
+  body.style.cssText = `position:absolute;bottom:-3px;left:50%;transform:translateX(-50%);width:24px;height:10px;background:${sim.bodyColor};border-radius:0 0 6px 6px;`;
+  portrait.appendChild(body);
+  portrait.addEventListener("click", () => {
+    if (sims.length < 2) return;
+    selectedSimIdx = (selectedSimIdx + 1) % sims.length;
+    renderMotivesHud();
+    renderFamilyHud();
+    if (lotMode === "play") renderTs1CenterSlot();
+    composeLotScene();
+  });
+  root.appendChild(portrait);
+  // Name in the iconic TS1 yellow, fitted under the portrait.
+  const name = document.createElement("div");
+  name.textContent = sim.name;
+  name.style.cssText =
+    "color:#ffdf80;font:bold 10px/1.1 \"MS Sans Serif\",sans-serif;text-align:center;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-shadow:0 1px 0 rgba(0,0,0,0.5);";
+  root.appendChild(name);
+  // Mini swatches for the other household members.
   if (sims.length > 1) {
-    const delBtn = document.createElement("button");
-    delBtn.textContent = "Remove";
-    delBtn.style.cssText =
-      "flex:1;background:#222;color:#d88;border:1px solid #533;font:inherit;padding:3px 6px;cursor:pointer;border-radius:2px;";
-    delBtn.addEventListener("click", () => removeSelectedSim());
-    actions.appendChild(delBtn);
+    const swatches = document.createElement("div");
+    swatches.style.cssText =
+      "display:flex;gap:2px;justify-content:center;flex-wrap:wrap;max-width:100%;margin-top:1px;";
+    for (let i = 0; i < sims.length; i += 1) {
+      if (i === selectedSimIdx) continue;
+      const other = sims[i]!;
+      const dot = document.createElement("button");
+      dot.title = other.name;
+      dot.style.cssText = [
+        "width:11px",
+        "height:11px",
+        "border-radius:50%",
+        `background:${other.headColor}`,
+        "border:1px solid rgba(0,0,0,0.4)",
+        "padding:0",
+        "cursor:pointer",
+      ].join(";");
+      dot.addEventListener("click", () => {
+        selectedSimIdx = i;
+        renderMotivesHud();
+        renderFamilyHud();
+        if (lotMode === "play") renderTs1CenterSlot();
+        composeLotScene();
+      });
+      swatches.appendChild(dot);
+    }
+    if (swatches.childElementCount > 0) root.appendChild(swatches);
   }
-  root.appendChild(actions);
 }
 
 function removeSelectedSim(): void {
