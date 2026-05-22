@@ -1331,6 +1331,9 @@ function mountMinimap(): void {
   existing?.remove();
   const wrap = document.createElement("div");
   wrap.id = "minimap";
+  // Hidden in normal play — the dev minimap is a debug aid only. TS1's
+  // authentic UI doesn't have a floating minimap.
+  wrap.className = "debug-only";
   wrap.style.cssText =
     "position:fixed;top:200px;right:8px;background:linear-gradient(180deg,#1a2840 0%,#0f1a2d 100%);border:1px solid #3a4a66;box-shadow:0 2px 8px rgba(0,0,0,.4);padding:6px;border-radius:6px;display:flex;flex-direction:column;gap:4px;align-items:center;font:10px/1.2 ui-monospace,monospace;color:#9ad;";
   wrap.innerHTML = `<canvas id="minimap-canvas" width="${MINIMAP_SIZE}" height="${MINIMAP_SIZE}" style="image-rendering:pixelated;cursor:crosshair;border:1px solid #345;"></canvas><span style="opacity:.7;">click to pan</span>`;
@@ -1467,6 +1470,9 @@ function mountCameraMiniBar(): void {
   existing?.remove();
   const bar = document.createElement("div");
   bar.id = "camera-controls";
+  // Floating rotate/zoom/walls bar is a dev convenience. TS1's camera controls
+  // live inside the panel (via CameraPatch) — wire later. Hide for now.
+  bar.className = "debug-only";
   bar.style.cssText =
     "position:fixed;top:8px;right:8px;display:flex;gap:4px;align-items:center;" +
     "background:linear-gradient(180deg,#1a2840 0%,#0f1a2d 100%);" +
@@ -2011,7 +2017,9 @@ function mountBottomModeBar(): void {
   // (Mode Vie / Mode Achat / Mode Construction / Mode Options). The labels
   // include keyboard shortcuts ("- F1") which we strip from the visible
   // text but keep in the title for completeness.
-  const modeKeyToText: Record<string, string> = { play: "Mode Vie", buy: "Achat", build: "Construction", options: "Options" };
+  // Short labels keep the 140px right-side column from wrapping. Tooltips
+  // still carry the full FR string from UIText 138 ("Mode Vie - F1" etc.).
+  const modeKeyToText: Record<string, string> = { play: "Vie", buy: "Achat", build: "Constr.", options: "Options" };
   for (const btn of bar.querySelectorAll<HTMLButtonElement>("button.mode-tab")) {
     const idx = parseInt(btn.dataset["vctl"] ?? "-1", 10);
     if (idx >= 0) {

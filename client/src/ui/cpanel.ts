@@ -141,24 +141,12 @@ export function mountCpanel(): HTMLDivElement {
   motivesWrap.appendChild(motivesSlot);
   panel.appendChild(motivesWrap);
 
-  // LiveGadget grid — small 6-portrait family bar shown above-and-right of
-  // the motives strip. Native size 108×100. We use it as a label/avatar grid
-  // for the household members (no functional click logic yet — handled by
-  // the family slot's swatches inside LivePatch).
-  const liveGadget = document.createElement("div");
-  liveGadget.id = "cpanel-livegadget";
-  liveGadget.style.cssText = [
-    "position:absolute",
-    "left:566px",
-    "bottom:0",
-    "width:108px",
-    "height:100px",
-    `background:url("${UI_BASE}/Backgrounds/LiveGadget.png") no-repeat 0 0`,
-    "background-size:108px 100px",
-    "image-rendering:pixelated",
-    "pointer-events:none",
-  ].join(";");
-  panel.appendChild(liveGadget);
+  // LiveGadget (6-portrait family grid) is not displayed in single-Sim view —
+  // TS1 only surfaces it when there are multiple Sims in the household and
+  // you're using the family overview. The active Sim portrait + name lives
+  // inside the LivePatch arch above instead. The bitmap is still extracted
+  // and available at /assets/converted/ui/cpanel/Backgrounds/LiveGadget.png
+  // for a future family-pane feature.
 
   // Time / funds / speed — clock area. Sits in the right portion, before the
   // mode tabs strip on the far right.
