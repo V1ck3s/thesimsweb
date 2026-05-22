@@ -1713,6 +1713,28 @@ function mountBuildCenter(slot: HTMLDivElement): void {
 // ----------------------------------------------------------------------------
 
 const SKILL_NAMES = ["Cooking", "Mechanical", "Charisma", "Body", "Logic", "Creativity", "Cleaning"] as const;
+
+// Live.iff STR# 136 ("JobSubpanelLabels") → indices 1-6 are the six TS1
+// skills in FR (Cuisine, Mécanique, Charisme, Physique, Logique, Créativité).
+// Cleaning has no canonical TS1 string; fall back to "Ménage".
+const SKILL_STR_IDX = [1, 2, 3, 4, 5, 6, -1] as const;
+
+function skillLabel(i: number): string {
+  const idx = SKILL_STR_IDX[i];
+  if (idx === undefined || idx < 0) return i === 6 ? "Ménage" : (SKILL_NAMES[i] ?? "");
+  return tStr("Live", 136, idx, SKILL_NAMES[i] ?? "");
+}
+
+// Live.iff STR# 131 ("Personality") packs each trait axis as 7 entries:
+// [name, low_label, mid_label, high_label, low_desc, mid_desc, high_desc].
+// Index per axis: 1+7*axis = axis name, +1 = low, +3 = high.
+function traitPair(i: number): readonly [string, string] {
+  const base = 1 + 7 * i;
+  const low = tStr("Live", 131, base + 1, "");
+  const high = tStr("Live", 131, base + 3, "");
+  if (low && high) return [low, high];
+  return TRAIT_PAIRS[i] ?? ["", ""];
+}
 type LiveTab = "job" | "skills" | "friends" | "traits";
 let activeLiveTab: LiveTab = "job";
 
@@ -1795,7 +1817,7 @@ function renderLiveTabContent(host: HTMLDivElement, sim: SimState | undefined): 
     for (let i = 0; i < SKILL_NAMES.length; i += 1) {
       const v = 0; // skills not yet tracked per-Sim; placeholder for compat with TS1 panel.
       html += `<div style="display:grid;grid-template-columns:70px 1fr 18px;gap:5px;align-items:center;margin-bottom:2px;">
-        <span style="opacity:.85;">${SKILL_NAMES[i]}</span>
+        <span style="opacity:.85;">${skillLabel(i)}</span>
         <div style="position:relative;height:7px;background:#1a2030;border:1px solid #2a3a52;border-radius:2px;overflow:hidden;">
           <div style="position:absolute;left:0;top:0;bottom:0;width:${v * 10}%;background:#5fb86b;"></div>
         </div>
@@ -1822,11 +1844,11 @@ function renderLiveTabContent(host: HTMLDivElement, sim: SimState | undefined): 
     // Personality (traits 0-10 along 5 axes).
     let html = "";
     for (let i = 0; i < TRAIT_PAIRS.length; i += 1) {
-      const [low, high] = TRAIT_PAIRS[i] ?? ["", ""];
+      const [low, high] = traitPair(i);
       const v = sim.traits[i] ?? 5;
       html += `<div style="margin-bottom:4px;">
         <div style="display:flex;justify-content:space-between;font-size:10px;opacity:.75;">
-          <span>${low}</span><span>${high}</span>
+          <span>${escapeHtml(low)}</span><span>${escapeHtml(high)}</span>
         </div>
         <div style="position:relative;height:7px;background:#1a2030;border:1px solid #2a3a52;border-radius:2px;overflow:hidden;">
           <div style="position:absolute;left:0;top:0;bottom:0;width:${v * 10}%;background:#7ab8ff;"></div>
