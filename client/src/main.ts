@@ -4221,9 +4221,13 @@ function openOptionsModalImpl(): void {
     <section style="display:flex;flex-direction:column;gap:8px;">
       <div style="color:#9ad;font-weight:600;font-size:12px;letter-spacing:.05em;text-transform:uppercase;">Lot</div>
       <div style="display:flex;gap:6px;flex-wrap:wrap;">
-        <button data-opt="neighborhood" style="flex:1;min-width:130px;background:#2a3a52;color:#cde;border:1px solid #3a4a66;font:inherit;padding:7px 10px;cursor:pointer;border-radius:4px;">🌳 Neighborhood…</button>
-        <button data-opt="cas" style="flex:1;min-width:130px;background:#2a3a52;color:#cde;border:1px solid #3a4a66;font:inherit;padding:7px 10px;cursor:pointer;border-radius:4px;">👤 New Sim…</button>
+        <button data-opt="neighborhood" style="flex:1;min-width:130px;background:#2a3a52;color:#cde;border:1px solid #3a4a66;font:inherit;padding:7px 10px;cursor:pointer;border-radius:4px;">🌳 Quartier…</button>
+        <button data-opt="cas" style="flex:1;min-width:130px;background:#2a3a52;color:#cde;border:1px solid #3a4a66;font:inherit;padding:7px 10px;cursor:pointer;border-radius:4px;">👤 Nouveau Sim…</button>
         <button data-opt="reset" style="flex:1;min-width:130px;background:#3a2a2a;color:#d88;border:1px solid #533;font:inherit;padding:7px 10px;cursor:pointer;border-radius:4px;">🗑 Reset Lot</button>
+      </div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap;">
+        <button data-opt="phonebook" style="flex:1;min-width:130px;background:#2a3a52;color:#cde;border:1px solid #3a4a66;font:inherit;padding:7px 10px;cursor:pointer;border-radius:4px;">📞 Annuaire…</button>
+        <button data-opt="scrapbook" style="flex:1;min-width:130px;background:#2a3a52;color:#cde;border:1px solid #3a4a66;font:inherit;padding:7px 10px;cursor:pointer;border-radius:4px;">📷 Album…</button>
       </div>
     </section>
     <section style="display:flex;flex-direction:column;gap:8px;">
@@ -4277,6 +4281,14 @@ function openOptionsModalImpl(): void {
       clearLot();
       close();
     }
+  });
+  panel.querySelector<HTMLButtonElement>("button[data-opt=\"phonebook\"]")?.addEventListener("click", () => {
+    close();
+    openPhonebookModal();
+  });
+  panel.querySelector<HTMLButtonElement>("button[data-opt=\"scrapbook\"]")?.addEventListener("click", () => {
+    close();
+    openScrapbookModal();
   });
   panel.querySelector<HTMLButtonElement>("button[data-opt=\"debug\"]")?.addEventListener("click", () => {
     setDebugMode(!document.body.classList.contains("debug-mode"));
@@ -4374,6 +4386,185 @@ async function renderOptionsSavesList(panel: HTMLElement): Promise<void> {
 
 // Install the hook so the bottom-bar's Options button reaches us.
 optionsModalHook.open = openOptionsModalImpl;
+
+// ============================================================================
+// Extension panels — Phonebook + Scrapbook modals using authentic TS1
+// backgrounds (phonebookbkg.png 620×356, scrapback.png 700×560). Visual
+// scaffolding so the UI carries the full TS1 chrome; behavior is minimal
+// (services don't trigger NPCs yet, scrapbook holds no photos yet).
+// ============================================================================
+
+let phonebookModalEl: HTMLDivElement | null = null;
+let scrapbookModalEl: HTMLDivElement | null = null;
+
+interface PhonebookService {
+  /** FilterX.png base name (without extension). */
+  icon: string;
+  /** FR label shown beneath the icon. */
+  label: string;
+  /** Tooltip on hover. */
+  hint: string;
+}
+
+const PHONEBOOK_SERVICES: readonly PhonebookService[] = [
+  { icon: "FilterFood", label: "Livraison repas", hint: "Pizza, Chinois — service traiteur." },
+  { icon: "FilterShopping", label: "Épicerie", hint: "Livraison de courses." },
+  { icon: "FilterLodging", label: "Nounou / Ménage", hint: "Aide à domicile." },
+  { icon: "FilterGardening", label: "Jardinier", hint: "Entretien du jardin." },
+  { icon: "FilterDogCat", label: "Refuge animalier", hint: "Adoption d'un animal." },
+  { icon: "FilterSmallAnimal", label: "Petits animaux", hint: "Adoption d'oiseaux, poissons." },
+  { icon: "FilterMagic", label: "Sortilèges", hint: "Magie & potions (Magic Town)." },
+  { icon: "FilterSpa", label: "Bien-être", hint: "Soins, esthétique." },
+  { icon: "FilterMusic", label: "Musique", hint: "Cours, concerts." },
+  { icon: "FilterMovie", label: "Cinéma", hint: "Sorties ciné." },
+  { icon: "FilterPark", label: "Parc", hint: "Sorties au parc." },
+  { icon: "FilterRides", label: "Manèges", hint: "Sorties manèges." },
+];
+
+function openPhonebookModal(): void {
+  if (phonebookModalEl) return;
+  const overlay = document.createElement("div");
+  overlay.id = "phonebook-modal";
+  overlay.style.cssText =
+    "position:fixed;inset:0;background:rgba(0,0,0,.65);z-index:1000;display:flex;align-items:center;justify-content:center;font:11px/1.2 \"MS Sans Serif\",sans-serif;color:#ffdf80;";
+  const panel = document.createElement("div");
+  // Authentic phonebookbkg.png is 620×356 — render at native size so the
+  // Maxis chrome (rounded corners + side gutters) lines up with the content.
+  panel.style.cssText = [
+    "position:relative",
+    "width:620px",
+    "height:356px",
+    "max-width:96vw",
+    `background:url("${UI_BASE}/Backgrounds/phonebookbkg.png") no-repeat center center / 100% 100%`,
+    "image-rendering:pixelated",
+    "box-shadow:0 8px 32px rgba(0,0,0,.5)",
+  ].join(";");
+  panel.innerHTML = `
+    <div style="position:absolute;top:6px;left:50%;transform:translateX(-50%);font:bold 13px/1 \"MS Sans Serif\",sans-serif;color:#ffdf80;letter-spacing:.04em;text-shadow:0 1px 0 #000;">Annuaire téléphonique</div>
+    <div data-pb-grid style="position:absolute;left:14px;top:46px;width:286px;height:262px;padding:6px;display:grid;grid-template-columns:repeat(3,1fr);gap:6px;align-content:start;"></div>
+    <div data-pb-info style="position:absolute;right:14px;top:46px;width:286px;height:262px;padding:10px 14px;color:#bcd;font:11px/1.4 \"MS Sans Serif\",sans-serif;overflow:auto;">
+      <div style="color:#ffdf80;font-weight:bold;margin-bottom:6px;">Sélectionnez un service</div>
+      <div style="opacity:.8;">Survolez ou cliquez une catégorie à gauche pour voir les détails. Les services ne déclenchent pas encore d'appels (placeholder).</div>
+    </div>
+    <button data-pb-close style="position:absolute;bottom:8px;right:16px;background:#0d2c5a;border:1px solid #ffdf80;color:#ffdf80;font:bold 11px/1 \"MS Sans Serif\",sans-serif;padding:6px 14px;cursor:pointer;border-radius:3px;text-shadow:0 1px 0 #000;">Raccrocher</button>
+  `;
+  overlay.appendChild(panel);
+  document.body.appendChild(overlay);
+  phonebookModalEl = overlay;
+
+  const grid = panel.querySelector<HTMLDivElement>("[data-pb-grid]")!;
+  const info = panel.querySelector<HTMLDivElement>("[data-pb-info]")!;
+  for (const svc of PHONEBOOK_SERVICES) {
+    const btn = document.createElement("button");
+    btn.style.cssText = [
+      "display:flex",
+      "flex-direction:column",
+      "align-items:center",
+      "gap:2px",
+      "background:rgba(0,12,40,.5)",
+      "border:1px solid #2a4a7a",
+      "padding:4px 2px",
+      "color:#ffdf80",
+      "font:9px/1.1 \"MS Sans Serif\",sans-serif",
+      "cursor:pointer",
+      "image-rendering:pixelated",
+      "transition:background .08s",
+    ].join(";");
+    btn.innerHTML = `
+      <img src="${UI_BASE}/${svc.icon}.png" alt="${escapeHtml(svc.label)}" style="width:28px;height:auto;object-fit:contain;background-position:0 0;clip-path:inset(0 66.6% 0 0);" draggable="false" />
+      <span style="text-align:center;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:80px;">${escapeHtml(svc.label)}</span>
+    `;
+    btn.addEventListener("mouseenter", () => {
+      btn.style.background = "rgba(255,223,128,.18)";
+      info.innerHTML = `
+        <div style="color:#ffdf80;font-weight:bold;margin-bottom:6px;">${escapeHtml(svc.label)}</div>
+        <div style="opacity:.95;">${escapeHtml(svc.hint)}</div>
+        <div style="margin-top:10px;opacity:.6;font-style:italic;">Placeholder — l'appel n'invoque pas encore de NPC.</div>
+      `;
+    });
+    btn.addEventListener("mouseleave", () => {
+      btn.style.background = "rgba(0,12,40,.5)";
+    });
+    btn.addEventListener("click", () => {
+      info.innerHTML = `
+        <div style="color:#9be08a;font-weight:bold;margin-bottom:6px;">📞 ${escapeHtml(svc.label)}</div>
+        <div style="opacity:.95;">Appel passé — un NPC arrivera bientôt (non implémenté).</div>
+      `;
+    });
+    grid.appendChild(btn);
+  }
+
+  const close = (): void => {
+    overlay.remove();
+    phonebookModalEl = null;
+    window.removeEventListener("keydown", onKey, true);
+  };
+  const onKey = (ev: KeyboardEvent): void => {
+    if (ev.key === "Escape") close();
+  };
+  window.addEventListener("keydown", onKey, true);
+  panel.querySelector<HTMLButtonElement>("[data-pb-close]")!.addEventListener("click", close);
+  overlay.addEventListener("click", (ev) => {
+    if (ev.target === overlay) close();
+  });
+}
+
+function openScrapbookModal(): void {
+  if (scrapbookModalEl) return;
+  const overlay = document.createElement("div");
+  overlay.id = "scrapbook-modal";
+  overlay.style.cssText =
+    "position:fixed;inset:0;background:rgba(0,0,0,.65);z-index:1000;display:flex;align-items:center;justify-content:center;font:11px/1.2 \"MS Sans Serif\",sans-serif;color:#ffdf80;";
+  const panel = document.createElement("div");
+  // scrapback.png is 700×560 native — render at native size so the Maxis
+  // page-corners line up with the inner photo area.
+  panel.style.cssText = [
+    "position:relative",
+    "width:700px",
+    "height:560px",
+    "max-width:96vw",
+    "max-height:92vh",
+    `background:url("${UI_BASE}/Backgrounds/scrapback.png") no-repeat center center / 100% 100%`,
+    "image-rendering:pixelated",
+    "box-shadow:0 8px 32px rgba(0,0,0,.5)",
+  ].join(";");
+  panel.innerHTML = `
+    <div style="position:absolute;top:14px;left:50%;transform:translateX(-50%);font:bold 14px/1 \"MS Sans Serif\",sans-serif;color:#ffdf80;letter-spacing:.04em;text-shadow:0 1px 0 #000;">Album souvenirs</div>
+    <div data-sb-page style="position:absolute;left:36px;top:60px;right:36px;bottom:120px;background:rgba(0,12,40,.42);border:1px solid #2a4a7a;display:flex;align-items:center;justify-content:center;color:#bcd;font:12px/1.6 \"MS Sans Serif\",sans-serif;text-align:center;padding:24px;">
+      <div>
+        <div style="font-size:48px;line-height:1;opacity:.55;margin-bottom:14px;">📷</div>
+        <div style="color:#ffdf80;font-weight:bold;margin-bottom:4px;">Aucune photo pour l'instant</div>
+        <div style="opacity:.85;max-width:380px;margin:0 auto;">Utilisez l'appareil photo dans le jeu pour capturer la vie de votre famille. Les clichés s'ajoutent ici automatiquement.</div>
+      </div>
+    </div>
+    <div style="position:absolute;left:36px;right:36px;bottom:60px;display:flex;align-items:center;justify-content:space-between;gap:8px;">
+      <button data-sb-prev style="background:url(\"${UI_BASE}/Buttons/scrapleft.png\") no-repeat center / contain;width:46px;height:34px;border:none;cursor:pointer;image-rendering:pixelated;" title="Page précédente"></button>
+      <div data-sb-pageinfo style="color:#ffdf80;font:11px/1 \"MS Sans Serif\",sans-serif;opacity:.85;">Page 0 / 0</div>
+      <button data-sb-next style="background:url(\"${UI_BASE}/Buttons/scrapright.png\") no-repeat center / contain;width:46px;height:34px;border:none;cursor:pointer;image-rendering:pixelated;" title="Page suivante"></button>
+    </div>
+    <div style="position:absolute;left:0;right:0;bottom:8px;display:flex;justify-content:center;gap:8px;">
+      <button data-sb-delete style="background:url(\"${UI_BASE}/Buttons/scrapdelete.png\") no-repeat center / contain;width:74px;height:34px;border:none;cursor:pointer;image-rendering:pixelated;" title="Supprimer la photo"></button>
+      <button data-sb-done style="background:url(\"${UI_BASE}/Buttons/scrapdone.png\") no-repeat center / contain;width:74px;height:34px;border:none;cursor:pointer;image-rendering:pixelated;" title="Fermer l'album"></button>
+    </div>
+  `;
+  overlay.appendChild(panel);
+  document.body.appendChild(overlay);
+  scrapbookModalEl = overlay;
+
+  const close = (): void => {
+    overlay.remove();
+    scrapbookModalEl = null;
+    window.removeEventListener("keydown", onKey, true);
+  };
+  const onKey = (ev: KeyboardEvent): void => {
+    if (ev.key === "Escape") close();
+  };
+  window.addEventListener("keydown", onKey, true);
+  panel.querySelector<HTMLButtonElement>("[data-sb-done]")!.addEventListener("click", close);
+  overlay.addEventListener("click", (ev) => {
+    if (ev.target === overlay) close();
+  });
+}
 
 // ============================================================================
 // Saves panel — lists local + server saves, lets the user Save / Save As /
