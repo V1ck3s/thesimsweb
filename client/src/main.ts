@@ -1917,7 +1917,23 @@ function mountCameraControls(): void {
   mountMinimap();
   mountBottomModeBar();
   renderTs1CenterSlot();
+  // Eagerly fill the right-side time/funds/speed widget so it doesn't stay
+  // blank until engine().then() resolves. Motives + family also depend on
+  // module-level `let` HUD refs declared later in the file, so they're
+  // populated after the module finishes evaluating (see deferRender below).
+  renderTimeFundsHud();
   updateCameraButtonHighlights();
+}
+
+// Calling renderFamilyHud / renderMotivesHud from inside mountCameraControls()
+// would trip a TDZ error because their backing `let *HudEl` refs are declared
+// later in this file. queueMicrotask defers the call until module evaluation
+// finishes, so the refs are safely initialised by then.
+function deferEarlyRender(): void {
+  queueMicrotask(() => {
+    renderMotivesHud();
+    renderFamilyHud();
+  });
 }
 
 // Options modal entry point — body defined later in the file. Stored on a
@@ -2194,6 +2210,7 @@ function rotatedPan(screenDX: number, screenDY: number): [number, number] {
 }
 
 mountCameraControls();
+deferEarlyRender();
 // Load authentic Maxis STR# strings (FR by default, EN fallback). The first
 // renderMotivesHud()/renderTs1CenterSlot() will use English placeholders;
 // once the JSONs land we re-render so the panel switches to FR live.
