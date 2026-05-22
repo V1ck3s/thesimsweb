@@ -1539,16 +1539,18 @@ function renderTs1CenterSlot(): void {
 // buttons keep the visual reference to TS1 without faking behaviour.
 // ----------------------------------------------------------------------------
 
+// Real TS1 catalog icons extracted from UIGraphics.far (cpanel/Catalog/Buy*).
+const UI_BMP_BASE = "/assets/converted/ui/cpanel";
 const TS1_BUY_CATEGORIES = [
-  { id: "all", label: "All", icon: "▦", enabled: true },
-  { id: "seating", label: "Seating", icon: "🪑", enabled: false },
-  { id: "surfaces", label: "Surfaces", icon: "▭", enabled: false },
-  { id: "decor", label: "Decor", icon: "✦", enabled: false },
-  { id: "electronics", label: "Electronics", icon: "📺", enabled: false },
-  { id: "appliances", label: "Appliances", icon: "🍳", enabled: false },
-  { id: "plumbing", label: "Plumbing", icon: "🚿", enabled: false },
-  { id: "lighting", label: "Lighting", icon: "💡", enabled: false },
-  { id: "misc", label: "Misc", icon: "✿", enabled: false },
+  { id: "all", label: "All", bmp: null, enabled: true },
+  { id: "seating", label: "Seating", bmp: `${UI_BMP_BASE}/Catalog/BuyFSeating.BMP`, enabled: false },
+  { id: "surfaces", label: "Surfaces", bmp: `${UI_BMP_BASE}/Catalog/BuyFSurfaces.bmp`, enabled: false },
+  { id: "decor", label: "Decor", bmp: `${UI_BMP_BASE}/Catalog/BuyFDecorative.bmp`, enabled: false },
+  { id: "electronics", label: "Electronics", bmp: `${UI_BMP_BASE}/Catalog/BuyFElectronics.bmp`, enabled: false },
+  { id: "appliances", label: "Appliances", bmp: `${UI_BMP_BASE}/Catalog/BuyFAppliances.bmp`, enabled: false },
+  { id: "plumbing", label: "Plumbing", bmp: `${UI_BMP_BASE}/Catalog/BuyFPlumbing.bmp`, enabled: false },
+  { id: "lighting", label: "Lighting", bmp: `${UI_BMP_BASE}/Catalog/BuyFLighting.bmp`, enabled: false },
+  { id: "misc", label: "Misc", bmp: `${UI_BMP_BASE}/Catalog/BuyFMisc.bmp`, enabled: false },
 ] as const;
 
 function mountBuyCenter(slot: HTMLDivElement): void {
@@ -1559,10 +1561,14 @@ function mountBuyCenter(slot: HTMLDivElement): void {
     const b = document.createElement("button");
     b.dataset["buyCat"] = cat.id;
     b.title = cat.enabled ? cat.label : `${cat.label} — filter coming once OBJD function categories are parsed`;
-    b.innerHTML = `<div style="font-size:14px;line-height:1;">${cat.icon}</div><div style="font-size:9px;opacity:.75;margin-top:1px;">${cat.label}</div>`;
+    if (cat.bmp) {
+      b.innerHTML = `<img src="${cat.bmp}" alt="${cat.label}" style="display:block;width:32px;height:32px;object-fit:contain;image-rendering:pixelated;margin:0 auto;"/>`;
+    } else {
+      b.innerHTML = `<div style="font-size:14px;line-height:1;">▦</div><div style="font-size:9px;opacity:.85;margin-top:1px;">${cat.label}</div>`;
+    }
     b.disabled = !cat.enabled;
     b.style.cssText =
-      `padding:4px 2px;border-radius:3px;cursor:${cat.enabled ? "pointer" : "not-allowed"};font:inherit;`;
+      `padding:2px;border-radius:3px;cursor:${cat.enabled ? "pointer" : "not-allowed"};font:inherit;`;
     strip.appendChild(b);
   }
   slot.appendChild(strip);
