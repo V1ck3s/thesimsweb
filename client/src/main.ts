@@ -1557,11 +1557,12 @@ function mountBuyCenter(slot: HTMLDivElement): void {
   strip.style.cssText = "display:grid;grid-template-columns:repeat(9,1fr);gap:2px;margin-bottom:4px;";
   for (const cat of TS1_BUY_CATEGORIES) {
     const b = document.createElement("button");
+    b.dataset["buyCat"] = cat.id;
     b.title = cat.enabled ? cat.label : `${cat.label} — filter coming once OBJD function categories are parsed`;
     b.innerHTML = `<div style="font-size:14px;line-height:1;">${cat.icon}</div><div style="font-size:9px;opacity:.75;margin-top:1px;">${cat.label}</div>`;
     b.disabled = !cat.enabled;
     b.style.cssText =
-      `background:${cat.enabled ? "rgba(255,255,255,.06)" : "rgba(255,255,255,.02)"};border:1px solid #3a4a66;color:${cat.enabled ? "#cde" : "#566"};padding:4px 2px;border-radius:3px;cursor:${cat.enabled ? "pointer" : "not-allowed"};font:inherit;`;
+      `padding:4px 2px;border-radius:3px;cursor:${cat.enabled ? "pointer" : "not-allowed"};font:inherit;`;
     strip.appendChild(b);
   }
   slot.appendChild(strip);
@@ -1603,7 +1604,7 @@ function mountBuildCenter(slot: HTMLDivElement): void {
     b.innerHTML = `<div style="font-size:13px;line-height:1;">${tool.icon}</div><div style="font-size:9px;opacity:.75;margin-top:1px;">${tool.label}</div>`;
     b.disabled = !tool.enabled;
     b.style.cssText =
-      `background:${tool.enabled ? "rgba(255,255,255,.06)" : "rgba(255,255,255,.02)"};border:1px solid #3a4a66;color:${tool.enabled ? "#cde" : "#566"};padding:3px 2px;border-radius:3px;cursor:${tool.enabled ? "pointer" : "not-allowed"};font:inherit;`;
+      `padding:3px 2px;border-radius:3px;cursor:${tool.enabled ? "pointer" : "not-allowed"};font:inherit;`;
     palette.appendChild(b);
   }
   palette.addEventListener("click", (ev) => {
