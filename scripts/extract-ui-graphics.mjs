@@ -1,7 +1,14 @@
 #!/usr/bin/env node
-// Extracts CPanel bitmaps from UIGraphics.far so the web client can use the
-// authentic TS1 control-panel artwork. Outputs land under
-// `server/assets/converted/ui/` (gitignored — never commit Maxis assets).
+// Extract CPanel bitmaps from UIGraphics.far and convert them to PNGs with
+// authentic TS1 transparency (magenta keying + RLE8 "untouched" pixels).
+//
+// Why PNG: the original Maxis BMPs lean on two transparency conventions —
+//   1. RLE8 streams may leave pixels untouched; those should be transparent.
+//   2. Uncompressed BMPs use #FF00FF (magenta) as the chroma-key colour.
+// Neither survives a round-trip through a 32-bit BMP that the browser will
+// decode as opaque (browsers ignore the alpha channel of BI_RGB 32-bit BMPs).
+// Re-emitting as PNG (with proper RGBA) lets the browser composite the panel
+// chrome correctly over the canvas.
 //
 // FAR v1a format reminder (docs/formats/FAR.md):
 //   header  : "FAR!byAZ" (8) + version u32 (=1) + file_table_offset u32
@@ -12,6 +19,7 @@
 import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { encodePngRgba } from "./lib/png.mjs";
 
 const REPO = join(dirname(fileURLToPath(import.meta.url)), "..");
 const FAR_PATH = join(REPO, "server/assets/Sims/UIGraphics/UIGraphics.far");
@@ -47,12 +55,9 @@ if (listOnly) {
   process.exit(0);
 }
 
-// Pull every CPanel/* entry — backgrounds, buttons, catalog icons, etc. They
-// are standard Windows BMP files (with optional RLE4/RLE8 compression). The
-// browser does NOT natively render RLE8 BMPs, but it handles uncompressed
-// BMPs at 24/32-bit fine. So: if RLE-compressed, decode to an uncompressed
-// 32-bit BMP before saving.
-
+// Extract every CPanel/* entry. Each BMP becomes a .png at the same relative
+// path so we can swap the asset suffix in the client without restructuring
+// any directories.
 let written = 0;
 let skipped = 0;
 for (const e of entries) {
@@ -62,75 +67,129 @@ for (const e of entries) {
     continue;
   }
   const payload = buf.subarray(e.off, e.off + e.sizeDec);
-  // Normalize backslashes for the filesystem.
   const portable = e.name.replaceAll("\\", "/");
-  const outPath = join(OUT_DIR, portable);
+  // Some FAR entries are not BMPs (TGA, etc.) — pass them through unchanged.
+  const isBmp = payload.length >= 2 && payload[0] === 0x42 && payload[1] === 0x4d;
+  let outPath;
+  let outBuf;
+  if (isBmp) {
+    const png = decodeBmpToPng(payload, portable);
+    if (png) {
+      outPath = join(OUT_DIR, portable.replace(/\.bmp$/i, ".png"));
+      outBuf = png;
+    } else {
+      outPath = join(OUT_DIR, portable);
+      outBuf = payload;
+    }
+  } else {
+    outPath = join(OUT_DIR, portable);
+    outBuf = payload;
+  }
   mkdirSync(dirname(outPath), { recursive: true });
-  const expanded = maybeDecodeBmp(payload, portable);
-  writeFileSync(outPath, expanded);
+  writeFileSync(outPath, outBuf);
   written += 1;
 }
-console.error(`wrote ${written} CPanel bitmaps to ${OUT_DIR}, skipped ${skipped} non-CPanel entries`);
+console.error(`wrote ${written} CPanel assets to ${OUT_DIR}, skipped ${skipped} non-CPanel entries`);
 
 // ---------------------------------------------------------------------------
-// BMP RLE8 decoder. Standard Windows DIB header:
-//   offset 0   2  signature "BM"
-//   offset 2   4  file size
-//   offset 6   4  reserved
-//   offset 10  4  pixel array offset (bfOffBits)
-//   offset 14  4  DIB header size (40 = BITMAPINFOHEADER)
-//   offset 18  4  width
-//   offset 22  4  height
-//   offset 26  2  planes (=1)
-//   offset 28  2  bpp
-//   offset 30  4  compression (0=BI_RGB, 1=BI_RLE8, 2=BI_RLE4)
-//   offset 34  4  image size
-//   offset 46  4  colors used
-//   ... palette starts at offset 14 + DIB header size
+// BMP → RGBA decoder + PNG encoder. Handles BI_RGB 24-bit, BI_RGB 8-bit
+// (paletted), and BI_RLE8 (paletted with run-length compression). Other
+// flavours fall through to a raw copy.
 // ---------------------------------------------------------------------------
 
-function maybeDecodeBmp(src, debugName) {
-  if (src.length < 54 || src[0] !== 0x42 || src[1] !== 0x4d) {
-    return src; // not a BMP — leave as-is
-  }
+/** Returns a Buffer with the PNG bytes, or null if the BMP couldn't be decoded. */
+function decodeBmpToPng(src, debugName) {
+  if (src.length < 54) return null;
   const bfOffBits = src.readUInt32LE(10);
   const dibSize = src.readUInt32LE(14);
   const width = src.readInt32LE(18);
   const heightSigned = src.readInt32LE(22);
   const bpp = src.readUInt16LE(28);
   const compression = src.readUInt32LE(30);
-  if (compression !== 1) return src; // BI_RGB or RLE4 — leave alone for now
-  if (bpp !== 8) return src;
+  const colorsUsed = src.readUInt32LE(46);
   const height = Math.abs(heightSigned);
   const topDown = heightSigned < 0;
-  // Palette is between DIB header end and bfOffBits.
+  if (width <= 0 || height <= 0 || width > 4096 || height > 4096) return null;
+
   const paletteStart = 14 + dibSize;
   const paletteEnd = bfOffBits;
   const palette = src.subarray(paletteStart, paletteEnd); // BGRA quads
-  const rleStart = bfOffBits;
-  // Decode RLE8 → 8-bit indexed grid, then expand to 32-bit BGRA pixels.
-  // Track which pixels the stream actually wrote — anything left untouched
-  // is considered transparent (the RLE delta escape skips pixels which
-  // become "background" / "see-through" in the original game).
-  const pixelGrid = new Uint8Array(width * height);
-  const written = new Uint8Array(width * height);
-  let i = rleStart;
-  let x = 0;
-  let y = topDown ? 0 : height - 1;
-  const stepY = topDown ? 1 : -1;
-  const writePixel = (px, py, val) => {
-    if (px >= 0 && px < width && py >= 0 && py < height) {
-      pixelGrid[py * width + px] = val;
-      written[py * width + px] = 1;
+
+  // Output buffer, top-down RGBA.
+  const rgba = new Uint8Array(width * height * 4);
+
+  if (compression === 1 && bpp === 8) {
+    decodeRle8(src, bfOffBits, width, height, topDown, palette, rgba);
+  } else if (compression === 0 && bpp === 8) {
+    decodeIndexed8(src, bfOffBits, width, height, topDown, palette, rgba);
+  } else if (compression === 0 && bpp === 24) {
+    decodeRgb24(src, bfOffBits, width, height, topDown, rgba);
+  } else if (compression === 0 && bpp === 32) {
+    decodeRgb32(src, bfOffBits, width, height, topDown, rgba);
+  } else if (compression === 0 && bpp === 4) {
+    decodeIndexed4(src, bfOffBits, width, height, topDown, palette, rgba);
+  } else {
+    return null;
+  }
+
+  // Magenta keying — TS1 BMPs use #FF00FF as the canonical chroma-key colour
+  // for backgrounds and dropshadow holes. Replace any opaque magenta pixel
+  // with full transparency so the panel chrome composites cleanly.
+  for (let i = 0; i < rgba.length; i += 4) {
+    if (rgba[i + 3] === 0) continue;
+    const r = rgba[i];
+    const g = rgba[i + 1];
+    const b = rgba[i + 2];
+    // Slight tolerance for off-by-one encoders that wrote #FE00FE / #FF00FE.
+    if (r >= 0xfe && g <= 0x02 && b >= 0xfe) {
+      rgba[i + 3] = 0;
+      rgba[i] = 0;
+      rgba[i + 1] = 0;
+      rgba[i + 2] = 0;
     }
+  }
+
+  if (debugName && width * height >= 10000) {
+    console.error(`  decoded ${debugName}  ${width}x${height} bpp=${bpp} compr=${compression}`);
+  }
+  return encodePngRgba(width, height, rgba);
+}
+
+function writeRgba(dst, x, y, w, r, g, b, a) {
+  const o = (y * w + x) * 4;
+  dst[o] = r;
+  dst[o + 1] = g;
+  dst[o + 2] = b;
+  dst[o + 3] = a;
+}
+
+function paletteRgb(palette, idx) {
+  const o = idx * 4;
+  return {
+    r: palette[o + 2] ?? 0,
+    g: palette[o + 1] ?? 0,
+    b: palette[o] ?? 0,
   };
+}
+
+function decodeRle8(src, bfOff, w, h, topDown, palette, dst) {
+  // RLE8 escapes:
+  //   00 00 = end of line, 00 01 = end of bitmap, 00 02 dx dy = delta,
+  //   00 n (n>=3) followed by n indexes (padded to word) = absolute mode,
+  //   n v (n>=1) = run of n pixels of index v.
+  // Untouched pixels stay alpha 0.
+  let i = bfOff;
+  let x = 0;
+  let y = topDown ? 0 : h - 1;
+  const stepY = topDown ? 1 : -1;
   while (i < src.length - 1) {
     const n = src[i];
     const v = src[i + 1];
     i += 2;
     if (n > 0) {
+      const { r, g, b } = paletteRgb(palette, v);
       for (let k = 0; k < n; k += 1) {
-        writePixel(x, y, v);
+        if (x < w && y >= 0 && y < h) writeRgba(dst, x, y, w, r, g, b, 255);
         x += 1;
       }
     } else if (v === 0) {
@@ -146,63 +205,75 @@ function maybeDecodeBmp(src, debugName) {
       y += stepY * dy;
     } else {
       for (let k = 0; k < v; k += 1) {
-        writePixel(x, y, src[i + k]);
+        const { r, g, b } = paletteRgb(palette, src[i + k]);
+        if (x < w && y >= 0 && y < h) writeRgba(dst, x, y, w, r, g, b, 255);
         x += 1;
       }
       i += v + (v & 1);
     }
-    if (topDown ? y >= height : y < 0) break;
+    if (topDown ? y >= h : y < 0) break;
   }
-  // Build an uncompressed BGRA BMP. Trick: BMPs are bottom-up unless height
-  // is negative. Keep the original orientation by emitting top-down (negative
-  // height) so we can write rows in natural order.
-  const rowBytes = width * 4;
+}
+
+function decodeIndexed8(src, bfOff, w, h, topDown, palette, dst) {
+  // Each row is padded to a multiple of 4 bytes.
+  const stride = (w + 3) & ~3;
+  for (let row = 0; row < h; row += 1) {
+    const srcY = topDown ? row : h - 1 - row;
+    const base = bfOff + srcY * stride;
+    for (let x = 0; x < w; x += 1) {
+      const idx = src[base + x] ?? 0;
+      const { r, g, b } = paletteRgb(palette, idx);
+      writeRgba(dst, x, row, w, r, g, b, 255);
+    }
+  }
+}
+
+function decodeIndexed4(src, bfOff, w, h, topDown, palette, dst) {
+  const stride = ((w + 1) >> 1) + 3;
+  const padded = stride & ~3;
+  for (let row = 0; row < h; row += 1) {
+    const srcY = topDown ? row : h - 1 - row;
+    const base = bfOff + srcY * padded;
+    for (let x = 0; x < w; x += 1) {
+      const byte = src[base + (x >> 1)] ?? 0;
+      const idx = (x & 1) === 0 ? (byte >> 4) & 0x0f : byte & 0x0f;
+      const { r, g, b } = paletteRgb(palette, idx);
+      writeRgba(dst, x, row, w, r, g, b, 255);
+    }
+  }
+}
+
+function decodeRgb24(src, bfOff, w, h, topDown, dst) {
+  const rowBytes = w * 3;
   const pad = (4 - (rowBytes & 3)) & 3;
   const stride = rowBytes + pad;
-  const pixelDataSize = stride * height;
-  const dibOut = 40;
-  const headerSize = 14 + dibOut;
-  const out = Buffer.alloc(headerSize + pixelDataSize);
-  out.write("BM", 0, "ascii");
-  out.writeUInt32LE(out.length, 2);
-  out.writeUInt32LE(0, 6);
-  out.writeUInt32LE(headerSize, 10);
-  out.writeUInt32LE(dibOut, 14);
-  out.writeInt32LE(width, 18);
-  out.writeInt32LE(-height, 22); // top-down
-  out.writeUInt16LE(1, 26);
-  out.writeUInt16LE(32, 28);
-  out.writeUInt32LE(0, 30); // BI_RGB
-  out.writeUInt32LE(pixelDataSize, 34);
-  out.writeInt32LE(2835, 38); // X pels/m
-  out.writeInt32LE(2835, 42); // Y pels/m
-  out.writeUInt32LE(0, 46);
-  out.writeUInt32LE(0, 50);
-  // RLE8 typically reserves palette index 0 as the transparent colour (the
-  // "background" / unwritten pixel). Mark fully-transparent in the output so
-  // the BMP can sit on top of the page background.
-  for (let row = 0; row < height; row += 1) {
-    const dstBase = topDown
-      ? headerSize + row * stride
-      : headerSize + (height - 1 - row) * stride;
-    for (let col = 0; col < width; col += 1) {
-      const idx = pixelGrid[row * width + col];
-      const palBase = idx * 4;
-      const b = palette[palBase] ?? 0;
-      const g = palette[palBase + 1] ?? 0;
-      const r = palette[palBase + 2] ?? 0;
-      const o = dstBase + col * 4;
-      out[o] = b;
-      out[o + 1] = g;
-      out[o + 2] = r;
-      out[o + 3] = written[row * width + col] ? 255 : 0;
+  for (let row = 0; row < h; row += 1) {
+    const srcY = topDown ? row : h - 1 - row;
+    const base = bfOff + srcY * stride;
+    for (let x = 0; x < w; x += 1) {
+      const o = base + x * 3;
+      const b = src[o] ?? 0;
+      const g = src[o + 1] ?? 0;
+      const r = src[o + 2] ?? 0;
+      writeRgba(dst, x, row, w, r, g, b, 255);
     }
   }
-  if (debugName) {
-    // Light log: width x height for the largest entries to sanity-check layout.
-    if (width * height >= 10000) {
-      console.error(`  decoded ${debugName}  ${width}x${height}`);
+}
+
+function decodeRgb32(src, bfOff, w, h, topDown, dst) {
+  const stride = w * 4;
+  for (let row = 0; row < h; row += 1) {
+    const srcY = topDown ? row : h - 1 - row;
+    const base = bfOff + srcY * stride;
+    for (let x = 0; x < w; x += 1) {
+      const o = base + x * 4;
+      const b = src[o] ?? 0;
+      const g = src[o + 1] ?? 0;
+      const r = src[o + 2] ?? 0;
+      // Alpha channel in 32-bit BI_RGB is usually unused — force opaque so
+      // the magenta keying step (later) controls transparency.
+      writeRgba(dst, x, row, w, r, g, b, 255);
     }
   }
-  return out;
 }

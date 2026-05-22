@@ -16,7 +16,7 @@
 // helpers in main.ts continue feeding the right targets.
 //
 // Background:
-//   • PanelBack.bmp (804×100) is tiled horizontally across the full width so
+//   • PanelBack.png (804×100) is tiled horizontally across the full width so
 //     the chrome stretches without distortion.
 //
 // All BMPs come from /assets/converted/ui/cpanel/ (gitignored, populated by
@@ -38,7 +38,7 @@ export function mountCpanel(): HTMLDivElement {
     "bottom:0",
     "height:100px",
     "z-index:80",
-    `background:url("${UI_BASE}/Backgrounds/PanelBack.bmp") repeat-x left center`,
+    `background:url("${UI_BASE}/Backgrounds/PanelBack.png") repeat-x left center`,
     "background-size:auto 100%",
     "font:11px/1.2 \"MS Sans Serif\",Geneva,Tahoma,sans-serif",
     "color:#ffdf80",
@@ -57,7 +57,7 @@ export function mountCpanel(): HTMLDivElement {
     "bottom:0",
     "width:108px",
     "height:100px",
-    `background:url("${UI_BASE}/Backgrounds/LiveGadget.bmp") no-repeat 0 0`,
+    `background:url("${UI_BASE}/Backgrounds/LiveGadget.png") no-repeat 0 0`,
     "background-size:108px 100px",
     "image-rendering:pixelated",
   ].join(";");
@@ -193,10 +193,10 @@ export function setCpanelMode(mode: "play" | "buy" | "build" | "options"): void 
   // anchored to the bottom of the centerWrap so the over-height portion sticks
   // up naturally above the 100px panel base.
   const PATCHES: Record<typeof mode, { file: string; w: number; h: number }> = {
-    play: { file: "LivePatch.bmp", w: 213, h: 153 },
-    buy: { file: "BuyPatch.bmp", w: 156, h: 148 },
-    build: { file: "BuildPatch.bmp", w: 107, h: 132 },
-    options: { file: "OptionsPatch.bmp", w: 37, h: 100 },
+    play: { file: "LivePatch.png", w: 213, h: 153 },
+    buy: { file: "BuyPatch.png", w: 156, h: 148 },
+    build: { file: "BuildPatch.png", w: 107, h: 132 },
+    options: { file: "OptionsPatch.png", w: 37, h: 100 },
   };
   const p = PATCHES[mode];
   layer.style.cssText = [

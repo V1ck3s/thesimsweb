@@ -479,7 +479,7 @@ function moodColor(value: number): string {
 function renderMotivesHud(): void {
   const root = ensureMotivesHud();
   // Authentic TS1 motive strip: 8 stacked rows, FR label on the left, a
-  // HouseSubBarsOff.BMP-backed bar in the middle, value on the right. No mood
+  // HouseSubBarsOff.png-backed bar in the middle, value on the right. No mood
   // block (the LiveGadget portrait carries the mood ring instead).
   if (root.childElementCount !== MOTIVE_NAMES.length) {
     root.innerHTML = "";
@@ -499,7 +499,7 @@ function renderMotivesHud(): void {
         "position:relative",
         "height:8px",
         // Centre marker only — the bar fill renders as an inset coloured rect.
-        `background:url("${UI_BASE}/Backgrounds/HouseSubBarsOff.BMP") no-repeat center center / 100% 100%`,
+        `background:url("${UI_BASE}/Backgrounds/HouseSubBarsOff.png") no-repeat center center / 100% 100%`,
         "image-rendering:pixelated",
       ].join(";");
       const fill = document.createElement("div");
@@ -607,10 +607,10 @@ function ensureTimeFundsHud(): HTMLDivElement {
       <div style="font:bold 12px/1.1 \"MS Sans Serif\",sans-serif;color:#ffdf80;text-shadow:0 1px 0 rgba(0,0,0,0.5);"><span data-th-day>Mon</span> <span data-th-time style="font-variant-numeric:tabular-nums;">08:00</span></div>
       <div style="font:bold 14px/1.1 \"MS Sans Serif\",sans-serif;color:#9be67a;text-shadow:0 1px 0 rgba(0,0,0,0.5);"><span style="color:#9be67a;">§</span><span data-th-funds style="font-variant-numeric:tabular-nums;">20000</span></div>
       <div data-th-speed-group style="display:flex;gap:2px;margin-top:auto;">
-        <button data-th-speed="0" title="Pause" style="background:transparent;border:1px solid #000;border-radius:2px;padding:1px;cursor:pointer;line-height:0;"><img src="${UI_BASE}/Buttons/pause.bmp" alt="Pause" style="display:block;height:14px;image-rendering:pixelated;"/></button>
-        <button data-th-speed="1" title="Normal" style="background:transparent;border:1px solid #000;border-radius:2px;padding:1px;cursor:pointer;line-height:0;"><img src="${UI_BASE}/Buttons/Speed1.bmp" alt="1×" style="display:block;height:14px;image-rendering:pixelated;"/></button>
-        <button data-th-speed="2" title="Fast" style="background:transparent;border:1px solid #000;border-radius:2px;padding:1px;cursor:pointer;line-height:0;"><img src="${UI_BASE}/Buttons/Speed2.bmp" alt="2×" style="display:block;height:14px;image-rendering:pixelated;"/></button>
-        <button data-th-speed="3" title="Ultra" style="background:transparent;border:1px solid #000;border-radius:2px;padding:1px;cursor:pointer;line-height:0;"><img src="${UI_BASE}/Buttons/Speed3.bmp" alt="3×" style="display:block;height:14px;image-rendering:pixelated;"/></button>
+        <button data-th-speed="0" title="Pause" style="background:transparent;border:1px solid #000;border-radius:2px;padding:1px;cursor:pointer;line-height:0;"><img src="${UI_BASE}/Buttons/pause.png" alt="Pause" style="display:block;height:14px;image-rendering:pixelated;"/></button>
+        <button data-th-speed="1" title="Normal" style="background:transparent;border:1px solid #000;border-radius:2px;padding:1px;cursor:pointer;line-height:0;"><img src="${UI_BASE}/Buttons/Speed1.png" alt="1×" style="display:block;height:14px;image-rendering:pixelated;"/></button>
+        <button data-th-speed="2" title="Fast" style="background:transparent;border:1px solid #000;border-radius:2px;padding:1px;cursor:pointer;line-height:0;"><img src="${UI_BASE}/Buttons/Speed2.png" alt="2×" style="display:block;height:14px;image-rendering:pixelated;"/></button>
+        <button data-th-speed="3" title="Ultra" style="background:transparent;border:1px solid #000;border-radius:2px;padding:1px;cursor:pointer;line-height:0;"><img src="${UI_BASE}/Buttons/Speed3.png" alt="3×" style="display:block;height:14px;image-rendering:pixelated;"/></button>
       </div>
     `
     : `
@@ -1536,25 +1536,25 @@ function renderTs1CenterSlot(): void {
 const UI_BMP_BASE = "/assets/converted/ui/cpanel";
 const TS1_BUY_CATEGORIES_F = [
   { id: "all", label: "Toutes", bmp: null, enabled: true },
-  { id: "seating", label: "Sièges", bmp: `${UI_BMP_BASE}/Catalog/BuyFSeating.BMP`, enabled: false },
-  { id: "surfaces", label: "Surfaces", bmp: `${UI_BMP_BASE}/Catalog/BuyFSurfaces.bmp`, enabled: false },
-  { id: "decor", label: "Décoration", bmp: `${UI_BMP_BASE}/Catalog/BuyFDecorative.bmp`, enabled: false },
-  { id: "electronics", label: "Électronique", bmp: `${UI_BMP_BASE}/Catalog/BuyFElectronics.bmp`, enabled: false },
-  { id: "appliances", label: "Électroménager", bmp: `${UI_BMP_BASE}/Catalog/BuyFAppliances.bmp`, enabled: false },
-  { id: "plumbing", label: "Plomberie", bmp: `${UI_BMP_BASE}/Catalog/BuyFPlumbing.bmp`, enabled: false },
-  { id: "lighting", label: "Éclairage", bmp: `${UI_BMP_BASE}/Catalog/BuyFLighting.bmp`, enabled: false },
-  { id: "misc", label: "Divers", bmp: `${UI_BMP_BASE}/Catalog/BuyFMisc.bmp`, enabled: false },
+  { id: "seating", label: "Sièges", bmp: `${UI_BMP_BASE}/Catalog/BuyFSeating.png`, enabled: false },
+  { id: "surfaces", label: "Surfaces", bmp: `${UI_BMP_BASE}/Catalog/BuyFSurfaces.png`, enabled: false },
+  { id: "decor", label: "Décoration", bmp: `${UI_BMP_BASE}/Catalog/BuyFDecorative.png`, enabled: false },
+  { id: "electronics", label: "Électronique", bmp: `${UI_BMP_BASE}/Catalog/BuyFElectronics.png`, enabled: false },
+  { id: "appliances", label: "Électroménager", bmp: `${UI_BMP_BASE}/Catalog/BuyFAppliances.png`, enabled: false },
+  { id: "plumbing", label: "Plomberie", bmp: `${UI_BMP_BASE}/Catalog/BuyFPlumbing.png`, enabled: false },
+  { id: "lighting", label: "Éclairage", bmp: `${UI_BMP_BASE}/Catalog/BuyFLighting.png`, enabled: false },
+  { id: "misc", label: "Divers", bmp: `${UI_BMP_BASE}/Catalog/BuyFMisc.png`, enabled: false },
 ] as const;
 const TS1_BUY_CATEGORIES_R = [
   { id: "all-r", label: "Toutes", bmp: null, enabled: true },
-  { id: "living", label: "Salon", bmp: `${UI_BMP_BASE}/Catalog/BuyRLiving.BMP`, enabled: false },
-  { id: "dining", label: "Salle à manger", bmp: `${UI_BMP_BASE}/Catalog/BuyRDining.bmp`, enabled: false },
-  { id: "kitchen", label: "Cuisine", bmp: `${UI_BMP_BASE}/Catalog/BuyRKitchen.bmp`, enabled: false },
-  { id: "bedroom", label: "Chambre", bmp: `${UI_BMP_BASE}/Catalog/BuyRBedroom.bmp`, enabled: false },
-  { id: "bathroom", label: "Salle de bains", bmp: `${UI_BMP_BASE}/Catalog/BuyRBathroom.bmp`, enabled: false },
-  { id: "study", label: "Bureau", bmp: `${UI_BMP_BASE}/Catalog/BuyRStudy.bmp`, enabled: false },
-  { id: "outside", label: "Extérieur", bmp: `${UI_BMP_BASE}/Catalog/BuyROutside.bmp`, enabled: false },
-  { id: "misc-r", label: "Divers", bmp: `${UI_BMP_BASE}/Catalog/BuyRMisc.bmp`, enabled: false },
+  { id: "living", label: "Salon", bmp: `${UI_BMP_BASE}/Catalog/BuyRLiving.png`, enabled: false },
+  { id: "dining", label: "Salle à manger", bmp: `${UI_BMP_BASE}/Catalog/BuyRDining.png`, enabled: false },
+  { id: "kitchen", label: "Cuisine", bmp: `${UI_BMP_BASE}/Catalog/BuyRKitchen.png`, enabled: false },
+  { id: "bedroom", label: "Chambre", bmp: `${UI_BMP_BASE}/Catalog/BuyRBedroom.png`, enabled: false },
+  { id: "bathroom", label: "Salle de bains", bmp: `${UI_BMP_BASE}/Catalog/BuyRBathroom.png`, enabled: false },
+  { id: "study", label: "Bureau", bmp: `${UI_BMP_BASE}/Catalog/BuyRStudy.png`, enabled: false },
+  { id: "outside", label: "Extérieur", bmp: `${UI_BMP_BASE}/Catalog/BuyROutside.png`, enabled: false },
+  { id: "misc-r", label: "Divers", bmp: `${UI_BMP_BASE}/Catalog/BuyRMisc.png`, enabled: false },
 ] as const;
 let buyCatalogScope: "function" | "room" = "function";
 
@@ -1623,7 +1623,7 @@ function mountBuyCenter(slot: HTMLDivElement): void {
 // remain visible-but-disabled until their gameplay logic lands.
 // ----------------------------------------------------------------------------
 
-// Each toolBtn*.bmp in cpanel/Buttons/ contains 4 stacked horizontal frames
+// Each toolBtn*.png in cpanel/Buttons/ contains 4 stacked horizontal frames
 // (normal/hover/active/disabled). We only need the first one — cropped via
 // CSS background-position. Frame width = BMP width / 4.
 type Ts1BuildTool = {
@@ -1636,25 +1636,25 @@ type Ts1BuildTool = {
   enabled: boolean;
 };
 const TS1_BUILD_TOOLS: readonly Ts1BuildTool[] = [
-  { id: "hand", label: "Main", bmp: "toolBtnHand.bmp", bmpFullW: 120, bmpFullH: 35, enabled: false },
-  { id: "wall", label: "Mur", bmp: "toolBtnWall.bmp", bmpFullW: 124, bmpFullH: 40, enabled: true },
-  { id: "wall-line", label: "Mur (ligne)", bmp: "toolBtnWall.bmp", bmpFullW: 124, bmpFullH: 40, enabled: true },
-  { id: "wall-rect", label: "Pièce", bmp: "toolBtnWall.bmp", bmpFullW: 124, bmpFullH: 40, enabled: true },
-  { id: "door", label: "Porte", bmp: "toolBtnDoor.bmp", bmpFullW: 108, bmpFullH: 41, enabled: true },
-  { id: "window", label: "Fenêtre", bmp: "toolBtnWindow.bmp", bmpFullW: 116, bmpFullH: 39, enabled: true },
+  { id: "hand", label: "Main", bmp: "toolBtnHand.png", bmpFullW: 120, bmpFullH: 35, enabled: false },
+  { id: "wall", label: "Mur", bmp: "toolBtnWall.png", bmpFullW: 124, bmpFullH: 40, enabled: true },
+  { id: "wall-line", label: "Mur (ligne)", bmp: "toolBtnWall.png", bmpFullW: 124, bmpFullH: 40, enabled: true },
+  { id: "wall-rect", label: "Pièce", bmp: "toolBtnWall.png", bmpFullW: 124, bmpFullH: 40, enabled: true },
+  { id: "door", label: "Porte", bmp: "toolBtnDoor.png", bmpFullW: 108, bmpFullH: 41, enabled: true },
+  { id: "window", label: "Fenêtre", bmp: "toolBtnWindow.png", bmpFullW: 116, bmpFullH: 39, enabled: true },
   { id: "paint", label: "Sol", bmp: null, icon: "▪", enabled: true },
   { id: "paint-rect", label: "Sol (zone)", bmp: null, icon: "◫", enabled: true },
-  { id: "wallpaper", label: "Papier peint", bmp: "toolBtnWallpaper.bmp", bmpFullW: 128, bmpFullH: 40, enabled: false },
-  { id: "stairs", label: "Escalier", bmp: "toolBtnStairs.bmp", bmpFullW: 128, bmpFullH: 38, enabled: false },
-  { id: "fireplace", label: "Cheminée", bmp: "toolBtnFireplace.bmp", bmpFullW: 116, bmpFullH: 35, enabled: false },
-  { id: "tree", label: "Jardin", bmp: "toolBtnTree.bmp", bmpFullW: 140, bmpFullH: 39, enabled: false },
+  { id: "wallpaper", label: "Papier peint", bmp: "toolBtnWallpaper.png", bmpFullW: 128, bmpFullH: 40, enabled: false },
+  { id: "stairs", label: "Escalier", bmp: "toolBtnStairs.png", bmpFullW: 128, bmpFullH: 38, enabled: false },
+  { id: "fireplace", label: "Cheminée", bmp: "toolBtnFireplace.png", bmpFullW: 116, bmpFullH: 35, enabled: false },
+  { id: "tree", label: "Jardin", bmp: "toolBtnTree.png", bmpFullW: 140, bmpFullH: 39, enabled: false },
   { id: "pool", label: "Piscine", bmp: null, icon: "🌊", enabled: false },
   { id: "roof", label: "Toit", bmp: null, icon: "▲", enabled: false },
 ] as const;
 
 function mountBuildCenter(slot: HTMLDivElement): void {
   // TS1 tool palette — 14 tools laid out in a 2×7 grid. Each entry uses its
-  // real toolBtn*.bmp icon (1st frame cropped) where extracted, falling back
+  // real toolBtn*.png icon (1st frame cropped) where extracted, falling back
   // to a glyph for items whose authentic art lives in a not-yet-extracted FAR.
   const palette = document.createElement("div");
   palette.style.cssText = "display:grid;grid-template-columns:repeat(7,1fr);gap:1px;margin-bottom:3px;";
@@ -1722,13 +1722,13 @@ function mountLiveCenter(slot: HTMLDivElement): void {
   tabs.style.cssText = "display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:2px;";
   // Friends/Personality don't have dedicated TS1 base-game BMPs in cpanel/
   // (those live in Buttons/ via FameIconMultiButton etc.), so for Friends we
-  // reuse Interest.bmp (closest semantically) and for Personality we use Gift
+  // reuse Interest.png (closest semantically) and for Personality we use Gift
   // as a placeholder until the real bitmap is identified.
   const tabBmps: Array<[LiveTab, string, string]> = [
-    ["job", "Job.bmp", "Job"],
-    ["skills", "House.bmp", "House / Skills"],
-    ["friends", "Interest.bmp", "Friends / Interests"],
-    ["traits", "Gift.bmp", "Personality"],
+    ["job", "Job.png", "Job"],
+    ["skills", "House.png", "House / Skills"],
+    ["friends", "Interest.png", "Friends / Interests"],
+    ["traits", "Gift.png", "Personality"],
   ];
   for (const [key, bmp, alt] of tabBmps) {
     const b = document.createElement("button");
