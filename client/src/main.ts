@@ -18,6 +18,9 @@ import {
   type IsoSceneSprite,
   type IsoEntity,
 } from "./renderer/iso.js";
+import { loadStrings, s as tStr, ss as tStrArr } from "./ui/i18n.js";
+import { mountCpanel, setCpanelMode } from "./ui/cpanel.js";
+import { UI_BASE } from "./ui/bmp.js";
 
 function findCanvas(): HTMLCanvasElement {
   const el = document.getElementById("game");
@@ -264,6 +267,28 @@ const MOTIVE_NAMES = [
   "Room",
 ] as const;
 
+// STR# index inside Live.iff chunk 130 ("Motives") for each motive *label*.
+// The chunk is [header, label, desc, label, desc, ...] so labels live at the
+// odd indices. The TS1 order is Hunger, Energy, Comfort, Fun, Hygiene, Social,
+// Bladder, Room — our internal order is different, so we map here.
+const MOTIVE_STR_IDX = [
+  1, // Hunger    → Appétit
+  5, // Comfort   → Confort
+  9, // Hygiene   → Hygiène
+  13, // Bladder   → Petits besoins
+  3, // Energy    → Energie
+  7, // Fun       → Distractions
+  11, // Social    → Vie sociale
+  15, // Room      → Espace
+] as const;
+
+/** Localised motive name, falling back to the English code default. */
+function motiveLabel(i: number): string {
+  const idx = MOTIVE_STR_IDX[i];
+  if (idx === undefined) return MOTIVE_NAMES[i] ?? "";
+  return tStr("Live", 130, idx, MOTIVE_NAMES[i] ?? "");
+}
+
 const MOTIVE_DECAY_PER_S = 0.4; // ~24 pts / minute, brisker than TS1 for demo.
 
 function clampMotive(v: number): number {
@@ -487,7 +512,7 @@ function renderMotivesHud(): void {
       row.dataset["motiveIdx"] = String(i);
       row.style.cssText = "display:grid;grid-template-columns:60px 1fr 32px;gap:6px;align-items:center;";
       const lbl = document.createElement("span");
-      lbl.textContent = MOTIVE_NAMES[i] ?? "";
+      lbl.textContent = motiveLabel(i);
       lbl.style.opacity = "0.85";
       const track = document.createElement("div");
       track.style.cssText = "position:relative;height:8px;background:#222;border-radius:3px;overflow:hidden;";
@@ -1435,31 +1460,9 @@ function drawMinimap(): void {
 // ============================================================================
 
 function mountTs1Panel(): void {
-  document.getElementById("ts1-panel")?.remove();
-  const panel = document.createElement("div");
-  panel.id = "ts1-panel";
-  panel.innerHTML = `
-    <div class="ts1-slot" id="ts1-slot-family">
-      <div class="ts1-slot-title">Family</div>
-      <div data-slot-body="family" style="flex:1;overflow:auto;display:flex;flex-direction:column;gap:3px;"></div>
-    </div>
-    <div class="ts1-slot" id="ts1-slot-motives">
-      <div class="ts1-slot-title">Motives</div>
-      <div data-slot-body="motives" style="flex:1;overflow:auto;display:flex;flex-direction:column;gap:3px;"></div>
-    </div>
-    <div class="ts1-slot" id="ts1-slot-center">
-      <div class="ts1-slot-title" data-center-title>Live</div>
-      <div data-slot-body="center" style="flex:1;overflow:auto;display:flex;flex-direction:column;gap:4px;"></div>
-    </div>
-    <div class="ts1-slot" id="ts1-slot-time">
-      <div class="ts1-slot-title">Clock</div>
-      <div data-slot-body="time" style="flex:1;overflow:hidden;display:flex;flex-direction:column;gap:5px;"></div>
-    </div>
-    <div class="ts1-slot last" id="ts1-slot-tabs">
-      <div data-slot-body="tabs" style="flex:1;display:flex;flex-direction:column;gap:5px;"></div>
-    </div>
-  `;
-  document.body.appendChild(panel);
+  // Real layout lives in client/src/ui/cpanel.ts — uses authentic Maxis BMPs
+  // (PanelBack, LiveGadget, mode patches) instead of fabricated chrome.
+  mountCpanel();
 }
 
 function getSlotBody(name: "family" | "motives" | "center" | "time" | "tabs"): HTMLDivElement | null {
@@ -1842,6 +1845,7 @@ function mountBuildToolsCenter(slot: HTMLDivElement): void {
 
 function mountCameraControls(): void {
   mountTs1Panel();
+  setCpanelMode(lotMode);
   mountCameraMiniBar();
   mountMinimap();
   mountBottomModeBar();
@@ -1954,6 +1958,9 @@ function setLotMode(m: LotMode): void {
   // Auto-pick a sensible default sub-tool when entering Buy/Build.
   if (m === "buy") buildTool = "place";
   else if (m === "build" && !BUILD_TOOLS_FOR_BUILD.has(buildTool)) buildTool = "wall";
+  // Swap the mode patch chrome (LivePatch / BuyPatch / BuildPatch) under the
+  // center slot so the rounded overlay matches the active mode.
+  setCpanelMode(m);
   // Rebuild the center slot so it shows the right tools / queue.
   renderTs1CenterSlot();
   updateModeButtonHighlights();
@@ -2104,6 +2111,14 @@ function rotatedPan(screenDX: number, screenDY: number): [number, number] {
 }
 
 mountCameraControls();
+// Load authentic Maxis STR# strings (FR by default, EN fallback). The first
+// renderMotivesHud()/renderTs1CenterSlot() will use English placeholders;
+// once the JSONs land we re-render so the panel switches to FR live.
+void loadStrings().then(() => {
+  renderMotivesHud();
+  renderFamilyHud();
+  renderTs1CenterSlot();
+});
 // Initial render: empty lot.
 renderLot();
 
