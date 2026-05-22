@@ -5,12 +5,11 @@
 //
 //   ┌─ LivePatch / BuyPatch / BuildPatch (arch overlay, anchored bottom-left,
 //   │  sticks up ~50px above the 100px base; hosts the active Sim portrait,
-//   │  name and the mode-specific sub-tabs / catalog).
+//   │  name and the 8 motive bars — matching TS1 native).
 //   │
-//   ├─ Motives strip — 8 stacked bars to the right of the patch arch.
-//   │
-//   ├─ Center content slot — built by mountLiveCenter / mountBuyCenter /
-//   │  mountBuildCenter (data-slot-body="center").
+//   ├─ Center content slot — sub-tabs (House/Job/Friends/Personality) and
+//   │  their content (skills, friend list, trait sliders…), or the Buy /
+//   │  Build mode-specific UI. (data-slot-body="center")
 //   │
 //   ├─ Time + funds + speed widget (data-slot-body="time").
 //   │
@@ -66,8 +65,7 @@ export function mountCpanel(): HTMLDivElement {
 
   // Mode patch arch — bottom-left anchored, dimensions set per-mode by
   // setCpanelMode(). The patch *is* the chrome that hosts the active-mode
-  // content (portrait+motives in Live, catalog tabs in Buy, tool palette in
-  // Build). Default values come from setCpanelMode() at boot.
+  // content; for Live mode that's portrait + name + 8 motive bars.
   const patchWrap = document.createElement("div");
   patchWrap.id = "cpanel-patch-wrap";
   patchWrap.style.cssText = [
@@ -79,77 +77,72 @@ export function mountCpanel(): HTMLDivElement {
     "background-repeat:no-repeat",
     "background-position:left bottom",
     "image-rendering:pixelated",
-    "pointer-events:none", // content layer below claims its own pointer-events
+    "pointer-events:none",
   ].join(";");
   panel.appendChild(patchWrap);
 
-  // Inside the patch: family portrait (top), then the mode-specific center
-  // slot. Both have pointer-events:auto so buttons / icons remain clickable
-  // through the transparent patchWrap.
+  // Inside the patch: family portrait (top of arch), then motives stacked
+  // beneath. Both have pointer-events:auto so widgets through the transparent
+  // arch remain clickable.
   const family = document.createElement("div");
   family.dataset["slotBody"] = "family";
   family.style.cssText = [
     "position:absolute",
-    "left:0",
-    "right:0",
-    "top:4px",
-    "height:62px", // sits in the arch's upper bell
+    "left:42px", // arch's central oval is roughly the middle third
+    "right:42px",
+    "top:6px",
+    "height:54px",
     "display:flex",
     "flex-direction:column",
     "align-items:center",
     "justify-content:center",
-    "gap:2px",
+    "gap:1px",
     "pointer-events:auto",
     "overflow:hidden",
   ].join(";");
   patchWrap.appendChild(family);
 
-  const centerSlot = document.createElement("div");
-  centerSlot.dataset["slotBody"] = "center";
-  centerSlot.style.cssText = [
-    "position:absolute",
-    "left:6px",
-    "right:6px",
-    "bottom:4px",
-    "top:66px", // below the family portrait area
-    "pointer-events:auto",
-    "overflow:hidden",
-    "color:#ffdf80",
-  ].join(";");
-  patchWrap.appendChild(centerSlot);
-
-  // Motives strip — right of the patch, 8 stacked bars. Default left:218px
-  // (just past LivePatch w=213). Width chosen so 8 × ~10px rows fit at
-  // authentic 40px native bar width.
+  // Motives strip — 8 stacked bars below the portrait, still inside the arch.
   const motivesWrap = document.createElement("div");
-  motivesWrap.id = "cpanel-motives-wrap";
   motivesWrap.style.cssText = [
     "position:absolute",
-    "left:218px",
+    "left:8px",
+    "right:8px",
+    "top:62px",
     "bottom:4px",
-    "top:4px",
-    "width:340px",
-    "display:flex",
-    "flex-direction:column",
-    "gap:1px",
-    "padding:2px 4px",
-    "color:#ffdf80",
+    "padding:1px 0",
+    "pointer-events:auto",
+    "overflow:hidden",
   ].join(";");
   const motivesSlot = document.createElement("div");
   motivesSlot.dataset["slotBody"] = "motives";
-  motivesSlot.style.cssText = "flex:1;display:flex;flex-direction:column;gap:1px;overflow:hidden;";
+  motivesSlot.style.cssText = "display:flex;flex-direction:column;gap:1px;height:100%;";
   motivesWrap.appendChild(motivesSlot);
-  panel.appendChild(motivesWrap);
+  patchWrap.appendChild(motivesWrap);
 
-  // LiveGadget (6-portrait family grid) is not displayed in single-Sim view —
-  // TS1 only surfaces it when there are multiple Sims in the household and
-  // you're using the family overview. The active Sim portrait + name lives
-  // inside the LivePatch arch above instead. The bitmap is still extracted
-  // and available at /assets/converted/ui/cpanel/Backgrounds/LiveGadget.png
-  // for a future family-pane feature.
+  // Center content slot — sub-tabs (House/Job/Friends/Personality) + their
+  // content, or Buy catalog / Build tool palette. Lives RIGHT of the patch
+  // arch, in the open part of the panel.
+  const centerWrap = document.createElement("div");
+  centerWrap.id = "cpanel-center-wrap";
+  centerWrap.style.cssText = [
+    "position:absolute",
+    "left:218px",
+    "right:340px",
+    "bottom:4px",
+    "top:4px",
+    "padding:2px 6px",
+    "color:#ffdf80",
+  ].join(";");
+  const centerSlot = document.createElement("div");
+  centerSlot.dataset["slotBody"] = "center";
+  centerSlot.style.cssText =
+    "display:flex;flex-direction:column;gap:2px;height:100%;overflow:hidden;";
+  centerWrap.appendChild(centerSlot);
+  panel.appendChild(centerWrap);
 
-  // Time / funds / speed — clock area. Sits in the right portion, before the
-  // mode tabs strip on the far right.
+  // Time / funds / speed — clock area. Sits to the right of the center slot,
+  // before the mode tabs strip on the far right.
   const timeWrap = document.createElement("div");
   timeWrap.id = "cpanel-time-wrap";
   timeWrap.style.cssText = [

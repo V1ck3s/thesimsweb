@@ -1730,27 +1730,32 @@ function mountLiveCenter(slot: HTMLDivElement): void {
   // (those live in Buttons/ via FameIconMultiButton etc.), so for Friends we
   // reuse Interest.png (closest semantically) and for Personality we use Gift
   // as a placeholder until the real bitmap is identified.
+  // Each BMP is a 108×30 4-frame strip (normal / hover / active / disabled);
+  // render only the first/active frame via background-position offset.
   const tabBmps: Array<[LiveTab, string, string]> = [
-    ["job", "Job.png", "Job"],
-    ["skills", "House.png", "House / Skills"],
-    ["friends", "Interest.png", "Friends / Interests"],
-    ["traits", "Gift.png", "Personality"],
+    ["job", "Job.png", "Boulot"],
+    ["skills", "House.png", "Habitation"],
+    ["friends", "Interest.png", "Passions"],
+    ["traits", "Gift.png", "Personnalité"],
   ];
+  const TAB_FRAME_W = 27;
+  const TAB_FRAME_H = 30;
   for (const [key, bmp, alt] of tabBmps) {
     const b = document.createElement("button");
     b.dataset["liveTab"] = key;
     b.title = alt;
     const active = key === activeLiveTab;
+    const frameIdx = active ? 2 : 0; // 2 = pressed/active state
     b.style.cssText = [
-      `background:${active ? "rgba(255,223,128,0.18)" : "transparent"}`,
-      `border:1px solid ${active ? "#ffdf80" : "#000"}`,
-      "padding:1px",
+      `background:url("${UI_BASE}/Buttons/${bmp}") no-repeat ${-frameIdx * TAB_FRAME_W}px 0 / 108px ${TAB_FRAME_H}px`,
+      `width:${TAB_FRAME_W}px`,
+      `height:${TAB_FRAME_H}px`,
+      `border:1px solid ${active ? "#ffdf80" : "transparent"}`,
+      "padding:0",
       "cursor:pointer",
-      "border-radius:2px",
-      "line-height:0",
-      "min-height:18px",
+      "image-rendering:pixelated",
+      "margin:0 auto",
     ].join(";");
-    b.innerHTML = `<img src="${UI_BASE}/Buttons/${bmp}" alt="${alt}" style="display:block;width:100%;height:auto;image-rendering:pixelated;"/>`;
     tabs.appendChild(b);
   }
   wrap.appendChild(tabs);
@@ -1781,10 +1786,9 @@ function renderLiveTabContent(host: HTMLDivElement, sim: SimState | undefined): 
   }
   if (activeLiveTab === "job") {
     host.innerHTML = `
-      <div style="opacity:.85;">Career: <span style="color:#fff;">Unemployed</span></div>
-      <div style="opacity:.85;margin-top:3px;">Level: <span style="color:#fff;">—</span></div>
-      <div style="opacity:.85;margin-top:3px;">Salary: <span style="color:#cfa;">§0</span> /hr</div>
-      <div style="opacity:.7;font-size:10px;margin-top:6px;">Read the newspaper or use the computer to find a job.</div>
+      <div style="opacity:.85;">Carrière : <span style="color:#fff;">Sans emploi</span></div>
+      <div style="opacity:.85;margin-top:2px;">Niveau : <span style="color:#fff;">—</span></div>
+      <div style="opacity:.85;margin-top:2px;">Salaire : <span style="color:#9be67a;">§0</span>/h</div>
     `;
   } else if (activeLiveTab === "skills") {
     let html = "";
