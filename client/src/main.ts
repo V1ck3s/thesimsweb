@@ -1530,39 +1530,90 @@ function renderTs1CenterSlot(): void {
 // ----------------------------------------------------------------------------
 
 // Real TS1 catalog icons extracted from UIGraphics.far (cpanel/Catalog/Buy*).
+// Two flavours: Function (BuyF*) groups objects by what they do, Room (BuyR*)
+// groups them by where they live. The user toggles between the two with the
+// Function/Room buttons; only Function is the default in the original game.
 const UI_BMP_BASE = "/assets/converted/ui/cpanel";
-const TS1_BUY_CATEGORIES = [
-  { id: "all", label: "All", bmp: null, enabled: true },
-  { id: "seating", label: "Seating", bmp: `${UI_BMP_BASE}/Catalog/BuyFSeating.BMP`, enabled: false },
+const TS1_BUY_CATEGORIES_F = [
+  { id: "all", label: "Toutes", bmp: null, enabled: true },
+  { id: "seating", label: "Sièges", bmp: `${UI_BMP_BASE}/Catalog/BuyFSeating.BMP`, enabled: false },
   { id: "surfaces", label: "Surfaces", bmp: `${UI_BMP_BASE}/Catalog/BuyFSurfaces.bmp`, enabled: false },
-  { id: "decor", label: "Decor", bmp: `${UI_BMP_BASE}/Catalog/BuyFDecorative.bmp`, enabled: false },
-  { id: "electronics", label: "Electronics", bmp: `${UI_BMP_BASE}/Catalog/BuyFElectronics.bmp`, enabled: false },
-  { id: "appliances", label: "Appliances", bmp: `${UI_BMP_BASE}/Catalog/BuyFAppliances.bmp`, enabled: false },
-  { id: "plumbing", label: "Plumbing", bmp: `${UI_BMP_BASE}/Catalog/BuyFPlumbing.bmp`, enabled: false },
-  { id: "lighting", label: "Lighting", bmp: `${UI_BMP_BASE}/Catalog/BuyFLighting.bmp`, enabled: false },
-  { id: "misc", label: "Misc", bmp: `${UI_BMP_BASE}/Catalog/BuyFMisc.bmp`, enabled: false },
+  { id: "decor", label: "Décoration", bmp: `${UI_BMP_BASE}/Catalog/BuyFDecorative.bmp`, enabled: false },
+  { id: "electronics", label: "Électronique", bmp: `${UI_BMP_BASE}/Catalog/BuyFElectronics.bmp`, enabled: false },
+  { id: "appliances", label: "Électroménager", bmp: `${UI_BMP_BASE}/Catalog/BuyFAppliances.bmp`, enabled: false },
+  { id: "plumbing", label: "Plomberie", bmp: `${UI_BMP_BASE}/Catalog/BuyFPlumbing.bmp`, enabled: false },
+  { id: "lighting", label: "Éclairage", bmp: `${UI_BMP_BASE}/Catalog/BuyFLighting.bmp`, enabled: false },
+  { id: "misc", label: "Divers", bmp: `${UI_BMP_BASE}/Catalog/BuyFMisc.bmp`, enabled: false },
 ] as const;
+const TS1_BUY_CATEGORIES_R = [
+  { id: "all-r", label: "Toutes", bmp: null, enabled: true },
+  { id: "living", label: "Salon", bmp: `${UI_BMP_BASE}/Catalog/BuyRLiving.BMP`, enabled: false },
+  { id: "dining", label: "Salle à manger", bmp: `${UI_BMP_BASE}/Catalog/BuyRDining.bmp`, enabled: false },
+  { id: "kitchen", label: "Cuisine", bmp: `${UI_BMP_BASE}/Catalog/BuyRKitchen.bmp`, enabled: false },
+  { id: "bedroom", label: "Chambre", bmp: `${UI_BMP_BASE}/Catalog/BuyRBedroom.bmp`, enabled: false },
+  { id: "bathroom", label: "Salle de bains", bmp: `${UI_BMP_BASE}/Catalog/BuyRBathroom.bmp`, enabled: false },
+  { id: "study", label: "Bureau", bmp: `${UI_BMP_BASE}/Catalog/BuyRStudy.bmp`, enabled: false },
+  { id: "outside", label: "Extérieur", bmp: `${UI_BMP_BASE}/Catalog/BuyROutside.bmp`, enabled: false },
+  { id: "misc-r", label: "Divers", bmp: `${UI_BMP_BASE}/Catalog/BuyRMisc.bmp`, enabled: false },
+] as const;
+let buyCatalogScope: "function" | "room" = "function";
 
 function mountBuyCenter(slot: HTMLDivElement): void {
-  // Category strip — purely visual for now (FUNCTION GUID filter pending).
+  // Function/Room toggle — two compact pills at the top, the active one
+  // highlighted in TS1 yellow.
+  const scopeRow = document.createElement("div");
+  scopeRow.style.cssText = "display:flex;gap:2px;margin-bottom:3px;justify-content:center;";
+  for (const scope of ["function", "room"] as const) {
+    const b = document.createElement("button");
+    b.textContent = scope === "function" ? "Fonction" : "Pièce";
+    b.dataset["buyScope"] = scope;
+    const active = scope === buyCatalogScope;
+    b.style.cssText = [
+      "flex:1",
+      "padding:1px 4px",
+      `background:${active ? "rgba(255,223,128,0.22)" : "transparent"}`,
+      `border:1px solid ${active ? "#ffdf80" : "#000"}`,
+      "border-radius:2px",
+      "color:#ffdf80",
+      "font:bold 9px/1.2 \"MS Sans Serif\",sans-serif",
+      "cursor:pointer",
+    ].join(";");
+    b.addEventListener("click", () => {
+      buyCatalogScope = scope;
+      renderTs1CenterSlot();
+    });
+    scopeRow.appendChild(b);
+  }
+  slot.appendChild(scopeRow);
+  // Categories grid — 8 BuyF*/BuyR* icons in a 2×4 grid (fits the BuyPatch
+  // overlay). The "all" entry is the default no-filter view.
+  const cats = buyCatalogScope === "function" ? TS1_BUY_CATEGORIES_F : TS1_BUY_CATEGORIES_R;
   const strip = document.createElement("div");
-  strip.style.cssText = "display:grid;grid-template-columns:repeat(9,1fr);gap:2px;margin-bottom:4px;";
-  for (const cat of TS1_BUY_CATEGORIES) {
+  strip.style.cssText = "display:grid;grid-template-columns:repeat(4,1fr);gap:1px;margin-bottom:3px;";
+  for (const cat of cats) {
     const b = document.createElement("button");
     b.dataset["buyCat"] = cat.id;
-    b.title = cat.enabled ? cat.label : `${cat.label} — filter coming once OBJD function categories are parsed`;
+    b.title = cat.enabled ? cat.label : `${cat.label} — filtre OBJD à implémenter`;
     if (cat.bmp) {
-      b.innerHTML = `<img src="${cat.bmp}" alt="${cat.label}" style="display:block;width:32px;height:32px;object-fit:contain;image-rendering:pixelated;margin:0 auto;"/>`;
+      b.innerHTML = `<img src="${cat.bmp}" alt="${cat.label}" style="display:block;width:100%;max-width:34px;height:auto;image-rendering:pixelated;margin:0 auto;"/>`;
     } else {
-      b.innerHTML = `<div style="font-size:14px;line-height:1;">▦</div><div style="font-size:9px;opacity:.85;margin-top:1px;">${cat.label}</div>`;
+      b.innerHTML = `<div style="font:9px/1.2 \"MS Sans Serif\",sans-serif;color:#ffdf80;padding:6px 2px;">${cat.label}</div>`;
     }
     b.disabled = !cat.enabled;
-    b.style.cssText =
-      `padding:2px;border-radius:3px;cursor:${cat.enabled ? "pointer" : "not-allowed"};font:inherit;`;
+    b.style.cssText = [
+      "padding:1px",
+      "border-radius:2px",
+      `cursor:${cat.enabled ? "pointer" : "not-allowed"}`,
+      "background:transparent",
+      "border:1px solid #000",
+      "min-height:24px",
+      "overflow:hidden",
+      cat.enabled ? "" : "opacity:0.45;filter:grayscale(0.5);",
+    ].join(";");
     strip.appendChild(b);
   }
   slot.appendChild(strip);
-  // The rest: existing place obj + selected info + Sell hint via mountBuildToolsCenter logic, restricted to buy controls.
+  // Existing place-object + selected-info bar.
   mountBuildToolsCenter(slot);
 }
 
@@ -1572,35 +1623,64 @@ function mountBuyCenter(slot: HTMLDivElement): void {
 // remain visible-but-disabled until their gameplay logic lands.
 // ----------------------------------------------------------------------------
 
-const TS1_BUILD_TOOLS = [
-  { id: "wall", label: "Wall", icon: "▏", enabled: true },
-  { id: "wall-line", label: "Line", icon: "／", enabled: true },
-  { id: "wall-rect", label: "Room", icon: "▢", enabled: true },
-  { id: "wallpaper", label: "Wallpaper", icon: "▦", enabled: false },
-  { id: "paint", label: "Floor", icon: "▪", enabled: true },
-  { id: "paint-rect", label: "Floor▢", icon: "◫", enabled: true },
-  { id: "door", label: "Door", icon: "🚪", enabled: true },
-  { id: "window", label: "Window", icon: "🪟", enabled: true },
-  { id: "stairs", label: "Stairs", icon: "▟", enabled: false },
-  { id: "pool", label: "Pool", icon: "🌊", enabled: false },
-  { id: "roof", label: "Roof", icon: "▲", enabled: false },
-  { id: "garden", label: "Garden", icon: "🌿", enabled: false },
-  { id: "hand", label: "Hand", icon: "✋", enabled: false },
-  { id: "sledge", label: "Sledge", icon: "🔨", enabled: false },
+// Each toolBtn*.bmp in cpanel/Buttons/ contains 4 stacked horizontal frames
+// (normal/hover/active/disabled). We only need the first one — cropped via
+// CSS background-position. Frame width = BMP width / 4.
+type Ts1BuildTool = {
+  id: string;
+  label: string;
+  bmp: string | null; // path under cpanel/Buttons/ — null falls back to icon
+  bmpFullW?: number;
+  bmpFullH?: number;
+  icon?: string;
+  enabled: boolean;
+};
+const TS1_BUILD_TOOLS: readonly Ts1BuildTool[] = [
+  { id: "hand", label: "Main", bmp: "toolBtnHand.bmp", bmpFullW: 120, bmpFullH: 35, enabled: false },
+  { id: "wall", label: "Mur", bmp: "toolBtnWall.bmp", bmpFullW: 124, bmpFullH: 40, enabled: true },
+  { id: "wall-line", label: "Mur (ligne)", bmp: "toolBtnWall.bmp", bmpFullW: 124, bmpFullH: 40, enabled: true },
+  { id: "wall-rect", label: "Pièce", bmp: "toolBtnWall.bmp", bmpFullW: 124, bmpFullH: 40, enabled: true },
+  { id: "door", label: "Porte", bmp: "toolBtnDoor.bmp", bmpFullW: 108, bmpFullH: 41, enabled: true },
+  { id: "window", label: "Fenêtre", bmp: "toolBtnWindow.bmp", bmpFullW: 116, bmpFullH: 39, enabled: true },
+  { id: "paint", label: "Sol", bmp: null, icon: "▪", enabled: true },
+  { id: "paint-rect", label: "Sol (zone)", bmp: null, icon: "◫", enabled: true },
+  { id: "wallpaper", label: "Papier peint", bmp: "toolBtnWallpaper.bmp", bmpFullW: 128, bmpFullH: 40, enabled: false },
+  { id: "stairs", label: "Escalier", bmp: "toolBtnStairs.bmp", bmpFullW: 128, bmpFullH: 38, enabled: false },
+  { id: "fireplace", label: "Cheminée", bmp: "toolBtnFireplace.bmp", bmpFullW: 116, bmpFullH: 35, enabled: false },
+  { id: "tree", label: "Jardin", bmp: "toolBtnTree.bmp", bmpFullW: 140, bmpFullH: 39, enabled: false },
+  { id: "pool", label: "Piscine", bmp: null, icon: "🌊", enabled: false },
+  { id: "roof", label: "Toit", bmp: null, icon: "▲", enabled: false },
 ] as const;
 
 function mountBuildCenter(slot: HTMLDivElement): void {
-  // TS1 tool palette as a grid — visual reference to the full game toolbox.
+  // TS1 tool palette — 14 tools laid out in a 2×7 grid. Each entry uses its
+  // real toolBtn*.bmp icon (1st frame cropped) where extracted, falling back
+  // to a glyph for items whose authentic art lives in a not-yet-extracted FAR.
   const palette = document.createElement("div");
-  palette.style.cssText = "display:grid;grid-template-columns:repeat(7,1fr);gap:2px;margin-bottom:4px;";
+  palette.style.cssText = "display:grid;grid-template-columns:repeat(7,1fr);gap:1px;margin-bottom:3px;";
   for (const tool of TS1_BUILD_TOOLS) {
     const b = document.createElement("button");
-    b.title = tool.enabled ? tool.label : `${tool.label} — needs gameplay logic`;
+    b.title = tool.enabled ? tool.label : `${tool.label} — non implémenté`;
     b.dataset["buildToolPalette"] = tool.id;
-    b.innerHTML = `<div style="font-size:13px;line-height:1;">${tool.icon}</div><div style="font-size:9px;opacity:.75;margin-top:1px;">${tool.label}</div>`;
+    if (tool.bmp && tool.bmpFullW && tool.bmpFullH) {
+      const frameW = Math.round(tool.bmpFullW / 4);
+      b.innerHTML = `<div style="width:${frameW}px;height:${tool.bmpFullH}px;background:url('${UI_BASE}/Buttons/${tool.bmp}') no-repeat 0 0;image-rendering:pixelated;margin:0 auto;transform:scale(0.7);transform-origin:top center;"></div>`;
+    } else {
+      b.innerHTML = `<div style="font-size:14px;line-height:1;">${tool.icon ?? "?"}</div>`;
+    }
     b.disabled = !tool.enabled;
-    b.style.cssText =
-      `padding:3px 2px;border-radius:3px;cursor:${tool.enabled ? "pointer" : "not-allowed"};font:inherit;`;
+    b.style.cssText = [
+      "padding:1px",
+      "border-radius:2px",
+      `cursor:${tool.enabled ? "pointer" : "not-allowed"}`,
+      "background:transparent",
+      "border:1px solid #000",
+      "color:#ffdf80",
+      "font:9px/1 \"MS Sans Serif\",sans-serif",
+      tool.enabled ? "" : "opacity:0.45;filter:grayscale(0.5);",
+      "min-height:18px",
+      "overflow:hidden",
+    ].join(";");
     palette.appendChild(b);
   }
   palette.addEventListener("click", (ev) => {
@@ -1634,52 +1714,52 @@ function mountLiveCenter(slot: HTMLDivElement): void {
   const sim = sims[selectedSimIdx];
   const wrap = document.createElement("div");
   wrap.style.cssText =
-    "display:grid;grid-template-rows:auto auto 1fr;gap:5px;height:100%;font:11px/1.35 ui-sans-serif,system-ui,sans-serif;color:#cde;";
-  // Portrait + name + status row.
-  const header = document.createElement("div");
-  header.style.cssText = "display:flex;gap:8px;align-items:center;";
-  header.innerHTML = `
-    <div style="position:relative;width:36px;height:36px;border-radius:50%;background:${sim?.headColor ?? "#666"};border:2px solid #d9b76a;display:flex;align-items:center;justify-content:center;flex-shrink:0;">
-      <div style="position:absolute;bottom:-2px;left:50%;transform:translateX(-50%);width:18px;height:9px;background:${sim?.bodyColor ?? "#444"};border-radius:0 0 4px 4px;"></div>
-    </div>
-    <div style="min-width:0;flex:1;">
-      <div style="font-weight:600;color:#fff;font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escapeHtml(sim?.name ?? "—")}</div>
-      <div style="font-size:10px;opacity:.7;">${sim?.age ?? ""} ${sim?.gender === "F" ? "♀" : sim?.gender === "M" ? "♂" : ""} · Unemployed</div>
-    </div>
-  `;
-  wrap.appendChild(header);
-  // Tabs row.
+    "display:grid;grid-template-rows:auto 1fr;gap:3px;height:100%;font:11px/1.3 \"MS Sans Serif\",sans-serif;color:#ffdf80;";
+  // Authentic TS1 sub-tabs row — 4 buttons using the real House / Job /
+  // Interest / Gift BMPs (108×30 each). They scale down inside the LivePatch
+  // area; the active tab gets a brighter border.
   const tabs = document.createElement("div");
   tabs.style.cssText = "display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:2px;";
-  const tabLabels: Array<[LiveTab, string]> = [
-    ["job", "Job"],
-    ["skills", "Skills"],
-    ["friends", "Friends"],
-    ["traits", "Personality"],
+  // Friends/Personality don't have dedicated TS1 base-game BMPs in cpanel/
+  // (those live in Buttons/ via FameIconMultiButton etc.), so for Friends we
+  // reuse Interest.bmp (closest semantically) and for Personality we use Gift
+  // as a placeholder until the real bitmap is identified.
+  const tabBmps: Array<[LiveTab, string, string]> = [
+    ["job", "Job.bmp", "Job"],
+    ["skills", "House.bmp", "House / Skills"],
+    ["friends", "Interest.bmp", "Friends / Interests"],
+    ["traits", "Gift.bmp", "Personality"],
   ];
-  for (const [key, label] of tabLabels) {
+  for (const [key, bmp, alt] of tabBmps) {
     const b = document.createElement("button");
     b.dataset["liveTab"] = key;
-    b.textContent = label;
+    b.title = alt;
     const active = key === activeLiveTab;
-    b.style.cssText =
-      `background:${active ? "linear-gradient(180deg,#3a78c0 0%,#26538a 100%)" : "rgba(255,255,255,.05)"};` +
-      `border:1px solid ${active ? "#d9b76a" : "#345"};color:${active ? "#fff" : "#cde"};` +
-      `padding:3px 4px;border-radius:3px;cursor:pointer;font:10px ui-sans-serif,system-ui,sans-serif;`;
+    b.style.cssText = [
+      `background:${active ? "rgba(255,223,128,0.18)" : "transparent"}`,
+      `border:1px solid ${active ? "#ffdf80" : "#000"}`,
+      "padding:1px",
+      "cursor:pointer",
+      "border-radius:2px",
+      "line-height:0",
+      "min-height:18px",
+    ].join(";");
+    b.innerHTML = `<img src="${UI_BASE}/Buttons/${bmp}" alt="${alt}" style="display:block;width:100%;height:auto;image-rendering:pixelated;"/>`;
     tabs.appendChild(b);
   }
   wrap.appendChild(tabs);
   // Content area.
   const content = document.createElement("div");
   content.dataset["liveContent"] = "1";
-  content.style.cssText = "overflow:auto;min-height:0;";
+  content.style.cssText = "overflow:auto;min-height:0;font:10px/1.2 \"MS Sans Serif\",sans-serif;color:#ffdf80;";
   wrap.appendChild(content);
   renderLiveTabContent(content, sim);
   // Wire tab clicks.
   tabs.addEventListener("click", (ev) => {
     const t = ev.target;
-    if (!(t instanceof HTMLButtonElement)) return;
-    const tab = t.dataset["liveTab"];
+    const btn = t instanceof HTMLElement ? t.closest("button") : null;
+    if (!(btn instanceof HTMLButtonElement)) return;
+    const tab = btn.dataset["liveTab"];
     if (tab === "job" || tab === "skills" || tab === "friends" || tab === "traits") {
       activeLiveTab = tab;
       renderTs1CenterSlot();
@@ -1859,60 +1939,76 @@ function mountBottomModeBar(): void {
   const slot = document.querySelector<HTMLDivElement>("#ts1-panel [data-slot-body='tabs']");
   const bar = document.createElement("div");
   bar.id = "bottom-mode-bar";
+  // TS1 modes: Live / Buy / Build / Options. Use FR labels from UIText
+  // chunk 138 (VCtlTips) entries 10 / 11 / 12 / 13 as tooltips and short
+  // single-glyph labels on the buttons themselves, matching the cramped
+  // right-edge real estate of the original panel.
   if (slot) {
     bar.style.cssText =
-      "display:flex;flex-direction:column;gap:4px;flex:1;font:12px/1.2 ui-sans-serif,system-ui,sans-serif;color:#cde;";
+      "display:flex;flex-direction:column;gap:2px;padding:4px 4px 4px 0;font:10px/1.1 \"MS Sans Serif\",sans-serif;color:#ffdf80;height:100%;justify-content:center;";
   } else {
     bar.style.cssText =
       "position:fixed;bottom:10px;left:50%;transform:translateX(-50%);display:flex;gap:4px;align-items:stretch;" +
-      "background:linear-gradient(180deg,#1a2840 0%,#0f1a2d 100%);" +
-      "border:1px solid #3a4a66;box-shadow:0 4px 14px rgba(0,0,0,.45);" +
+      "background:linear-gradient(180deg,#1a2840 0%,#0f1a2d 100%);border:1px solid #3a4a66;box-shadow:0 4px 14px rgba(0,0,0,.45);" +
       "padding:6px 8px;border-radius:8px;z-index:60;font:13px/1.2 ui-sans-serif,system-ui,sans-serif;color:#cde;";
   }
   bar.innerHTML = `
     <style>
       #bottom-mode-bar button.mode-tab {
-        background: rgba(255,255,255,.04);
-        border: 1px solid #3a4a66;
-        color: #cde;
-        padding: 6px 4px;
-        border-radius: 5px;
+        background: transparent;
+        border: 1px solid #000;
+        color: #ffdf80;
+        padding: 2px 8px;
+        border-radius: 2px;
         cursor: pointer;
         font: inherit;
-        font-weight: 500;
+        font-weight: 600;
         display: flex;
-        flex-direction: column;
         align-items: center;
-        gap: 2px;
-        transition: background .12s, border-color .12s;
-        flex: 1;
+        gap: 4px;
+        text-shadow: 0 1px 0 rgba(0,0,0,0.5);
       }
-      #bottom-mode-bar button.mode-tab:hover {
-        background: rgba(255,255,255,.10);
-        border-color: #6a8ab0;
-      }
+      #bottom-mode-bar button.mode-tab:hover { background: rgba(255,255,255,.05); }
       #bottom-mode-bar button.mode-tab.mode-active {
-        background: linear-gradient(180deg,#3a78c0 0%,#26538a 100%);
-        border-color: #d9b76a;
-        color: #fff;
-        box-shadow: inset 0 0 8px rgba(217,183,106,.25);
+        background: rgba(255,223,128,0.22);
+        border-color: #ffdf80;
+        color: #ffffff;
+        box-shadow: inset 0 0 4px rgba(0,0,0,0.4);
       }
-      #bottom-mode-bar .mode-icon { font-size: 16px; line-height: 1; }
-      #bottom-mode-bar .mode-label { font-size: 10px; opacity: .85; letter-spacing: .05em; text-transform: uppercase; }
+      #bottom-mode-bar .mode-glyph { font-size: 13px; line-height: 1; opacity: .9; width: 14px; text-align: center; }
+      #bottom-mode-bar .mode-label { font-size: 10px; letter-spacing: 0.03em; }
     </style>
-    <button class="mode-tab" data-mode-tab="play" title="Live mode (gameplay)">
-      <span class="mode-icon">▶</span><span class="mode-label">Live</span>
+    <button class="mode-tab" data-mode-tab="play" data-vctl="10">
+      <span class="mode-glyph">▶</span><span class="mode-label" data-mode-text="play">Live</span>
     </button>
-    <button class="mode-tab" data-mode-tab="buy" title="Buy mode (place furniture)">
-      <span class="mode-icon">§</span><span class="mode-label">Buy</span>
+    <button class="mode-tab" data-mode-tab="buy" data-vctl="11">
+      <span class="mode-glyph">§</span><span class="mode-label" data-mode-text="buy">Buy</span>
     </button>
-    <button class="mode-tab" data-mode-tab="build" title="Build mode (walls, floors, doors)">
-      <span class="mode-icon">⚒</span><span class="mode-label">Build</span>
+    <button class="mode-tab" data-mode-tab="build" data-vctl="12">
+      <span class="mode-glyph">⚒</span><span class="mode-label" data-mode-text="build">Build</span>
     </button>
-    <button class="mode-tab" data-mode-tab="options" title="Options (save/load/quit)">
-      <span class="mode-icon">⚙</span><span class="mode-label">Options</span>
+    <button class="mode-tab" data-mode-tab="options" data-vctl="13">
+      <span class="mode-glyph">⚙</span><span class="mode-label" data-mode-text="options">Options</span>
     </button>
   `;
+  // Replace English labels + tooltip with FR localised UIText 138 entries
+  // (Mode Vie / Mode Achat / Mode Construction / Mode Options). The labels
+  // include keyboard shortcuts ("- F1") which we strip from the visible
+  // text but keep in the title for completeness.
+  const modeKeyToText: Record<string, string> = { play: "Mode Vie", buy: "Achat", build: "Construction", options: "Options" };
+  for (const btn of bar.querySelectorAll<HTMLButtonElement>("button.mode-tab")) {
+    const idx = parseInt(btn.dataset["vctl"] ?? "-1", 10);
+    if (idx >= 0) {
+      const full = tStr("UIText", 138, idx, "");
+      if (full) btn.title = full;
+    }
+    const key = btn.dataset["modeTab"] ?? "";
+    const label = btn.querySelector<HTMLSpanElement>("span[data-mode-text]");
+    if (label && modeKeyToText[key]) {
+      // Use short FR labels in-button; tooltip carries the long form.
+      label.textContent = modeKeyToText[key];
+    }
+  }
   bar.addEventListener("click", (ev) => {
     const t = ev.target;
     if (!(t instanceof HTMLElement)) return;
