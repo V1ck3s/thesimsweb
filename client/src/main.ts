@@ -3564,90 +3564,166 @@ async function loadAndApplyHouse(path: string, buildBar: HTMLElement): Promise<v
 let neighborhoodCache: NeighborhoodLot[] | null = null;
 let neighborhoodModalEl: HTMLDivElement | null = null;
 
+// Authentic TS1 Neighborhood mode — full-screen Magic Town map (NScreen.png,
+// 800×600 from UIGraphics.far/Nbhd) with clickable lot markers laid out on
+// the map and a TS1-styled action bar at the bottom. Replaces the previous
+// dialog-style modal.
 async function openNeighborhoodModal(): Promise<void> {
   if (neighborhoodModalEl) return;
   const overlay = document.createElement("div");
-  overlay.id = "neighborhood-modal";
-  overlay.style.cssText =
-    "position:fixed;inset:0;background:rgba(0,0,0,.65);z-index:1000;display:flex;align-items:center;justify-content:center;font:13px/1.4 ui-sans-serif,system-ui,sans-serif;color:#cde;";
-  const panel = document.createElement("div");
-  panel.style.cssText =
-    "background:#181c24;border:1px solid #345;border-radius:8px;padding:18px 22px;width:640px;max-width:94vw;max-height:88vh;overflow:auto;display:flex;flex-direction:column;gap:12px;box-shadow:0 8px 32px rgba(0,0,0,.5);";
-  panel.innerHTML = `
-    <div style="font-size:15px;color:#9ad;font-weight:600;display:flex;align-items:center;gap:10px;">
-      <span>Neighborhood — Magic Town</span>
-      <span data-nb-current style="opacity:.6;font-size:12px;font-weight:normal;"></span>
-    </div>
-    <div data-nb-grid style="display:grid;grid-template-columns:repeat(5,1fr);gap:10px;"></div>
-    <div data-nb-status style="opacity:.6;font-size:11px;min-height:1em;"></div>
-    <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:4px;">
-      <button data-nb-close style="background:#222;color:#cde;border:1px solid #345;font:inherit;padding:6px 14px;border-radius:3px;cursor:pointer;">Close</button>
-    </div>
-  `;
-  overlay.appendChild(panel);
+  overlay.id = "neighborhood-screen";
+  overlay.style.cssText = [
+    "position:fixed",
+    "inset:0",
+    "z-index:1000",
+    "background:#000",
+    "display:flex",
+    "align-items:center",
+    "justify-content:center",
+    "font:11px/1.2 \"MS Sans Serif\",Geneva,Tahoma,sans-serif",
+    "color:#ffdf80",
+    "image-rendering:pixelated",
+  ].join(";");
+  // Inner canvas keeps the 800×600 native NScreen aspect ratio centered, with
+  // the bitmap stretched to fit the viewport while preserving proportions.
+  const stage = document.createElement("div");
+  stage.style.cssText = [
+    "position:relative",
+    "width:min(100vw, calc(100vh * (800 / 600)))",
+    "height:min(100vh, calc(100vw * (600 / 800)))",
+    `background:#001a4d url("${UI_BASE}/../Nbhd/NScreen.png") no-repeat center center / 100% 100%`,
+    "box-shadow:0 0 40px rgba(0,0,0,.7)",
+  ].join(";");
+  overlay.appendChild(stage);
   document.body.appendChild(overlay);
   neighborhoodModalEl = overlay;
+
+  // Title bar (top), action strip (bottom). Match TS1 chrome palette
+  // (dark cobalt blue, yellow text, no rounded corners).
+  const titleBar = document.createElement("div");
+  titleBar.style.cssText = [
+    "position:absolute",
+    "top:0",
+    "left:0",
+    "right:0",
+    "height:32px",
+    "background:linear-gradient(180deg, rgba(0,10,40,.85) 0%, rgba(0,5,30,.65) 100%)",
+    "border-bottom:1px solid #244",
+    "color:#ffdf80",
+    "display:flex",
+    "align-items:center",
+    "justify-content:space-between",
+    "padding:0 12px",
+    "font:bold 14px/1 \"MS Sans Serif\",sans-serif",
+    "letter-spacing:0.04em",
+  ].join(";");
+  titleBar.innerHTML = `
+    <span data-nb-title>Quartier — Magic Town</span>
+    <span data-nb-current style="opacity:.7;font-weight:normal;font-size:11px;"></span>
+  `;
+  stage.appendChild(titleBar);
+
+  const actionBar = document.createElement("div");
+  actionBar.style.cssText = [
+    "position:absolute",
+    "bottom:0",
+    "left:0",
+    "right:0",
+    "height:46px",
+    "background:linear-gradient(0deg, rgba(0,10,40,.92) 0%, rgba(0,5,30,.72) 100%)",
+    "border-top:1px solid #244",
+    "display:flex",
+    "align-items:center",
+    "gap:8px",
+    "padding:0 12px",
+  ].join(";");
+  actionBar.innerHTML = `
+    <span data-nb-status style="flex:1;font:11px/1.3 \"MS Sans Serif\",sans-serif;color:#ffdf80;opacity:.9;min-height:1em;"></span>
+    <button data-nb-close style="background:url(\"${UI_BASE}/Backgrounds/BackPatch.png\") no-repeat center center / contain;width:52px;height:38px;border:none;cursor:pointer;color:#ffdf80;font:bold 11px/1 \"MS Sans Serif\",sans-serif;text-shadow:0 1px 0 #000;image-rendering:pixelated;" title="Retour au terrain">Retour</button>
+  `;
+  stage.appendChild(actionBar);
 
   const close = (): void => {
     overlay.remove();
     neighborhoodModalEl = null;
   };
-  panel.querySelector<HTMLButtonElement>("button[data-nb-close]")!.addEventListener("click", close);
-  overlay.addEventListener("click", (ev) => {
-    if (ev.target === overlay) close();
-  });
+  actionBar.querySelector<HTMLButtonElement>("button[data-nb-close]")!.addEventListener("click", close);
+  // Esc closes — convenient when the canvas is paused.
+  const keyHandler = (ev: KeyboardEvent): void => {
+    if (ev.key === "Escape") {
+      close();
+      window.removeEventListener("keydown", keyHandler);
+    }
+  };
+  window.addEventListener("keydown", keyHandler);
 
-  const grid = panel.querySelector<HTMLDivElement>("div[data-nb-grid]")!;
-  const status = panel.querySelector<HTMLDivElement>("div[data-nb-status]")!;
-  const current = panel.querySelector<HTMLSpanElement>("span[data-nb-current]")!;
-  current.textContent = currentLotPath ? `· current: ${currentLotPath.split("/").pop()}` : "";
+  const status = actionBar.querySelector<HTMLDivElement>("[data-nb-status]")!;
+  const current = titleBar.querySelector<HTMLSpanElement>("[data-nb-current]")!;
+  current.textContent = currentLotPath ? `· actif : ${currentLotPath.split("/").pop()}` : "";
 
-  grid.innerHTML = "<div style='opacity:.6;'>loading lots…</div>";
+  status.textContent = "chargement des terrains…";
   try {
     if (!neighborhoodCache) neighborhoodCache = await fetchNeighborhoodMap();
-    grid.innerHTML = "";
+    status.textContent = `${neighborhoodCache.length} terrain${neighborhoodCache.length > 1 ? "s" : ""} — clic pour s'y installer.`;
+    // Lay lots out on the NScreen background. NScreen is 800×600 native; we
+    // scatter lots inside the central green block (~10%-90% horizontal, ~14%-86%
+    // vertical) so they sit on the visible lots area of the map.
+    const cols = NEIGHBORHOOD_COLS;
+    const rows = Math.max(1, Math.ceil(neighborhoodCache.length / cols));
     for (const lot of neighborhoodCache) {
       const tile = document.createElement("button");
       const isCurrent = lot.path === currentLotPath;
-      tile.style.cssText =
-        `background:${isCurrent ? "rgba(120,170,230,.18)" : "#111"};color:#cde;border:1px solid ${isCurrent ? "#69f" : "#345"};` +
-        `border-radius:4px;padding:10px;display:flex;flex-direction:column;gap:6px;cursor:pointer;font:inherit;text-align:left;` +
-        `transition:transform .1s;`;
-      tile.addEventListener("mouseenter", () => (tile.style.transform = "scale(1.03)"));
-      tile.addEventListener("mouseleave", () => (tile.style.transform = "scale(1)"));
+      const xPct = 12 + ((lot.gx + 0.5) / cols) * 76; // 12%–88%
+      const yPct = 18 + ((lot.gy + 0.5) / Math.max(rows, 2)) * 64; // 18%–82%
+      tile.dataset["lotPath"] = lot.path;
+      tile.style.cssText = [
+        "position:absolute",
+        `left:${xPct}%`,
+        `top:${yPct}%`,
+        "transform:translate(-50%, -50%)",
+        "width:88px",
+        "min-height:36px",
+        "padding:3px 4px",
+        `background:${isCurrent ? "rgba(255,223,128,.18)" : "rgba(0,12,40,.78)"}`,
+        `border:1px solid ${isCurrent ? "#ffdf80" : "#5a7aa6"}`,
+        "border-radius:2px",
+        "color:#ffdf80",
+        "font:bold 10px/1.1 \"MS Sans Serif\",sans-serif",
+        "text-align:center",
+        "cursor:pointer",
+        "box-shadow:0 1px 2px rgba(0,0,0,.5)",
+        "transition:transform .08s, box-shadow .08s",
+        "image-rendering:pixelated",
+      ].join(";");
       tile.title = `${lot.path}\n${(lot.size / 1024).toFixed(1)} KiB`;
-      // ASCII isometric house icon — cheap, no asset needed.
       tile.innerHTML = `
-        <div style="font-family:ui-monospace,monospace;font-size:13px;color:${isCurrent ? "#9be08a" : "#9ad"};text-align:center;line-height:1.05;">
-          <pre style="margin:0;">▟▙
-██</pre>
-        </div>
-        <div style="font-weight:600;font-size:12px;">${escapeHtml(lot.name)}</div>
-        <div style="opacity:.55;font-size:10px;">${escapeHtml(lot.path.split("/").slice(-2).join("/"))}</div>
+        <div style="font-size:10px;font-weight:bold;text-shadow:0 1px 0 #000;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${escapeHtml(lot.name)}</div>
+        <div style="font-size:9px;opacity:.75;font-weight:normal;color:${isCurrent ? "#9be08a" : "#bcd"};">${isCurrent ? "★ actif" : "§ vide"}</div>
       `;
+      tile.addEventListener("mouseenter", () => {
+        tile.style.transform = "translate(-50%, -50%) scale(1.08)";
+        tile.style.boxShadow = "0 2px 6px rgba(0,0,0,.7)";
+      });
+      tile.addEventListener("mouseleave", () => {
+        tile.style.transform = "translate(-50%, -50%)";
+        tile.style.boxShadow = "0 1px 2px rgba(0,0,0,.5)";
+      });
       tile.addEventListener("click", async () => {
         if (lot.path === currentLotPath) {
-          status.textContent = `${lot.name} is already the active lot.`;
-          status.style.color = "#9ad";
+          status.textContent = `${lot.name} est déjà le terrain actif.`;
           return;
         }
         const ok = confirm(
-          `Move family (${sims.length} Sim${sims.length === 1 ? "" : "s"}) into "${lot.name}"?\n` +
-            `The current house contents (furniture/walls) will be replaced.`,
+          `Installer la famille (${sims.length} Sim${sims.length === 1 ? "" : "s"}) dans « ${lot.name} » ?\n` +
+            `Le contenu du terrain actuel (murs/mobilier) sera remplacé.`,
         );
         if (!ok) return;
-        status.textContent = "moving family…";
-        status.style.color = "#cde";
+        status.textContent = "déménagement en cours…";
         try {
-          // Wipe placed instances — the new lot's geometry takes over.
           lotInstances.length = 0;
-          // loadAndApplyHouse will wipe walls/floor/doors/windows and set
-          // currentLotPath. The Sim list survives.
           const buildBar =
             document.getElementById("build-tools") ?? document.createElement("div");
           await loadAndApplyHouse(lot.path, buildBar);
-          // Re-spawn each Sim at a fresh empty tile so they don't end up
-          // inside a wall in the new lot.
           for (const sim of sims) {
             const { x, y } = findEmptyLotTile();
             sim.fx = x;
@@ -3656,27 +3732,26 @@ async function openNeighborhoodModal(): Promise<void> {
             sim.onArrive = null;
           }
           composeLotScene();
-          status.textContent = `moved in: ${lot.name}.`;
-          status.style.color = "#9bd09b";
-          current.textContent = `· current: ${lot.path.split("/").pop()}`;
-          // Refresh tile highlights.
-          for (const t of grid.querySelectorAll<HTMLButtonElement>("button")) {
-            t.style.background = "#111";
-            t.style.borderColor = "#345";
+          status.textContent = `installé dans : ${lot.name}.`;
+          current.textContent = `· actif : ${lot.path.split("/").pop()}`;
+          // Refresh highlights on all tiles.
+          for (const t of stage.querySelectorAll<HTMLButtonElement>("button[data-lot-path]")) {
+            const active = t.dataset["lotPath"] === currentLotPath;
+            t.style.background = active ? "rgba(255,223,128,.18)" : "rgba(0,12,40,.78)";
+            t.style.borderColor = active ? "#ffdf80" : "#5a7aa6";
           }
-          tile.style.background = "rgba(120,170,230,.18)";
-          tile.style.borderColor = "#69f";
         } catch (err) {
-          status.textContent = `error: ${err instanceof Error ? err.message : "?"}`;
-          status.style.color = "#d8a13a";
+          status.textContent = `erreur : ${err instanceof Error ? err.message : "?"}`;
         }
       });
-      grid.appendChild(tile);
+      stage.appendChild(tile);
     }
   } catch (err) {
-    grid.innerHTML = `<div style='color:#d8a13a;'>error: ${escapeHtml(err instanceof Error ? err.message : "?")}</div>`;
+    status.textContent = `erreur : ${err instanceof Error ? err.message : "?"}`;
   }
 }
+
+const NEIGHBORHOOD_COLS = 5;
 
 function escapeHtml(s: string): string {
   return s.replace(/[&<>"']/g, (c) =>

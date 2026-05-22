@@ -55,14 +55,15 @@ if (listOnly) {
   process.exit(0);
 }
 
-// Extract every CPanel/* entry. Each BMP becomes a .png at the same relative
-// path so we can swap the asset suffix in the client without restructuring
-// any directories.
+// Extract every CPanel/* and Nbhd/* entry. Each BMP becomes a .png at the same
+// relative path so we can swap the asset suffix in the client without
+// restructuring any directories.
+const EXTRACT_PREFIXES = ["cpanel\\", "cpanel/", "nbhd\\", "nbhd/"];
 let written = 0;
 let skipped = 0;
 for (const e of entries) {
   const lower = e.name.toLowerCase();
-  if (!lower.startsWith("cpanel\\") && !lower.startsWith("cpanel/")) {
+  if (!EXTRACT_PREFIXES.some((pfx) => lower.startsWith(pfx))) {
     skipped += 1;
     continue;
   }
@@ -89,7 +90,7 @@ for (const e of entries) {
   writeFileSync(outPath, outBuf);
   written += 1;
 }
-console.error(`wrote ${written} CPanel assets to ${OUT_DIR}, skipped ${skipped} non-CPanel entries`);
+console.error(`wrote ${written} CPanel+Nbhd assets to ${OUT_DIR}, skipped ${skipped} other entries`);
 
 // ---------------------------------------------------------------------------
 // BMP → RGBA decoder + PNG encoder. Handles BI_RGB 24-bit, BI_RGB 8-bit
