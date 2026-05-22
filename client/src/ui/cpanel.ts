@@ -185,7 +185,9 @@ export function mountCpanel(): HTMLDivElement {
 }
 
 /** Set the active mode patch BMP (LivePatch / BuyPatch / BuildPatch / OptionsPatch)
- * and resize the patch wrapper to the patch's native pixel dimensions. */
+ * and resize the patch wrapper to the patch's native pixel dimensions. The
+ * Live-only widgets (portrait + motives) live inside the arch in Live mode
+ * but are hidden in Buy/Build so the patch's chrome wraps the mode UI cleanly. */
 export function setCpanelMode(mode: "play" | "buy" | "build" | "options"): void {
   const wrap = document.getElementById("cpanel-patch-wrap");
   if (!wrap) return;
@@ -194,4 +196,15 @@ export function setCpanelMode(mode: "play" | "buy" | "build" | "options"): void 
   wrap.style.height = `${p.h}px`;
   wrap.style.backgroundImage = `url("${UI_BASE}/Backgrounds/${p.file}")`;
   wrap.style.backgroundSize = `${p.w}px ${p.h}px`;
+  // Show portrait + motives only in Live mode; the other patches host their
+  // own mode-specific UI inside (Buy catalog, Build tools, Options panel).
+  const isLive = mode === "play";
+  for (const child of wrap.children) {
+    if (!(child instanceof HTMLElement)) continue;
+    if (child.dataset["slotBody"] === "family") {
+      child.style.display = isLive ? "" : "none";
+    } else if (child.querySelector('[data-slot-body="motives"]')) {
+      child.style.display = isLive ? "" : "none";
+    }
+  }
 }
