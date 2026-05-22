@@ -18,7 +18,7 @@ import {
   type IsoSceneSprite,
   type IsoEntity,
 } from "./renderer/iso.js";
-import { loadStrings, s as tStr, ss as tStrArr, getLocale } from "./ui/i18n.js";
+import { loadStrings, s as tStr, ss as tStrArr, getLocale, setLocale } from "./ui/i18n.js";
 import { mountCpanel, setCpanelMode } from "./ui/cpanel.js";
 import { UI_BASE } from "./ui/bmp.js";
 
@@ -4077,6 +4077,13 @@ function openOptionsModalImpl(): void {
     <div style="font-size:15px;color:#d9b76a;font-weight:600;display:flex;align-items:center;gap:10px;">
       <span style="font-size:18px;">⚙</span><span>Options</span>
     </div>
+    <section data-section="locale" style="display:flex;flex-direction:column;gap:8px;">
+      <div style="color:#9ad;font-weight:600;font-size:12px;letter-spacing:.05em;text-transform:uppercase;">Langue / Language</div>
+      <div style="display:flex;gap:6px;">
+        <button data-locale="3" style="flex:1;min-width:60px;font:inherit;padding:7px 10px;cursor:pointer;border-radius:4px;font-weight:600;">🇫🇷 Français</button>
+        <button data-locale="1" style="flex:1;min-width:60px;font:inherit;padding:7px 10px;cursor:pointer;border-radius:4px;font-weight:600;">🇬🇧 English</button>
+      </div>
+    </section>
     <section data-section="saves" style="display:flex;flex-direction:column;gap:8px;">
       <div style="color:#9ad;font-weight:600;font-size:12px;letter-spacing:.05em;text-transform:uppercase;">Game</div>
       <div style="display:flex;gap:6px;flex-wrap:wrap;">
@@ -4149,6 +4156,34 @@ function openOptionsModalImpl(): void {
     setDebugMode(!document.body.classList.contains("debug-mode"));
   });
   panel.querySelector<HTMLButtonElement>("button[data-opt=\"close\"]")?.addEventListener("click", close);
+
+  // Locale toggle — FR / EN. Persists to localStorage via i18n.setLocale().
+  function refreshLocaleHighlight(): void {
+    const cur = getLocale();
+    for (const btn of panel.querySelectorAll<HTMLButtonElement>("button[data-locale]")) {
+      const isActive = btn.dataset["locale"] === String(cur);
+      btn.style.background = isActive ? "#3a78c0" : "#2a3a52";
+      btn.style.borderColor = isActive ? "#69f" : "#3a4a66";
+      btn.style.color = isActive ? "#fff" : "#cde";
+      btn.style.border = "1px solid";
+    }
+  }
+  refreshLocaleHighlight();
+  for (const btn of panel.querySelectorAll<HTMLButtonElement>("button[data-locale]")) {
+    btn.addEventListener("click", () => {
+      const code = parseInt(btn.dataset["locale"] ?? "3", 10);
+      if (code !== 1 && code !== 3) return;
+      setLocale(code);
+      refreshLocaleHighlight();
+      // Re-render every panel widget so the new strings come through.
+      renderMotivesHud();
+      renderFamilyHud();
+      renderTimeFundsHud();
+      renderTs1CenterSlot();
+      mountBottomModeBar();
+      updateModeButtonHighlights();
+    });
+  }
 
   // Populate saves list.
   void renderOptionsSavesList(panel);
