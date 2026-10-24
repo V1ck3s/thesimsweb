@@ -30,9 +30,12 @@ export const DIRTY_LEVEL = 0x100;
 export const DIRTY_ROTATION = 0x800;
 export const DIRTY_ZOOM = 0x1000;
 export const DIRTY_FUNDS = 0x4000;
-export const DIRTY_TIME = 0x8000;
+/** UpdateCPStateFromWorld and cWinViewControl::UpdateViewFromCPState use 0x2000 for the clock. */
+export const DIRTY_TIME = 0x2000;
 export const DIRTY_CPMODE = 0x100000;
 export const DIRTY_PAUSE = 0x800000;
+/** CPState::SetSelectedPerson sets bit 3 (cWinPeople refreshes the person on it). */
+export const DIRTY_SELECTED_PERSON = 0x8;
 export const DIRTY_ALL = 0xffffffff;
 
 /** A member of the active family, as the panels need it. */
@@ -48,6 +51,46 @@ export interface PersonInfo {
   personality: number[];
   isChild: boolean;
   isFemale: boolean;
+  // Live mode panel data (cWinPeople and its subpanels), optional: absent = neutral.
+  // `motives` above is indexed by the game's motive number (3 = overall mood,
+  // 5 energy, 6 comfort, 7 hunger, 8 hygiene, 9 bladder, 13 room, 14 social, 15 fun).
+  /** Person data (Int16[256], Behavior.iff STR# 200 indices, see data/neighborhood.ts PD). */
+  personData?: Int16Array;
+  /** Neighbor id (relationship matrix key). */
+  neighborId?: number;
+  /** BMP_ 2002 of the character file: three faces (normal, happy, sad) side by side. */
+  face?: ImageBitmap | null;
+  /** BMP_ 2003 of the character file: the relationship picture. */
+  relFace?: ImageBitmap | null;
+  /** Relationship matrix row: other neighbor id -> [daily, flags, lifetime, ...]. */
+  relationships?: Array<{ other: number; values: number[] }>;
+}
+
+/**
+ * Person data 65 (gender, also read as cXPerson+0x60e): 0 male, 1 female,
+ * bit 1 dog, bit 2 cat. Values above 1 are pets.
+ */
+export function personGender(p: PersonInfo): number {
+  return p.personData?.[65] ?? (p.isFemale ? 1 : 0);
+}
+
+/**
+ * HouseStats as the house subpanel reads it (House::GetHouseStats then the
+ * HouseStats getters). The lot fills it; a default-constructed HouseStats is
+ * all zeros.
+ */
+export interface HouseStats {
+  /** Scores, 0..100. */
+  sizeScore: number;
+  furnishingsScore: number;
+  yardScore: number;
+  upkeepScore: number;
+  layoutScore: number;
+  squareFeet: number;
+  numBedrooms: number;
+  numBathrooms: number;
+  /** 0 small, 1 medium, 2 large (other values print "**Unknown**"). */
+  lotSize: number;
 }
 
 /**
@@ -77,6 +120,8 @@ export class CPState {
   private day = 0;
   private selected = 0;
   family: PersonInfo[] = [];
+  /** Everyone the family may know (relationships panel), looked up by neighborId. */
+  neighbors: PersonInfo[] = [];
   familyName = "";
   viewer: HouseViewerHooks | null = null;
   private listeners: Array<(s: CPState) => void> = [];
@@ -94,6 +139,11 @@ export class CPState {
 
   private touch(bits: number): void {
     this.dirty |= bits;
+  }
+
+  /** CPState::SetDirty. */
+  setDirty(bits: number): void {
+    this.touch(bits);
   }
 
   // --- modes -----------------------------------------------------------------
@@ -238,10 +288,68 @@ export class CPState {
   setSelectedPerson(index: number): void {
     if (index < 0 || index >= this.family.length) return;
     this.selected = index;
-    this.touch(DIRTY_PERSON);
+    this.touch(DIRTY_PERSON | DIRTY_SELECTED_PERSON);
   }
+
+  /** Neighborhood::GetZoningType of the current lot (1 = residential); the lot fills it. */
+  zoningType = 1;
 
   getFamilyName(): string {
     return this.familyName;
+  }
+
+  // --- view control gadget (cWinViewControl) ---------------------------------
+
+  /** Friends of the active family (CPState::GetFamilyFriendCount); the simulation fills it. */
+  familyFriendCount = 0;
+  /** Statistics of the current house (House::GetHouseStats); the lot fills it. */
+  houseStats: HouseStats = {
+    sizeScore: 0,
+    furnishingsScore: 0,
+    yardScore: 0,
+    upkeepScore: 0,
+    layoutScore: 0,
+    squareFeet: 0,
+    numBedrooms: 0,
+    numBathrooms: 0,
+    lotSize: 0,
+  };
+  /** CPState+0x54 (dirty 0x1000000): Buy and Build modes unavailable. */
+  buyAndBuildDisabled = false;
+  /** Dirty 0x8000000: Live and Camera modes unavailable. */
+  liveModeDisabled = false;
+  /** CPState+0 (HideButtonsForLocation): hides funds and friend count. */
+  hideForLocation = false;
+  /** Globals read by Is2ndLevelFloorable / HasBeenTo2ndLevel; the lot fills them. */
+  secondLevelFloorable = false;
+  beenTo2ndLevel = false;
+
+  getFamilyFriendCount(): number {
+    return this.familyFriendCount;
+  }
+
+  isBuyAndBuildDisabled(): boolean {
+    return this.buyAndBuildDisabled;
+  }
+
+  isLiveModeDisabled(): boolean {
+    return this.liveModeDisabled;
+  }
+
+  isHideForLocation(): boolean {
+    return this.hideForLocation;
+  }
+
+  is2ndLevelFloorable(): boolean {
+    return this.secondLevelFloorable;
+  }
+
+  hasBeenTo2ndLevel(): boolean {
+    return this.beenTo2ndLevel;
+  }
+
+  /** CPState::GetWallButtonEnableFlags: bit 0 walls up, bit 1 walls down, bit 2 cutaway. */
+  getWallButtonEnableFlags(): number {
+    return this.level !== 1 && this.level !== 2 ? 1 : 7;
   }
 }

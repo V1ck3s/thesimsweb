@@ -6,7 +6,7 @@
  * instead (each exports `mount(ctx, mgr)`).
  */
 
-import { CPState } from "./cpstate.js";
+import { CPState, DIRTY_ALL } from "./cpstate.js";
 import type { GameContext } from "./context.js";
 import { CPANEL_HEIGHT, WinCPanel } from "./cpanel/cpanel.js";
 import { familyInHouse, loadCharacter, loadNeighborhood, neighborByGuid, PD } from "./data/neighborhood.js";
@@ -81,6 +81,10 @@ async function mountGame(ctx: GameContext, mgr: WinMgr, splash: TSWinSplashScree
   if (!(await cpanel.init())) throw new Error("control panel init failed");
   view.childAdd(cpanel);
   cpanel.postInit();
+  // The original starts collapsed (SetCPMode(1)) during init and the panel opens
+  // when the lot is entered; refresh everything once the windows listen.
+  ctx.state.setCPMode(0);
+  ctx.state.dirty = DIRTY_ALL;
   splash.setSplashMessage("ocns");
   await splash.finished();
   mgr.main.childRemove(splash);

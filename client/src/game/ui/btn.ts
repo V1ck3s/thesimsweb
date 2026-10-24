@@ -36,6 +36,10 @@ export class TSWinBtn extends TSWin {
   caption = "";
   font: FfnFont | null = null;
   captionColor = "#ffffff";
+  /** cTSWinBtn::SetCustomHiliteColors: caption color per frame column (overrides captionColor). */
+  hiliteColors: string[] | null = null;
+  /** cTSWinBtn::SetTextAlignment (+0x15c): 0 left, 1 centered, 2 right. */
+  textAlignment = 1;
   onClick: ((btn: TSWinBtn) => void) | null = null;
   private changedOnDown = false;
 
@@ -92,9 +96,10 @@ export class TSWinBtn extends TSWin {
     }
     if (this.caption && this.font) {
       const tw = this.font.stringWidth(this.caption);
-      const x = (this.getW() - tw) >> 1;
+      const x = this.textAlignment === 0 ? 0 : this.textAlignment === 2 ? this.getW() - tw : (this.getW() - tw) >> 1;
       const y = (this.getH() - this.font.height) >> 1;
-      this.font.drawText(g.ctx, this.caption, g.ox + x, g.oy + y, this.captionColor);
+      const color = this.hiliteColors?.[this.frameColumn()] ?? this.captionColor;
+      this.font.drawText(g.ctx, this.caption, g.ox + x, g.oy + y, color);
     }
   }
 
@@ -135,8 +140,9 @@ export class TSWinBtn extends TSWin {
     this.entered = this.isPointInWindowWindowCoordinates(x, y);
     if (this.mode === BTN_PUSH) {
       this.state = 0;
-    } else if (this.mode === BTN_TOGGLE) {
+    } else if (this.mode === BTN_TOGGLE && !this.sendOnDown) {
       // Pressing showed the "down" frame; releasing outside cancels.
+      // Buttons that fire on press keep their state (cTSWinBtn+0xec == 1).
       if (!this.entered && this.changedOnDown) this.state = 0;
       else if (this.entered && !this.changedOnDown) this.state = 0;
     }
