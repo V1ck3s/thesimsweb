@@ -58,12 +58,15 @@ export async function registerManifestRoute(
   app: FastifyInstance,
   { assetsDir }: Options,
 ): Promise<void> {
-  app.get("/api/manifest", async () => {
-    const files = await walk(assetsDir);
+  // Walking the install over the WSL2 /mnt/c mount takes tens of seconds, and
+  // the game folder is read-only: walk once at startup and serve the result.
+  let files: Promise<ManifestEntry[]> = walk(assetsDir);
+  app.get("/api/manifest", async (req) => {
+    if ((req.query as { refresh?: string }).refresh !== undefined) files = walk(assetsDir);
     return {
       version: 1,
       assetsRoot: "/assets/",
-      files,
+      files: await files,
     };
   });
 }
