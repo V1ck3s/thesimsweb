@@ -27,8 +27,18 @@ interface Glyph {
   advance: number;
 }
 
+/** cITSFontSys::tFontStyleFlags: software drop shadow (cTSFont::TSDrawText). */
+export const FONT_SHADOW = 0x10;
+
+/** cITSFontSys::tOutputStyleType, as passed to DrawTextPara. */
+export const ALIGN_LEFT = 0;
+export const ALIGN_CENTER = 1;
+export const ALIGN_RIGHT = 2;
+
 export class FfnFont {
   readonly height: number;
+  /** Style flags (cTSFont+0xc); see withFlags(). */
+  flags = 0;
   private readonly glyphs = new Map<number, Glyph>();
   private readonly extraWidth: number;
   private readonly atlasW: number;
@@ -102,8 +112,134 @@ export class FfnFont {
     return w + this.extraWidth;
   }
 
+  /**
+   * The same font with other style flags (the font system caches one cTSFont
+   * per (size, flags); glyph data is shared here).
+   */
+  withFlags(flags: number): FfnFont {
+    if (flags === this.flags) return this;
+    const f = Object.create(this) as FfnFont;
+    f.flags = flags;
+    return f;
+  }
+
+  /** cTSFont::GetBaselineHeight: bottom of the "A" glyph (top offset + height). */
+  baselineHeight(): number {
+    const a = this.glyphs.get(0x41);
+    return a ? a.top + a.h : this.height;
+  }
+
+  /** cTSFont::GetCharDims: a glyph's box, top/bottom relative to the line top. */
+  charDims(code: number): { left: number; top: number; right: number; bottom: number } {
+    const g = this.glyphs.get(code);
+    if (!g) return { left: 0, top: 0, right: 0, bottom: 0 };
+    return { left: g.bearing, top: g.top, right: g.bearing + g.w, bottom: g.top + g.h };
+  }
+
+  /** Bitmap width of a glyph (FontRect::Width), used by word wrapping. */
+  glyphWidth(code: number): number {
+    return this.glyphs.get(code)?.w ?? 0;
+  }
+
+  /** cTSFont::TSTextArea: sum of the advances, one line high (no extra width). */
+  textArea(text: string): { w: number; h: number } {
+    let w = 0;
+    for (const ch of text) w += this.charWidth(toCp1252(ch));
+    return { w, h: this.height };
+  }
+
+  /**
+   * cTSFont::CalculateWordsToFitInWidth: how many characters of
+   * text[start .. start + len) go on a line `width` pixels wide. Breaks after
+   * spaces and hyphens, keeps a newline in the line, swallows trailing spaces;
+   * a single word wider than the line is not split.
+   */
+  calculateWordsToFitInWidth(text: string, start: number, len: number, width: number): number {
+    if (len < 1) return 0;
+    const code = (i: number): number => (start + i < text.length ? toCp1252(text[start + i]!) : 0);
+    let lastBreak = 0;
+    let returnBreak = false;
+    let fit = 0;
+    let w = this.glyphWidth(code(0));
+    let i = 0;
+    let n: number;
+    for (;;) {
+      if (w > width) {
+        n = lastBreak;
+        break;
+      }
+      fit = i + 1;
+      if (fit >= len) return fit;
+      const c = code(i);
+      if (c === 10) {
+        returnBreak = true;
+        n = fit;
+        break;
+      }
+      if (c === 0x20 || c === 0x2d) lastBreak = fit;
+      w = w - this.glyphWidth(c) + this.charWidth(c);
+      if (i < len) {
+        w += this.glyphWidth(code(i + 1));
+        i++;
+      }
+    }
+    if (n === 0) {
+      if (fit < 2) {
+        while (n < len && start + n < text.length) {
+          const c = code(n);
+          if (c === 0 || c === 10 || c === 0x20) break;
+          n++;
+        }
+      } else {
+        n = fit - 1;
+      }
+    }
+    if (!returnBreak) while (n < len && code(n) === 0x20) n++;
+    if (n === 0 && len > 0) n = 1;
+    return n;
+  }
+
+  /** cTSFont::CalculateNumberOfLines (width 0 means one line). */
+  calculateNumberOfLines(text: string, width: number): number {
+    if (width === 0) return 1;
+    let lines = 0;
+    for (let pos = 0; pos < text.length; lines++) {
+      pos += this.calculateWordsToFitInWidth(text, pos, text.length - pos, width);
+    }
+    return lines;
+  }
+
+  /**
+   * cTSFont::DrawTextPara: word-wrapped text inside an absolute rectangle, one
+   * line per font height, stopping at the rectangle's bottom.
+   */
+  drawTextPara(
+    ctx: CanvasRenderingContext2D,
+    rect: { left: number; top: number; right: number; bottom: number },
+    text: string,
+    align: number,
+    color: string,
+  ): void {
+    const width = rect.right - rect.left;
+    let y = rect.top;
+    for (let pos = 0; y < rect.bottom && pos < text.length; y += this.height) {
+      const n = this.calculateWordsToFitInWidth(text, pos, text.length - pos, width);
+      const line = text.slice(pos, pos + n);
+      let x = rect.left;
+      if (align === ALIGN_CENTER) x = rect.left + (width >>> 1) - Math.trunc(this.stringWidth(line) / 2);
+      else if (align === ALIGN_RIGHT) x = rect.right - this.stringWidth(line);
+      this.drawText(ctx, line, x, y, color);
+      pos += n;
+    }
+  }
+
   /** Draw `text` with its top-left at (x, y). */
   drawText(ctx: CanvasRenderingContext2D, text: string, x: number, y: number, color: string): void {
+    if (this.flags & FONT_SHADOW) this.drawGlyphs(ctx, text, x + 2, y + 2, "#000000");
+    this.drawGlyphs(ctx, text, x, y, color);
+  }
+
+  private drawGlyphs(ctx: CanvasRenderingContext2D, text: string, x: number, y: number, color: string): void {
     const atlas = this.atlasFor(color);
     let pen = x;
     for (const ch of text) {

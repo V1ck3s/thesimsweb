@@ -53,6 +53,12 @@ positions, sizes, resource ids, colors, fonts and behaviors come from the code.
 | `ui/tswin.ts` | cTSWin (area, flags, children, plot, hit testing, TSOn* handlers) |
 | `ui/winmgr.ts` | cTSWinMgrW95 (input routing, capture, hover, paint loop); `winMgr` singleton |
 | `ui/btn.ts` | cTSWinBtn (frame columns, push/toggle modes, commands) |
+| `ui/ctrlmgr.ts`, `ui/syscolors.ts` | cTSWinCtrlMgr (system bitmaps/fonts) and the boot colors (InitSimsColors) |
+| `ui/text.ts`, `ui/textlist.ts`, `ui/scrollbar.ts`, `ui/slider.ts` | cTSWinText, cTSWinTextList, cTSWinScrollbar, cTSWinSlider |
+| `ui/check.ts`, `ui/triradio.ts`, `ui/systembutton.ts` | cTSWinCheck, cWinTriRadio, cTSSystemButton (DefaultPushBtn) |
+| `ui/dlg.ts`, `ui/gendlg.ts`, `ui/msgbox.ts` | cTSWinDlg (modal via `winMgr.doModalWin`), cTSWinGenDlg, cTSWinMsgBox (`TSWinMsgBox.show`) |
+| `ui/ttwindow.ts` | cDefaultTTWindow; `winMgr.setDefaultTTWindow(...)` turns tooltips on |
+| `ui/piemenu.ts` | cTSPieMenu (`TSPieMenu.forLiveMode(ctx)`, `pie.show(x, y, items, onPick)`) |
 | `res/uires.ts` | nsSMResFac + Res_*.RT tables (`ctx.res.image(id)`) |
 | `res/ffn.ts`, `res/fonts.ts` | cTSFont / cTSFontSys (`await ctx.fonts.acquire(size, style)`) |
 | `res/strings.ts` | StringSet (`ctx.strings.get("UIText", id, index)`) |

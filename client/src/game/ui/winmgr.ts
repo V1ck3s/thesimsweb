@@ -7,7 +7,16 @@
  * scaled by CSS to fit the browser window with integer-free nearest scaling.
  */
 
-import { TSWin, WF_MODAL } from "./tswin.js";
+import { TSWin, WF_MODAL, type Rect } from "./tswin.js";
+import type { DefaultTTWindow } from "./ttwindow.js";
+
+/** Tooltip states (cTSWinMgrW95+0x198). */
+const TT_IDLE = 0;
+const TT_WAITING = 1;
+const TT_UNFURLING = 2;
+const TT_SHOWN = 3;
+/** A shown tooltip goes away after this long (SetupToolTipsWindow). */
+const TT_SHOW_MS = 5000;
 
 /** The single window manager, like the game's global cTSWinMgrW95 pointer. */
 export let winMgr: WinMgr;
@@ -20,6 +29,17 @@ export class WinMgr {
   private hover: TSWin | null = null;
   private mouseX = -1;
   private mouseY = -1;
+  private buttons = 0;
+  private focus: TSWin | null = null;
+  private readonly modal = new Map<TSWin, (result: number) => void>();
+  // Tooltips (cTSWinMgrW95+0x194..0x1c1).
+  private ttDefault: DefaultTTWindow | null = null;
+  private ttTarget: TSWin | null = null;
+  private ttState = TT_IDLE;
+  private ttTime = 0;
+  private ttUnfurlStart = 0;
+  private ttPos = { x: 0, y: 0 };
+  private ttWindow: DefaultTTWindow | null = null;
 
   constructor(
     host: HTMLElement,
@@ -57,12 +77,204 @@ export class WinMgr {
     return { x: this.mouseX, y: this.mouseY };
   }
 
+  /** GetKeyState(VK_LBUTTON / VK_RBUTTON) < 0 */
+  isMouseButtonDown(): boolean {
+    return this.buttons !== 0;
+  }
+
+  setFocus(w: TSWin | null): void {
+    this.focus = w;
+  }
+
+  getFocus(): TSWin | null {
+    return this.focus;
+  }
+
+  // --- modal windows (cTSWinMgrW95::DoModalWin, cTSWinDlg::TSEndDialog) -----
+
+  /**
+   * Adds `win` in front of `parent` and routes all input to it until
+   * endDialog(win, result); resolves with that result.
+   */
+  doModalWin(win: TSWin, parent: TSWin = this.main): Promise<number> {
+    this.hover?.tsOnMouseExit();
+    this.hover = null;
+    this.untriggerToolTips();
+    parent.childAdd(win);
+    win.setFlag(WF_MODAL, true);
+    if (this.capture && this.capture !== win) this.capture = null;
+    const focus = this.focus;
+    this.focus = win;
+    win.tsBeginModal();
+    return new Promise((resolve) => {
+      this.modal.set(win, (result) => {
+        this.focus = focus;
+        resolve(result);
+      });
+    });
+  }
+
+  /** Ends a doModalWin loop (the 0x10 "end dialog" message). */
+  endDialog(win: TSWin, result: number): void {
+    const done = this.modal.get(win);
+    if (!done) return;
+    this.modal.delete(win);
+    win.tsEndModal();
+    win.setFlag(WF_MODAL, false);
+    this.releaseCapture(win);
+    win.parent?.childRemove(win);
+    done(result);
+  }
+
+  // --- tooltips (cTSWinMgrW95::HandleMouseEnterExit / SetupToolTipsWindow) ---
+
+  /** Installs the tooltip window (GetDefaultTTWindow); tooltips stay off without it. */
+  setDefaultTTWindow(w: DefaultTTWindow): void {
+    this.ttDefault = w;
+  }
+
+  /** cTSWin::GetTTPosition: left edge and top of the tooltip for `w`. */
+  getTTPosition(w: TSWin, tt: TSWin, followCursor: boolean): { x: number; y: number } {
+    const o = w.absOrigin();
+    const right = o.x + w.getW();
+    const bottom = o.y + w.getH();
+    const x = followCursor ? Math.min(Math.max(o.x, this.mouseX), right - 1) : Math.trunc((o.x + right) / 2);
+    let y = o.y - tt.getH() - 1;
+    if (y < 3) y = bottom + 2;
+    return { x, y };
+  }
+
+  /** cTSWin::GetToolTipsWindow: the default window showing `w`'s text. */
+  private getToolTipsWindow(w: TSWin): DefaultTTWindow | null {
+    this.ttDefault?.setToolTip(w.tooltip, 0);
+    return this.ttDefault;
+  }
+
+  private hasToolTip(w: TSWin | null): boolean {
+    return !!w && w.isVisible() && w.tooltip !== "";
+  }
+
+  /** cTSWinMgrW95::TriggerToolTips: advances the state machine (used by the lot view). */
+  triggerToolTips(): void {
+    const w = this.ttTarget;
+    if (!w) return;
+    const now = performance.now();
+    if (this.ttState === TT_UNFURLING) {
+      this.ttState = TT_SHOWN;
+      this.ttTime = now;
+    } else if (this.ttState === TT_IDLE) {
+      this.ttState = TT_WAITING;
+      this.ttTime = now;
+    } else if (this.ttState === TT_SHOWN) {
+      this.ttState = TT_UNFURLING;
+      this.ttUnfurlStart = now;
+    }
+    this.openToolTip(w);
+  }
+
+  /** cTSWinMgrW95::UntriggerToolTips */
+  untriggerToolTips(): void {
+    this.ttState = TT_IDLE;
+    this.ttWindow = null;
+  }
+
+  private openToolTip(w: TSWin): void {
+    this.ttWindow = null;
+    if (!this.hasToolTip(w)) return;
+    this.ttWindow = this.getToolTipsWindow(w);
+    if (this.ttWindow) this.ttPos = this.getTTPosition(w, this.ttWindow, false);
+  }
+
+  /** cTSWinMgrW95::HandleMouseEnterExit (the tooltip part). */
+  private toolTipHover(w: TSWin | null): void {
+    const now = performance.now();
+    const tip = this.hasToolTip(w);
+    if (this.ttState === TT_UNFURLING) {
+      this.ttState = TT_SHOWN;
+    } else if (this.ttState === TT_IDLE) {
+      this.ttState = TT_WAITING;
+    } else if (this.ttState === TT_SHOWN) {
+      if (!tip) {
+        if (!w || now - this.ttTime > w.tooltipDelay) this.ttState = TT_WAITING;
+      } else {
+        this.ttState = TT_UNFURLING;
+        this.ttUnfurlStart = now;
+      }
+    }
+    this.ttTarget = w;
+    this.ttTime = now;
+    this.ttWindow = null;
+    if (w) this.openToolTip(w);
+  }
+
+  /** cTSWinMgrW95::SetupToolTipsWindow: per-frame timing; true when the tooltip shows. */
+  private setupToolTipsWindow(now: number): boolean {
+    const w = this.ttTarget;
+    const tt = this.ttWindow;
+    if (w && this.hasToolTip(w)) {
+      if (this.ttState === TT_WAITING && w.tooltipDelay <= now - this.ttTime) {
+        this.ttState = TT_UNFURLING;
+        this.ttUnfurlStart = now;
+        if (tt) this.ttPos = this.getTTPosition(w, tt, true);
+      } else if (this.ttState === TT_SHOWN && now - this.ttTime > TT_SHOW_MS) {
+        this.ttState = TT_IDLE;
+      }
+    } else if (w && this.ttState === TT_SHOWN && w.tooltipDelay <= now - this.ttTime) {
+      this.ttState = TT_WAITING;
+      this.ttTime = now;
+    }
+    if (!tt) return false;
+    const h = tt.getH();
+    const r: Rect = { left: 0, top: 0, right: tt.getW(), bottom: h };
+    let t = 1;
+    let visible = false;
+    if (this.ttState === TT_UNFURLING && w) {
+      const elapsed = now - this.ttUnfurlStart;
+      if (elapsed < w.tooltipUnfurl && w.tooltipUnfurl !== 0) {
+        t = elapsed / w.tooltipUnfurl;
+        const shown = Math.trunc(h * t + 0.5);
+        r.left += this.ttPos.x;
+        r.right += this.ttPos.x;
+        r.top = this.ttPos.y + h - shown;
+        r.bottom = this.ttPos.y + h;
+        visible = r.bottom - r.top > 0;
+      } else {
+        this.ttState = TT_SHOWN;
+        this.ttTime = now;
+      }
+    }
+    if (this.ttState === TT_SHOWN) {
+      visible = true;
+      t = 1;
+      r.left = this.ttPos.x;
+      r.right = this.ttPos.x + tt.getW();
+      r.top = this.ttPos.y;
+      r.bottom = this.ttPos.y + h;
+    }
+    if (!visible) return false;
+    // Keep it on screen.
+    let dx = 0;
+    let dy = 0;
+    if (r.left < 0) dx = -r.left;
+    else if (this.width <= r.right) dx = this.width - r.right - 1;
+    if (r.top < 0) dy = -r.top;
+    else if (this.height <= r.bottom) dy = this.height - r.bottom - 1;
+    r.left += dx;
+    r.right += dx;
+    r.top += dy;
+    r.bottom += dy;
+    tt.unfurlToolTip(r, t);
+    return true;
+  }
+
   start(): void {
     const frame = (t: number): void => {
       this.main.pump(t);
       this.ctx.fillStyle = "#000";
       this.ctx.fillRect(0, 0, this.width, this.height);
       this.main.plot(this.ctx, 0, 0);
+      // cTSWinMgrW95::Plot: the tooltip is drawn over everything.
+      if (this.setupToolTipsWindow(t)) this.ttWindow?.plot(this.ctx, 0, 0);
       requestAnimationFrame(frame);
     };
     requestAnimationFrame(frame);
@@ -104,6 +316,7 @@ export class WinMgr {
     this.hover?.tsOnMouseExit();
     this.hover = under;
     under?.tsOnMouseEnter();
+    this.toolTipHover(under);
   }
 
   /** Deliver to the window, bubbling to parents until someone handles it. */
@@ -132,11 +345,13 @@ export class WinMgr {
       this.dispatch(p.x, p.y, (w, x, y) => w.tsOnMouseMove(x, y));
     });
     c.addEventListener("mousedown", (e) => {
+      this.buttons = e.buttons;
       const p = this.toLogical(e);
       if (e.button === 0) this.dispatch(p.x, p.y, (w, x, y) => w.tsOnMouseDownL(x, y));
       if (e.button === 2) this.dispatch(p.x, p.y, (w, x, y) => w.tsOnMouseDownR(x, y));
     });
     window.addEventListener("mouseup", (e) => {
+      this.buttons = e.buttons;
       const p = this.toLogical(e);
       if (e.button === 0) this.dispatch(p.x, p.y, (w, x, y) => w.tsOnMouseUpL(x, y));
       if (e.button === 2) this.dispatch(p.x, p.y, (w, x, y) => w.tsOnMouseUpR(x, y));
@@ -151,6 +366,16 @@ export class WinMgr {
       },
       { passive: false },
     );
+    window.addEventListener("keydown", (e) => {
+      // Keys go to the capture, else the front-most modal window, else the focus.
+      const modal = this.main.children.find((w) => w.isVisible() && w.getFlag(WF_MODAL));
+      for (let w = this.capture ?? modal ?? this.focus; w; w = w.parent) {
+        if (w.tsOnKeyDown(e.key)) {
+          e.preventDefault();
+          return;
+        }
+      }
+    });
     c.addEventListener("mouseleave", () => {
       this.hover?.tsOnMouseExit();
       this.hover = null;

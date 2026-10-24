@@ -19,6 +19,7 @@ import { Strings } from "./res/strings.js";
 import { UIRes } from "./res/uires.js";
 import { TSWinSplashScreen } from "./screens/splash.js";
 import { TSWin } from "./ui/tswin.js";
+import { DefaultTTWindow } from "./ui/ttwindow.js";
 import { WinMgr } from "./ui/winmgr.js";
 
 const SCREEN_W = 1024;
@@ -97,6 +98,7 @@ class Game {
 async function boot(): Promise<void> {
   const mgr = new WinMgr(document.getElementById("screen")!, SCREEN_W, SCREEN_H);
   const ctx = await createContext();
+  mgr.setDefaultTTWindow(await DefaultTTWindow.create(ctx.fonts));
   const tick = (): void => {
     ctx.state.update();
     requestAnimationFrame(tick);

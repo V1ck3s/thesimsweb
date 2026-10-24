@@ -69,6 +69,10 @@ export class TSWin {
   area: Rect = { left: 0, top: 0, right: 0, bottom: 0 };
   flags = WF_VISIBLE | WF_ENABLED;
   tooltip = "";
+  /** cTSWin+0x9c: hover time before the tooltip shows (the options' default, 750 ms). */
+  tooltipDelay = 750;
+  /** cTSWin+0xa0: tooltip fade-in time. */
+  tooltipUnfurl = 150;
   /** Image whose transparent pixels let clicks fall through (optional). */
   hitImage: ImageBitmap | null = null;
   private hitAlpha: Uint8ClampedArray | null = null;
@@ -271,6 +275,9 @@ export class TSWin {
   tsOnKeyDown(_key: string): boolean {
     return false;
   }
+  /** Called by WinMgr.doModalWin / endDialog (cTSWin::TSBeginModal / TSEndModal). */
+  tsBeginModal(): void {}
+  tsEndModal(): void {}
   /** Button/command notifications bubble up to parents (cTSWin::TSOnCommand). */
   tsOnCommand(cmd: number, source: TSWin): boolean {
     return this.parent ? this.parent.tsOnCommand(cmd, source) : false;
