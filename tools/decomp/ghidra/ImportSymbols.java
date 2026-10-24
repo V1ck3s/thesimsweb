@@ -49,6 +49,9 @@ public class ImportSymbols extends GhidraScript {
     @Override
     public void run() throws Exception {
         String[] args = getScriptArgs();
+        // Discovered non-returning functions are mostly false positives here and
+        // truncate the disassembly of their callers.
+        setAnalysisOption(currentProgram, "Non-Returning Functions - Discovered", "false");
         if (args.length >= 4) {
             Register reg = currentProgram.getRegister(args[1]);
             BigInteger val = new BigInteger(args[2].replace("0x", ""), 16);

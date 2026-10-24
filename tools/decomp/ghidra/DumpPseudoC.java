@@ -21,6 +21,19 @@ public class DumpPseudoC extends GhidraScript {
         File out = new File(args[0]);
         out.mkdirs();
         int timeout = args.length > 1 ? Integer.parseInt(args[1]) : 60;
+        // Ghidra's non-return discovery wrongly flags many game functions
+        // (e.g. StringBuffer::append), which truncates their callers. Only
+        // genuine process exits keep the flag.
+        java.util.regex.Pattern exits = java.util.regex.Pattern.compile(
+            "(?i).*(exit|abort|terminate|ExitProcess|ExitToShell|_assert|throw).*");
+        int cleared = 0;
+        for (Function f : currentProgram.getFunctionManager().getFunctions(true)) {
+            if (f.hasNoReturn() && !exits.matcher(f.getName()).matches()) {
+                f.setNoReturn(false);
+                cleared++;
+            }
+        }
+        println("cleared no-return on " + cleared + " functions");
         DecompInterface d = new DecompInterface();
         d.setOptions(new DecompileOptions());
         d.openProgram(currentProgram);
