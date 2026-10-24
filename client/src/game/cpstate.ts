@@ -131,6 +131,10 @@ export class CPState {
     this.listeners.push(fn);
   }
 
+  offChange(fn: (s: CPState) => void): void {
+    this.listeners = this.listeners.filter((f) => f !== fn);
+  }
+
   update(): void {
     if (!this.dirty) return;
     for (const fn of this.listeners) fn(this);

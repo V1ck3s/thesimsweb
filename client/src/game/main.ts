@@ -1,15 +1,19 @@
 /**
- * Entry point of the faithful client: boots the window manager at the game's
- * resolution, loads the shared services and mounts the game shell.
+ * Entry point of the faithful client. Follows cSimsApp: splash screen while
+ * the services load (Init), then the neighborhood screen (DoNbhdScreen), then
+ * the lot with its control panel when a house is picked.
  *
  * `game.html?test=<name>` mounts a dev test from src/game/dev/tests/<name>.ts
  * instead (each exports `mount(ctx, mgr)`).
  */
 
-import { CPState, DIRTY_ALL } from "./cpstate.js";
+import { CPState, DIRTY_ALL, Mode } from "./cpstate.js";
 import type { GameContext } from "./context.js";
 import { CPANEL_HEIGHT, WinCPanel } from "./cpanel/cpanel.js";
-import { familyInHouse, loadCharacter, loadNeighborhood, neighborByGuid, PD } from "./data/neighborhood.js";
+import { activateFamily } from "./data/family.js";
+import { loadNeighborhood } from "./data/neighborhood.js";
+import { Neighborhood } from "./nbhd/nghinterface.js";
+import { WinNeighborhoodUL } from "./nbhd/winneighborhoodul.js";
 import { Fonts } from "./res/fonts.js";
 import { Strings } from "./res/strings.js";
 import { UIRes } from "./res/uires.js";
@@ -38,57 +42,56 @@ async function createContext(): Promise<GameContext> {
 /** Lot view placeholder (cDDDSimsView): full screen, hosts the control panel. */
 class LotView extends TSWin {}
 
-/** Fill CPState with the family living in `houseNumber` (Neighborhood::GetFamilyInHouse). */
-async function loadFamily(ctx: GameContext, houseNumber: number): Promise<void> {
-  const nbhd = await loadNeighborhood();
-  const family = familyInHouse(nbhd, houseNumber);
-  if (!family) return;
-  const state = ctx.state;
-  state.familyName = family.name;
-  state.setFunds(family.budget);
-  state.family = [];
-  for (const guid of family.memberGuids) {
-    const nb = neighborByGuid(nbhd, guid);
-    if (!nb?.personData) continue;
-    const pd = nb.personData;
-    const ch = await loadCharacter(nbhd.dir, nb.name);
-    state.family.push({
-      id: nb.id,
-      firstName: ch.firstName,
-      lastName: family.name,
-      motives: [],
-      skills: [PD.cookingSkill, PD.mechanicalSkill, PD.charismaSkill, PD.bodySkill, PD.logicSkill, PD.creativitySkill].map(
-        (i) => pd[i] ?? 0,
-      ),
-      personality: [PD.neatPersonality, PD.outgoingPersonality, PD.activePersonality, PD.playfulPersonality, PD.nicePersonality].map(
-        (i) => pd[i] ?? 0,
-      ),
-      isChild: (pd[PD.personAge] ?? 27) < 18,
-      isFemale: pd[PD.gender] === 1,
-    });
-  }
-}
+class Game {
+  private nbhdDir = "UserData";
 
-async function mountGame(ctx: GameContext, mgr: WinMgr, splash: TSWinSplashScreen): Promise<void> {
-  splash.setSplashMessage("char");
-  await loadFamily(ctx, 1);
-  splash.setSplashMessage("main");
-  const view = new LotView();
-  view.setArea(0, 0, ctx.width, ctx.height);
-  splash.setSplashMessage("cpnl");
-  const cpanel = new WinCPanel(ctx);
-  cpanel.setArea(0, ctx.height - CPANEL_HEIGHT, ctx.width, ctx.height);
-  if (!(await cpanel.init())) throw new Error("control panel init failed");
-  view.childAdd(cpanel);
-  cpanel.postInit();
-  // The original starts collapsed (SetCPMode(1)) during init and the panel opens
-  // when the lot is entered; refresh everything once the windows listen.
-  ctx.state.setCPMode(0);
-  ctx.state.dirty = DIRTY_ALL;
-  splash.setSplashMessage("ocns");
-  await splash.finished();
-  mgr.main.childRemove(splash);
-  mgr.main.childAdd(view);
+  constructor(
+    private readonly ctx: GameContext,
+    private readonly mgr: WinMgr,
+  ) {}
+
+  /** cSimsApp::DoNbhdScreen */
+  async showNeighborhood(): Promise<void> {
+    const { ctx, mgr } = this;
+    const nb = await Neighborhood.load(this.nbhdDir);
+    const screen: WinNeighborhoodUL = new WinNeighborhoodUL(ctx, nb, {
+      onEnterLot: (house) => {
+        mgr.main.childDelete(screen);
+        void this.enterLot(house);
+      },
+      onEndModal: (result) => console.log(`neighborhood screen ended: ${result}`),
+      onSwitchNeighborhood: (next) => {
+        this.nbhdDir = next;
+        mgr.main.childDelete(screen);
+        void this.showNeighborhood();
+      },
+      onUnported: (what) => console.log(`not ported: ${what}`),
+    });
+    screen.setArea(0, 0, ctx.width, ctx.height);
+    if (!(await screen.init())) throw new Error("neighborhood init failed");
+    mgr.main.childAdd(screen);
+  }
+
+  /** Neighborhood::LoadHouse + cSimsApp control panel setup. */
+  async enterLot(house: number): Promise<void> {
+    const { ctx, mgr } = this;
+    const state = ctx.state;
+    await activateFamily(state, await loadNeighborhood(this.nbhdDir), house);
+    const view = new LotView();
+    view.setArea(0, 0, ctx.width, ctx.height);
+    const cpanel = new WinCPanel(ctx);
+    cpanel.setArea(0, ctx.height - CPANEL_HEIGHT, ctx.width, ctx.height);
+    if (!(await cpanel.init())) throw new Error("control panel init failed");
+    view.childAdd(cpanel);
+    cpanel.postInit();
+    mgr.main.childAdd(view);
+    // The original starts collapsed (SetCPMode(1)) during init and opens the
+    // panel in the lot; refresh everything once the windows listen.
+    state.setMode(state.family.length ? Mode.Live : Mode.Buy, true);
+    state.setCPMode(0);
+    state.setSelectedPerson(0);
+    state.dirty = DIRTY_ALL;
+  }
 }
 
 async function boot(): Promise<void> {
@@ -106,16 +109,18 @@ async function boot(): Promise<void> {
     const load = tests[`./dev/tests/${test}.ts`];
     if (!load) throw new Error(`no test "${test}"`);
     await (await load()).mount(ctx, mgr);
-  } else {
-    const splash = new TSWinSplashScreen(ctx);
-    await splash.init();
-    mgr.main.childAdd(splash);
-    splash.setSplashMessage("stap");
-    splash.setSplashMessage("regr");
-    splash.setSplashMessage("ctrl");
-    splash.setSplashMessage("grph");
-    await mountGame(ctx, mgr, splash);
+    return;
   }
+  const splash = new TSWinSplashScreen(ctx);
+  await splash.init();
+  mgr.main.childAdd(splash);
+  for (const stage of ["stap", "regr", "ctrl", "grph", "main", "cpnl", "char", "ocns"] as const) {
+    splash.setSplashMessage(stage);
+  }
+  const game = new Game(ctx, mgr);
+  await splash.finished();
+  mgr.main.childDelete(splash);
+  await game.showNeighborhood();
 }
 
 boot().then(

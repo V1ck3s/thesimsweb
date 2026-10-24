@@ -185,7 +185,7 @@ async function strEntries(bytes: Uint8Array): Promise<Array<{ langCode?: number;
 const cp1252 = new TextDecoder("windows-1252");
 
 /** Strings of a format -3 STR#/CTSS for one language (US English fallback). */
-async function localizedStrings(bytes: Uint8Array, lang: number): Promise<string[]> {
+export async function localizedStrings(bytes: Uint8Array, lang: number): Promise<string[]> {
   const entries = await strEntries(bytes);
   if (!entries.some((e) => e.langCode !== undefined)) return entries.map((e) => cp1252.decode(e.data));
   const ours = entries.filter((e) => e.langCode === lang);

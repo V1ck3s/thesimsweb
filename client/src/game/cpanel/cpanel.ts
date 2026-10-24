@@ -55,9 +55,10 @@ export class WinCPanel extends TSWin {
   private panel = PanelID.People;
   private background: ImageBitmap | null = null;
 
+  private readonly listener = (s: CPState): void => this.updateViewFromCPState(s);
+
   constructor(readonly ctx: GameContext) {
     super();
-    ctx.state.onChange((s) => this.updateViewFromCPState(s));
   }
 
   override async init(): Promise<boolean> {
@@ -80,13 +81,21 @@ export class WinCPanel extends TSWin {
     this.catalog = new WinCatalog(ctx);
     this.options = new WinOptions(ctx);
     this.camPanel = new WinCamPanel(ctx);
-    return (
+    const ok =
       (await place(this.arch, SUBPANEL_ORIGIN.y, 100)) &&
       (await place(this.people, SUBPANEL_ORIGIN.y - 50, 150)) &&
       (await place(this.catalog, SUBPANEL_ORIGIN.y, 100)) &&
       (await place(this.options, SUBPANEL_ORIGIN.y, 100)) &&
-      (await place(this.camPanel, SUBPANEL_ORIGIN.y, 100))
-    );
+      (await place(this.camPanel, SUBPANEL_ORIGIN.y, 100));
+    // Only listen once every subpanel exists (CPState::SetControlPanel).
+    if (ok) ctx.state.onChange(this.listener);
+    return ok;
+  }
+
+  override shutdown(): void {
+    this.ctx.state.offChange(this.listener);
+    this.viewControl.parent?.childDelete(this.viewControl);
+    super.shutdown();
   }
 
   /** cWinCPanel::PostInit: the view control lives in the lot view, bottom-left. */
