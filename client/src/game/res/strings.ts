@@ -14,12 +14,18 @@ interface StrEntry {
   kind: "single" | "pair" | "lang";
   langCode?: number;
   data: Uint8Array;
+  comment?: Uint8Array;
+}
+
+interface Str {
+  text: string;
+  comment: string;
 }
 
 const latin1 = new TextDecoder("windows-1252");
 
 export class Strings {
-  private readonly tables = new Map<string, Map<number, string[]>>();
+  private readonly tables = new Map<string, Map<number, Str[]>>();
 
   constructor(private readonly lang = LANG_FRENCH) {}
 
@@ -29,7 +35,7 @@ export class Strings {
     if (this.tables.has(name)) return;
     const wasm = await engine();
     const { data, chunks } = await readStandaloneIff(`Sims/${path}`);
-    const table = new Map<number, string[]>();
+    const table = new Map<number, Str[]>();
     for (const c of chunks) {
       if (c.kind !== "STR#") continue;
       const parsed = wasm.parseStrTable(data.subarray(c.dataStart, c.dataStart + c.dataLen)) as {
@@ -42,21 +48,30 @@ export class Strings {
 
   /** Entry `index` of STR# `id` in table `name`, or "" when missing. */
   get(name: string, id: number, index: number): string {
-    return this.tables.get(name)?.get(id)?.[index] ?? "";
+    return this.tables.get(name)?.get(id)?.[index]?.text ?? "";
+  }
+
+  /** The entry's description (StringSetBase::GetDescription). */
+  comment(name: string, id: number, index: number): string {
+    return this.tables.get(name)?.get(id)?.[index]?.comment ?? "";
   }
 
   list(name: string, id: number): string[] {
-    return this.tables.get(name)?.get(id) ?? [];
+    return (this.tables.get(name)?.get(id) ?? []).map((s) => s.text);
   }
 
-  private pick(entries: StrEntry[]): string[] {
-    if (!entries.some((e) => e.kind === "lang")) return entries.map((e) => latin1.decode(e.data));
+  private pick(entries: StrEntry[]): Str[] {
+    const str = (e: StrEntry): Str => ({
+      text: latin1.decode(e.data),
+      comment: e.comment ? latin1.decode(e.comment) : "",
+    });
+    if (!entries.some((e) => e.kind === "lang")) return entries.map(str);
     // Format -3 stores one entry per (string, language); keep ours, fall back to US English.
     const ours = entries.filter((e) => e.langCode === this.lang);
     const us = entries.filter((e) => e.langCode === 1);
     const n = Math.max(ours.length, us.length);
-    const out: string[] = [];
-    for (let i = 0; i < n; i++) out.push(latin1.decode((ours[i] ?? us[i])!.data));
+    const out: Str[] = [];
+    for (let i = 0; i < n; i++) out.push(str((ours[i] ?? us[i])!));
     return out;
   }
 }
