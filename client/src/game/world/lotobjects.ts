@@ -98,19 +98,25 @@ export async function loadLotObjectDrawer(house: ResFile, world: IntegrityWorld)
     return r;
   };
   const drawables = new Map<PlacedObject, DrawableLotObject>();
+  // People stand in the tile links too (cXObject::Place) but are drawn by LotPeople: a tile's
+  // chain skips them.
+  const skipPeople = (o: PlacedObject | undefined): PlacedObject | undefined => {
+    for (let guard = 0; o?.isPerson && guard < 64; guard++) o = objects.get(o.nextSiblingId);
+    return o;
+  };
   const drawableOf = (o: PlacedObject | undefined): DrawableLotObject | null => {
     if (!o || o.isPerson) return null;
     let d = drawables.get(o);
     if (!d) {
       d = new DrawableLotObject(o, renderer(o.selector.res));
       drawables.set(o, d);
-      Object.defineProperty(d, "next", { get: () => drawableOf(objects.get(o.nextSiblingId)) });
+      Object.defineProperty(d, "next", { get: () => drawableOf(skipPeople(objects.get(o.nextSiblingId))) });
     }
     return d;
   };
   for (const o of objects.values()) drawableOf(o);
   const drawer = new ObjectModuleDrawer(
-    (id) => drawableOf(objects.get(id)),
+    (id) => drawableOf(skipPeople(objects.get(id))),
     function* () {
       for (const o of objects.values()) {
         const d = drawableOf(o);

@@ -119,16 +119,56 @@ cWinLotBtn::Init (house buttons) `UI_Nhood_rollover / UI_Nhood_click`, mask 5
 Studiotown, Vacation) Init + BuildFilterToolbar `UI_Nhood_click` (press);
 cWinArch and cWinCatalog set the mask to 0 (silent buttons).
 
+## Lot ambience and positional sound (cBoxX::Event 52, cFreshPlayer, cAudioInfo)
+
+Files: `audio/audioinfo.ts` (cAudioInfo interface + `setAudioInfo`), `audio/fresh.ts`
+(cFreshPlayer / cFreshScore / cFreshCellPlayer / cFreshTimer, `.fsc` v7 grid scores,
+rand_override MSVC LCG, prob and semitone tables), `audio/lotaudio.ts` (the lot-side
+cAudioInfo + VM sound hooks), `audio/boxx.ts` (event switch rewritten after the jump
+table lbl_106172A0).
+
+- cBoxX::Init loads the 4 fresh players (sim_amb, beach, hotdatepark_amb, magic_amb)
+  and sets `hm.sourceDataHandler` (BoxxGlobalGetSourceParamValue: field > 0x15 → 0,
+  else cAudioInfo::GetObjectData).
+- Event 52 kSetAmbienceMode / 36 kSetMusicMode / 33 kNotifyChange
+  (OutdoorTileRatio → SetYPos(ratio * 10 / 100 scale), hour table → SetXPos) /
+  25 kActivateApp / 21-22 kPause-kUnpause, as in the original. UpdateAmbienceLoop:
+  BeachLoop 0x10aa3 on beach lots, nite_loop 0xba9 at night on lots outside 0x14..0x1d,
+  fade to VOLUME_TABLE[fx] at speed 5000.
+- Positional: instance multimap (sound object id → sources), GetInstanceVolPan
+  (screen position, zoom and level attenuation), GetSndobVolPan (max volume,
+  volume-weighted pan), UpdateSndobVolPan on every NotifyViewChange and periodically.
+  KillSource stops (fades) tracks left without instances.
+- VM hooks (additive, VM agent's files): `SimModule.soundHooks`
+  (`playSound(behavior, soundId, source)` / `killSounds(source)`) called from
+  `xobject.ts` primitives 23 (cXObject::TryPlaySound: FWAV string from the private
+  then the global file; source = stack object when operand byte 4 != 0xff && &2) and
+  48 (TryKillSounds). `installLotAudio` (main.ts enterLot) installs them.
+- main.ts onChange (CPState::UpdateWorldFromCPState): Pause/ResumeSounds on mode
+  change and live pause, then NotifyViewChange, then the mode music.
+
+Verified (headless Chrome, full game.html flow then `game.enterLot(1)`; `window.soundPlayer`
+dev handle, `boxx.ambienceState()`): hood backyard player + river loop + music; lot 1
+ratio 77 → Y 19, hour 5 → X 1, nite_loop fades in, stops at 6 h with X → 2, cells
+reach playing; buy mode stops the player (buy music), back to live restarts it;
+pause toggles; radio vol 923 pan 546; stereo_rock on a sim 1024 at zoom 3, 800
+(kSplStereo floor) at zoom 2/1; beach lot player 1 + BeachLoop; magictown player 3.
+BeachLoop plays with pan register 0: cTrackPlayer::PlayPause with kArgsIdVolPan sets
+reg 0x13 = a2, 0x14 = a3, and UpdateAmbienceLoop passes (0, 0, 0) — same as original.
+
 ## Gaps
 
-- Positional sound: GetSndobVolPan (object position → vol/pan) and 3D patches
-  are not done; object sounds play at full volume, centred.
-- cBoxX::UpdateAmbienceLoop / cFreshPlayer (outdoor ambience `.fsc` scores in
-  live mode) not ported.
-- Gender/vox selection in MappedEvent (`…m/…f/…k` by sim gender, `vox` lookups
-  via cAudioInfo::GetObjectData) falls back to the first existing variant.
-- `getsrcdatafield` needs `hm.sourceDataHandler` (object data); without it the
-  instruction logs an error and continues.
+- The view and the clock are polled every 50 ms (`lotaudio.ts`) instead of the
+  original calls from HouseViewer::UpdateWorld / CPState::SetZoom / SetRotation and
+  cSimsApp::DoCommand's clock.
+- OutdoorTileRatio uses a flat PointToTile (level 1) estimate; room area
+  (GetObjectData 13) = `room.tiles.length`.
+- `?house=N` has no ambience: GameModeManager ignores modes until the hood was
+  shown (faithful); use the full flow.
+- SAnimator sound/footstep events (`sim/personanim.ts`, VM agent) only record
+  "animSound"; they should call `soundPlayer.playBySource(name, personId)`.
+- Fresh cell state 1 loads samples asynchronously; FreshSnd.fadeVolume stops the
+  sample at volume 0 (documented deviation). TurnOffTv is a no-op.
 - A stopping (fading) track no longer executes commands; the original keeps
   stepping (it would run past `end`).
 - MP3 songs stream through `<audio>` + MediaElementSource; Pause/Unpause of

@@ -18,8 +18,8 @@ import type { XObject } from "../world/objects.js";
 import type { BehaviorTree } from "./behavior.js";
 import { applyMotiveIncs, calcHappy, motivesSim, type MotiveCurve, type MotiveInc } from "./motives.js";
 import type { SimModule } from "./simmodule.js";
-import { PRIM_FALSE, PRIM_TRUE, PRIM_WAIT, simThrow } from "./treesim.js";
-import type { StackElem } from "./treestack.js";
+import { PRIM_FALSE, PRIM_TRUE, PRIM_WAIT, simThrow, SimError } from "./treesim.js";
+import type { ParamSource, StackElem } from "./treestack.js";
 import { SimObject, XERR } from "./xobject.js";
 import { loadStringSet } from "./behavior.js";
 import { PersonAnimator, requestSkill } from "./personanim.js";
@@ -158,6 +158,12 @@ export class PersonSim extends SimObject {
   renderDir: number | null = null;
   /** cXPerson +0x814 scored interactions of the last Find Best Interaction (trace). */
   lastScores: Array<{ object: number; name: string; score: number }> = [];
+  /**
+   * cXPerson +0xab0: ObjectRecords, the objects whose trees run on this
+   * person's stack (pushed by GosubObjectTree with the stack size after the
+   * push, dropped by StackJustPopped).
+   */
+  readonly objectRecords: Array<{ id: number; depth: number; action: boolean }> = [];
   /** Primitive trace (debug): "tree:node op -> result". */
   readonly trace: string[] = [];
   traceOn = false;
@@ -178,6 +184,9 @@ export class PersonSim extends SimObject {
       m.set(rec.motives2, 16);
     }
     this.person = { personData: pd, motives: m };
+    // cXPerson::ReconStream: the saved ObjectRecords (object id, stack size, action flag).
+    for (const r of rec?.tail?.objectRecords ?? []) this.objectRecords.push({ id: r.object, depth: r.value, action: r.flag });
+    for (const x of rec?.tail?.motiveIncs ?? []) this.motiveIncs.push({ ...x });
     this.animator = new PersonAnimator({
       setPersonData: (i, v) => {
         this.pd[i] = v;
@@ -256,12 +265,53 @@ export class PersonSim extends SimObject {
     this.animator.stop("background");
     this.queue.length = 0;
     this.currentAction = null;
+    this.objectRecords.length = 0;
     this.route = null;
     this.module.initPerson(this);
     super.reset(tick);
     if (pd[25] === 0x7ae) pd[25] = 0;
     else this.module.initPerson(this);
     if (this.module.getZoningType(this.module.sim.globals[10]!) !== 1 && pd[32] !== 2) pd[32] = 1;
+  }
+
+  /**
+   * cXPerson::GosubObjectTree: cXObject's, then an ObjectRecord for `other`
+   * (its object data 62, the count of people running its trees, goes up).
+   */
+  override gosubObjectTree(other: SimObject, params: ParamSource | null, treeId: number, action = false): boolean {
+    if (!super.gosubObjectTree(other, params, treeId)) return false;
+    this.objectRecords.push({ id: other.id, depth: this.getStackSize(), action });
+    other.obj.objectData[62] = other.obj.objectData[62]! + 1;
+    return true;
+  }
+
+  /**
+   * cXPerson::StackJustPopped: the last ObjectRecord goes when the stack
+   * shrank below its frame (its object's data 62 goes down); with no record
+   * left the current action is cleared (SetCurrentAction of an empty
+   * Interaction).
+   */
+  override stackJustPopped(): void {
+    const n = this.getStackSize();
+    const top = this.objectRecords[this.objectRecords.length - 1];
+    if (!top) return;
+    if (n === top.depth - 1 || n < top.depth) {
+      const o = this.module.getObject(top.id);
+      if (o) o.obj.objectData[62] = o.obj.objectData[62]! - 1;
+      this.objectRecords.pop();
+    }
+    if (this.objectRecords.length === 0) this.setCurrentAction(null);
+  }
+
+  /** cXPerson::TryTestInteractingWith: is the stack object one of the ObjectRecords of me (mode 0, 2) or of the person in (scope, data) (mode 1, error 0x1c)? */
+  protected tryTestInteractingWith(elem: StackElem, mode: number, scope: number, data: number): number {
+    let who: PersonSim = this;
+    if (mode === 1) {
+      const o = this.module.getObject(this.interpValue(scope, data, false));
+      if (!(o instanceof PersonSim)) simThrow(XERR.notPerson);
+      who = o;
+    }
+    return who.objectRecords.some((r) => r.id === elem.stackObj) ? PRIM_TRUE : PRIM_FALSE;
   }
 
   protected override moved(): void {
@@ -340,7 +390,7 @@ export class PersonSim extends SimObject {
       case 30:
         return this.tryGosubFoundAction(elem);
       case 37:
-        return this.module.unportedPrim(op, "test sim interacting with", PRIM_FALSE);
+        return this.tryTestInteractingWith(elem, u8(0), (u8(1) << 24) >> 24, s16(2));
       case 45:
         return this.tryGotoRoutingSlot(elem, s16(0), s16(2), u8(4));
       case 44:
@@ -561,6 +611,19 @@ export class PersonSim extends SimObject {
     return new Route(found.goal, [me.fx, me.fy], found.path);
   }
 
+  /**
+   * cXObject::SetLocation for a walking person: what it carries follows,
+   * and (world hooks) its tile link moves with it.
+   */
+  private setLocation(fx: number, fy: number): void {
+    const h = this.module.worldHooks;
+    if (h) h.moveTo(this.obj, { fx, fy }, this.obj.level);
+    else {
+      this.obj.fx = fx;
+      this.obj.fy = fy;
+    }
+  }
+
   /** The walking speed in 1/16 tile per tick: the walking loop's distance over its duration (3 units per tile). */
   private walkSpeed(): number {
     const name = this.isChild ? "c2o-walking-loop" : "a2o-walking-loop";
@@ -583,16 +646,14 @@ export class PersonSim extends SimObject {
       if (s) a.start("main", s, false, true);
     }
     const { pos, dir } = r.step([this.obj.fx, this.obj.fy], this.walkSpeed());
-    this.obj.fx = pos[0];
-    this.obj.fy = pos[1];
+    this.setLocation(pos[0], pos[1]);
     if (dir !== null) {
       this.renderDir = dir;
       this.obj.objectData[1] = Math.round(dir) & 7;
     }
     this.module.dirty(this);
     if (!r.done) return false;
-    this.obj.fx = r.goal.fx;
-    this.obj.fy = r.goal.fy;
+    this.setLocation(r.goal.fx, r.goal.fy);
     if (r.goal.facing >= 0) {
       this.obj.objectData[1] = r.goal.facing;
       this.renderDir = r.goal.facing;
@@ -708,12 +769,14 @@ export class PersonSim extends SimObject {
   }
 
   /** MotiveEffects::GetInteractionScore: the mean of the curves at the motives plus the entry's advertised effects. */
-  interactionScore(e: TreeTableEntry): number {
+  interactionScore(e: TreeTableEntry, ads?: readonly Int16Array[]): number {
     const c = this.scoreCurves;
     if (!c.length) return 0;
     let s = 0;
     for (const k of c) {
-      const ad = e.motives[k.motive];
+      // the check tree may have changed the advertisements (the scratch entry)
+      const a = ads && k.motive < e.motives.length ? ads[k.motive] : undefined;
+      const ad = a ? { personality: a[0]!, min: a[1]!, delta: a[2]! } : e.motives[k.motive];
       let effect = 0;
       if (ad) {
         if (ad.personality === 0) effect = ad.min + ad.delta;
@@ -736,7 +799,7 @@ export class PersonSim extends SimObject {
    * with the object as stack object (parameter 0 = 1: autonomous). The
    * person's temps are restored afterwards.
    */
-  testInteraction(target: SimObject, e: TreeTableEntry, auto: boolean): boolean {
+  testInteraction(target: SimObject, e: TreeTableEntry, auto: boolean, wantAds = false): boolean {
     const pd = this.pd;
     const visitor = pd[PDX.personType] !== 0;
     if (target.obj.objectData[8]! & 0x200) return false;
@@ -749,6 +812,26 @@ export class PersonSim extends SimObject {
     } else if (pd[PDX.gender]! & 4) {
       if (!(e.flags & 0x200)) return false;
     } else if (e.flags & 0x40) return false;
+    if (wantAds) {
+      // TreeTableEntry::CopyFrom into the scratch entry (lbl_105BA320)
+      const ads = this.module.sim.currentAd;
+      const n = Math.min(ads.length, e.motives.length);
+      for (let i = 0; i < n; i++) {
+        const mo = e.motives[i]!;
+        ads[i]!.set([mo.personality, mo.min, mo.delta]);
+      }
+    }
+    const r = this.runTestTree(target, e, auto);
+    // another room (object data 29): the room advertisement's delta is -min
+    if (wantAds && target.obj.objectData[29] !== this.obj.objectData[29]) {
+      const a13 = this.module.sim.currentAd[13];
+      if (a13) a13[2] = -a13[1]!;
+    }
+    return r;
+  }
+
+  /** The check tree part of ObjTestSim::TestInteraction. */
+  private runTestTree(target: SimObject, e: TreeTableEntry, auto: boolean): boolean {
     if (e.checkTree === 0) return true;
     // ObjTestSim runs the check tree on its own stack: an error there only
     // fails the test. Here it runs above the person's stack, unwound on error.
@@ -795,8 +878,8 @@ export class PersonSim extends SimObject {
       for (let i = tt.entries.length - 1; i >= 0; i--) {
         const e = tt.entries[i]!;
         if (e.autonomyThreshold <= 0 || e.autonomyThreshold > autonomy || e.flags & 0x80) continue;
-        if (!this.testInteraction(o, e, true)) continue;
-        const ad = this.interactionScore(e);
+        if (!this.testInteraction(o, e, true, true)) continue;
+        const ad = this.interactionScore(e, m.sim.currentAd);
         if (ad === 0) continue;
         const att = attenuation(e, k, visitor);
         const score = (1 / (dist * att + 1)) * (ad - cur);
@@ -878,22 +961,66 @@ export class PersonSim extends SimObject {
   }
 
   /**
-   * cXPerson::AddAction: queues `i` (at most 8; entries flagged "run
-   * immediately", TTAB flag 4, are refused). Without interaction flag 2 it
-   * goes before the queued ones of lower priority, else at the end.
+   * cXPerson::AddAction. Entries flagged "run immediately" (TTAB flag 4)
+   * are not queued: once ObjTestSim::TestInteraction passes, their action
+   * tree runs at once as a one-tick tree on this person (stack object = the
+   * target, priority person data 33 = the interaction's for the time of
+   * it), unless one already runs (lbl_105BE790). Others: without
+   * interaction flag 2 the queued interactions of lower priority are
+   * dropped (their object's entry point 4 check tree runs) and `i` goes at
+   * the end; with flag 2 it goes in front (the 8th one falls off).
    */
   addAction(i: Interaction): boolean {
-    const tgt = this.module.getObject(i.target);
-    const e = tgt ? this.module.treeTableOf(tgt.obj.selector)?.entries.find((x) => x.stringIndex === i.ttabIndex) : null;
-    if (!e || e.flags & 4) return false;
-    if (this.queue.length >= 8) return false;
-    if (i.flags & 2) this.queue.push(i);
-    else {
+    const m = this.module;
+    const tgt = m.getObject(i.target);
+    const e = tgt ? m.treeTableOf(tgt.obj.selector)?.entries.find((x) => x.stringIndex === i.ttabIndex) : null;
+    if (!tgt || !e) return false;
+    if (e.flags & 4) return this.runImmediately(tgt, e, i);
+    if (!(i.flags & 2)) {
       let k = this.queue.length;
       while (k > 0 && this.queue[k - 1]!.priority < i.priority) k--;
-      this.queue.splice(k, 0, i);
+      for (const d of this.queue.splice(k)) {
+        const o = m.getObject(d.target);
+        const tree = o ? o.fnTable.getTreeID(4) : 0;
+        if (o && tree !== 0) o.runCheckTree(o.behavior, this.id, tree, null);
+      }
+      if (this.queue.length >= 8) return false;
+      this.queue.push(i);
+    } else {
+      // interaction flag 0x40: it takes the current action's name
+      if (i.flags & 0x40 && this.currentAction) i.name = this.currentAction.name;
+      this.queue.unshift(i);
+      if (this.queue.length > 8) this.queue.length = 8;
     }
-    this.module.onQueueChanged?.(this);
+    m.onQueueChanged?.(this);
+    return true;
+  }
+
+  /** The "run immediately" part of cXPerson::AddAction (TreeSim::RunOneTickTree). */
+  private runImmediately(target: SimObject, e: TreeTableEntry, i: Interaction): boolean {
+    const m = this.module;
+    if (!this.testInteraction(target, e, false) || m.immediateAction) return false;
+    m.immediateAction = i;
+    const saved = this.pd[33]!;
+    this.pd[33] = i.priority;
+    // the ObjTestSim around it gives the person's temps back afterwards
+    const temps = new Int16Array(this.temps.subarray(0, 8));
+    const depth = this.getStackSize();
+    try {
+      this.runOneTickTree(target.behavior, target.id, i.actionTree, { src: Array.from(i.args), at: 0 });
+    } catch (err) {
+      const cur = this.getCurElem();
+      if (err instanceof SimError) this.errors.push({ code: err.code, tree: cur?.getTreeID() ?? -1, node: cur?.node ?? -1 });
+      while (this.getStackSize() > depth) {
+        this.stack.pop();
+        this.stackJustPopped();
+      }
+      m.record(this, "error", `run immediately ${target.obj.selector.name}: ${i.name}: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      m.immediateAction = null;
+      this.pd[33] = saved;
+      this.temps.set(temps, 0);
+    }
     return true;
   }
 
@@ -952,14 +1079,23 @@ export class PersonSim extends SimObject {
   }
 
   /**
-   * cXPerson::ShouldInterrupt (simplified): the head of the queue has a
-   * higher priority than the current one (person data 33), or interaction
-   * flag 2. The motive emergencies (bladder, energy...) are not checked.
+   * cXPerson::ShouldInterrupt: never while person data 71 is set; else the
+   * head of the queue has a higher priority than the current one (person
+   * data 33) or interaction flag 2; else, on a residential lot for a
+   * person with data 32 < 2, a motive emergency (motive 7 or 9 below -99,
+   * or motive 5 below -99 when person data 65 <= 1).
    */
   shouldInterrupt(): boolean {
+    const pd = this.pd;
+    if (pd[71] !== 0) return false;
     const h = this.queue[0];
-    if (!h) return false;
-    return h.priority > this.pd[33]! || (h.flags & 2) !== 0;
+    let r = h ? h.priority > pd[33]! || (h.flags & 2) !== 0 : false;
+    // motive emergencies on a residential lot (threshold lbl_1059A524+0x2c = -99)
+    if (!r && this.module.getZoningType(this.module.sim.globals[10]!) === 1 && pd[32]! < 2) {
+      const m = this.motives;
+      if (m[7]! < -99 || m[9]! < -99 || (m[5]! < -99 && pd[65]! <= 1)) r = true;
+    }
+    return r;
   }
 
   /**

@@ -22,11 +22,12 @@ import type { ObjSelector } from "../world/objselector.js";
 import { Behavior } from "./behavior.js";
 import type { Simulator } from "./simulator.js";
 import { SimObject } from "./xobject.js";
+import { simThrow } from "./treesim.js";
 import { EP } from "./objfntable.js";
-import { PersonSim, SCORE_CURVE_MOTIVES } from "./person.js";
+import { PersonSim, SCORE_CURVE_MOTIVES, type Interaction } from "./person.js";
 import { curvesFromStrings, HAPPY_CURVE_MOTIVES, type MotiveCurve } from "./motives.js";
-import { loadStringSet } from "./behavior.js";
-import type { NeighborhoodData } from "../data/neighborhood.js";
+import { loadStringSet, loadTree } from "./behavior.js";
+import type { Neighbor, NeighborhoodData } from "../data/neighborhood.js";
 import { TreeTable } from "./treetable.js";
 import { loadFloatConstants } from "./floatconstants.js";
 import { setMotiveConstants } from "./motives.js";
@@ -94,6 +95,28 @@ export class SimResources {
   }
 }
 
+/** A fixed-point lot position (1/16 tile). */
+export interface FPos {
+  fx: number;
+  fy: number;
+}
+
+/** See SimModule.worldHooks. */
+export interface WorldHooks {
+  selector(guid: number): ObjSelector | null | undefined;
+  make(sel: ObjSelector): XObject | null;
+  canPlace(obj: XObject, pos: FPos, level: number, container: XObject | null, slot: number): boolean;
+  place(obj: XObject, pos: FPos, level: number, container: XObject | null, slot: number): void;
+  moveTo(obj: XObject, pos: FPos, level: number): void;
+  /** cXObject::Pickup (out of the world). */
+  pickup(obj: XObject): void;
+  /** cXObject::FindGoodLocation (Placement.findGoodLocation). */
+  findGoodLocation(obj: XObject, start: FPos, level: number, opts: { emptyTile: boolean; buildable: boolean; random: (() => number) | null }): FPos | null;
+  kill(obj: XObject): void;
+  /** Placement's last error (lbl_105BA1A8) and the object TestIntersection hit (lbl_105BA248). */
+  lastError(): { code: number; obstacle: number };
+}
+
 /** One recorded side effect the port does not perform (sounds, dialogs, UI). */
 export interface SimEvent {
   tick: number;
@@ -124,6 +147,12 @@ export class SimModule {
   readonly unported = new Map<string, number>();
   /** Recorded side effects (bounded). */
   readonly events: SimEvent[] = [];
+  /**
+   * cSoundPlayer as the sound primitives reach it (cXObject::TryPlaySound:
+   * the FWAV event of the private or global file, PlayBySource(name, source);
+   * TryKillSounds: QuietBySourceID(source)). Null: the primitives only record.
+   */
+  soundHooks: { playSound(behavior: Behavior | null, soundId: number, source: number): void; killSounds(source: number): void } | null = null;
   /** Called when an object's look changed (cXObject::Dirty) or it was killed. */
   onDirty: ((o: SimObject) => void) | null = null;
   onKill: ((o: SimObject) => void) | null = null;
@@ -157,16 +186,20 @@ export class SimModule {
   }
 
   /**
-   * The world side of Create New Object Instance (set by the lot view):
-   * `selector` looks a GUID up (undefined while its object file opens, null
-   * when unknown), `make` builds the object out of the world (its Init runs
-   * through the placement hooks) and places it per the primitive's mode;
-   * null when it cannot be placed.
+   * The world side of the placement primitives (set by the lot view; null
+   * in the headless test, where they are logged and fail): `selector` looks
+   * a GUID up (undefined while its object file opens, null when unknown),
+   * `make` builds an object out of the world (ObjectModule::
+   * MakeNewOutOfWorldObject; its Init runs through the placement hooks),
+   * `canPlace` / `place` are cXObject::CanPlace / Place (vtable +0x5c /
+   * +0x60; `slot` is the container's slot index, objectSlots[slot + 1]),
+   * `moveTo` moves a walking person (its tile link and contents follow,
+   * cXObject::SetLocation) and `kill` is ObjectModule::KillObject's world
+   * part.
    */
-  worldHooks: {
-    selector(guid: number): ObjSelector | null | undefined;
-    make(sel: ObjSelector, mode: number, me: XObject, stack: XObject | null): XObject | null;
-  } | null = null;
+/** lbl_105BE790: the interaction being run immediately by cXPerson::AddAction. */
+  immediateAction: Interaction | null = null;
+    worldHooks: WorldHooks | null = null;
 
   /** Called when a person's interaction queue or current action changes (the Live panel). */
   onQueueChanged: ((p: PersonSim) => void) | null = null;
@@ -264,6 +297,30 @@ export class SimModule {
       const word = l.slice(i + 1).trim().toLowerCase();
       if (Number.isFinite(h)) this.zoning.set(h, word === "community" ? 2 : 1);
     }
+  }
+
+  /**
+   * The GUIDs named by the Create Object Instance nodes (primitive 42, not
+   * "create neighbor") of the loaded behaviors. The original ObjectFolder
+   * holds every object so a check tree can create one at once; here their
+   * files are loaded ahead (WinLotView.initSimulator).
+   */
+  createdObjectGUIDs(): Set<number> {
+    const files = new Set<ResFile>();
+    for (const b of this.behaviors.values()) for (const f of [b.glob, b.priv, b.middle]) if (f) files.add(f);
+    const out = new Set<number>();
+    for (const f of files) {
+      for (const c of f.list("BHAV")) {
+        const t = loadTree(f, c.id);
+        if (!t) continue;
+        for (let i = 0; i < t.count; i++) {
+          const off = t.nodeOffset(i);
+          if ((t.primitive(off) & 0x7fff) !== 42 || (t.bytes[off + 4 + 5]! & 4) !== 0) continue;
+          out.add(t.view.getUint32(off + 4, true));
+        }
+      }
+    }
+    return out;
   }
 
   /** The Behavior of a selector (ObjSelector +0xc). */
@@ -432,8 +489,8 @@ export class SimModule {
 
   /**
    * The kill queue (ObjectModule::KillObject for each entry): the object
-   * leaves the module. Its Cleanup tree, slot hierarchy and the world tile
-   * arrays are not handled yet; the lot view hides it through `onKill`.
+   * leaves the module and the world (picked up out of its tile or its
+   * container's slot, `worldHooks.kill`). Its Cleanup tree is not run.
    */
   runKillQueue(): void {
     while (this.killQueue.length) {
@@ -445,6 +502,7 @@ export class SimModule {
       this.list.splice(this.list.indexOf(o), 1);
       const pi = this.people.indexOf(o);
       if (pi >= 0) this.people.splice(pi, 1);
+      this.worldHooks?.kill(o.obj);
       this.onKill?.(o);
     }
   }
@@ -494,9 +552,75 @@ export class SimModule {
     this.unported.set(key, n + 1);
   }
 
-  /** Neighbor person data (scope 32): the neighborhood is not wired to the simulator yet. */
-  neighborPersonData(_neighborId: number, data: number): number {
-    if (data < 0 || data >= 0x100) return 0;
-    return this.unportedValue("scope 32 neighbor's person data", 0);
+  /** Neighborhood::GetNextNeighborID: the next id above `id` that has a neighbor (0 when none). */
+  nextNeighborID(id: number): number {
+    let best = 0;
+    for (const n of this.nbhd?.neighbors ?? []) if (n.id > id && (best === 0 || n.id < best)) best = n.id;
+    return best;
   }
+
+  /** Neighborhood::FindNeighborByID. */
+  findNeighborByID(id: number): Neighbor | null {
+    return this.nbhd?.neighbors.find((n) => n.id === id) ?? null;
+  }
+
+  /**
+   * RelMatrix of a neighbor (Neighbor +0xc): the array of values kept for
+   * `other` (undefined when there is none) and how to grow it to n values
+   * (RelMatrix::SetArraySize, new values 0). The arrays are the
+   * neighborhood's own (the relationships panel and the save read them).
+   */
+  neighborRelation(nb: Neighbor, other: number): { arr: number[] | undefined; grow: (n: number) => number[] } {
+    const find = () => nb.relationships.find((r) => r.other === other);
+    return {
+      arr: find()?.values,
+      grow: (n) => {
+        let r = find();
+        if (!r) {
+          r = { other, values: [] };
+          nb.relationships.push(r);
+        }
+        while (r.values.length < n) r.values.push(0);
+        return r.values;
+      },
+    };
+  }
+
+  /**
+   * InterpValue scope 32: the person data of the neighbor whose id is
+   * `neighborId` (Neighbor +0x74). Errors 0x37 (no such neighbor), 0x21
+   * (index out of 0..0xff).
+   */
+  neighborPersonData(neighborId: number, data: number): number {
+    const nb = this.findNeighborByID(neighborId);
+    if (!nb) simThrow(0x37);
+    if (data < 0 || data >= 0x100) simThrow(0x21);
+    return nb.personData?.[data] ?? 0;
+  }
+
+  /**
+   * Neighborhood::GetNeighborData (InterpValue scope 24) of the neighbor
+   * `neighborId` (0 when unknown): 0 its person's object id on this lot (0
+   * when absent), 1 whether it belongs to the active family, 3 / 4 zero, 6
+   * the house of its family (0 when none). Others (2 Neighbor +0xe8, 5 the
+   * friend count, 7..9 family flags) are not ported (0).
+   */
+  neighborData(neighborId: number, data: number): number {
+    const nb = this.findNeighborByID(neighborId);
+    if (!nb || data < 0 || data > 9) return 0;
+    switch (data) {
+      case 0:
+        return this.people.find((p) => (p.obj.selector.guid | 0) === (nb.guid | 0))?.id ?? 0;
+      case 1:
+        return this.sim.state?.family.some((f) => (f.guid ?? 0) === (nb.guid | 0)) ? 1 : 0;
+      case 3:
+      case 4:
+        return 0;
+      case 6:
+        return this.nbhd?.families.find((f) => f.memberGuids.some((g) => (g | 0) === (nb.guid | 0)))?.houseNumber ?? 0;
+      default:
+        return this.unportedValue(`scope 24 neighbor data ${data}`, 0);
+    }
+  }
+
 }

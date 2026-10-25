@@ -30,6 +30,10 @@
  * 7. GViewer::SetLevel(1), then Neighborhood::SaveHouse (House::SaveFile:
  *    the stats, then world/housesave.ts).
  *
+ * The thumbnails SaveFile writes come from a view opened on the saved file
+ * (world/thumbnail.ts withHouseThumbnails): the original renders them with
+ * its one HouseViewer, which holds the loaded lot.
+ *
  * Not ported: House::ClearRouteHistory (route history not modeled), the
  * persistent family 0's budget reset by SaveHouse, and SaveHouse's cleanup
  * of family-less, house-less characters (DeleteCharacter loop).
@@ -50,6 +54,7 @@ import { ResFile } from "./iffres.js";
 import { loadLotModule, OD, type XObject } from "./objects.js";
 import { computeRooms, RoomManager } from "./rooms.js";
 import { TileWalls } from "./tilewalls.js";
+import { withHouseThumbnails } from "./thumbnail.js";
 import { killObject, makeNewOutOfWorldObject } from "./tools/objectfactory.js";
 import { Placement } from "./tools/placement.js";
 import { fixedSetWall, setFixedFloor } from "./tools/worldedit.js";
@@ -281,7 +286,9 @@ export async function moveOutHouse(ctx: GameContext, store: NeighborhoodStore, h
       stats: { objectValue: st.simA0, archValue: st.simA4, global16: st.lotHasHouse, global25: st.transitFilterFlags },
       clearHistory: true,
     });
-    await writeGameFile(path, setSavedLevel(bytes, 1));
+    // House::SaveFile's thumbnails (GlobalDispatch(0x92)), from a view of the saved lot.
+    const saved = await withHouseThumbnails(path, setSavedLevel(bytes, 1), ctx.width, ctx.height - 100);
+    await writeGameFile(path, saved);
   } catch (e) {
     console.error(`[moveout] SaveHouse ${path} failed`, e);
     return false;

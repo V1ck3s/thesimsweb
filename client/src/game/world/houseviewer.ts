@@ -20,6 +20,8 @@ import { drawFloor, type FloorGraphicsMgr } from "./floors.js";
 import { RenderParam } from "./renderparam.js";
 import { getOverlappingSprite, poolCornerSpriteId, poolSpriteId, rotateTileBits, type ByteLayer } from "./pools.js";
 import { LIGHT_POOLS_ENABLED, lightMapSet, NO_LIGHT, processFloorLightEntry } from "./lightmaps.js";
+import { RoofRenderer } from "./roofrender.js";
+import { getViewWall } from "./tools/wallworld.js";
 import { DIRS, RotatableWorld } from "./world.js";
 import { LEVEL_PX, makeZSpriteLookup, ZBufferLookup } from "./zbuffer.js";
 
@@ -81,6 +83,10 @@ export class HouseViewer {
     clampAmbient(level: number): number;
     /** cRotatableWorld::GetLightEntry of a view tile (lightmaps.ts). */
     getLightEntry?(x: number, y: number, level: number): readonly number[];
+    /** Room::GetAmbientLight of a room id. */
+    roomAmbient?(id: number): number;
+    /** RoomManager::ResolveDiagonal (world tile): the two rooms of a diagonal tile and their sides. */
+    resolveDiagonal?(x: number, y: number, level: number): { room1: number; side1: number; room2: number; side2: number };
   } | null = null;
   /** HouseViewer's dynamic cutaway (cutaway.ts), told about scale / rotation / level changes. */
   cutawayCtl: { onScale(): void; onRotation(): void; onLevel(old: number): void } | null = null;
@@ -88,9 +94,23 @@ export class HouseViewer {
   people: { draw(viewer: HouseViewer): void } | null = null;
   /** HouseViewer::RenderCursorObject: the buy / build tool's cursor object, drawn after the dynamic objects. */
   cursor: { draw(viewer: HouseViewer, comp: Compositor, rp: RenderParam): void } | null = null;
+  /** cRoofLayer::RenderRoofPolys (created with the first roof drawn). */
+  private roofRenderer: RoofRenderer | null = null;
   /** XSmoothScroller state. */
   private scroll: { fromX: number; fromY: number; toX: number; toY: number; start: number; dur: number } | null = null;
   dirty = true;
+  /** +0x17c / +0x182: while MakeThumbnail renders, GetClearColor returns the buffer's transparent color (24-bit here). */
+  thumbnailClearColor: number | null = null;
+
+  /**
+   * +0x50 (set by MakeThumbnail): RenderTerrainRow, RenderStaticRow and
+   * RenderDynamicObjects skip the tiles with flag 0x20 (world coordinates).
+   */
+  isThumbnailHidden(wx: number, wy: number): boolean {
+    if (this.thumbnailClearColor === null) return false;
+    const f = this.world.fixed;
+    return wx >= 0 && wy >= 0 && wx < f.size && wy < f.size && (f.flags[0]!.u8(wx, wy) & 0x20) !== 0;
+  }
 
   constructor(
     readonly world: RotatableWorld,
@@ -173,13 +193,13 @@ export class HouseViewer {
    * maps' range (ProcessFloorLightEntry) and the ambient level is not 1.
    * Sets Compositor.light for the draw; clearFloorLight resets it.
    */
-  setFloorLight(x: number, y: number, level: number, sx: number, sy: number): void {
+  setFloorLight(x: number, y: number, level: number, sx: number, sy: number, entry: readonly number[] | null = null): void {
     this.comp.light = null;
     if (!LIGHT_POOLS_ENABLED) return;
     const a = this.comp.ambient;
     if (Math.abs(a - 1) <= 1e-6) return;
     const s = this.scale;
-    const lights = processFloorLightEntry(this.lightEntry(x, y, level), lightMapSet.floorRange(s));
+    const lights = processFloorLightEntry(entry ?? this.lightEntry(x, y, level), lightMapSet.floorRange(s));
     if (lights.length === 0) return;
     const tex = this.comp.lightMapTexture(lightMapSet.floor(s));
     const maps = lights.map(([dx, dy]) => {
@@ -335,8 +355,12 @@ export class HouseViewer {
     }
   }
 
-  /** HouseViewer::GetOffsetsMinMax: allowed origin range. */
-  getOffsetsMinMax(): { minX: number; maxX: number; minY: number; maxY: number } {
+  /**
+   * HouseViewer::GetOffsetsMinMax: allowed origin range for a view of
+   * viewW x viewH (MakeThumbnail asks for its buffer's size). `low` is what
+   * the original keeps at +0x1f4 (the thumbnail's z).
+   */
+  getOffsetsMinMax(viewW = this.viewW, viewH = this.viewH): { minX: number; maxX: number; minY: number; maxY: number; low: number } {
     const s = this.scale;
     const w = this.world;
     const n = w.size - 2;
@@ -344,18 +368,18 @@ export class HouseViewer {
     const span = tileW * n;
     let minX: number;
     let maxX: number;
-    if (this.viewW < span) {
-      minX = Math.trunc(-span / 2) + this.viewW - (8 << s);
+    if (viewW < span) {
+      minX = Math.trunc(-span / 2) + viewW - (8 << s);
       maxX = Math.trunc(span / 2) + tileW;
     } else {
-      minX = maxX = Math.trunc(this.viewW / 2);
+      minX = maxX = Math.trunc(viewW / 2);
     }
     let top = 0;
     for (let k = 1, x = w.minX + 1, y = w.minY + 1; k < n + 1; k++, x++, y++) {
       top = Math.max(top, (this.maxAlts[x + y]! << (s + 1)) - (4 << s) * k);
     }
     let maxY = top + this.levelPx() * 2;
-    let minY = this.viewH - (8 << s) * n - (8 << s) * 2;
+    let minY = viewH - (8 << s) * n - (8 << s) * 2;
     let low = 0x7fffffff;
     for (let k = 1, x = n + w.minX, y = n + w.minY; k < n + 1; k++, x--, y--) {
       low = Math.min(low, (4 << s) * k - (this.minAlts[x + y]! << (s + 1)));
@@ -367,7 +391,7 @@ export class HouseViewer {
     maxX -= dx;
     maxY -= dy;
     minY -= dy;
-    return { minX, maxX, minY, maxY };
+    return { minX, maxX, minY, maxY, low };
   }
 
   /** HouseViewer::SetOffsets: clamp, align x to 4 pixels, move the origin. */
@@ -478,7 +502,7 @@ export class HouseViewer {
   /** HouseViewer::UpdateStaticLayer for the whole view. */
   render(): void {
     const comp = this.comp;
-    const c = CLEAR_COLOR;
+    const c = this.thumbnailClearColor ?? CLEAR_COLOR;
     comp.clear((c >> 16) & 0xff, (c >> 8) & 0xff, c & 0xff);
     const rp = new RenderParam(this, this.zLookupIndex);
     // Terrain + ground floors (RenderStatic(level 1, terrain pass)).
@@ -489,6 +513,8 @@ export class HouseViewer {
       this.walls?.drawWalls(this, comp, l, rp);
       this.renderStatic(l, false, rp);
     }
+    // UpdateStaticLayer: with the roof shown (+0x51), RenderRoofPolys of the roof layers below the level.
+    if (this.drawRoof) (this.roofRenderer ??= new RoofRenderer(comp.gl)).draw(this);
     this.objects?.drawDynamicObjects?.(this, comp, rp);
     comp.ambient = 1;
     this.cursor?.draw(this, comp, rp);
@@ -544,6 +570,7 @@ export class HouseViewer {
       const p = this.tileToPoint(x, y, level, this.scale, 0);
       if (!this.tileVisible(p.h, p.v)) continue;
       if (!this.terrainVisible(x, y)) continue;
+      if (this.isThumbnailHidden(...w2(w, x, y))) continue;
       const alt = w.getPackedAlt(x, y);
       rp.setGridCoords(...this.fixedCenter(x, y), 1);
       terrain.draw(this.target, w, x, y, p.h, p.v, alt, this.scale);
@@ -584,6 +611,7 @@ export class HouseViewer {
       const y = y0 + step[1] * k;
       const base = this.tileToPoint(x, y, 1, s, 0);
       if (!this.tileVisible(base.h, base.v)) continue;
+      if (this.isThumbnailHidden(...w2(w, x, y))) continue;
       const alt = w.getPackedAlt(x, y);
       const fx = base.h - (8 << s);
       const fy = base.v - (alt[1] << (s + 1));
@@ -603,14 +631,106 @@ export class HouseViewer {
 
   /** RenderTerrainRow's ground floor tile. */
   private drawTerrainFloor(x: number, y: number, floor: number, fx: number, fy: number): void {
-    const w = this.world;
     this.comp.ambient = this.ambientAtTile(x, y, 1);
-    if (w.getWallStorage(x, y, 1).segs !== 0 && isDiagonal(w, x, y, 1)) return; // diagonal floor halves: not ported
-    const g = this.floors.getFloorGraphic(floor, this.scale);
-    if (!g) return;
-    this.setFloorLight(x, y, 1, fx, fy);
-    drawFloor(this.comp, this, g.renderer, { x, y, level: 1 }, g.id, fx, fy);
-    this.comp.light = null;
+    this.drawTileFloor(x, y, 1, floor, fx, fy);
+  }
+
+  /**
+   * RenderTerrainRow's floor of a view tile whose floor pattern is not 0,
+   * with its top-left corner at (fx, fy). A tile with a diagonal wall draws
+   * its two half floors (TileWalls +0x08 for sides 1 / 2, +0x14 for sides
+   * 3 / 4; both the tile's pattern when both are 0), each clipped (the
+   * lbl_105BA5F4 clip rectangle) to its side of the tile's center:
+   *   0x10: the +0x14 half below the center row, then the +0x08 half above;
+   *   0x20: the +0x08 half left of the center column, then the +0x14 half right.
+   * On a degenerate tile (two rooms) each half takes the ambient light of
+   * its room, and the lights of the other room are taken out of its light
+   * entry.
+   */
+  private drawTileFloor(x: number, y: number, level: number, floor: number, fx: number, fy: number): void {
+    const w = this.world;
+    const s = this.scale;
+    const draw = (pattern: number, entry: readonly number[] | null): void => {
+      const g = this.floors.getFloorGraphic(pattern, s);
+      if (!g) return;
+      this.setFloorLight(x, y, level, fx, fy, entry);
+      drawFloor(this.comp, this, g.renderer, { x, y, level }, g.id, fx, fy);
+      this.comp.light = null;
+    };
+    const segs = w.getWallStorage(x, y, level).segs;
+    const t = segs !== 0 ? getViewWall(w, x, y, level) : null;
+    if (!t || (t.segs & 0x30) === 0) {
+      draw(floor, null);
+      return;
+    }
+    let first = t.styles[0]!;
+    let second = t.patterns[0]!;
+    if (first === 0 && second === 0) first = second = floor;
+    const [wx, wy] = w.toWorld(x, y);
+    const l = this.lighting;
+    const d = l?.resolveDiagonal?.(wx, wy, level) ?? null;
+    const rot = w.rotation;
+    const side1 = d && d.side1 !== 0 ? ((d.side1 + ((4 - rot) & 3) - 1) & 3) + 1 : 0;
+    const degenerate = w.fixed.rooms[level - 1]!.u16(wx, wy) === 0xfffb;
+    const entry = this.lightEntry(x, y, level);
+    // `own`: the diagonal side the half lies on (0x10: 2 below, 4 above; 0x20: 1 left, 3 right).
+    const half = (pattern: number, own: number, clip: { left: number; top: number; right: number; bottom: number }): void => {
+      if (pattern === 0) return;
+      let e: readonly number[] = entry;
+      if (d && d.room1 !== d.room2) {
+        const other = ((own + 1) & 3) + 1;
+        const match = side1 === own || side1 === 0 ? d.room1 : side1 === other ? d.room2 : -1;
+        e = this.filterHalfLights(entry, x, y, level, match);
+      }
+      if (degenerate && d && l?.roomAmbient) this.comp.ambient = l.clampAmbient(l.roomAmbient(side1 === own ? d.room1 : d.room2));
+      this.comp.setClip(clip);
+      draw(pattern, e);
+      this.comp.setClip(null);
+    };
+    const full = { left: 0, top: 0, right: this.viewW, bottom: this.viewH };
+    if (t.segs & 0x10) {
+      const cy = fy + (4 << s);
+      half(second, 2, { ...full, top: Math.max(full.top, cy) });
+      half(first, 4, { ...full, bottom: Math.min(full.bottom, cy) });
+    } else {
+      const cx = fx + (8 << s);
+      half(first, 1, { ...full, right: Math.min(full.right, cx) });
+      half(second, 3, { ...full, left: Math.max(full.left, cx) });
+    }
+  }
+
+  /**
+   * RenderTerrainRow's light entry of one half floor: a light (at the tile
+   * minus its offset, view coordinates) whose room is not the half's room
+   * (`room`; -1 = no test) leaves the entry (LightEntry::Count, slot 1 moves
+   * to slot 0 when slot 0 goes).
+   */
+  private filterHalfLights(entry: readonly number[], x: number, y: number, level: number, room: number): number[] {
+    const e = [...entry];
+    const count = (): number => (e[0] !== NO_LIGHT ? 1 : 0) + (e[2] !== NO_LIGHT ? 1 : 0);
+    const n = count();
+    if (n === 0 || room < 0) return e;
+    const roomAt = (vx: number, vy: number): number => {
+      const [wx, wy] = this.world.toWorld(vx, vy);
+      return this.world.fixed.outOfGrid(wx, wy) ? -1 : this.world.fixed.rooms[level - 1]!.u16(wx, wy);
+    };
+    const r0 = roomAt(x - e[0]!, y - e[1]!);
+    const r1 = n === 2 ? roomAt(x - e[2]!, y - e[3]!) : -1;
+    if (r0 !== room) {
+      const c = count();
+      if (c === 1) e[0] = e[1] = NO_LIGHT;
+      else if (c === 2) {
+        e[0] = e[2]!;
+        e[1] = e[3]!;
+        e[2] = e[3] = NO_LIGHT;
+      }
+    }
+    if (n === 2 && r1 !== room) {
+      const c = count();
+      if (c === 1) e[0] = e[1] = NO_LIGHT;
+      else if (c === 2) e[2] = e[3] = NO_LIGHT;
+    }
+    return e;
   }
 
   /**
@@ -712,21 +832,13 @@ export class HouseViewer {
       const x = x0 + step[0] * k;
       const y = y0 + step[1] * k;
       const base = this.tileToPoint(x, y, level, s, 0);
+      if (this.isThumbnailHidden(...w2(w, x, y))) continue;
       const alt = w.getPackedAlt(x, y);
       rp.ambient = this.ambientAtTile(x, y, level);
       this.comp.ambient = rp.ambient;
       if (level >= 2) {
         const floor = w.getFloor(x, y, level);
-        if (floor !== 0 && !(w.getWallStorage(x, y, level).segs !== 0 && isDiagonal(w, x, y, level))) {
-          const g = this.floors.getFloorGraphic(floor, s);
-          if (g) {
-            const fx = base.h - (8 << s);
-            const fy = base.v - (alt[1] << (s + 1));
-            this.setFloorLight(x, y, level, fx, fy);
-            drawFloor(this.comp, this, g.renderer, { x, y, level }, g.id, fx, fy);
-            this.comp.light = null;
-          }
-        }
+        if (floor !== 0) this.drawTileFloor(x, y, level, floor, base.h - (8 << s), base.v - (alt[1] << (s + 1)));
       }
       if (level === 1) this.drawPoolTile(x, y, rp);
       if (this.objects && w.getTileObjectID(x, y, level) !== 0) this.objects.drawTileObjects(this, this.comp, x, y, level, rp);
@@ -737,9 +849,4 @@ export class HouseViewer {
 /** World coordinates of a view tile. */
 function w2(world: RotatableWorld, x: number, y: number): [number, number] {
   return world.toWorld(x, y);
-}
-
-/** TileWalls diagonal bits (0x10 / 0x20 of the first wall byte, cRotatableWorld::GetWall). */
-function isDiagonal(world: RotatableWorld, x: number, y: number, level: number): boolean {
-  return (world.getWallStorage(x, y, level).segs & 0x30) !== 0;
 }

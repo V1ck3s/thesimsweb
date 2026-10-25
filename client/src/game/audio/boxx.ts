@@ -9,6 +9,8 @@
  */
 
 import { listDir, looseUrl } from "./audiosys.js";
+import { getAudioInfo } from "./audioinfo.js";
+import { FreshPlayer, FreshTimer } from "./fresh.js";
 import { checkHit, parseHot, parseHsm, type HitCode, type MappedEvent } from "./hitdata.js";
 import { GROUP_MUSIC, GROUP_SFX, GROUP_VOX, HitMan, TICK_MS } from "./hitman.js";
 import { R } from "./registers.js";
@@ -30,8 +32,12 @@ export const EV = {
   Pause: 21,
   Unpause: 22,
   KillInstance: 23,
+  /** cSimsApp::ActivateApp (+0xc). */
+  ActivateApp: 25,
   TurnOnTv: 30,
   TurnOffTv: 31,
+  UpdateSourceVolPan: 32,
+  /** cSoundPlayer::NotifyHourChange / NotifyViewChange. */
   NotifyChange: 33,
   EnableSound: 34,
   EnableMusic: 35,
@@ -39,6 +45,7 @@ export const EV = {
   SetFXVolume: 37,
   SetMusicVolume: 38,
   SetVoxVolume: 39,
+  SetAmbienceMode: 52,
 } as const;
 
 /** cGameModeManager modes (kSetMusicMode arguments, SimsSound.hot bkground_*). */
@@ -176,26 +183,70 @@ async function initReceiver(hm: HitMan, dir: string, id: number): Promise<number
   return main.size();
 }
 
+/** cBoxX::Event kSetAmbienceMode arguments (.hot kAmbienceMode*): the players at +0x10c..+0x118. */
+export const AMBIENCE = { Backyard: 0, Beach: 1, Park: 2, Magictown: 3 } as const;
+
+/**
+ * cBoxX::Init's ambience scores (lbl_105BC818 + 0x404..0x491): backyard
+ * always, beach and park with Hot Date (expansion flags 4 / 8), magic town
+ * with Makin' Magic (0x80).
+ */
+const AMBIENCE_SCORES: ReadonlyArray<[dir: string, file: string]> = [
+  ["SoundData\\Outdoors\\", "sim_amb.fsc"],
+  ["ExpansionShared\\Sound\\Beach\\", "beach.fsc"],
+  ["ExpansionShared\\Sound\\Park\\", "hotdatepark_amb.fsc"],
+  ["SoundData\\MTOutdoors\\", "magic_amb.fsc"],
+];
+
+/** UpdateAmbienceLoop's tracks: lbl_105C1C3C BeachLoop (HotDate.hot), lbl_105C1C38 nite_loop. */
+const TRK_BEACH_LOOP = 0x10aa3;
+const TRK_NITE_LOOP = 0xba9;
+
+/** cBoxX::Pause leaves these playing: ui_click and ui_speed_{1,2,3}top. */
+const PAUSE_EXEMPT = new Set([0x605, 0xaa7, 0xaad, 0xab3]);
+
+/** lbl_106171D8: hour (0..23) -> fresh X column step (x 1000 / 13 in kNotifyChange). */
+const HOUR_TO_X = [12, 12, 12, 12, 12, 1, 2, 3, 4, 4, 5, 6, 6, 7, 8, 9, 10, 11, 11, 11, 12, 12, 12, 12];
+
+/** kArgsIdVolPan: the track plays for an instance (object) and takes its volume / pan. */
+const ARGS_IDVOLPAN = 2;
+
 export class BoxX {
   readonly hm = new HitMan();
   private readonly events = new Map<string, MappedEvent>();
-  /** +0xdc: source id -> tracks started for it (AddToInstanceMap). */
+  /** +0xdc: sound object id -> the instance (source) ids it plays for (AddToInstanceMap). */
   private readonly instances = new Map<number, Set<number>>();
   /** +0xf0 */
   readonly modes = new GameModeManager(this);
-  /** +0xe: sound enabled; +0xc: music enabled; +0xd: paused. */
+  /** +0xc: the application is active (kActivateApp, 25). */
+  private active = true;
+  /** +0xd: paused (kPause / kUnpause). */
+  private paused = false;
+  /** +0xe: sound enabled; +0xf: music enabled. */
   private soundEnabled = true;
   private musicEnabled = true;
-  private paused = false;
   /** +0xf8, +0xfc, +0x100: option volumes 0..10. */
-  private readonly volumes = { fx: 8, music: 8, vox: 8 };
+  private readonly volumes = { fx: 10, music: 10, vox: 10 };
+  /** +0x104 */
+  private readonly freshTimer = new FreshTimer();
+  /** +0x10c backyard, +0x110 beach, +0x114 park, +0x118 magic town. */
+  readonly ambience: Array<FreshPlayer | null> = [null, null, null, null];
+  /** +0x108: the current ambience player. */
+  private ambienceCur: FreshPlayer | null = null;
+  /** +0x11c: kActivateApp's volume refresh countdown (cBoxX::Update). */
+  private volPanCountdown = 0;
+  /** lbl_105C1C8C: the outdoor loop UpdateAmbienceLoop plays (0 = none). */
+  private ambienceLoop = 0;
+  /** lbl_105C1C40: last simulator speed sent to register 100. */
+  private lastSimSpeed = -1;
   private timer: number | null = null;
-  readonly loaded: { codes: string[]; tracks: number; patches: number; events: number; receivers: Record<string, number> } = {
+  readonly loaded: { codes: string[]; tracks: number; patches: number; events: number; receivers: Record<string, number>; ambience: string[] } = {
     codes: [],
     tracks: 0,
     patches: 0,
     events: 0,
     receivers: {},
+    ambience: [],
   };
 
   /** cBoxX::Init */
@@ -205,6 +256,17 @@ export class BoxX {
       const n = await initReceiver(this.hm, r.dir, r.hitList);
       if (n > 0) this.loaded.receivers[r.dir] = n;
     }
+    for (let i = 0; i < AMBIENCE_SCORES.length; i++) {
+      const [dir, file] = AMBIENCE_SCORES[i]!;
+      const p = new FreshPlayer(this.freshTimer);
+      if (await p.init(dir, file)) {
+        this.ambience[i] = p;
+        this.loaded.ambience.push(dir + file);
+      }
+    }
+    // cHitMan::RegisterSourceDataRequestHandler(BoxxGlobalGetSourceParamValue): fields 0..0x15 -> cAudioInfo::GetObjectData.
+    this.hm.sourceDataHandler = (source, field) => (field > 0x15 || field < 0 ? null : (getAudioInfo()?.objectData(source, field) ?? 0));
+    this.updateAmbienceLoop();
     this.timer = window.setInterval(() => this.update(), TICK_MS);
   }
 
@@ -246,6 +308,13 @@ export class BoxX {
 
   /** cBoxX::Update (every TICK_MS). */
   update(): void {
+    const n = this.volPanCountdown;
+    if (n !== 0) {
+      this.updateAllSndobVolPan();
+      this.volPanCountdown = 0;
+      this.updateAllSndobVolPan();
+      this.volPanCountdown = n - 1;
+    }
     this.hm.timerCallback();
   }
 
@@ -253,16 +322,40 @@ export class BoxX {
     if (this.timer !== null) window.clearInterval(this.timer);
     this.timer = null;
     this.hm.killAll();
+    for (const p of this.ambience) p?.shutdown();
+    this.freshTimer.shutdown();
+  }
+
+  /** cBoxX::GetEventObjectSound: a kSndobPlay event whose track takes (id, vol, pan). */
+  private getEventObjectSound(name: string): TrackPlayer | null {
+    const ev = this.events.get(name);
+    if (!ev || ev.kind !== EV.SndobPlay) return null;
+    const t = this.track(ev.arg);
+    return t && t.def.argsType === ARGS_IDVOLPAN ? t : null;
   }
 
   /**
-   * cBoxX::MappedEvent: look the name up (with the m/f/k gender variants of
-   * GetEventObjectSound as a fallback) and send its event. Returns false when
-   * the name is unknown.
+   * cBoxX::MappedEvent: look the name up and send its event. A "vox" event
+   * is dropped for a source whose voice is 1000 (cAudioInfo::GetObjectData 0);
+   * an unknown name is retried with the source's m / f / k (kid) suffix when
+   * such per-voice variants exist. Returns false when nothing was sent.
    */
   playMappedEvent(name: string, source: number, a4 = 0, a5 = 0): boolean {
-    const key = name.toLowerCase();
-    const ev = this.events.get(key) ?? this.events.get(`${key}m`) ?? this.events.get(`${key}f`) ?? this.events.get(`${key}k`);
+    let key = name.toLowerCase();
+    const voice = (): number => getAudioInfo()?.objectData(source, 0) ?? 0;
+    if ((key.endsWith("vox") || key.startsWith("vox")) && voice() === 1000) return false;
+    if (!this.events.has(key)) {
+      const [m, f, k] = [`${key}m`, `${key}f`, `${key}k`];
+      if (this.getEventObjectSound(m) ?? this.getEventObjectSound(f) ?? this.getEventObjectSound(k)) {
+        const v = voice();
+        if (v === 1000) return false;
+        if (v === 0) key = m;
+        else if (v === 1) key = f;
+        else if (v === 2) key = k;
+        if (!this.events.has(key)) return false;
+      }
+    }
+    const ev = this.events.get(key);
     if (!ev || ev.kind === 0) return false;
     this.event(ev.kind, ev.arg, ev.a3 || source, ev.a4 || a4, ev.a5 || a5);
     return true;
@@ -273,48 +366,224 @@ export class BoxX {
     return o instanceof TrackPlayer ? o : null;
   }
 
-  /** cBoxX::AddToInstanceMap */
-  private addInstance(trackId: number, source: number): void {
-    let s = this.instances.get(source);
-    if (!s) this.instances.set(source, (s = new Set()));
-    s.add(trackId);
-  }
-
-  /** cBoxX::KillSource: kill every track started for `source`. */
-  killSource(source: number): void {
-    const s = this.instances.get(source);
-    if (!s) return;
-    for (const id of s) this.track(id)?.kill();
-    this.instances.delete(source);
+  /** cBoxX::AddToInstanceMap(sndob, instance) */
+  private addToInstanceMap(sndob: number, instance: number): void {
+    let s = this.instances.get(sndob);
+    if (!s) this.instances.set(sndob, (s = new Set()));
+    s.add(instance);
   }
 
   /**
-   * Positional volume/pan of a source (cBoxX::GetSndobVolPan). Objects on the
-   * lot are not positioned yet: full volume, centred.
+   * cBoxX::KillSource: forget `source` in every sound's instances; a sound
+   * left without instances stops (cTrackPlayer::Stop fades it), the others
+   * are re-positioned (UpdateSndobVolPan).
    */
-  private sndobVolPan(_source: number): [number, number] {
-    return [0x400, 0x200];
+  killSource(source: number): void {
+    for (const [sndob, set] of [...this.instances]) {
+      if (!set.delete(source)) continue;
+      if (set.size === 0) this.instances.delete(sndob);
+      this.updateSndobVolPan(sndob);
+    }
   }
 
-  /** cBoxX::Event */
+  /**
+   * cBoxX::GetInstanceVolPan: an object's volume and pan from where it is on
+   * screen. Pan follows the screen x (a small swing: +-0xc00 / (width * 50)
+   * around 0x200); volume drops with the zoom ((3 - scale) * Spl * 14) toward
+   * a floor (800 for kSplStereo, else 0), fades out over 600 pixels outside
+   * the central screen area (20 % margins left / right, 30 % top, the bottom
+   * edge), and is 3/5 on another level. Spl is the sound's register 0x39
+   * (kSplLoud 10 .. kSplQuiet 100; 0 = infinite: no attenuation).
+   */
+  private getInstanceVolPan(instance: number, obj: TrackPlayer | null): { ok: boolean; vol: number; pan: number } {
+    if (instance < 1) return { ok: false, vol: 0x400, pan: 0x200 };
+    const info = getAudioInfo();
+    const pos = info?.objectPosition(instance) ?? null;
+    if (!info || !pos || pos.x === 0 || pos.y === 0) return { ok: false, vol: 0, pan: 0x200 };
+    const sc = info.worldToScreen(pos);
+    const br = info.screenBottomRight();
+    const viewerLevel = info.viewerLevel();
+    const spl = obj ? obj.registerVal(R.Spl) : 0x14;
+    let pan = 0x200;
+    if (spl !== 0) {
+      pan = Math.trunc(((sc.h - Math.trunc(br.h / 2)) * 0xc00) / Math.trunc((br.h * 100) / 2)) + 0x200;
+      pan = Math.max(0, Math.min(0x400, pan));
+    }
+    const zoom = info.zoomLevel();
+    const floor = spl === 0x2711 ? 800 : 0;
+    let vol = Math.max(floor, Math.max(0, 0x400 - (3 - zoom) * spl * 0xe));
+    const mx = Math.trunc((br.h * 0x14) / 100);
+    const dx = sc.h < mx ? mx - sc.h : sc.h - (br.h - mx);
+    let dy = Math.max(0, sc.v - br.v);
+    if (dy === 0) dy = Math.max(0, Math.trunc((br.v * 0x1e) / 100) - sc.v);
+    const d = Math.max(dx, dy);
+    if (d !== 0 && spl !== 0) {
+      if (d < 600) vol = Math.min(0x400, Math.max(floor, Math.trunc(((vol - floor) * (600 - d)) / 600) + floor));
+      else vol = floor;
+    }
+    if (pos.level !== viewerLevel && spl !== 0) vol = Math.trunc((vol * 3) / 5);
+    return { ok: true, vol, pan };
+  }
+
+  /**
+   * cBoxX::GetSndobVolPan: over the sound's instances, the loudest volume
+   * and the volume-weighted pan; full volume, centred when it has none.
+   */
+  private getSndobVolPan(sndob: number): { vol: number; pan: number } {
+    const set = this.instances.get(sndob);
+    if (!set || set.size === 0) return { vol: 0, pan: 0x200 };
+    const obj = this.track(sndob);
+    if (!obj) return { vol: 0, pan: 0x200 };
+    let max = 0;
+    let sum = 0;
+    let weighted = 0;
+    for (const inst of set) {
+      const r = this.getInstanceVolPan(inst, obj);
+      max = Math.max(max, r.vol);
+      sum += r.vol;
+      weighted += r.vol * (r.pan - 0x200);
+    }
+    return { vol: max, pan: (sum !== 0 ? Math.trunc(weighted / sum) : 0) + 0x200 };
+  }
+
+  /** cBoxX::UpdateSndobVolPan(long): re-position a sound, stop it when it has no instance left. */
+  private updateSndobVolPan(sndob: number): void {
+    const t = this.track(sndob);
+    if (!t) return;
+    if (!this.instances.get(sndob)?.size) {
+      t.stop();
+      return;
+    }
+    let { vol, pan } = this.getSndobVolPan(sndob);
+    if (this.volPanCountdown !== 0) {
+      vol -= 1;
+      if (vol < 0) vol = 1;
+    }
+    t.setRegister(R.extvol, vol);
+    t.setRegister(R.pan, pan);
+  }
+
+  /** cBoxX::UpdateAllSndobVolPan */
+  private updateAllSndobVolPan(): void {
+    for (const sndob of [...this.instances.keys()]) this.updateSndobVolPan(sndob);
+  }
+
+  /**
+   * cBoxX::UpdateAmbienceLoop: in live mode, unpaused and active, the
+   * outdoor loop: the beach waves with the beach ambience, else the night
+   * crickets (nite_loop) out of 6:00..18:59 on a lot outside 0x14..0x1d.
+   * It fades in (fade_dest = the FX volume, speed 5000).
+   */
+  private updateAmbienceLoop(): void {
+    let cur = this.ambienceLoop !== 0 ? this.track(this.ambienceLoop) : null;
+    const prev = this.ambienceLoop;
+    if (!this.paused && this.active && this.modes.mode === MODE.Live) {
+      let id = TRK_BEACH_LOOP;
+      if (this.ambienceCur !== this.ambience[AMBIENCE.Beach]) {
+        const info = getAudioInfo();
+        const lot = info?.lotNumber() ?? 0;
+        if (lot < 0x14 || lot > 0x1d) {
+          const hour = info?.objectData(0, 4) ?? 0;
+          id = hour < 0x13 && hour > 5 ? 0 : TRK_NITE_LOOP;
+        } else {
+          id = 0;
+        }
+      }
+      this.ambienceLoop = id;
+      if (id !== prev && cur) cur.stop();
+      cur = id !== 0 ? this.track(id) : null;
+      if (cur && !cur.isActive()) {
+        const vol = VOLUME_TABLE[this.volumes.fx] ?? 0x400;
+        cur.playPause(0, 0, 0);
+        cur.setRegister(R.extvol, 0);
+        cur.setRegister(R.fade_dest, vol);
+        cur.setRegister(R.fade_var, R.extvol);
+        cur.setRegister(R.fade_speed, 5000);
+        cur.setRegister(R.fade_on, 1);
+        cur.unpause();
+      }
+    } else if (cur?.isActive()) {
+      cur.stop();
+    }
+  }
+
+  /** cBoxX::Pause: pause every running track but the UI click / speed sounds. */
+  private pauseTracks(): void {
+    this.paused = true;
+    this.hm.duckMapRemoveAll();
+    this.updateAmbienceLoop();
+    for (const p of this.hm.activePlayers()) if (!PAUSE_EXEMPT.has(p.trackId())) p.pause();
+  }
+
+  /** cBoxX::Unpause */
+  private unpauseTracks(): void {
+    this.paused = false;
+    this.hm.unpause();
+    this.updateAmbienceLoop();
+    this.modes.unpause();
+  }
+
+  /** The kSndobPlay / kTurnOnTv body: play `t` for `source`, positioned from its instances. */
+  private playPositioned(t: TrackPlayer, sndob: number, source: number, a4: number, a5: number): void {
+    this.addToInstanceMap(sndob, source);
+    const { vol, pan } = this.getSndobVolPan(sndob);
+    t.playPause(source, a4, a5);
+    t.setRegister(R.extvol, vol);
+    t.setRegister(R.pan, pan);
+  }
+
+  /** cBoxX::Event (jump table lbl_106172A0). */
   event(kind: number, arg: number, source = 0, a4 = 0, a5 = 0): boolean {
     if (!this.soundEnabled && kind !== EV.EnableSound) return false;
+    const info = getAudioInfo();
+    if (this.modes.mode !== MODE.Load && info) {
+      const speed = info.simSpeed();
+      if (speed !== this.lastSimSpeed) {
+        this.lastSimSpeed = speed;
+        this.hm.setRegister(R.SimSpeed, speed > 0x3c0 ? 2 : speed > 800 ? 1 : 0);
+      }
+    }
+    if (kind === EV.KillInstance) {
+      if (arg !== 0) this.killSource(arg);
+      return true;
+    }
     switch (kind) {
-      case EV.SndobPlay:
-      case EV.TurnOnTv: {
+      case EV.SndobPlay: {
+        if (!this.active) return false;
         const t = this.track(arg);
         if (!t) return false;
-        if (kind === EV.TurnOnTv) this.killSource(source);
-        if (kind === EV.TurnOnTv || (t.def.argsType === 2 && source !== 0)) this.addInstance(arg, source);
-        let [vol, pan] = this.sndobVolPan(source);
-        if (a4) vol = a4;
-        if (a5) pan = a5;
-        t.playPause(source, vol, pan);
-        if (t.def.argsType === 2) {
-          t.setRegister(R.extvol, vol);
-          t.setRegister(R.pan, pan);
+        if (!t.isActive()) this.instances.delete(arg);
+        if (t.def.argsType === ARGS_IDVOLPAN) {
+          if (source === 0) return false;
+          this.playPositioned(t, arg, source, a4, a5);
+        } else {
+          t.playPause(source, a4, a5);
         }
-        if (!this.paused) t.unpause();
+        t.unpause();
+        return true;
+      }
+      case EV.TurnOnTv: {
+        this.killSource(source);
+        const t = this.track(arg);
+        if (!t) return false;
+        this.playPositioned(t, arg, source, a4, a5);
+        if (!this.paused && this.active) t.unpause();
+        return true;
+      }
+      case EV.TurnOffTv:
+        return true;
+      case EV.UpdateSourceVolPan:
+        for (const [sndob, set] of [...this.instances]) if (set.has(arg)) this.updateSndobVolPan(sndob);
+        return true;
+      case EV.NotifyChange: {
+        this.updateAllSndobVolPan();
+        let ratio = info?.outdoorTileRatio() ?? 0;
+        if (this.hm.paused || ratio < 30) ratio = 0;
+        if (this.ambienceCur) {
+          this.ambienceCur.setYPos(ratio * 10);
+          this.ambienceCur.setXPos(Math.trunc(((HOUR_TO_X[info?.objectData(0, 4) ?? 0] ?? 12) * 1000) / 13));
+        }
+        this.updateAmbienceLoop();
         return true;
       }
       case EV.SndobStop:
@@ -335,18 +604,36 @@ export class BoxX {
       case EV.KillAll:
         this.hm.killAll();
         this.instances.clear();
+        this.ambienceCur?.stop();
+        for (const p of this.ambience) p?.stop();
         return true;
       case EV.Pause:
-        this.paused = true;
-        this.hm.pause();
+        this.pauseTracks();
+        if (this.modes.mode === MODE.Live) this.ambienceCur?.setPause(true);
         return true;
       case EV.Unpause:
         this.paused = false;
-        this.hm.unpause();
+        if (!this.active) return true;
+        this.unpauseTracks();
+        this.ambienceCur?.setPause(false);
         return true;
-      case EV.KillInstance:
-      case EV.TurnOffTv:
-        this.killSource(arg || source);
+      case EV.ActivateApp:
+        this.active = arg !== 0;
+        if (this.active) {
+          this.volPanCountdown = 100;
+          this.updateAllSndobVolPan();
+          this.volPanCountdown = 0;
+          this.updateAllSndobVolPan();
+          this.volPanCountdown = 100;
+          if (!this.paused) {
+            this.unpauseTracks();
+            this.ambienceCur?.setPause(false);
+          }
+          if (this.modes.mode === MODE.Hood) this.unpauseTracks();
+          this.modes.unpause();
+        } else if (this.modes.mode === MODE.Live) {
+          for (const p of this.ambience) p?.setPause(true);
+        }
         return true;
       case EV.EnableSound:
         this.soundEnabled = arg !== 0;
@@ -358,11 +645,45 @@ export class BoxX {
         return true;
       case EV.SetMusicMode:
         this.modes.setMode(arg);
+        if (this.modes.mode === MODE.Live) {
+          if (this.ambienceCur) {
+            this.ambienceCur.play();
+            this.ambienceCur.setPause(this.paused);
+          }
+        } else if (this.modes.mode === MODE.Hood) {
+          const backyard = this.ambience[AMBIENCE.Backyard] ?? null;
+          if (this.ambienceCur !== backyard) this.ambienceCur?.stop();
+          this.ambienceCur = backyard;
+          if (backyard) {
+            backyard.setYPos(1000);
+            backyard.setXPos(500);
+            backyard.play();
+            backyard.setPause(false);
+          }
+        } else {
+          this.ambienceCur?.stop();
+        }
+        this.updateAmbienceLoop();
         return true;
-      case EV.SetFXVolume:
+      case EV.SetAmbienceMode: {
+        const next = arg >= 0 && arg < 4 ? (this.ambience[arg] ?? null) : null;
+        if (next === this.ambienceCur) return true;
+        this.ambienceCur?.stop();
+        this.ambienceCur = next;
+        if (next) {
+          next.play();
+          next.setPause(this.paused);
+        }
+        return true;
+      }
+      case EV.SetFXVolume: {
         this.volumes.fx = arg;
-        this.hm.setGroupVolume(GROUP_SFX, VOLUME_TABLE[arg] ?? 0x400);
+        const v = VOLUME_TABLE[arg] ?? 0x400;
+        this.hm.setGroupVolume(GROUP_SFX, v);
+        for (const p of this.ambience) p?.setVolume(v);
+        this.updateAmbienceLoop();
         return true;
+      }
       case EV.SetMusicVolume:
         this.volumes.music = arg;
         this.hm.setGroupVolume(GROUP_MUSIC, this.musicEnabled ? (VOLUME_TABLE[arg] ?? 0x400) : 0);
@@ -379,6 +700,19 @@ export class BoxX {
   getVolumes(): { fx: number; music: number; vox: number } {
     return { ...this.volumes };
   }
+
+  /** Dev view of the ambience (current player, its grid position and cells, the outdoor loop). */
+  ambienceState(): { current: number; loop: number; ratio: number; hour: number; lot: number; player: ReturnType<FreshPlayer["debugState"]> | null } {
+    const info = getAudioInfo();
+    return {
+      ratio: info?.outdoorTileRatio() ?? -1,
+      hour: info?.objectData(0, 4) ?? -1,
+      lot: info?.lotNumber() ?? -1,
+      current: this.ambienceCur ? this.ambience.indexOf(this.ambienceCur) : -1,
+      loop: this.ambienceLoop,
+      player: this.ambienceCur?.debugState() ?? null,
+    };
+  }
 }
 
 /** cGameModeManager: the music of the current game mode. */
@@ -392,6 +726,11 @@ export class GameModeManager {
   private obj(id: number): TrackPlayer | null {
     const o = this.boxx.hm.soundObject(id);
     return o instanceof TrackPlayer ? o : null;
+  }
+
+  /** cGameModeManager::Unpause: MainMusicLoop goes on. */
+  unpause(): void {
+    this.obj(TRK_MAIN_MUSIC_LOOP)?.unpause();
   }
 
   /** cGameModeManager::SetMode */

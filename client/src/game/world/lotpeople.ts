@@ -10,7 +10,8 @@
  */
 
 import { loadNeighborhood, neighborByGuid } from "../data/neighborhood.js";
-import { loadPerson, SimRenderer, type SAnimator } from "../sims/index.js";
+import { loadPerson, rootTransform, SimRenderer, type SAnimator, type SimView } from "../sims/index.js";
+import { quatRotate, transformPoint, type Vec3 } from "../sims/math3d.js";
 import type { Skeleton } from "../sims/skeleton.js";
 import type { Compositor } from "./compositor.js";
 import type { HouseViewer } from "./houseviewer.js";
@@ -75,14 +76,36 @@ export class LotPeople {
     return true;
   }
 
+  /**
+   * SAnimator::PrepReg's registration point (VitaBoy::FindRegistration) in
+   * lot world space (VitaBoy units, level 1): slot 0 is body strings 6 / 7
+   * (the hand bone and its "Palm" offset), slot 1 body strings 4 / 5 (the
+   * head and "Top"). The named offset is RotationTf(Z, a) * TranslationTf(t)
+   * (lbl_105C2224: Palm (pi, 0.5 0 0), Top and HeadFake (-pi/2, 0.8 0 0),
+   * Shoulder (pi, 0 0 1)), i.e. the point t in the bone's frame. Null when
+   * the person has no such bone.
+   */
+  registrationPoint(obj: PlacedObject, slot: number, rotation: number, alt: number): Vec3 | null {
+    const p = this.people.find((x) => x.obj === obj);
+    if (!p || (slot !== 0 && slot !== 1)) return null;
+    const bs = p.anim.bodyStrings;
+    const bone = p.anim.vitaboy.skeleton.findBone(bs.get(slot === 0 ? 6 : 4));
+    if (!bone) return null;
+    const OFFSETS: Readonly<Record<string, Vec3>> = { palm: [0.5, 0, 0], top: [0.8, 0, 0], headfake: [0.8, 0, 0], shoulder: [0, 0, 1] };
+    const t = OFFSETS[bs.get(slot === 0 ? 7 : 5).toLowerCase()] ?? [0, 0, 0];
+    const r = quatRotate(bone.worldRot, t);
+    const local: Vec3 = [bone.worldPos[0] + r[0], bone.worldPos[1] + r[1], bone.worldPos[2] + r[2]];
+    const place = { x: obj.fx / 16, y: obj.fy / 16, level: 1, alt, direction: p.simDir ? p.simDir() : obj.dir };
+    return transformPoint(local, rootTransform(place, rotation));
+  }
+
   update(nowMs: number): void {
     // Sim-driven people have no practices here: this only deforms their meshes.
     for (const p of this.people) p.anim.update(nowMs);
   }
 
-  /** Draw everyone on the levels up to the viewer's current level. */
-  draw(viewer: HouseViewer): void {
-    const view = {
+  private static viewOf(viewer: HouseViewer): SimView {
+    return {
       zoom: viewer.scale,
       rotation: viewer.world.rotation,
       originX: viewer.originX,
@@ -90,6 +113,41 @@ export class LotPeople {
       width: viewer.viewW,
       height: viewer.viewH,
     };
+  }
+
+  /**
+   * cXObject::GetLastDamage of a person (the screen rectangle its Draw3D
+   * covered), [left, top, right, bottom]: the projected bones of its posed
+   * skeleton, padded by the mesh's reach around them (0.35 world units).
+   * Null when the person is not drawn.
+   */
+  screenRect(obj: PlacedObject, viewer: HouseViewer): [number, number, number, number] | null {
+    const p = this.people.find((x) => x.obj === obj);
+    if (!p || obj.level > viewer.level || obj.hidden !== 0) return null;
+    const cam = this.renderer.cameraFor(LotPeople.viewOf(viewer));
+    const root = rootTransform(
+      { x: obj.fx / 16, y: obj.fy / 16, level: obj.level, alt: viewer.world.fixed.getFAlt(obj.fx, obj.fy), direction: p.simDir ? p.simDir() : obj.dir },
+      viewer.world.rotation,
+    );
+    let r: [number, number, number, number] | null = null;
+    for (const b of p.anim.vitaboy.skeleton.bones) {
+      const s = cam.project(transformPoint(b.worldPos, root));
+      if (!r) r = [s.x, s.y, s.x, s.y];
+      else {
+        r[0] = Math.min(r[0], s.x);
+        r[1] = Math.min(r[1], s.y);
+        r[2] = Math.max(r[2], s.x);
+        r[3] = Math.max(r[3], s.y);
+      }
+    }
+    if (!r) return null;
+    const pad = 0.35 / cam.upp;
+    return [Math.floor(r[0] - pad), Math.floor(r[1] - pad), Math.ceil(r[2] + pad), Math.ceil(r[3] + pad)];
+  }
+
+  /** Draw everyone on the levels up to the viewer's current level. */
+  draw(viewer: HouseViewer): void {
+    const view = LotPeople.viewOf(viewer);
     for (const { obj, anim, simDir } of this.people) {
       if (obj.level > viewer.level) continue;
       // HouseViewer::Render3DObject: RoomManager::GetRoomAmbientLight at the person's view position.

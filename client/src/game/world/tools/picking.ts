@@ -5,8 +5,9 @@
  *
  * The original keeps each object's last damage rectangle from its DrawIso;
  * this port recomputes it the same way drawIso places the draw group's
- * sprites (objectdraw.ts). People are skipped (their rectangle comes from the
- * 3D mesh; not ported).
+ * sprites (objectdraw.ts). People stand in the tile links too; their
+ * rectangle (the 3D mesh's, cXPerson::Draw3D) comes from `personRect`
+ * (without it they are skipped).
  */
 
 import type { HouseViewer } from "../houseviewer.js";
@@ -76,6 +77,7 @@ export function pointToObjectId(
   py: number,
   level: number,
   mode: number,
+  personRect: ((o: XObject) => [number, number, number, number] | null) | null = null,
 ): number {
   const w = viewer.world;
   const t = viewer.pointToWholeTile(px, py, level);
@@ -89,9 +91,9 @@ export function pointToObjectId(
   for (let i = 0; ; i++) {
     const [wx, wy] = RotatableWorld.rotateCoords(vx, vy, (4 - w.rotation) & 3, 0x40);
     for (const o of p.tileObjects(wx, wy, level)) {
-      if (o.isPerson) continue;
+      if (o.isPerson && !personRect) continue;
       const f = o.objectData[ODX.flagField2]! & 0xffff;
-      const r = objectScreenRect(o, viewer, renderer(o.selector.res), rp);
+      const r = o.isPerson ? personRect!(o) : objectScreenRect(o, viewer, renderer(o.selector.res), rp);
       const inside = r !== null && px >= r[0] && px < r[2] && py >= r[1] && py < r[3];
       const accepts = mode === PickMode.Flag8000 ? (f & 0x8000) !== 0 : mode === PickMode.Flag4000 ? (f & 0x4000) !== 0 : true;
       if (inside) {

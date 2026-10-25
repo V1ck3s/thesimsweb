@@ -26,6 +26,7 @@ import { PDX } from "../sim/person.js";
 import { IDCANCEL, IDYES, MB_YESNOCANCEL, TSWinMsgBox } from "../ui/msgbox.js";
 import { buildHouseFile, moduleOrder } from "./housesave.js";
 import { summarizeHouseStats } from "./housestats.js";
+import { saveHouseThumbnails } from "./thumbnail.js";
 import type { WinLotView } from "./winlotview.js";
 
 /** UIText STR# 0x99 (0-based entries): the "save before leaving?" message and title. */
@@ -96,6 +97,9 @@ export async function saveGame(ctx: GameContext, lv: WinLotView | null, nbhdDir:
     const fixed = viewer.world.fixed;
     const objects = new Map(moduleOrder(lot.module).map((o) => [o.objectId, o]));
     const st = summarizeHouseStats(objects, fixed, walls.gfx, viewer.floors, prices);
+    // House::SaveFile: XViewer::IssueToolSelection(0) after the stats, before the world is saved.
+    // A pool or water tool keeps its pools out of the world layer while selected; Deselect puts them back.
+    lv.gameTools?.issueToolSelection(null);
     const sel = lv.selectedPerson();
     const bytes = await buildHouseFile({
       house,
@@ -109,6 +113,7 @@ export async function saveGame(ctx: GameContext, lv: WinLotView | null, nbhdDir:
       rotation: viewer.world.rotation,
       selectedPersonId: sel ? sel.id : lot.module.selectedPersonId,
       stats: { objectValue: st.simA0, archValue: st.simA4, global16: st.lotHasHouse, global25: st.transitFilterFlags },
+      thumbnails: () => saveHouseThumbnails({ viewer, walls, lighting: lv.lighting, terrain: lv.terrain }),
     });
     await writeGameFile(lv.housePath, bytes);
     if (store) {

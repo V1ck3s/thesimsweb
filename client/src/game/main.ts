@@ -9,6 +9,7 @@
  */
 
 import { MUSIC, soundPlayer, UI_SOURCE } from "./audio/index.js";
+import { installLotAudio } from "./audio/lotaudio.js";
 import { CPState, DIRTY_ALL, Mode } from "./cpstate.js";
 import type { GameContext } from "./context.js";
 import { CPANEL_HEIGHT, WinCPanel } from "./cpanel/cpanel.js";
@@ -43,8 +44,8 @@ const MODE_MUSIC: Record<Mode, string> = {
 
 /**
  * cSimsApp::LoadGame's PlaySoundA after a successful load: the outdoor
- * ambience of the lot (Hot Date / Makin' Magic SetAmbienceMode events; the
- * cBoxX ambience loop itself is not ported).
+ * ambience of the lot (kSetAmbienceMode: cBoxX switches its fresh player,
+ * audio/fresh.ts).
  */
 function lotAmbience(house: number): string {
   if (house - 0x1c >= 0 && house - 0x1c < 2) return "setambience_beach";
@@ -76,6 +77,10 @@ class Game {
   lotView: WinLotView | null = null;
   /** Mode whose music plays (null outside a lot). */
   private musicMode: Mode | null = null;
+  /** Whether the sounds were last paused (CPState::UpdateWorldFromCPState's PauseSounds / ResumeSounds). */
+  private soundsPaused: boolean | null = null;
+  /** Teardown of audio/lotaudio.ts for the loaded lot. */
+  private lotAudioOff: (() => void) | null = null;
 
   constructor(
     private readonly ctx: GameContext,
@@ -83,7 +88,18 @@ class Game {
   ) {
     // The mode music follows CPState (cSimsApp::UpdateWorldFromCPState).
     ctx.state.onChange((st) => {
-      if (!this.lotView || st.getMode() === this.musicMode) return;
+      if (!this.lotView) return;
+      // Sounds run in live mode while not paused (mode change, or the pause button in live mode).
+      const modeChanged = st.getMode() !== this.musicMode;
+      const pause = st.getMode() !== Mode.Live || st.isPaused();
+      if (modeChanged || (st.getMode() === Mode.Live && pause !== this.soundsPaused)) {
+        this.soundsPaused = pause;
+        if (pause) soundPlayer.pauseSounds();
+        else soundPlayer.resumeSounds();
+      }
+      if (!modeChanged) return;
+      // CPState::SetMode dirties the zoom too: HouseViewer::SetScale then NotifyViewChange, before the music.
+      soundPlayer.notifyViewChange();
       this.musicMode = st.getMode();
       soundPlayer.quietBySourceID(-1);
       soundPlayer.playBySource(MODE_MUSIC[this.musicMode], -1);
@@ -108,8 +124,11 @@ class Game {
   private leaveLot(): void {
     if (!this.lotView) return;
     this.mgr.main.childDelete(this.lotView);
+    this.lotAudioOff?.();
+    this.lotAudioOff = null;
     this.lotView = null;
     this.musicMode = null;
+    this.soundsPaused = null;
   }
 
   /** cSimsApp::DoNbhdScreen */
@@ -167,6 +186,7 @@ class Game {
     const t0 = performance.now();
     if (!(await view.init())) throw new Error("lot view init failed");
     console.log(`lot ${house} loaded in ${Math.round(performance.now() - t0)} ms`);
+    this.lotAudioOff = installLotAudio(view);
     soundPlayer.playBySource(lotAmbience(house), UI_SOURCE);
     this.lotView = view;
     markLotClean(view);
@@ -227,6 +247,7 @@ async function boot(): Promise<void> {
   }
   // Dev handle for the screenshot tooling (`eval:game.lotView...`).
   (window as unknown as { game: Game }).game = game;
+  (window as unknown as { soundPlayer: typeof soundPlayer }).soundPlayer = soundPlayer;
   await splash.finished();
   mgr.main.childDelete(splash);
   soundPlayer.stopLoadMusic();

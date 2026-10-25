@@ -207,6 +207,8 @@ export class DynamicCutaway {
 
   /** CPState::SetWallState's HouseViewer calls. */
   setWallState(state: WallState): void {
+    // HouseViewer::SetDrawRoof (+0x51).
+    this.viewer.drawRoof = state === WallState.Roof;
     if (state === WallState.Roof) {
       this.walls.drawRoof = true;
     } else {

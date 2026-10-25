@@ -393,7 +393,7 @@ export class SimObject extends TreeSim {
       case 29: {
         // check tree ad min
         const ad = m.sim.currentAd;
-        if (!ad || data < 0 || data >= ad.length) simThrow(XERR.motiveRange);
+        if (data < 0 || data >= ad.length) simThrow(XERR.motiveRange);
         const e = ad[data]!;
         const field = scope === 12 ? 2 : scope === 28 ? 0 : 1;
         if (want) this.outRef = { a: e, i: field };
@@ -455,8 +455,8 @@ export class SimObject extends TreeSim {
       }
       case 23: // room[temp 0]: rooms are not simulated yet.
         return m.unportedValue("scope 23 room[temp0]", 0);
-      case 24: // neighbor in stack object
-        return m.unportedValue("scope 24 neighbor in stack object", 0);
+      case 24: // neighbor in stack object: Neighborhood::GetNeighborData(stack object, data)
+        return m.neighborData(this.getCurElem()!.stackObj, data);
       case 25: {
         // locals
         const e = this.getCurElem()!;
@@ -712,12 +712,13 @@ export class SimObject extends TreeSim {
       case 0:
         return this.tryIdle(elem, s16(0));
       case 1:
-        return this.tryGenericSimCall(s16(0));
+        return this.tryGenericSimCall(elem, s16(0));
       case 2:
         return this.tryExpression(t, off);
-      case 4: // Grab
-      case 5: // Drop
-        return this.module.unportedPrim(op, op === 4 ? "grab" : "drop", PRIM_FALSE);
+      case 4:
+        return this.tryGrab(elem);
+      case 5:
+        return this.tryDrop();
       case 7:
         return this.tryUpdate(elem, s16(0), s16(2));
       case 8:
@@ -732,15 +733,15 @@ export class SimObject extends TreeSim {
         return this.tryDirectionTo(elem, s16(0), s16(2), u8(4), u8(5), s16(6));
       case 13:
         return this.tryPushInteraction(elem, u8(0), u8(1), u8(2), u8(3), u8(4));
-      case 14: // Find Best Object For Function
-        return this.module.unportedPrim(op, "find best object for function", PRIM_FALSE);
+      case 14:
+        return this.tryFindFunctionalObject(elem, s16(0), s16(2), s16(4), u8(6));
       case 15: {
         // Breakpoint: throws when the value is non-zero.
         if (this.interpValue(s16(2), s16(0), false) !== 0) simThrow(XERR.breakpoint);
         return PRIM_TRUE;
       }
-      case 16: // Find Location For
-        return this.module.unportedPrim(op, "find good location", PRIM_FALSE);
+      case 16:
+        return this.tryFindGoodLocation(elem, u8(0), u8(1), u8(2));
       case 18:
         return this.tryKillObject(elem, s16(0), u8(2));
       case 19: // Make New Character
@@ -750,9 +751,13 @@ export class SimObject extends TreeSim {
       case 21: // Show String: a string of the private file sent to the UI (GlobalDispatch 0xeb); recorded only.
         this.module.record(this, "showString", s16(0));
         return PRIM_TRUE;
-      case 23: // Play Sound Event (TryPlaySound always succeeds): recorded only.
+      case 23: {
+        // Play Sound Event (cXObject::TryPlaySound always succeeds): operand 4 bit 1 plays it for the stack object.
         this.module.record(this, "playSound", s16(0));
+        const f = u8(4);
+        this.module.soundHooks?.playSound(elem.behavior, s16(0), f !== 0xff && f & 2 ? elem.stackObj : this.id);
         return PRIM_TRUE;
+      }
       case 24: // Old Relationship
         return this.module.unportedPrim(op, "old relationship", PRIM_FALSE);
       case 26: // Relationship
@@ -779,13 +784,14 @@ export class SimObject extends TreeSim {
         this.module.record(this, "balloon", s16(2));
         return PRIM_TRUE;
       case 42:
-        return this.tryCreateObject(elem, v.getUint32(p, true), (u8(4) << 24) >> 24, u8(5));
-      case 43: // Drop Onto
-        return this.module.unportedPrim(op, "drop onto", PRIM_FALSE);
+        return this.tryCreateObject(elem, v.getUint32(p, true), (u8(4) << 24) >> 24, u8(5), (u8(6) << 24) >> 24);
+      case 43:
+        return this.tryDropOnto(elem, s16(0), s16(2), s16(4), s16(6));
       case 46:
         return this.trySnap(elem, s16(0), s16(2), s16(4));
-      case 48: // Stop All Sounds: recorded only.
+      case 48: // Stop All Sounds (cXObject::TryKillSounds): of this object, or of the stack object when operand 0 is set.
         this.module.record(this, "killSounds", 0);
+        this.module.soundHooks?.killSounds(s16(0) === 0 ? this.id : elem.stackObj);
         return PRIM_TRUE;
       case 49:
         return this.tryNotifyOutOfIdle(elem);
@@ -935,14 +941,39 @@ export class SimObject extends TreeSim {
   /** cXObject::TryBudget. */
   /**
    * cXObject::TryGenericSimCall: 44 calls through lbl_105BBAC0, all returning
-   * true; calls >= 0x2c (and 7, 22) are error 0x2a. Ported: 10/11 (buy and
-   * build disabled/enabled: recorded), 28 (lot zoning into temp 0). Others
+   * true; calls >= 0x2c (and 7, 22) are error 0x2a. Ported: 2 (the stack
+   * object becomes the current action's icon), 10/11 (buy and build
+   * disabled/enabled: recorded), 14 (global 0x1f := temp 0), 15 (person
+   * data 0x48 := temp 0), 28 (lot zoning into temp 0). Others
    * are logged and return true.
    */
-  protected tryGenericSimCall(call: number): number {
+  protected tryGenericSimCall(elem: StackElem, call: number): number {
     const m = this.module;
     if (call < 0 || call >= 0x2c || call === 7 || call === 22) simThrow(0x2a);
     switch (call) {
+      case 2: {
+        // The stack object (error 0xa) becomes my current action's icon (person only, error 0x1c).
+        const o = this.obj_(elem.stackObj);
+        if (!o) simThrow(XERR.noObject);
+        const me = m.persons.find((x) => x === (this as SimObject));
+        if (!me) simThrow(XERR.notPerson);
+        if (me.currentAction && me.currentAction.priority !== 0) {
+          me.currentAction.icon = o.id;
+          m.onQueueChanged?.(me);
+        }
+        return PRIM_TRUE;
+      }
+      case 14:
+        // cSimulator::SetGlobal(0x1f, temp 0).
+        m.sim.globals[0x1f] = this.temps[0]!;
+        return PRIM_TRUE;
+      case 15: {
+        // Person data 0x48 := temp 0, 0x49 := 0 (person only, error 0x1c); the footprint is recomputed.
+        if (!this.person) simThrow(XERR.notPerson);
+        this.person.personData[0x48] = this.temps[0]!;
+        this.person.personData[0x49] = 0;
+        return PRIM_TRUE;
+      }
       case 10:
       case 11:
         // ObjectModule::DisableBuyAndBuild / EnableBuyAndBuild(this).
@@ -971,46 +1002,88 @@ export class SimObject extends TreeSim {
 
   /**
    * cXObject::TryRelationship2. Operands: variable index, mode (0 me -> stack
-   * object, 1 stack object -> me, 2 local's object -> stack object, 3 stack
-   * object -> local's object), flags (1 fail when the variable is missing, 2
-   * neighbor relationships, 4 set instead of get), local index, value scope
-   * and data. Object relationships live in the source's RelMatrix keyed by
-   * the target's id. Person-to-person and neighbor relationships go through
-   * the neighborhood, which is not wired: they are logged and fail.
+   * object, 1 stack object -> me, 2 stack object -> local's object, 3
+   * local's object -> stack object), flags (1 fail when the variable is
+   * missing, 2 the ids are neighbor ids, 4 set instead of get), local index,
+   * value scope and data. Between two people (or with flag 2) the
+   * relationship lives in the source neighbor's RelMatrix (Neighbor +0xc,
+   * Neighborhood::FindNeighborByID of person data 0x1f) keyed by the other
+   * neighbor's id; otherwise in the source object's RelMatrix keyed by the
+   * target's object id. A missing variable grows the array (zeros). Errors:
+   * 0x33 bad local, 0x15 missing object / neighbor, 0x1c flag 2 with modes
+   * 0 / 1 run by a non-person, 0x13 nothing to write the value into.
    */
   protected tryRelationship2(elem: StackElem, index: number, mode: number, flags: number, local: number, scope: number, data: number): number {
     const m = this.module;
-    if (flags & 2) return m.unportedPrim(26, "relationship (neighbors)", PRIM_FALSE);
-    const localObj = (): SimObject | null => {
+    const localId = (): number => {
       if (local >= elem.numLocals) simThrow(0x33);
-      return m.getObject(elem.getLocal(local));
+      return elem.getLocal(local);
     };
-    let from: SimObject | null = null;
-    let to: SimObject | null = null;
-    if (mode === 0) {
-      from = this;
-      to = m.getObject(elem.stackObj);
-    } else if (mode === 1) {
-      from = m.getObject(elem.stackObj);
-      to = this;
-    } else if (mode === 2) {
-      to = localObj();
-      from = m.getObject(elem.stackObj);
-    } else if (mode === 3) {
-      from = localObj();
-      to = m.getObject(elem.stackObj);
+    let arr: number[] | undefined;
+    let grow: (n: number) => number[];
+    if (flags & 2) {
+      const nb = (id: number) => m.findNeighborByID(id);
+      const myNeighbor = (): number => {
+        if (!this.person) simThrow(XERR.notPerson);
+        return this.person.personData[0x1f]!;
+      };
+      let from = null;
+      let to = null;
+      if (mode === 0) {
+        from = nb(myNeighbor());
+        to = nb(elem.stackObj);
+      } else if (mode === 1) {
+        const me = myNeighbor();
+        from = nb(elem.stackObj);
+        to = nb(me);
+      } else if (mode === 2) {
+        const l = localId();
+        from = nb(elem.stackObj);
+        to = nb(l);
+      } else if (mode === 3) {
+        from = nb(localId());
+        to = nb(elem.stackObj);
+      }
+      if (!from || !to) simThrow(XERR.noStackObject);
+      ({ arr, grow } = m.neighborRelation(from, to.id));
+      if (flags & 4) m.record(this, "relationshipDirty", `${from.id}->${to.id}:${index}`);
+    } else {
+      let from: SimObject | null = null;
+      let to: SimObject | null = null;
+      if (mode === 0) {
+        from = this;
+        to = m.getObject(elem.stackObj);
+      } else if (mode === 1) {
+        from = m.getObject(elem.stackObj);
+        to = this;
+      } else if (mode === 2) {
+        to = m.getObject(localId());
+        from = m.getObject(elem.stackObj);
+      } else if (mode === 3) {
+        from = m.getObject(localId());
+        to = m.getObject(elem.stackObj);
+      }
+      if (!from || !to) simThrow(XERR.noStackObject);
+      if (from.person && to.person) {
+        const a = m.findNeighborByID(from.person.personData[0x1f]!);
+        if (!a) simThrow(XERR.noStackObject);
+        ({ arr, grow } = m.neighborRelation(a, to.person.personData[0x1f]!));
+        if (flags & 4) m.record(this, "relationshipDirty", `${a.id}->${to.person.personData[0x1f]}:${index}`);
+      } else {
+        const rel = from.obj.relations;
+        const key = to.id;
+        arr = rel.get(key);
+        grow = (n) => {
+          const x = rel.get(key) ?? [];
+          while (x.length < n) x.push(0);
+          rel.set(key, x);
+          return x;
+        };
+      }
     }
-    if (!from || !to) simThrow(0x15);
-    if (from.obj.isPerson && to.obj.isPerson) return m.unportedPrim(26, "relationship (person to person)", PRIM_FALSE);
-    const rel = from.obj.relations;
-    let arr = rel.get(to.id);
     if (!arr || arr.length <= index) {
       if (flags & 1) return PRIM_FALSE;
-      if (!arr) {
-        arr = [];
-        rel.set(to.id, arr);
-      }
-      while (arr.length <= index) arr.push(0);
+      arr = grow(index + 1);
     }
     this.outRef = null;
     this.outFRef = null;
@@ -1052,7 +1125,8 @@ export class SimObject extends TreeSim {
     if (flags & 1) file = beh.glob;
     else if (getTreeClass(elem.getTreeID()) === 2) file = beh.priv;
     else file = beh.getResFile(getBaseID(3));
-    const name = file ? loadStringSet(file, strId)?.[index] : undefined;
+    // StringSetBase::GetString is 1-based
+    const name = file && index >= 1 ? loadStringSet(file, strId)?.[index - 1] : undefined;
     if (!name) return PRIM_FALSE;
     const stackObj = this.obj_(elem.stackObj);
     let runner: SimObject | null;
@@ -1108,30 +1182,121 @@ export class SimObject extends TreeSim {
 
   /**
    * cXObject::TryCreateObject (Create New Object Instance). Operands: GUID,
-   * placement mode (byte 4: 0 in front of me, 1 on top of me, 2 in my hand,
-   * 3 in front of the stack object, 4 in its slot, 5 underneath me, 6 out
-   * of the world, ...; the world side places it, see SimModule.worldHooks),
-   * flags (byte 5): 1 fail when an instance exists, 2 the new object's Main
-   * gets my id as parameter 0 and my stack object, 4 the neighbor in the
-   * stack object (not ported), 0x10 my temp 0 as its parameter 0, 0x20 face
-   * the stack object's direction. The new object becomes the stack object.
-   * The object file of a GUID not opened yet loads asynchronously: the
-   * primitive waits meanwhile (the original loads synchronously).
+   * placement mode (byte 4, jump table lbl_10601BC4), flags (byte 5), local
+   * (byte 6). Modes: 0 in front of me, 1 / 2 my slot 0 (on top of me / in
+   * my hand), 3 in front of the stack object, 4 the stack object's slot 0,
+   * 5 where I stand, 6 out of the world (not placed), 7 / 8 where the
+   * object in parameter 0 / local [byte 6] is, 9 in front of me turned by
+   * local [byte 6] (odd directions: on my tile), 10 / 11 my slot 2 / 3,
+   * 12..14 the stack object's slot 2..4. Flags: 1 fail when an instance
+   * of the type is on the target tile, 2 the new object's Main gets my id
+   * as parameter 0 and my stack object, 4 the neighbor in the stack object
+   * (not ported), 8 fail when anything is on the target tile, 0x10 my temp
+   * 0 as its parameter 0, 0x20 face the stack object's direction. The new
+   * object is made out of the world, then CanPlace / Place (it is killed
+   * when it does not fit) and becomes the stack object. The room check of
+   * the target tile is not ported. An object file not opened yet loads
+   * asynchronously: the primitive waits meanwhile (the original loads
+   * synchronously).
    */
-  protected tryCreateObject(elem: StackElem, guid: number, mode: number, flags: number): number {
+  protected tryCreateObject(elem: StackElem, guid: number, mode: number, flags: number, local: number): number {
     const hooks = this.module.worldHooks;
     if (!hooks || flags & 4) return this.module.unportedPrim(42, flags & 4 ? "create neighbor" : "create object (no world)", PRIM_FALSE);
     const sel = hooks.selector(guid);
     if (sel === undefined) return PRIM_WAIT;
     if (!sel) return PRIM_FALSE;
-    if (flags & 1 && this.module.list.some((x) => x.obj.selector === sel)) return PRIM_FALSE;
-    const stack = this.obj_(elem.stackObj);
-    const x = hooks.make(sel, mode, this.obj, stack?.obj ?? null);
+    const me = this.obj;
+    const stack = this.obj_(elem.stackObj)?.obj ?? null;
+    let pos = { fx: 0, fy: 0 };
+    let level = me.level;
+    let container: XObject | null = null;
+    let slot = 0;
+    let place = true;
+    let wallDir = -1;
+    const front = (o: XObject, d: number): { fx: number; fy: number } => {
+      const [dx, dy] = DIR_VEC[d & 7]!;
+      return { fx: o.fx + dx * 16, fy: o.fy + dy * 16 };
+    };
+    const at = (o: XObject | null): boolean => {
+      if (!o) return false;
+      pos = { fx: o.fx, fy: o.fy };
+      level = o.level;
+      return true;
+    };
+    switch (mode) {
+      case 0:
+        pos = front(me, me.dir);
+        break;
+      case 1:
+      case 2:
+      case 10:
+      case 11:
+        at(me);
+        container = me;
+        slot = mode === 10 ? 2 : mode === 11 ? 3 : 0;
+        break;
+      case 3:
+        if (!at(stack)) return PRIM_FALSE;
+        pos = front(stack!, stack!.dir);
+        break;
+      case 4:
+      case 12:
+      case 13:
+      case 14:
+        if (!at(stack)) return PRIM_FALSE;
+        container = stack;
+        slot = mode === 4 ? 0 : mode - 10;
+        break;
+      case 5:
+        at(me);
+        break;
+      case 6:
+        pos = { fx: -16, fy: -16 };
+        level = 1;
+        place = false;
+        break;
+      case 7:
+        if (elem.numParams === 0) simThrow(XERR.paramRange);
+        if (!at(this.obj_(elem.getParam(0))?.obj ?? null)) return PRIM_FALSE;
+        break;
+      case 8:
+        if (local < 0 || local >= elem.numLocals) simThrow(XERR.paramRange);
+        if (!at(this.obj_(elem.getLocal(local))?.obj ?? null)) return PRIM_FALSE;
+        break;
+      case 9: {
+        const d = (me.dir + this.interpValue(25, local, false)) & 7;
+        pos = d & 1 ? { fx: me.fx, fy: me.fy } : front(me, d);
+        wallDir = (d + 4) & 7;
+        break;
+      }
+      default:
+        at(me);
+        break;
+    }
+    void wallDir;
+    const tx = pos.fx >> 4;
+    const ty = pos.fy >> 4;
+    const onTarget = (): SimObject[] => this.module.list.filter((x) => x.obj.tileX === tx && x.obj.tileY === ty && x.obj.level === level && x.obj.containerId === 0);
+    if (flags & 1 && onTarget().some((x) => x.obj.selector === sel)) return PRIM_FALSE;
+    if (flags & 8 && onTarget().length > 0) return PRIM_FALSE;
+    if (place) {
+      const n = this.module.sim.world?.size ?? 64;
+      if (tx < 1 || ty < 1 || tx >= n - 1 || ty >= n - 1) return PRIM_FALSE;
+    }
+    const x = hooks.make(sel);
     if (!x) return PRIM_FALSE;
     const o = this.module.addObject(x, true);
     if (flags & 0x20 && stack) {
-      x.objectData[1] = o.isPerson ? stack.obj.dir : stack.obj.dir & 6;
+      x.objectData[1] = o.isPerson ? stack.dir : stack.dir & 6;
       this.module.dirty(o);
+    }
+    if (place) {
+      if (!hooks.canPlace(x, pos, level, container, slot)) {
+        this.module.removeObject(x);
+        hooks.kill(x);
+        return PRIM_FALSE;
+      }
+      hooks.place(x, pos, level, container, slot);
     }
     const main = o.getStackSize() > 0 ? o.stack.getNthFrame(0) : null;
     if (flags & 2) {
@@ -1144,7 +1309,132 @@ export class SimObject extends TreeSim {
       main.setParam(0, this.temps[0]!);
     }
     elem.stackObj = o.id;
+    this.module.dirty(o);
     return PRIM_TRUE;
+  }
+
+  /**
+   * cXObject::TryFindFunctionalObject (Find Best Object For Function).
+   * Operands: function (jump table lbl_10601BE8: the object data holding
+   * each object's score and the entry point it must have), data / scope of
+   * a reference object (flag 8: distances are taken from it, error 0x17
+   * when missing), flags (byte 6: 1 outside, 2 inside, 4 same room; the
+   * room tests are not ported and pass). Every object not locked out
+   * (object data 25) nor flagged 0x200 with that entry point's action tree
+   * scores its object data (50 for function 8 and the type test of
+   * function 15), its check tree (run on me with it as the stack object)
+   * must pass and may change the score (my object data 66); the score
+   * minus 3 x the distance (halved beyond a tile for function 11, at least
+   * 1) is compared, the best becomes the stack object.
+   */
+  protected tryFindFunctionalObject(elem: StackElem, fn: number, data: number, scope: number, flags: number): number {
+    const FNS: ReadonlyArray<readonly [number, number] | null> = [
+      [0x1f, 0x12], [0x20, 0x13], [0x21, 0x14], [0x24, 0x15], null, null, [0x25, 0x18], [0x26, 0x19],
+      [-1, 0x1a], null, [0x3d, 0xe], [0x27, 0x1c], [0x40, 0x10], [0x41, 0x11], [0xf, 0x1d], [-1, -1],
+    ];
+    const f = fn >= 0 && fn < FNS.length ? FNS[fn] : null;
+    if (!f) return PRIM_FALSE;
+    // Function 8 (lbl_100EB5E8): people only (pets fail).
+    if (fn === 8 && this.person) {
+      const g = this.person.personData[0x41]! | 0;
+      const x = g ^ 1;
+      if ((x >> 1) - (x & g) < 0) return PRIM_FALSE;
+    }
+    const [scoreField, entry] = f;
+    let from: SimObject = this;
+    if (flags & 8) {
+      const o = this.obj_(this.interpValue(scope, data, false));
+      if (!o) simThrow(XERR.noTestObject);
+      from = o;
+    }
+    const my = this.obj.objectData;
+    let best: SimObject | null = null;
+    let bestScore = 0;
+    for (const o of [...this.module.list]) {
+      const d = o.obj.objectData;
+      if (d[OD.keepAwake]! > 0 || d[8]! & 0x200) continue;
+      if (fn === 15) {
+        if (d[OD.category] !== 4) continue;
+        my[66] = 50;
+      } else {
+        const action = o.fnTable.getTreeID(entry);
+        if (action === 0) continue;
+        my[66] = scoreField === -1 ? 50 : d[scoreField]!;
+        if (my[66] === 0) continue;
+        const check = o.fnTable.getCheckTreeID(entry);
+        if (check !== 0) {
+          if (!this.runCheckTree(o.behavior, o.id, check, null)) continue;
+          if (my[66] === 0) continue;
+        }
+      }
+      let dist = calcShortDistance(from.obj, o.obj);
+      if (dist > 1 && fn === 11) dist *= 0.5;
+      let score = Math.fround(my[66]! - dist * 3);
+      if (score < 1) score = 1;
+      if (score > bestScore) {
+        best = o;
+        bestScore = score;
+      }
+    }
+    if (!best) return PRIM_FALSE;
+    elem.stackObj = best.id;
+    return PRIM_TRUE;
+  }
+
+  /**
+   * cXObject::TryFindGoodLocation (Find Location For): places the stack
+   * object (error 0x15 without one). Operands: mode (byte 0), local (byte
+   * 1), flags (byte 2: 1 start from the object in local [byte 1], error
+   * 0x33 / 0x17; 2 any tile, else an empty one; 4 a buildable tile). Modes:
+   * 1 out of the world (Pickup); 2 at the reference object (or me), turned
+   * to face its direction + 5; 3 / 4 the first spot from the reference
+   * object (error 0x3d without one) along its facing (+2 for 4), same room;
+   * 5 from a random spot; others from the start (16, 16 by default) or the
+   * reference object, same room first. CanPlace / Place on the spot found.
+   * The search is Placement.findGoodLocation's ring search for every mode
+   * (the per-direction searches of the original are not ported).
+   */
+  protected tryFindGoodLocation(elem: StackElem, mode: number, local: number, flags: number): number {
+    const target = this.obj_(elem.stackObj);
+    if (!target) simThrow(XERR.noStackObject);
+    const hooks = this.module.worldHooks;
+    if (!hooks) return this.module.unportedPrim(16, "find good location (no world)", PRIM_FALSE);
+    let ref: SimObject | null = null;
+    let start = { fx: 0x10, fy: 0x10 };
+    let level = 1;
+    if (flags & 1) {
+      if (local >= elem.numLocals) simThrow(0x33);
+      ref = this.obj_(elem.getLocal(local));
+      if (!ref) simThrow(XERR.noTestObject);
+      start = { fx: ref.obj.fx, fy: ref.obj.fy };
+      level = ref.obj.level;
+    }
+    const x = target.obj;
+    const placeAt = (pos: { fx: number; fy: number } | null, lvl: number): number => {
+      if (!pos || !hooks.canPlace(x, pos, lvl, null, 0)) return PRIM_FALSE;
+      hooks.place(x, pos, lvl, null, 0);
+      this.module.dirty(target);
+      return PRIM_TRUE;
+    };
+    const opts = { emptyTile: (flags & 2) === 0, buildable: (flags & 4) !== 0, random: null as (() => number) | null };
+    if (mode === 2) {
+      const r = ref ?? (this as SimObject);
+      // Turn((((dir + 5) & 7) - my dir) & 7) / 2) with the usual 2 rotation notches.
+      const steps = ((((r.obj.dir + 5) & 7) - x.dir) & 7) >> 1;
+      x.objectData[1] = (x.dir + 2 * steps) & 7;
+      return placeAt({ fx: r.obj.fx, fy: r.obj.fy }, r.obj.level);
+    }
+    if (mode === 1) {
+      hooks.pickup(x);
+      this.module.dirty(target);
+      return PRIM_TRUE;
+    }
+    if (mode === 3 || mode === 4) {
+      if (!ref) simThrow(0x3d);
+      return placeAt(hooks.findGoodLocation(x, start, level, opts), level);
+    }
+    if (mode === 5) opts.random = () => this.module.sim.random();
+    return placeAt(hooks.findGoodLocation(x, start, level, opts), level);
   }
 
   /**
@@ -1209,28 +1499,39 @@ export class SimObject extends TreeSim {
   }
 
   /**
-   * cXObject::TrySnap (simplified): moves this object to a spot of the stack
-   * object. Modes: 0 routing slot whose index is parameter `slot`, 3 routing
-   * slot `slot`, 4 global routing slot `slot`, 1 the stack object's own
-   * position, 2 the tile in front of it. A routing slot with a snap target
-   * (+0x20 >= 0) puts the person at the object (its containment slot is not
-   * modelled), else at the slot's offset rotated with the object; flag 0x1000
-   * turns the person to the object's direction plus the slot's first allowed
-   * direction. Wall, tile occupancy and footprint checks are skipped.
+   * cXObject::TrySnap(StackElem, XPrimParam): moves this object to a spot of
+   * the stack object. Operands: slot (or the parameter holding it), mode,
+   * flags. Modes: 0 routing slot whose index is parameter `slot`, 3 routing
+   * slot `slot`, 4 global routing slot `slot` (SLOT 100); 1 the stack
+   * object's slot 0; 2 the tile in front of it. A routing slot with a snap
+   * target (+0x20 >= 0) puts this object into that containment slot of the
+   * stack object (error 0x20 when it has none), else at the slot's offset
+   * turned with the object; slot flag 0x1000 faces the object's direction
+   * plus the first allowed direction, else the facing is kept; slot flag
+   * 0x800 skips the bounds check. Then TrySnap(FTilePt, ...): bounds, then
+   * CanPlace / Place (Placement) and the facing. On failure object data 52
+   * is 2 when the spot was out of bounds and object data 54 the obstacle.
+   * Not ported: the room and wall checks between the two tiles, the
+   * animation displacement (flag 1) and moving people out of the way
+   * (flag 2, cXPerson::MoveOutOfWay). Without world hooks (headless) the
+   * object is moved without placement checks.
    */
   protected trySnap(elem: StackElem, slotArg: number, mode: number, flags: number): number {
     void flags;
     const o = this.obj_(elem.stackObj);
     if (!o) simThrow(0x15);
     const t = o.obj;
-    let fx = t.fx;
-    let fy = t.fy;
+    let pos = { fx: t.fx, fy: t.fy };
     let dir = this.obj.dir;
+    let container: XObject | null = null;
+    let slot = 0;
+    let checkBounds = true;
     if (mode === 2) {
       const [vx, vy] = DIR_VEC[t.dir & 7]!;
-      fx += vx * 16;
-      fy += vy * 16;
-    } else if (mode !== 1) {
+      pos = { fx: t.fx + vx * 16, fy: t.fy + vy * 16 };
+    } else if (mode === 1) {
+      container = t;
+    } else {
       let idx = slotArg;
       if (mode === 0) {
         if (slotArg < 0 || slotArg >= elem.numParams) simThrow(8);
@@ -1238,27 +1539,113 @@ export class SimObject extends TreeSim {
       } else if (mode !== 3 && mode !== 4) {
         simThrow(0x24);
       }
-      // Mode 4: the global routing slots (Global.iff SLOT 100).
       const slots = mode === 4 ? this.module.globalRoutingSlots() : this.module.routingSlotsOf(t.selector);
-      const slot = slots[idx];
-      if (!slot) simThrow(0x1b);
-      if (slot.flags & 0x1000) {
+      const rs = slots[idx];
+      if (!rs || idx < 0) simThrow(0x1b);
+      if (rs.flags & 0x1000) {
         let k = 0;
-        while (k < 7 && !(slot.flags & (1 << k))) k++;
+        while (k < 7 && !(rs.flags & (1 << k))) k++;
         dir = t.dir + (k === 7 ? 0 : k);
       }
-      if (slot.snapTarget < 0) {
-        const [dx, dy] = rotateOffset(slot.x, slot.y, t.dir);
-        fx += dx;
-        fy += dy;
+      checkBounds = (rs.flags & 0x800) === 0;
+      if (rs.snapTarget < 0) {
+        const [dx, dy] = rotateOffset(rs.x, rs.y, t.dir);
+        pos = { fx: Math.round(t.fx + dx), fy: Math.round(t.fy + dy) };
+      } else {
+        if (rs.snapTarget >= t.objectSlots.length - 1) simThrow(0x20);
+        container = t;
+        slot = rs.snapTarget;
       }
     }
-    this.obj.fx = Math.round(fx);
-    this.obj.fy = Math.round(fy);
-    this.obj.level = t.level;
-    this.obj.objectData[1] = dir & 7;
+    const d = this.obj.objectData;
+    d[52] = 0;
+    const hooks = this.module.worldHooks;
+    if (!hooks) {
+      this.obj.fx = pos.fx;
+      this.obj.fy = pos.fy;
+      this.obj.level = t.level;
+    } else {
+      const n = this.module.sim.world?.size ?? 64;
+      const tx = pos.fx >> 4;
+      const ty = pos.fy >> 4;
+      let ok = !(checkBounds && (tx < 1 || ty < 1 || tx >= n - 1 || ty >= n - 1));
+      if (ok) ok = hooks.canPlace(this.obj, pos, t.level, container, slot);
+      if (!ok) {
+        const e = hooks.lastError();
+        if (!checkBounds || e.code === 1 || tx < 1 || ty < 1 || tx >= n - 1 || ty >= n - 1) d[52] = 2;
+        d[54] = e.obstacle;
+        return PRIM_FALSE;
+      }
+      hooks.place(this.obj, pos, t.level, container, slot);
+    }
+    d[1] = ((dir % 8) + 8) % 8;
     this.moved();
     this.module.dirty(this);
+    return PRIM_TRUE;
+  }
+
+  /**
+   * The Grab case of TryElement: the stack object goes into my slot 0
+   * (CanPlace / Place at my position); false when it does not fit.
+   */
+  protected tryGrab(elem: StackElem): number {
+    const hooks = this.module.worldHooks;
+    if (!hooks) return this.module.unportedPrim(4, "grab (no world)", PRIM_FALSE);
+    const o = this.obj_(elem.stackObj);
+    if (!o) return PRIM_FALSE;
+    const me = this.obj;
+    const pos = { fx: me.fx, fy: me.fy };
+    if (!hooks.canPlace(o.obj, pos, me.level, me, 0)) return PRIM_FALSE;
+    hooks.place(o.obj, pos, me.level, me, 0);
+    this.module.dirty(o);
+    return PRIM_TRUE;
+  }
+
+  /**
+   * The Drop case of TryElement: what my slot 0 holds goes to the tile in
+   * front of me (my position plus my direction's step, lbl_10601878).
+   */
+  protected tryDrop(): number {
+    const hooks = this.module.worldHooks;
+    if (!hooks) return this.module.unportedPrim(5, "drop (no world)", PRIM_FALSE);
+    const held = this.obj_(this.obj.objectSlots[1]?.containedId ?? 0);
+    if (!held) return PRIM_FALSE;
+    const me = this.obj;
+    const [dx, dy] = DIR_VEC[me.dir & 7]!;
+    const pos = { fx: me.fx + dx * 16, fy: me.fy + dy * 16 };
+    if (!hooks.canPlace(held.obj, pos, me.level, null, 0)) return PRIM_FALSE;
+    hooks.place(held.obj, pos, me.level, null, 0);
+    this.module.dirty(held);
+    return PRIM_TRUE;
+  }
+
+  /**
+   * cXObject::TryDropOnto: what my slot `src` holds goes into slot `dst` of
+   * the stack object. Operands: source is a parameter index (flag), source
+   * slot, destination is a parameter index (flag), destination slot.
+   * Errors: 8 bad parameter, 0x1b no such slot of mine, 0x15 no stack
+   * object. False when the slot is empty or the object does not fit.
+   */
+  protected tryDropOnto(elem: StackElem, srcIsParam: number, src: number, dstIsParam: number, dst: number): number {
+    const param = (i: number): number => {
+      if (i < 0 || i >= elem.numParams) simThrow(XERR.paramRange);
+      return elem.getParam(i);
+    };
+    const from = srcIsParam !== 0 ? param(src) : src;
+    const to = dstIsParam !== 0 ? param(dst) : dst;
+    const s = from >= 0 && from < this.obj.objectSlots.length - 1 ? this.obj.objectSlots[from + 1] : undefined;
+    if (!s) simThrow(XERR.slotRange);
+    const target = this.obj_(elem.stackObj);
+    if (!target) simThrow(XERR.noStackObject);
+    if (s.containedId === 0) return PRIM_FALSE;
+    const held = this.obj_(s.containedId);
+    const hooks = this.module.worldHooks;
+    if (!held) return PRIM_FALSE;
+    if (!hooks) return this.module.unportedPrim(43, "drop onto (no world)", PRIM_FALSE);
+    const pos = { fx: -16, fy: -16 };
+    if (!hooks.canPlace(held.obj, pos, 1, target.obj, to)) return PRIM_FALSE;
+    hooks.place(held.obj, pos, 1, target.obj, to);
+    this.module.dirty(held);
     return PRIM_TRUE;
   }
 
@@ -1310,12 +1697,74 @@ export class SimObject extends TreeSim {
         ref.a[ref.i] = found;
         return found !== 0 ? PRIM_TRUE : PRIM_FALSE;
       }
-      case 5: // neighbor
-      case 7: // neighbor of type
-      case 9: // object adjacent to object in local
+      case 5: // Neighborhood::GetNextNeighborID
+        found = m.nextNeighborID(cur);
+        ref.a[ref.i] = found;
+        return found !== 0 ? PRIM_TRUE : PRIM_FALSE;
+      case 7: {
+        // the next neighbor whose selector has this GUID
+        const guid = v.getUint32(p, true) | 0;
+        for (found = m.nextNeighborID(cur); found !== 0; found = m.nextNeighborID(found)) {
+          if ((m.findNeighborByID(found)!.guid | 0) === guid) break;
+        }
+        ref.a[ref.i] = found;
+        return found !== 0 ? PRIM_TRUE : PRIM_FALSE;
+      }
+      case 12: {
+        // the next person (people list, wrapping) of the same family (person data 0x3d) as the person in the variable
+        if (cur === 0) return PRIM_FALSE;
+        const me = m.getObject(cur);
+        if (!me?.person) simThrow(XERR.notPerson);
+        const fam = me.person.personData[0x3d];
+        const list = m.people;
+        const at = list.findIndex((x) => x.id === cur);
+        for (let k = 1; at >= 0 && k < list.length; k++) {
+          const o = list[(at + k) % list.length]!;
+          if (o.person && o.person.personData[0x3d] === fam) {
+            ref.a[ref.i] = o.id;
+            return PRIM_TRUE;
+          }
+        }
+        return PRIM_FALSE;
+      }
+      case 9: {
+        // the next object on the 4 tiles beside the object in local (operand byte 6):
+        // east, south, west then north of it, the one in the variable giving the start;
+        // the tile's first object, with the same object data 29 (room)
+        const li = t.bytes[p + 6]!;
+        if (li >= elem.numLocals) simThrow(8);
+        const center = m.getObject(elem.getLocal(li));
+        if (!center) simThrow(XERR.noObject);
+        const c = center.obj;
+        const curObj = cur > 0 ? m.getObject(cur) : null;
+        let dx = 1;
+        let dy = 0;
+        let first = true;
+        if (curObj) {
+          dx = (curObj.obj.fx >> 4) - (c.fx >> 4);
+          dy = (curObj.obj.fy >> 4) - (c.fy >> 4);
+          first = false;
+        }
+        const n = m.sim.world?.size ?? 64;
+        for (;;) {
+          if (!first) {
+            if (dx > 0) [dx, dy] = [0, 1];
+            else if (dx < 0) [dx, dy] = [0, -1];
+            else if (dy > 0) [dx, dy] = [-1, 0];
+            else return PRIM_FALSE;
+          }
+          first = false;
+          const tx = (c.fx >> 4) + dx;
+          const ty = (c.fy >> 4) + dy;
+          if (tx < 0 || ty < 0 || tx >= n || ty >= n || c.level < 1 || c.level > 2) continue;
+          const o = m.list.find((x) => x.obj.tileX === tx && x.obj.tileY === ty && x.obj.level === c.level && x.obj.containerId === 0);
+          if (!o || o.obj.objectData[29] !== c.objectData[29]) continue;
+          ref.a[ref.i] = o.id;
+          return PRIM_TRUE;
+        }
+      }
       case 10: // career
       case 11: // neighborhood list
-      case 12: // person in the same family
         return m.unportedPrim(31, `set to next type ${kind}`, PRIM_FALSE);
       case 8: {
         // object on the same tile (ObjectIterator over the tile, wrapping)

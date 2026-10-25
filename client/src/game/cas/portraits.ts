@@ -447,3 +447,34 @@ export async function generatePortraits(bodyStrings: readonly string[], res?: UI
   save(2007, web);
   return out;
 }
+
+let popupCamera: HeadCamera | null = null;
+
+/**
+ * The head the Live mode pie shows at its center (PopupHead::Render), as a
+ * still: the person's head drawn like MakePersonHeadImage (crop
+ * {76, 45, 122, 125}) scaled to `w` x `h`, its background made transparent.
+ * The original renders the animated 3D head each frame, turned toward the
+ * highlighted item and zooming from the sim to the pie center; this port
+ * draws it facing the camera.
+ */
+export async function popupHeadImage(bodyStrings: readonly string[], w: number, h: number): Promise<ImageBitmap | null> {
+  const vb = await headPerson(bodyStrings);
+  if (!vb) return null;
+  if (!popupCamera) {
+    const cam = new HeadCamera();
+    await cam.init();
+    popupCamera = cam;
+  }
+  const key = 0xf81f;
+  const p = popupCamera.headImage(vb, 0, 0, w, h, NO_MARGINS, key, HEAD_CROP);
+  // the key and the resampled edge pixels blended with it (magenta tint) go transparent
+  const d = p.data;
+  for (let i = 0; i < d.length; i += 4) {
+    const r = d[i]!;
+    const g = d[i + 1]!;
+    const b = d[i + 2]!;
+    if (b > g + 24 && r > g + 40) d[i + 3] = 0;
+  }
+  return createImageBitmap(new ImageData(d, p.w, p.h));
+}

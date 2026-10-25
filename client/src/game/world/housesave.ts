@@ -11,8 +11,8 @@
  *   objt 0   ObjectFolder::PrepareForModuleSave (ObjectSaveTypeTable, version 3)
  *   ObjM 1   ObjectModule::DoStream          (compressed, version 0x49)
  *   then GlobalDispatch(0x92): HOUS 0 (HouseViewer::DoStream) and the
- *   thumbnails (THMB / BMP_), which are carried over from the loaded file
- *   (HouseViewer::SaveThumbnail is not ported).
+ *   thumbnails (THMB / BMP_, HouseViewer::SaveThumbnail: world/thumbnail.ts),
+ *   carried over from the loaded file when the caller renders none.
  * Every chunk gets flags 0x10 except the thumbnails (0), as in the files the
  * game writes. Chunks of the loaded file this save does not produce are kept.
  *
@@ -41,6 +41,7 @@ import type { PersonRecord, SavedInteraction } from "./personstream.js";
 import { getSRandSeed } from "./random.js";
 import { ReconBuffer } from "./reconbuffer.js";
 import { compactRecon, type ReconOut } from "./reconwriter.js";
+import { getRoofPattern, getRoofPitch } from "./roofs.js";
 import type { WallGraphicsMgr } from "./wallgraphics.js";
 import { ARRAY_SIZE, type FixedWorld } from "./world.js";
 
@@ -235,24 +236,11 @@ export function saveSimulator(sim: Simulator, loaded: Uint8Array | null, extra: 
 
 /** HouseViewer::DoStream (write; plain stream). */
 export function saveHouseViewer(viewer: HouseViewer, rotation: number, loaded: Uint8Array | null): Uint8Array {
-  // Carried: the +0x49 cutaway byte, the roof pitch and pattern (cRoofLayer, not ported).
+  // Carried: the +0x49 cutaway byte. The roof pitch and pattern are cRoofLayer's (roofs.ts).
   let low = 0;
-  let pitch = 0.6;
-  let roof = "";
   if (loaded && loaded.length >= 16) {
     try {
-      const { buf, version } = ReconBuffer.fromChunk(loaded);
-      low = buf.recon32() & 0xff;
-      buf.recon32();
-      buf.recon32();
-      buf.recon32();
-      if (version > 8) buf.recon16();
-      if (version >= 0x1d) buf.recon16();
-      if (version > 0x29) buf.recon16();
-      if (version > 0x30) {
-        pitch = buf.reconFloat();
-        roof = buf.reconString();
-      }
+      low = ReconBuffer.fromChunk(loaded).buf.recon32() & 0xff;
     } catch {
       // keep the defaults
     }
@@ -265,8 +253,8 @@ export function saveHouseViewer(viewer: HouseViewer, rotation: number, loaded: U
     w.recon16(rotation);
     w.recon16(viewer.level);
     w.recon16(viewer.drawRoof ? 1 : 0);
-    w.reconFloat(pitch);
-    w.reconString(roof);
+    w.reconFloat(getRoofPitch());
+    w.reconString(getRoofPattern());
   });
 }
 
@@ -708,6 +696,11 @@ export interface HouseSaveInput {
   clearHistory?: boolean;
   /** Dev check: number the saved types in the loaded table's order (that of the folder which wrote it). */
   keepLoadedTypeOrder?: boolean;
+  /**
+   * GlobalDispatch(0x92)'s HouseViewer::SaveThumbnail / SaveUnleashedThumbnail
+   * (world/thumbnail.ts), run after the other chunks; null: the loaded file's are carried.
+   */
+  thumbnails?: (() => IffChunk[]) | null;
 }
 
 /** House::SaveFile: the chunks of the new house file, in the original order. */
@@ -762,10 +755,11 @@ export async function buildHouseFile(input: HouseSaveInput): Promise<Uint8Array>
   );
   add({ type: "objt", id: 0, flags: FLAGS, label: "", data: objt });
   add({ type: "ObjM", id: 1, flags: FLAGS, label: "", data: objm });
-  // GlobalDispatch(0x92): the house viewer's chunk, then the thumbnails (carried).
+  // GlobalDispatch(0x92): the house viewer's chunk, then the thumbnails.
   const hous0 = house.get("HOUS", 0);
   if (input.viewer) add({ type: "HOUS", id: 0, flags: FLAGS, label: "", data: saveHouseViewer(input.viewer, input.rotation, hous0) });
   else if (hous0) add({ type: "HOUS", id: 0, flags: FLAGS, label: "", data: hous0.slice() });
+  if (input.thumbnails) for (const c of input.thumbnails()) add(c);
   // Chunks of the loaded file not produced above (thumbnails, older chunks) keep their place after them.
   const replaced = new Set(["Arry", "FLRm", "WALm"]);
   for (const c of loaded) {

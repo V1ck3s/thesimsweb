@@ -99,8 +99,13 @@ export class Simulator {
   period = 42;
   /** +0x1b0 */
   private cursor = 0;
-  /** lbl_105BA320: the advertisement table check trees read (scopes 12, 28, 29); none outside autonomy. */
-  currentAd: Int16Array[] | null = null;
+  /**
+   * lbl_105BA320: the scratch TreeTableEntry whose advertisements check trees
+   * read and write (scopes 12, 28, 29), one [personality, min, delta] per
+   * motive. ObjTestSim::TestInteraction copies the tested entry in when the
+   * caller wants the result (autonomy); otherwise it keeps the last one.
+   */
+  currentAd: Int16Array[] = Array.from({ length: 16 }, () => new Int16Array(3));
   module!: SimModule;
   /** Objects whose Init / Load trees failed at load (id -> code). */
   readonly loadErrors = new Map<number, number>();

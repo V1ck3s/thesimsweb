@@ -1,4 +1,4 @@
-# SimAntics VM port (phases 1–2) — handoff
+# SimAntics VM port (phases 1–3) — handoff
 
 Port of the object simulation from the decompiled Mac build (cSimulator,
 TreeSim, TreeStack, StackElem, Behavior, TreeTable, cXObject::Try*,
@@ -148,17 +148,92 @@ walk is not ported (they appear in place).
 
 ### Known gaps (phase 2)
 
-- Carrying (hand slot, Drop Onto 43): a snack is created out of the world
-  and the sim does not visibly eat it; hunger does not rise from snacks.
-- Routing: no people avoidance, stairs, room permissions, failure trees;
-  turning is instant; no walk start / stop animations.
-- ShouldInterrupt ignores motive emergencies; cancelling the running action
-  queues the person's interaction 0x21 like the original.
-- Social interactions (people are not pickable; relationship primitive
-  person↔person, Test Sim Interacting With 37, set to next neighbor types)
-  are unported. Kyle in House01 waits forever in a saved joke state.
-- Error 0x44c in "Interaction - Flirt Suggestion" (saved state of the child).
-- Pie menu: no head in the center, no sub-menus ("a/b" strings shown raw).
+Superseded by the phase 3 section below (carrying, social interactions,
+pie menu sub-menus / head and ShouldInterrupt are now ported).
+
+## Phase 3 — carrying, social interactions, pie menu
+
+### Carrying (xobject.ts, winlotview.ts, placement.ts)
+
+- `SimModule.worldHooks` (`WorldHooks`): the lot view gives the VM
+  placement (CanPlace / Place / move / pick up / FindGoodLocation / kill) so
+  primitives act on the real tile and slot chains. Headless runs keep the
+  old "no world" fallbacks.
+- Ported: Grab (4), Drop (5), Drop Onto (43), Find Functional Object (14),
+  Find Good Location (16, modes 1–5; ring search in
+  `Placement.findGoodLocation`), Create Object Instance (42, all modes of
+  lbl_10601BC4), Snap (46: slot 0 of the stack object, routing slot snap
+  targets, flag 0x800, object data 52 / 54 on failure), generic sim calls
+  2 / 14 / 15.
+- Held objects (slot 0 = hand, slot 1 = head) are drawn at
+  SAnimator::PrepReg's registration point (`LotPeople.registrationPoint`:
+  body strings 6/7 or 4/5, "Palm" / "Top" offsets).
+- cXPerson::GosubObjectTree / StackJustPopped keep `objectRecords`
+  (+0xab0, saved with the house) for Test Sim Interacting With (37).
+- Verified on House01: snack (fridge → chips in hand → eat, hunger
+  50 → 58) and meal (prepare at the counter, eat, trash via Find Good
+  Location).
+
+### Social interactions (person.ts, xobject.ts, simmodule.ts)
+
+- People are pickable in Live mode (`LotPeople.screenRect`, projected bones)
+  and are skipped in the drawing tile chains.
+- Relationship (26) person↔person goes through the neighbor RelMatrix
+  (keyed by person data 0x1f), object↔object through the object one;
+  scope 24 (neighbor data 0, 1, 3, 4, 6) and 32 (neighbor person data).
+- Set To Next: neighbor (5), neighbor of GUID (7), adjacent object (9),
+  same family person (12).
+- cXPerson::AddAction fully: TTAB flag 4 ("run immediately", every social
+  entry) runs the action tree at once as a one-tick tree (lbl_105BE790
+  guard, person data 33 = priority meanwhile, temps restored); lower
+  priority queued interactions are dropped with their entry point 4;
+  interaction flag 2 goes in front.
+- ObjTestSim::TestInteraction: the scratch TreeTableEntry (lbl_105BA320,
+  `Simulator.currentAd`, [personality, min, delta] per motive) is always
+  valid; autonomy copies the entry in and scores the advertisements the
+  check tree changed (scopes 12/28/29); another room makes the room ad's
+  delta -min.
+- cXObject::TryCallNamedTree: STR# indices are 1-based (StringSetBase::GetString).
+- cXPerson::ShouldInterrupt: person data 71, queue head, and the motive
+  emergencies (motive 7 / 9 below -99, motive 5 below -99 with person data
+  65 <= 1) on a residential lot.
+- Objects created by behaviors (Create Object Instance GUIDs) are loaded
+  with the lot (`SimModule.createdObjectGUIDs`) so a one-tick tree can
+  create them synchronously like the original's full ObjectFolder.
+- Verified in the browser on House05 (Goth family): clicking Bella with
+  Mortimer selected shows Dance / Hug / Kiss / Talk sub-menus, Wait,
+  Cancel, Shoo, Pick up kids; Hug / Kiss run Person A / Person B trees on
+  both sims (screenshot: they hug), social motive and relationship rise,
+  no tree error. House01: the saved joke of Kyle / the child ends (0x44c
+  was the unported person↔person relationship in "Adjust my STR to Person
+  B").
+
+### Pie menu (winlotview.ts `doMenu`, cas/portraits.ts)
+
+- cObjPickerTool::DoMenu: "a/b" names go in sub-menu "a" (placed at its
+  first entry); picking it pops the sub pie (same setup as the people pie,
+  title = the sub-menu name) at the cursor; letting go near its center
+  returns to the people pie, elsewhere cancels.
+- PopupHead: the selected sim's head (MakePersonHeadImage, crop
+  {76, 45, 122, 125}) is drawn at the pie center, as a still.
+
+### Known gaps (phase 3)
+
+- PopupHead is a still image: not animated, not turned toward the
+  highlighted item, no zoom from the sim to the pie.
+- DoMenu: no 12-item pages (-3), the people pie does not stay up (items
+  disabled) under the sub pie.
+- AddAction: an interaction queued while a "run immediately" one runs
+  does not overwrite it (lbl_105BE790 copy); unique ids not ported.
+- ObjTestSim: object data 50 → interaction flag 0x10 (hide) not ported.
+- Set To Next types 10 (career) and 11 (neighborhood list) are unported.
+- Walk start / stop and turning animations are still not ported; routing
+  has no people avoidance, stairs or failure trees.
+- Base-game houses (House05, House07) report, at load, error 0x44e in a
+  few objects (lamps, paintings, counters: saved stacks naming nodes or
+  trees their behavior lacks); not investigated.
+- Headless (`?test=sim`, no world hooks): one run had sims hit 0xa in "do idle core"
+  node 124 (stale container id: snapping does not place without a world).
 - Action icons for person targets show an empty frame.
 - Debug: `PersonSim.traceOn` fills `trace` and `autonomyLog` (decisions,
   routes, errors with stacks); the `?test=sim` page prints them.
@@ -175,10 +250,10 @@ walk is not ported (they appear in place).
 
 ## Next steps
 
-1. Carry / hand slots (Snap into person slots, Drop Onto, accessories) so
-   food interactions complete; then sims eat.
-2. People picking (3D bounds) → social pie menus; relationship person↔person,
-   neighbor scopes, Test Sim Interacting With.
-3. Routing fidelity (cRouter: people avoidance, walk start/stop/turns,
-   failure trees, stairs), FindGoodLocation port, arrival by car on move-in.
-4. Pie menu head (PopupHead) and sub-menus.
+1. Routing fidelity (cRouter: people avoidance, walk start/stop/turns,
+   failure trees, stairs), arrival by car on move-in.
+2. PopupHead as a live 3D head (SAnimator::StartPopupHead, attitude / nod,
+   turning toward the highlighted item).
+3. Remaining Set To Next types (career, neighborhood list), inventory (51),
+   old relationship (24), tutorial (10).
+4. The 0x44e load errors of base-game houses.

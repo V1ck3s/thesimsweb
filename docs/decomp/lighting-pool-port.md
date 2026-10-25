@@ -79,11 +79,14 @@ These screenshots are in the local scratch folder `shots/`: `l*-day/night`,
 
 ### Not ported / to check
 
-- Only `lightSource == 1` lights. Windows / outdoor light (other
-  lightSource values, the outside light through windows) are not
-  positioned.
-- Floor halves of diagonal walls are not drawn, so they have no light
-  either.
+- Only `lightSource == 1` lights are positioned, and that is the original:
+  Room::CollectObjectStats calls LightLayer::RemoveLight / PositionLight
+  only for objects whose +0x6a (light source) is 1, and nothing else calls
+  PositionLight. Windows (light source 0 in House01) only add their
+  contribution to the room's window light (the ambient level). There is no
+  outdoor light pool through windows to port (see roof-port.md).
+- Floor halves of diagonal walls are drawn (HouseViewer.drawTileFloor, see
+  roof-port.md), with their rooms' ambient and filtered light entries.
 - No light maps on objects. I have not confirmed whether the original lights
   objects with maps; the DrawIso path I read uses only the ambient level.
 - Light map file caching (the original's `.lmp` cache) is skipped; maps are
@@ -210,13 +213,12 @@ rectangles cost 400 / 100 / 100 for the pool and 60 / 15 / 15 for water.
   tile they stand on.
 - The tool cursor (`cDDDSimsView::SetToolCursor` 0 / 6) is only stored in
   `toolCursor`.
-- Saving the house while the pool or water tool is selected would save an
-  empty layer, because the world layer is cleared during the tool's life.
-  Check that leaving build mode deselects the tool before saving
-  (`housesave.ts` writes `fixed.pool` / `fixed.water`).
+- Saving while the pool or water tool is selected: House::SaveFile calls
+  XViewer::IssueToolSelection(0) after the stats and before
+  cFixedWorld::Save; `savegame.ts` does the same (`gameTools.issueToolSelection(null)`),
+  so the tool's Deselect writes its layer back first. Verified on House02
+  (77 pool tiles: 0 while the tool is selected, 77 in the saved file).
 
-## 4. Roofs (not started)
+## 4. Roofs
 
-cRoofLayer (`mac-pseudoc-annotated/cRoofLayer.c`, 1421 lines), roof drawing,
-and the roof tool (`cpanel/arch/roofpanel.ts`) are not started. Today the
-lot draws no roofs.
+Ported: see [`roof-port.md`](./roof-port.md).

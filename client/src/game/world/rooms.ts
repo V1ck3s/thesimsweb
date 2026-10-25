@@ -15,6 +15,7 @@
  */
 
 import type { HouseViewer } from "./houseviewer.js";
+import { generateRoofs } from "./roofs.js";
 import { CutawayMask } from "./walls.js";
 import { getWall, SEG_HORIZ, SEG_ROTATION, SEG_VERT } from "./tilewalls.js";
 import { ARRAY_SIZE, DIRS, type FixedWorld, type TilePt } from "./world.js";
@@ -263,6 +264,8 @@ export function computeRooms(fixed: FixedWorld, mgr: RoomManager, level = 0): vo
     computeLevelRooms(fixed, mgr, l);
     computeOutside(fixed, l);
   }
+  // The end of ComputeRooms: cRoofLayer::GenerateRoof for both roof layers.
+  generateRoofs(fixed, mgr);
 }
 
 function computeLevelRooms(fixed: FixedWorld, mgr: RoomManager, level: number): void {

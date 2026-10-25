@@ -14,6 +14,12 @@ import { GLOBAL_DEFAULTS, R } from "./registers.js";
 import type { SoundObject } from "./samplepatch.js";
 import type { TrackPlayer } from "./trackplayer.js";
 
+/** Sound objects with Pause / Unpause (cTrackPlayer vtable 0x60 / 0x64). */
+interface Pausable {
+  pause(): void;
+  unpause(): void;
+}
+
 /** cTSCallbackTimer period set by cBoxX::Init (Start(0x14)). */
 export const TICK_MS = 20;
 
@@ -222,19 +228,27 @@ export class HitMan {
     for (const p of [...this.updateList]) p.kill();
   }
 
-  private paused: TrackPlayer[] = [];
+  /** +0x28: set by Pause, cleared by Unpause (cBoxX kNotifyChange reads it). */
+  paused = false;
 
-  /** cHitMan::Pause: pause every running track (remembered for Unpause). */
-  pause(): void {
-    for (const p of [...this.updateList]) {
-      p.pause();
-      this.paused.push(p);
-    }
+  /** cHitMan::DuckMapRemoveAll */
+  duckMapRemoveAll(): void {
+    this.duckMap.clear();
+    this.globals.set(R.main_duckpri, 0);
+    this.updateActiveTrackVolumes();
   }
 
-  /** cHitMan::Unpause */
+  /** cHitMan::Pause: every sound object pauses. */
+  pause(): void {
+    this.paused = true;
+    for (const o of this.objects.values()) (o as Partial<Pausable>).pause?.();
+    this.duckMapRemoveAll();
+  }
+
+  /** cHitMan::Unpause: every sound object unpauses (cBoxX::Unpause). */
   unpause(): void {
-    for (const p of this.paused.splice(0)) p.unpause();
+    this.paused = false;
+    for (const o of this.objects.values()) (o as Partial<Pausable>).unpause?.();
   }
 
   error(who: string, msg: string): void {

@@ -291,8 +291,8 @@ Files: `client/src/game/screens/frozen.ts` (new), `world/moveout.ts` (new), `mai
   its house, as MoveOut puts +0x110 back) and the screen shows STR# 131 [11]/[10].
 - Not ported: House::ClearRouteHistory, the family 0 budget reset in SaveHouse, SaveHouse's DeleteCharacter
   loop over family-less house-less characters, the GUID 0xc3249a1d object LoadHouse may create, the
-  "import lot" broadcast, **the thumbnail** (HouseViewer::SaveThumbnail is not ported: a bulldozed lot keeps
-  its old THMB / BMP_ pictures on the neighborhood screen).
+  "import lot" broadcast. The thumbnails are rendered from a view opened on the saved file (world/thumbnail.ts
+  withHouseThumbnails, see save-port.md "Thumbnails"): an evicted or bulldozed lot shows its new state.
 - Checked (UserData, overlay, then deleted): evicting house 7 kept 106 of 182 objects (all build-mode objects
   plus those with movement flag 0x10: mailbox, trash can), no person, funds 0, globals 26 / 28 = 0; the lot
   reloads in buy mode. Bulldozing house 5 removed walls, floors and every object but trees, tombstones,

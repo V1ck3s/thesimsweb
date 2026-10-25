@@ -761,6 +761,57 @@ export class Placement {
     return true;
   }
 
+  /**
+   * cXObject::FindGoodLocation: the first tile around `start` where `obj`
+   * can be placed (CanPlace at the tile's center): inside the lot, no
+   * diagonal wall (segments 0x30), no pool, empty when `emptyTile`, not
+   * flagged 0x20 when `buildable`. `random` starts from a random tile near
+   * `start` (or anywhere). The tiles are taken ring by ring around the
+   * start (the original walks a spiral of its own, jump table
+   * lbl_105BB9A4, not ported); the same-room test is not ported.
+   */
+  findGoodLocation(obj: XObject, start: FPt, level: number, opts: { emptyTile: boolean; buildable: boolean; random: (() => number) | null }): FPt | null {
+    const n = this.size;
+    let sx = tileOf(start.fx);
+    let sy = tileOf(start.fy);
+    if (opts.random) {
+      const rnd = opts.random;
+      if (sx === 0 && sy === 0) {
+        sx = rnd() % n;
+        sy = rnd() % n;
+      } else {
+        for (let guard = 0; guard < 64; guard++) {
+          const x = sx + ((rnd() % 10) - 5);
+          const y = sy + ((rnd() % 10) - 5);
+          if (!this.outOfBounds(x, y)) {
+            sx = x;
+            sy = y;
+            break;
+          }
+        }
+      }
+    }
+    sx = Math.min(Math.max(sx, 1), n - 2);
+    sy = Math.min(Math.max(sy, 1), n - 2);
+    const fits = (x: number, y: number): boolean => {
+      if (x < 1 || y < 1 || x >= n - 1 || y >= n - 1) return false;
+      if (getWall(this.world, x, y, level).segs & 0x30) return false;
+      if (opts.emptyTile && this.tileObjectId(x, y, level) !== 0) return false;
+      if (level === 1 && this.world.pool.u8(x, y) < 0x10) return false;
+      if (opts.buildable && !this.anywhere && this.tileFlags(x, y, 1) & 0x20) return false;
+      return this.canPlace(obj, { fx: (x << 4) | 8, fy: (y << 4) | 8 }, level, null, 0);
+    };
+    for (let r = 0; r < n; r++) {
+      for (let dy = -r; dy <= r; dy++) {
+        for (let dx = -r; dx <= r; dx++) {
+          if (Math.max(Math.abs(dx), Math.abs(dy)) !== r) continue;
+          if (fits(sx + dx, sy + dy)) return { fx: ((sx + dx) << 4) | 8, fy: ((sy + dy) << 4) | 8 };
+        }
+      }
+    }
+    return null;
+  }
+
   // --- cXMTObject ----------------------------------------------------------------------
 
   /** Offsets of a part (+0x1a0 x, +0x1a4 y, +0x1a8 level), multi-tile only. */

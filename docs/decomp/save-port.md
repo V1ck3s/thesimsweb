@@ -36,10 +36,10 @@ Port of the house save path. Code: `client/src/game/world/{reconwriter,usagemap,
 | objt 0 | ObjectFolder::PrepareForModuleSave (v3) | `saveTypeTable` |
 | ObjM 1 | ObjectModule::DoStream v0x49 (compressed) | `saveObjectModule` |
 | HOUS 0 | HouseViewer::DoStream (GlobalDispatch 0x92) | `saveHouseViewer` |
-| THMB/BMP_ | HouseViewer::SaveThumbnail | **copied from the loaded file** (not regenerated) |
+| THMB 512, BMP_ 513/512, THMB 1024, BMP_ 1025/1024 | HouseViewer::SaveThumbnail / SaveUnleashedThumbnail | `saveHouseThumbnails` (`world/thumbnail.ts`), see "Thumbnails" |
 
 3. **Chunk metadata and leftovers:**
-   - Flags are 0x10, except for the thumbnails, which are copied as they are.
+   - Flags are 0x10, except for the thumbnails (0, label "Thumbnail" on the BMP_s, "" on the THMBs).
    - Arry labels are the c2DArray names, and `"1"` for the legacy copies (ids 1/2/101/102).
    - Any other chunk of the loaded file is kept after the generated ones.
 
@@ -103,9 +103,50 @@ Port of the house save path. Code: `client/src/game/world/{reconwriter,usagemap,
   - Bought a plant (−120 §) and saved; after a reload, the object (id 202) and the funds 66,404 § are there.
   - The test overlay files were deleted afterwards.
 
+## Thumbnails (HouseViewer::SaveThumbnail, `world/thumbnail.ts`)
+
+- GlobalDispatch(0x92) on the HouseViewer writes HOUS 0, then (HouseViewer +0x4f, set by the constructor and
+  never cleared) SaveThumbnail(file, 0x200) and SaveUnleashedThumbnail(file, 0x400). SaveLowMemoryThumbnail
+  (BMP_ 612/613 copied from an application resource BMP_ 1000) writes nothing on the PC.
+- SaveThumbnail: w = ((maxX - minX) + view width) >> (zoom + 1), h likewise (GetOffsetsMinMax at the current
+  zoom), offsets maxX / maxY divided by 1 << (zoom - 1); daytime (cSimulator +0x18 = 0, terrain time of day,
+  AllRoomsLightingChanged), terrain detail 2; two MakeThumbnail passes into one buffer: pass 0 the lot, pass 1
+  adds the roof (+0x51, SetRoofDetail(2)). Each pass: ShrinkWrap (transparent margins), BMP_ 512 + pass =
+  the cropped image (MakeMemoryBMP, 24-bit, header sizes 0). THMB 512 = ThumbnailInfo { x - left0, y - top0, z,
+  left1 - left0, top1 - top0 }. Unleashed: size halved, scale 0.125 instead of 0.25, ids 0x400.
+- MakeThumbnail: buffer (0.5 + w / f) x (0.5 + h / f) cleared to the transparent color (GetClearColor in
+  thumbnail mode, +0x17c / +0x182), view rect = buffer, zoom 1, rotation 0, level 2, cutaway +0x48 and dynamic
+  cutaway +0x49 off, SetOffsets, grid overlay hidden, **+0x50 set: RenderTerrainRow, RenderStaticRow and
+  RenderDynamicObjects skip tiles with flag 0x20** (the road side). ThumbnailInfo: the average lot tile (flag 0x20
+  clear) through TileToPoint (level 1, altitude 0) >> 2 (f 0.25) or >> 3 (f 0.125); z = +0x1f4 (GetOffsetsMinMax's
+  lowest row term) shifted the same. Then ScaleBitmap(f): separable cubic 2|t|^3 - 3|t|^2 + 1 stretched by 1/f,
+  mirrored edges, normalized weights, transparent pixels excluded, a pixel stays transparent under 0.46875 of
+  opaque weight; buffers are 16-bit 555 (the shipped BMP_ colors are multiples of 8).
+- Port: the lot view's HouseViewer renders the buffer in pieces of its own WebGL target (origin moved per piece,
+  `readPixels`), with its state switched and restored like MakeThumbnail does. Additive hooks:
+  `HouseViewer.thumbnailClearColor` (+0x17c / +0x182), `isThumbnailHidden` (+0x50, used by the row renderers and
+  `ObjectModuleDrawer.drawDynamicObjects`), `getOffsetsMinMax(viewW, viewH)` returning `low` (+0x1f4);
+  `WinLotView.terrain` made public. `buildHouseFile({ thumbnails })` calls it after HOUS 0; without it the loaded
+  file's thumbnails are carried (dev checks).
+- MoveOut: the original saves with its one HouseViewer holding the loaded lot (hidden behind the neighborhood
+  screen). `withHouseThumbnails` opens a view (Compositor, HouseViewer, terrain, walls, objects, rooms and
+  lighting, as WinLotView::init without the simulator and people) on the saved bytes at HOUS 0's zoom, renders
+  the thumbnails and puts them after HOUS 0; the WebGL context is released afterwards.
+- The neighborhood re-reads the house file: `writeGameFile` clears the IFF cache, and EvictFamily calls
+  cWinLotBtn::ReloadThumbnail.
+- Checked (UserData, overlay, deleted afterwards): saving House01 gives THMB 512 [159, 92, 2, 0, 0], BMP_ 512/513
+  318 x 172, THMB 1024 [79, 45, 1, 0, 0], BMP_ 1024/1025 159 x 85: chunk order, BMP headers and sizes identical
+  to the file the game itself saved; the transparent silhouette matches pixel for pixel, mean color difference
+  3/255 (the lot changed since). Save 0.75-1.2 s (headless Chrome, swiftshader). Bulldozing house 3
+  (moveOutHouse, 1.3 s): the neighborhood screen shows the empty lot.
+- Gaps: the port draws no roof yet, so BMP_ 513 = BMP_ 512 and THMB dx = dy = 0 (pass 1 re-renders the view
+  with `drawRoof` set and will pick roofs up once the viewer draws them; meanwhile a saved house loses its
+  roof on the neighborhood screen); people (3D) are not drawn into the thumbnail; terrain colors by house
+  number (cTerrain::SetColor) are not wired in the port; RenderTerrainRow's water-tile case in thumbnail mode
+  is not ported.
+
 ## Gaps
 
-- Thumbnails are not regenerated (HouseViewer::SaveThumbnail).
 - People's persistent data is not saved to the neighborhood at save time. In the original, cXPerson does this at other moments.
 - Unoccupied lots (family +0x10c == 0): the budget is not saved. The family export (`ExportFamily`) and `ExportUnoccupiedLot` are not ported.
 - Save failure: the message uses UIText 0x99 entries 0xf/0x10, which is not verified visually.

@@ -21,8 +21,11 @@ import { FloorGraphicsMgr } from "./floors.js";
 import { HouseViewer, type ObjectDrawer, type TerrainDrawer, type WallDrawer } from "./houseviewer.js";
 import { ResFile } from "./iffres.js";
 import { loadLotObjectDrawer, type LotObjects } from "./lotobjects.js";
+import type { DrawableObject } from "./objectdraw.js";
+import type { RenderParam } from "./renderparam.js";
 import { LotPeople } from "./lotpeople.js";
 import { RoomLighting, timeOfDay } from "./lighting.js";
+import { loadRoofSettings, makeArchRoofHooks, roofLayersOf } from "./roofs.js";
 import { computeRooms, RoomManager } from "./rooms.js";
 import { Terrain } from "./terrain.js";
 import { WallManager } from "./walls.js";
@@ -37,13 +40,16 @@ import { FixedWorld, RotatableWorld } from "./world.js";
 import type { XObject } from "./objects.js";
 import type { ObjSelector } from "./objselector.js";
 import { Simulator } from "../sim/simulator.js";
+import type { WorldHooks } from "../sim/simmodule.js";
 import { SimObject } from "../sim/xobject.js";
 import type { PersonSim } from "../sim/person.js";
 import { TSPieMenu } from "../ui/piemenu.js";
+import { popupHeadImage } from "../cas/portraits.js";
+import { winMgr } from "../ui/winmgr.js";
+import type { TreeTableEntry } from "../sim/treetable.js";
 import { pointToObjectId, PickMode } from "./tools/picking.js";
 import { ActionIcons } from "./actionicons.js";
 import { killObject, makeNewOutOfWorldObject } from "./tools/objectfactory.js";
-import { DIR_VEC } from "../sim/routing.js";
 
 /** HOUS chunk id 0: HouseViewer::DoStream (saved camera). */
 interface SavedView {
@@ -115,8 +121,8 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
   rooms: RoomManager | null = null;
   cutaway: DynamicCutaway | null = null;
   lighting: RoomLighting | null = null;
-  /** The terrain when this view created it (relit with the time of day). */
-  private terrain: Terrain | null = null;
+  /** The terrain when this view created it (relit with the time of day; the thumbnails switch it to daytime). */
+  terrain: Terrain | null = null;
   /** Last mouse position over the view (the dynamic cutaway reads the cursor). */
   private cursor: { x: number; y: number } | null = null;
   /** Buy mode: cGameTools' cMoveTool, its placement rules and the tip it shows (cDDDSimsView::SetTip). */
@@ -204,9 +210,13 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
       v.objects = this.lotObjects.drawer;
       this.people = await LotPeople.load(comp, this.housePath.split("/")[0] ?? "UserData", this.lotObjects.objects.values());
       v.people = this.people;
+      this.lotObjects.drawer.placeHeld = (d, rp) => this.placeHeld(d, rp);
       // `?nosim` keeps the lot static (debug comparison).
       if (!new URLSearchParams(location.search).has("nosim")) await this.initSimulator(house, this.lotObjects);
     }
+    // HouseViewer::DoStream's roof settings; DiscoverTilesToRoof's stairs test reads the objects.
+    loadRoofSettings(house);
+    roofLayersOf(world.fixed).objects = () => this.lotObjects?.objects ?? null;
     const saved = readSavedView(house);
     if (saved) {
       world.setRotation(saved.rotation);
@@ -448,6 +458,10 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
       this.editCount++;
       st.setDirty(DIRTY_ARCH_UNDO);
     };
+    // cWinRoofPanel's cRoofLayer::SetPitch / SetRoofPattern, each a cRoofUndoable.
+    st.archRoofHooks = makeArchRoofHooks(undo, () => {
+      v.dirty = true;
+    });
     st.archUndoHooks = {
       undo: () => undo.undoLastCommand(),
       redo: () => undo.redoLastCommand(),
@@ -487,7 +501,7 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
     // from an undone deletion) joins it with its data kept, Main restarted.
     const simObject = (obj: XObject): SimObject | null => {
       const m = this.sim?.module;
-      if (!m) return null;
+      if (!m || this.killing.has(obj)) return null;
       const o = m.getObject(obj.objectId);
       if (o && o.obj === obj && !o.killed) return o;
       if (this.lotObjects?.module.objects.get(obj.objectId) !== obj) return null;
@@ -532,16 +546,14 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
   }
 
   /**
-   * Create New Object Instance's world side: ObjectFolder::GetSelectorByGUID
-   * (an object file not opened yet opens in the background: the primitive
-   * waits), ObjectModule::MakeNewOutOfWorldObject and the placement of the
-   * primitive's mode. In front of / underneath an object: that tile, the
-   * object fails (and is killed) when it cannot go there. In a slot of the
-   * stack object: its first object slot that takes it. On top of me / in
-   * my hand / out of the world and the other modes: it stays out of the
-   * world (people carry nothing visible yet).
+   * The world side of the sim's placement primitives (SimModule.worldHooks):
+   * ObjectFolder::GetSelectorByGUID (an object file not opened yet opens in
+   * the background: the primitive waits), ObjectModule::
+   * MakeNewOutOfWorldObject, cXObject::CanPlace / Place through Placement,
+   * a walking person's moves (its tile link follows: out of the old tile,
+   * into the new one; its contents follow, SetLocation) and KillObject.
    */
-  private createObjectHooks(): NonNullable<Simulator["module"]["worldHooks"]> {
+  private createObjectHooks(): WorldHooks {
     const loading = new Map<number, boolean>();
     return {
       selector: (guid) => {
@@ -560,40 +572,89 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
         }
         return undefined;
       },
-      make: (sel, mode, me, stack) => {
+      make: (sel) => {
         const p = this.placement;
         const lot = this.lotObjects;
         if (!p || !lot) return null;
         const obj = makeNewOutOfWorldObject(p, lot.folder, sel);
-        if (!obj) return null;
-        const at = (o: XObject, front: boolean): boolean => {
-          const [dx, dy] = front ? DIR_VEC[o.dir & 7]! : [0, 0];
-          const pos = { fx: ((o.fx >> 4) + dx) * 16 + 8, fy: ((o.fy >> 4) + dy) * 16 + 8 };
-          if (!p.canPlace(obj, pos, o.level, null, 0)) return false;
-          p.place(obj, pos, o.level, null, 0, true);
-          return true;
-        };
-        let ok = true;
-        if (mode === 0) ok = at(me, true);
-        else if (mode === 3) ok = stack !== null && at(stack, true);
-        else if (mode === 5) ok = at(me, false);
-        else if (mode === 4 && stack) {
-          for (let k = 1; k < stack.objectSlots.length; k++) {
-            if (p.canPlace(obj, { fx: stack.fx, fy: stack.fy }, stack.level, stack, k)) {
-              p.place(obj, { fx: stack.fx, fy: stack.fy }, stack.level, stack, k, true);
-              break;
-            }
-          }
-        }
-        if (!ok) {
-          killObject(p, obj);
-          return null;
-        }
-        if (this.viewer) this.viewer.dirty = true;
+        if (obj && this.viewer) this.viewer.dirty = true;
         return obj;
       },
+      canPlace: (obj, pos, level, container, slot) => {
+        const p = this.placement;
+        if (!p) return false;
+        p.error = 0;
+        p.obstacle = null;
+        return p.canPlace(obj, pos, level, container, slot);
+      },
+      place: (obj, pos, level, container, slot) => {
+        const p = this.placement;
+        if (!p) return;
+        p.place(obj, pos, level, container, slot, true);
+        if (this.viewer) this.viewer.dirty = true;
+      },
+      moveTo: (obj, pos, level) => {
+        const p = this.placement;
+        if (!p) {
+          obj.fx = pos.fx;
+          obj.fy = pos.fy;
+          return;
+        }
+        const tile = (f: number): number => f >> 4;
+        const sameTile = tile(obj.fx) === tile(pos.fx) && tile(obj.fy) === tile(pos.fy) && obj.level === level;
+        const onTile = !sameTile && p.isInWorld(obj) && obj.parentId === 0;
+        if (onTile) p.testAndPlace(obj, { placing: false, fy: 0, fx: 0, container: null, slot: -1, level: 0 }, true);
+        p.setLocation(obj, pos, level);
+        if (onTile && !p.outOfBounds(tile(pos.fx), tile(pos.fy))) {
+          p.testAndPlace(obj, { placing: true, fy: pos.fy, fx: pos.fx, container: null, slot: -1, level }, true);
+        }
+      },
+      pickup: (obj) => {
+        this.placement?.pickup(obj, true);
+        if (this.viewer) this.viewer.dirty = true;
+      },
+      findGoodLocation: (obj, start, level, opts) => this.placement?.findGoodLocation(obj, start, level, opts) ?? null,
+      kill: (obj) => {
+        const p = this.placement;
+        const lot = this.lotObjects;
+        if (!p || !lot || lot.module.objects.get(obj.objectId) !== obj) return;
+        this.killing.add(obj);
+        try {
+          killObject(p, obj);
+        } finally {
+          this.killing.delete(obj);
+        }
+        if (this.viewer) this.viewer.dirty = true;
+      },
+      lastError: () => ({ code: this.placement?.error ?? 0, obstacle: this.placement?.obstacle?.objectId ?? 0 }),
     };
   }
+
+  /**
+   * cXPerson::DrawIso: the object in a person's slot 0 is drawn at the
+   * person's hand registration (SAnimator::PrepReg, then
+   * RenderLoc::SetWorldCoord: world (x, y, z) -> fixed (z, x) / 0.1875 and
+   * altitude y * 2 sqrt 6 / 3).
+   */
+  private placeHeld(d: DrawableObject, rp: RenderParam): boolean {
+    const obj = (d as { obj?: XObject }).obj;
+    const v = this.viewer;
+    const lot = this.lotObjects;
+    if (!obj || !v || !lot || !this.people) return false;
+    const parent = lot.objects.get(obj.parentId);
+    if (!parent?.isPerson || obj.slotHierNumber !== 1) return false;
+    const p = this.people.registrationPoint(parent, 0, v.world.rotation, v.world.fixed.getFAlt(parent.fx, parent.fy));
+    if (!p) return false;
+    rp.x = p[2] / 0.1875;
+    rp.y = p[0] / 0.1875;
+    rp.z = Math.fround((p[1] * 2 * Math.sqrt(6)) / 3);
+    rp.level = parent.level;
+    rp.updateScreenCoords();
+    return true;
+  }
+
+  /** Objects being killed by the simulation (their pickup check trees must not bring them back). */
+  private readonly killing = new Set<XObject>();
 
   /**
    * Family members without a person object on the lot (a new move-in, or
@@ -658,11 +719,11 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
   }
 
   /**
-   * cObjPickerTool::TryClick in Live mode: the object under the cursor
-   * (HouseViewer::PointToObjectID; people are not pickable yet) offers the
-   * interactions the selected sim passes (DoMenu: ObjTestSim's menu); the
-   * one picked is queued on the sim with priority 50 (MenuItemSelected ->
-   * cXPerson::AddAction).
+   * cObjPickerTool::TryClick in Live mode: the object or person under the
+   * cursor (HouseViewer::PointToObjectID) offers the
+   * interactions the selected sim passes (ObjTestSim's menu), shown by
+   * DoMenu; the one picked goes to the sim with priority 50
+   * (MenuItemSelected -> cXPerson::AddAction).
    */
   private async liveClick(x: number, y: number): Promise<void> {
     const sim = this.sim;
@@ -671,21 +732,93 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
     const lot = this.lotObjects;
     const person = this.selectedPerson();
     if (!sim || !v || !p || !lot || !person) return;
-    const id = pointToObjectId(v, p, (r) => lot.renderer(r), x, y, v.level || 1, PickMode.Any);
+    const people = this.people;
+    const id = pointToObjectId(v, p, (r) => lot.renderer(r), x, y, v.level || 1, PickMode.Any, people ? (o) => people.screenRect(o, v) : null);
     const target = id ? sim.module.getObject(id) : null;
     if (!target) return;
     const entries = person.menuFor(target);
     if (!entries.length) return;
-    this.pie ??= await TSPieMenu.forLiveMode(this.ctx);
-    this.pie.show(
-      this.area.left + x,
-      this.area.top + y,
-      entries.map((e) => e.name),
-      (i) => {
-        const e = entries[i];
-        if (e) person.addAction(person.makeInteraction(target, e, 50));
-      },
-    );
+    const e = await this.doMenu(person, entries, this.area.left + x, this.area.top + y);
+    if (e) person.addAction(person.makeInteraction(target, e, 50));
+  }
+
+  /** The Live mode sub pie (cWinPeople::GetPeopleSubPie), made on first use. */
+  private subPie: TSPieMenu | null = null;
+  /** The pie heads made so far, by body strings. */
+  private readonly popupHeads = new Map<string, ImageBitmap | null>();
+
+  /**
+   * cObjPickerTool::DoMenu: names "a/b" go in a sub menu "a" (made at the
+   * place of its first entry), others straight in the people pie. Picking a
+   * sub menu pops the sub pie up at the cursor with the sub menu's name as
+   * title; letting go there near its center comes back to the people pie,
+   * elsewhere cancels. The selected sim's head (SAnimator::StartPopupHead)
+   * sits at the center. Not ported: pages of 12 items (-3), and the people
+   * pie staying up, its items disabled, under the sub pie.
+   */
+  private async doMenu(person: PersonSim, entries: TreeTableEntry[], x: number, y: number): Promise<TreeTableEntry | null> {
+    type Item = { text: string; entry: TreeTableEntry | null; sub: Array<{ text: string; entry: TreeTableEntry }> };
+    const top: Item[] = [];
+    for (const e of entries) {
+      const slash = e.name.indexOf("/");
+      if (slash < 0) {
+        top.push({ text: e.name, entry: e, sub: [] });
+        continue;
+      }
+      const head = e.name.slice(0, slash);
+      let m = top.find((t) => t.entry === null && t.text === head);
+      if (!m) {
+        m = { text: head, entry: null, sub: [] };
+        top.push(m);
+      }
+      m.sub.push({ text: e.name.slice(slash + 1), entry: e });
+    }
+    const pie = (this.pie ??= await TSPieMenu.forLiveMode(this.ctx));
+    const sub = (this.subPie ??= await TSPieMenu.forLiveMode(this.ctx));
+    const headImg = await this.popupHead(person, pie);
+    const paintHead = headImg
+      ? (g: Gfx, cx: number, cy: number): void => g.blit(headImg, cx - (headImg.width >> 1), cy - (headImg.height >> 1))
+      : null;
+    pie.onPaintCenter = paintHead;
+    sub.onPaintCenter = paintHead;
+    const popup = (m: TSPieMenu, px: number, py: number, items: string[]): Promise<number> =>
+      new Promise((resolve) => m.show(px, py, items, resolve));
+    for (;;) {
+      const sel = await popup(
+        pie,
+        x,
+        y,
+        top.map((t) => t.text),
+      );
+      const it = top[sel];
+      if (!it) return null;
+      if (it.entry) return it.entry;
+      sub.title = it.text;
+      const c = winMgr.cursorPosition();
+      const s = await popup(
+        sub,
+        c.x,
+        c.y,
+        it.sub.map((t) => t.text),
+      );
+      const leaf = it.sub[s];
+      if (leaf) return leaf.entry;
+      if (sub.inactiveRadius < sub.getDistance()) return null;
+    }
+  }
+
+  /** PopupHead: the selected sim's head for the pie center (a still here). */
+  private async popupHead(person: PersonSim, pie: TSPieMenu): Promise<ImageBitmap | null> {
+    const lp = this.people?.people.find((q) => q.obj === person.obj);
+    if (!lp) return null;
+    const strings = lp.anim.bodyStrings.strings;
+    const key = strings.join("|");
+    if (!this.popupHeads.has(key)) {
+      // inside the pie's inactive circle
+      const size = Math.max(16, 2 * pie.inactiveRadius - 6);
+      this.popupHeads.set(key, await popupHeadImage(strings, Math.trunc(size * 0.8), size).catch(() => null));
+    }
+    return this.popupHeads.get(key) ?? null;
   }
 
   /** XViewer routes the mouse to cGameTools' current tool in buy and build modes. */
@@ -752,6 +885,8 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
       };
       this.sim = sim;
       sim.module.worldHooks = this.createObjectHooks();
+      // objects the behaviors create (the original folder has them all)
+      await Promise.all([...sim.module.createdObjectGUIDs()].map((g) => lot.folder.getSelectorByGUID(g >>> 0).catch(() => null)));
       // The people's VitaBoys follow the simulation's animators.
       for (const ps of sim.module.persons) {
         this.people?.bindSim(

@@ -234,6 +234,11 @@ export class RoomLighting {
     return layer.getEntry(wx, wy, this.world.rotation);
   }
 
+  /** RoomManager::ResolveDiagonal (world tile): the half floors of diagonal tiles take their rooms' light. */
+  resolveDiagonal(x: number, y: number, level: number): { room1: number; side1: number; room2: number; side2: number } {
+    return this.rooms.resolveDiagonal(x, y, level);
+  }
+
   /** Room::GetAmbientLight of the room id 0 of a level (the walls' outside face). */
   outsideAmbient(): number {
     return this.roomAmbient(0);

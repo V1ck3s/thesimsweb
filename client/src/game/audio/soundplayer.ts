@@ -65,6 +65,8 @@ export class SoundPlayer {
         options.onChange(apply);
       }
       for (const [name, src] of this.pending.splice(0)) this.playBySource(name, src);
+      // cSimsApp::ActivateApp follows the window focus; the page being hidden is the closest browser signal.
+      document.addEventListener("visibilitychange", () => this.activateApp(document.visibilityState === "visible"));
     });
     return this.ready;
   }
@@ -119,6 +121,21 @@ export class SoundPlayer {
   }
   resumeSounds(): void {
     this.boxx?.event(EV.Unpause, 0);
+  }
+
+  /** cSoundPlayer::NotifyViewChange: objects re-positioned, the ambience follows the view (kNotifyChange). */
+  notifyViewChange(): void {
+    this.boxx?.event(EV.NotifyChange, 0);
+  }
+
+  /** cSoundPlayer::NotifyHourChange (same event: the ambience column follows the hour). */
+  notifyHourChange(): void {
+    this.boxx?.event(EV.NotifyChange, 0);
+  }
+
+  /** cSimsApp::ActivateApp(bool): cBoxX::Event(kActivateApp) straight from the app. */
+  activateApp(on: boolean): void {
+    this.boxx?.event(EV.ActivateApp, on ? 1 : 0);
   }
 
   /** cSoundPlayer::EnableSound / EnableMusic */

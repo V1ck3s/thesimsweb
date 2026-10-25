@@ -145,6 +145,13 @@ export class ObjectModuleDrawer implements ObjectDrawer {
     private readonly dynamic: () => Iterable<DrawableObject>,
   ) {}
 
+  /**
+   * cXPerson::DrawIso's held objects: positions `rp` for an object a person
+   * carries (SAnimator::PrepReg) and returns true; false draws the object
+   * at its own location.
+   */
+  placeHeld: ((o: DrawableObject, rp: RenderParam) => boolean) | null = null;
+
   /** Wall state for hiding wall objects (doors, windows) in cut walls; null = never hidden. */
   cutawayView: CutawayView | null = null;
 
@@ -190,7 +197,8 @@ export class ObjectModuleDrawer implements ObjectDrawer {
       const tx = o.fx >> 4;
       const ty = o.fy >> 4;
       if (tx < 1 || ty < 1 || tx >= n - 1 || ty >= n - 1) continue;
-      rp.setGridCoords(o.fx, o.fy, o.level);
+      if (viewer.isThumbnailHidden(tx, ty)) continue;
+      if (!this.placeHeld?.(o, rp)) rp.setGridCoords(o.fx, o.fy, o.level);
       const [vx, vy] = viewer.world.toView(tx, ty);
       comp.ambient = viewer.ambientAtTile(vx, vy, o.level);
       drawIso(o, viewer, comp, rp);
