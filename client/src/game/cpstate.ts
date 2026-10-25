@@ -47,6 +47,71 @@ export const DIRTY_SHOP_ITEM = 0x200;
 /** The Shop* setters mark the catalog page dirty (cWinCatalog refreshes on it). */
 export const DIRTY_CATALOG = 0x400;
 
+/** CPState::ArchUndo / ArchRedo mark bit 2 (cWinArch refreshes its undo / redo buttons). */
+export const DIRTY_ARCH_UNDO = 0x4;
+/** CPState::ArchSetCurrentTool */
+export const DIRTY_ARCH_TOOL = 0x10;
+/** CPState::ArchSetCurrentSubtool */
+export const DIRTY_ARCH_SUBTOOL = 0x20;
+
+/** CPState::ArchTools (CPState+0x58), in cWinArch's button order (UIText STR# 139 "BldTips"). */
+export const enum ArchTool {
+  Terrain = 0,
+  Water = 1,
+  Wall = 2,
+  Wallpaper = 3,
+  Stair = 4,
+  Fireplace = 5,
+  Plant = 6,
+  Floor = 7,
+  Door = 8,
+  Window = 9,
+  Roof = 10,
+  Hand = 11,
+}
+
+/**
+ * A build mode product (Product) as CPState::ArchSetCurrentTool reads it:
+ * tool products (terrain / water tool buttons) by their button index, wall
+ * styles (+0x14 kind 3, +0x30), wallpapers (+0x2c), floors (+0x34), and
+ * objects by GUID (doors, windows, stairs, fireplaces, plants, columns, pool
+ * equipment: cMoveTool modes 3..9).
+ */
+export interface ArchProduct {
+  /** Product +0x14 (3 = wall style). */
+  readonly kind: number;
+  /** ProductButton +8: the tool a tool product stands for (terrain: raise, lower, level, grass; water: pool, water), else -1. */
+  readonly toolIndex: number;
+  /** Object products' GUID, else 0. */
+  readonly guid: number;
+  /** +0x2c wallpaper id, +0x30 wall style, +0x34 floor style. */
+  readonly wallpaper: number;
+  readonly wallStyle: number;
+  readonly floorStyle: number;
+  getPrice(): number;
+  getProductName(): string;
+}
+
+/** cGameTools' UndoManager as CPState::ArchUndo / ArchRedo / ArchCanUndo / ArchCanRedo reach it; the lot view installs it. */
+export interface ArchUndoHooks {
+  undo(): void;
+  redo(): void;
+  canUndo(): boolean;
+  canRedo(): boolean;
+}
+
+/**
+ * cRoofLayer as cWinRoofPanel reaches it: the roof pitch (0 flat, 0.4
+ * shallow, 0.6 medium, 1 steep) and pattern (a GameData/Roofs bitmap name
+ * without extension); each change is one cRoofUndoable. The lot view installs it.
+ */
+export interface ArchRoofHooks {
+  getPitch(): number;
+  setPitch(pitch: number): void;
+  getPattern(): string;
+  setPattern(name: string): void;
+}
+
 /** CPState::NewCatalogSort (CPState+0x90). */
 export const enum CatalogSort {
   Room = 0,
@@ -540,6 +605,76 @@ export class CPState {
     if (this.mode !== Mode.Buy) return;
     this.shopSetCatalogItem(-1, null);
     this.soldItemHandler?.();
+  }
+
+  // --- build mode (CPState+0x58..+0x88) ---------------------------------------
+
+  /** +0x58 */
+  private archTool = ArchTool.Hand;
+  /** +0x5c: the sub-tool (product) picked per arch tool. */
+  private readonly archSubtools: Array<ArchProduct | null> = Array.from({ length: 12 }, () => null);
+  /** The lot view's undo manager (cGameTools +8). */
+  archUndoHooks: ArchUndoHooks | null = null;
+
+  /** CPState::ArchGetCurrentTool */
+  archGetCurrentTool(): ArchTool {
+    return this.archTool;
+  }
+
+  /** CPState::ArchSetCurrentTool (the lot view maps it to a cGameTools tool on DIRTY_ARCH_TOOL). */
+  archSetCurrentTool(tool: ArchTool): void {
+    const doorsOrWindows = tool === ArchTool.Door || tool === ArchTool.Window;
+    // Doors and windows need to see walls: the roof view goes back to walls up.
+    if (doorsOrWindows && this.getWallState() === WallState.Roof) this.setWallState(WallState.Up);
+    this.archTool = tool;
+    this.touch(DIRTY_ARCH_TOOL);
+  }
+
+  /** CPState::ArchGetCurrentSubtool */
+  archGetCurrentSubtool(): ArchProduct | null {
+    return this.archSubtools[this.archTool] ?? null;
+  }
+
+  /** CPState::ArchSetCurrentSubtool */
+  archSetCurrentSubtool(p: ArchProduct | null): void {
+    this.archSubtools[this.archTool] = p;
+    this.archSetCurrentTool(this.archTool);
+    this.touch(DIRTY_ARCH_SUBTOOL);
+  }
+
+  /** CPState::ArchGetCurrentFloorStyle: the floor product's style, else 1. */
+  archGetCurrentFloorStyle(): number {
+    return this.archSubtools[ArchTool.Floor]?.floorStyle ?? 1;
+  }
+
+  /** CPState::ArchUndo */
+  archUndo(): void {
+    this.archUndoHooks?.undo();
+    this.touch(DIRTY_ARCH_UNDO);
+  }
+
+  /** CPState::ArchRedo */
+  archRedo(): void {
+    this.archUndoHooks?.redo();
+    this.touch(DIRTY_ARCH_UNDO);
+  }
+
+  archCanUndo(): boolean {
+    return this.archUndoHooks?.canUndo() ?? false;
+  }
+
+  archCanRedo(): boolean {
+    return this.archUndoHooks?.canRedo() ?? false;
+  }
+
+  /** The lot's roof (cRoofLayer) for the roof panel; null until the lot view installs it. */
+  archRoofHooks: ArchRoofHooks | null = null;
+
+  /** CPState::UpdateWorldFromCPState: the lot view applies `bits` now instead of on its next update (it installs the hook). */
+  worldUpdateHook: ((bits: number) => void) | null = null;
+
+  updateWorldFromCPState(bits: number): void {
+    this.worldUpdateHook?.(bits);
   }
 
   // --- options and camera panels ---------------------------------------------

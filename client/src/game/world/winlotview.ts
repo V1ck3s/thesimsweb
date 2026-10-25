@@ -11,7 +11,7 @@
 
 import type { GameContext } from "../context.js";
 import { soundPlayer } from "../audio/index.js";
-import { DIRTY_SHOP_ITEM, Mode, type CPState, type HouseViewerHooks, type WallState } from "../cpstate.js";
+import { DIRTY_ARCH_SUBTOOL, DIRTY_ARCH_TOOL, DIRTY_ARCH_UNDO, DIRTY_SHOP_ITEM, Mode, type CPState, type HouseViewerHooks, type WallState } from "../cpstate.js";
 import { DefaultTTWindow } from "../ui/ttwindow.js";
 import { Gfx, TSWin } from "../ui/tswin.js";
 import { Compositor } from "./compositor.js";
@@ -27,10 +27,15 @@ import { computeRooms, RoomManager } from "./rooms.js";
 import { Terrain } from "./terrain.js";
 import { WallManager } from "./walls.js";
 import { CursorDrawer, GUID_TILE_CURSOR } from "./tools/cursorobject.js";
+import { BUILD_TOOLS } from "./tools/buildtools.js";
+import { GameTools, MoveToolAdapter, ToolId } from "./tools/gametools.js";
 import { MoveTool } from "./tools/movetool.js";
+import type { ToolHost } from "./tools/tool.js";
+import { UndoManager } from "./tools/undo.js";
 import { Placement, type ObjectBehaviorHooks } from "./tools/placement.js";
 import { FixedWorld, RotatableWorld } from "./world.js";
 import type { XObject } from "./objects.js";
+import type { ObjSelector } from "./objselector.js";
 import { Simulator } from "../sim/simulator.js";
 import { SimObject } from "../sim/xobject.js";
 
@@ -115,8 +120,13 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
   private tipWin: DefaultTTWindow | null = null;
   private buttonDown = false;
   private shift = false;
+  private ctrl = false;
+  /** cGameTools (buy and build tools). */
+  gameTools: GameTools | null = null;
   private readonly onModifiers = (e: KeyboardEvent | PointerEvent): void => {
     this.shift = e.shiftKey;
+    this.ctrl = e.ctrlKey;
+    if (e.type === "keyup" && e instanceof KeyboardEvent) this.activeTools()?.keyUp(e.key);
   };
   /** CPState listeners registered by init, removed by shutdown. */
   private readonly listeners: Array<(s: CPState) => void> = [];
@@ -139,7 +149,7 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
     const world = new RotatableWorld(FixedWorld.load(house, readLotSize(house)));
     const floors = new FloorGraphicsMgr();
     await floors.initialize();
-    await floors.loadUsageMap(house);
+    await floors.loadUsageMap(house, world.fixed);
     // cAnimDeviceSub::NewWorld sizes the 3D viewport to (width, height - 100).
     const viewW = this.ctx.width;
     const viewH = this.ctx.height - 100;
@@ -275,8 +285,8 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
       renderer: (res) => lot.renderer(res),
       // cSimulator::GetFunds / Spend (expense type 6, "furnishings") when the simulator runs.
       getFunds: () => this.sim?.getFunds() ?? st.getFunds(),
-      spend: (n) => {
-        if (this.sim) this.sim.spend(6, n);
+      spend: (n, expense = 6) => {
+        if (this.sim) this.sim.spend(expense, n);
         else st.setFunds(st.getFunds() - n);
       },
       shopSoldItem: () => st.shopSoldItem(),
@@ -299,22 +309,47 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
         drawer.cursor = c;
       },
     });
-    v.cursor = drawer;
     this.placement = p;
     this.buyTool = tool;
+    const tools = this.initGameTools(v, lot, p, tool);
+    // CPState::UpdateWorldFromCPState: the build panel's sub-tool picked inside CPState::Update.
+    st.worldUpdateHook = (bits) => {
+      if (st.getMode() === Mode.Build && bits & (DIRTY_ARCH_TOOL | DIRTY_ARCH_SUBTOOL)) {
+        tools.archSetCurrentTool(st.archGetCurrentTool(), st.archGetCurrentSubtool());
+      }
+    };
+    v.cursor = {
+      draw: (viewer, comp, rp) => {
+        drawer.draw(viewer, comp, rp);
+        tools.drawOverlay(viewer, comp, rp);
+      },
+    };
     window.addEventListener("keydown", this.onModifiers);
     window.addEventListener("keyup", this.onModifiers);
     window.addEventListener("pointermove", this.onModifiers);
     let guid: number | null = null;
-    let mode = st.getMode();
+    let mode: Mode | null = null;
     let pending = 0;
     this.listen(() => {
       if (st.getMode() !== mode) {
         mode = st.getMode();
-        // Leaving buy mode puts a held object back (cGameTools::SetTool -> Cancel).
-        if (mode !== Mode.Buy) tool.setParameter(null);
+        guid = null;
+        // CPState::SetMode -> SetCurrentToolByID: buy mode's hand, build mode's arch tool, no tool elsewhere
+        // (leaving puts a held object back: the tool's Cancel).
+        if (mode === Mode.Buy) {
+          tools.setCurrentToolByID(ToolId.Move, -1);
+          tool.setParameter(null);
+        } else if (mode === Mode.Build) {
+          tools.archSetCurrentTool(st.archGetCurrentTool(), st.archGetCurrentSubtool());
+        } else {
+          tools.current?.cancel();
+          tools.issueToolSelection(null);
+        }
+      } else if (mode === Mode.Build && st.dirty & (DIRTY_ARCH_TOOL | DIRTY_ARCH_SUBTOOL)) {
+        tools.archSetCurrentTool(st.archGetCurrentTool(), st.archGetCurrentSubtool());
       }
-      const product = mode === Mode.Buy ? st.shopGetCatalogItem() : null;
+      if (mode !== Mode.Buy) return;
+      const product = st.shopGetCatalogItem();
       const g = product?.guid ?? null;
       // A click on the catalog sets the shop item again (DIRTY_SHOP_ITEM), even the same product.
       if (g === guid && !(st.dirty & DIRTY_SHOP_ITEM && g !== null)) return;
@@ -324,9 +359,7 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
         if (tool.newPurchase) tool.setParameter(null);
         return;
       }
-      void lot.folder.getSelectorByGUID(g).then(async (sel) => {
-        // The new object's behaviors need its semi-global file before its init tree runs.
-        if (sel) await this.sim?.module.res.prepare([sel]);
+      void this.selectorForPurchase(lot, g).then((sel) => {
         if (ticket !== pending) return;
         tool.setParameter(sel);
         // The mouse is already over the lot: OnEnterWorld right away.
@@ -336,6 +369,100 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
         }
       });
     });
+  }
+
+  /** ObjectFolder::GetSelectorByGUID, with the object's semi-global file opened before its init tree runs. */
+  private async selectorForPurchase(lot: LotObjects, guid: number): Promise<ObjSelector | null> {
+    const sel = await lot.folder.getSelectorByGUID(guid);
+    if (sel) await this.sim?.module.res.prepare([sel]);
+    return sel;
+  }
+
+  /**
+   * cGameTools: the build tools around the buy tool, their host (funds,
+   * sounds, tips, world refreshes) and the undo manager behind CPState's
+   * ArchUndo / ArchRedo.
+   */
+  private initGameTools(v: HouseViewer, lot: LotObjects, p: Placement, move: MoveTool): GameTools {
+    const st = this.ctx.state;
+    const undo = new UndoManager();
+    const host: ToolHost = {
+      ctx: this.ctx,
+      state: st,
+      viewer: v,
+      world: v.world,
+      fixed: v.world.fixed,
+      walls: this.wallManager,
+      rooms: this.rooms,
+      lot,
+      placement: p,
+      undo,
+      dirty: {
+        walls: (level) => this.wallsChanged(level),
+        wallsPreview: (level) => {
+          this.wallManager?.rebuildFromMap(level);
+          v.dirty = true;
+        },
+        floors: () => {
+          v.dirty = true;
+        },
+        terrain: () => {
+          this.terrain?.markDirty();
+          v.buildMaxAltsTable();
+          v.dirty = true;
+        },
+      },
+      getFunds: () => this.sim?.getFunds() ?? st.getFunds(),
+      spend: (expense, n) => {
+        if (this.sim) this.sim.spend(expense, n);
+        else st.setFunds(st.getFunds() - n);
+      },
+      playSound: (event) => {
+        soundPlayer.playBySource(event);
+      },
+      setTip: (x, y, text) => {
+        if (this.tipWin) this.tip = { win: this.tipWin, x, y, text };
+      },
+      resetTip: () => {
+        this.tip = null;
+      },
+      getString: (file, id, index) => this.ctx.strings.get(file, id, index),
+      keys: () => ({ shift: this.shift, ctrl: this.ctrl }),
+      mouse: () => this.cursor ?? { x: 0, y: 0 },
+      invalidate: () => {
+        v.dirty = true;
+      },
+    };
+    const tools = new GameTools(host, new MoveToolAdapter(host, move), (g) => this.selectorForPurchase(lot, g));
+    for (const [id, make] of BUILD_TOOLS) tools.tools[id] = make(host);
+    undo.onChange = () => st.setDirty(DIRTY_ARCH_UNDO);
+    st.archUndoHooks = {
+      undo: () => undo.undoLastCommand(),
+      redo: () => undo.redoLastCommand(),
+      canUndo: () => undo.canUndo(),
+      canRedo: () => undo.canRedo(),
+    };
+    // cXPortal::ApplyWallStyle / Pickup: a door or window changed its wall.
+    p.onWallsChanged = (level) => this.wallsChanged(level);
+    this.gameTools = tools;
+    return tools;
+  }
+
+  /**
+   * Walls changed on a level (WallManager::AsynchronousRebuild, then the
+   * rooms (cFixedWorld::ComputeRooms), their cutaway and lighting).
+   */
+  wallsChanged(level: number): void {
+    const v = this.viewer;
+    if (!v) return;
+    this.wallManager?.rebuildFromMap(level);
+    if (this.rooms) {
+      computeRooms(v.world.fixed, this.rooms, level);
+      this.rooms.computeCutaway(v, level);
+      this.cutaway?.onRoomsChanged();
+    }
+    if (this.lighting) this.lighting.compute(this.lighting.phase);
+    v.dirty = true;
   }
 
   /**
@@ -393,9 +520,10 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
     };
   }
 
-  /** XViewer routes the mouse to the tool in buy mode only. */
-  private activeTool(): MoveTool | null {
-    return this.ctx.state.getMode() === Mode.Buy ? this.buyTool : null;
+  /** XViewer routes the mouse to cGameTools' current tool in buy and build modes. */
+  private activeTools(): GameTools | null {
+    const m = this.ctx.state.getMode();
+    return m === Mode.Buy || m === Mode.Build ? this.gameTools : null;
   }
 
   override postChildDraw(g: Gfx): void {
@@ -407,23 +535,23 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
   }
 
   override tsOnMouseDownL(x: number, y: number): boolean {
-    const tool = this.activeTool();
-    if (!tool || !this.viewer) return false;
+    const tools = this.activeTools();
+    if (!tools || !this.viewer) return false;
     this.buttonDown = true;
-    tool.click(x, y);
+    tools.mouseDown(x, y);
     return true;
   }
 
   override tsOnMouseUpL(x: number, y: number): boolean {
-    const tool = this.activeTool();
-    if (!tool || !this.viewer) return false;
+    const tools = this.activeTools();
+    if (!tools || !this.viewer) return false;
     this.buttonDown = false;
-    tool.release(x, y);
+    tools.mouseUp(x, y);
     return true;
   }
 
   override tsOnMouseEnter(): void {
-    this.activeTool()?.onEnterWorld();
+    this.activeTools()?.enterWorld();
   }
 
   /**
@@ -444,6 +572,14 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
         if (this.viewer) this.viewer.dirty = true;
       };
       this.sim = sim;
+      // The people's VitaBoys follow the simulation's animators.
+      for (const ps of sim.module.persons) {
+        this.people?.bindSim(
+          ps.obj,
+          (sk) => ps.animator.attach(sk),
+          () => ps.renderDir ?? ps.obj.dir,
+        );
+      }
     } catch (e) {
       console.error("[sim] simulator not started", e);
     }
@@ -550,8 +686,7 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
   override tsOnKeyDown(key: string): boolean {
     const v = this.viewer;
     if (!v) return false;
-    const tool = this.activeTool();
-    if (tool && (tool.onKeyDown(key) || tool.onChar(key))) return true;
+    if (this.activeTools()?.keyDown(key)) return true;
     const tw = 16 << v.scale;
     switch (key) {
       case "ArrowLeft":
@@ -588,11 +723,7 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
     this.edge?.onMouseMove(x, y);
     this.cursor = { x, y };
     this.cutaway?.mouseTrack(x, y);
-    const tool = this.activeTool();
-    if (tool) {
-      if (this.buttonDown) tool.drag(x, y);
-      else tool.float(x, y);
-    }
+    this.activeTools()?.mouseTrack(x, y);
     return this.viewer !== null;
   }
 
@@ -600,7 +731,7 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
     this.edge?.stop();
     this.cursor = null;
     this.buttonDown = false;
-    this.activeTool()?.onExitWorld();
+    this.activeTools()?.exitWorld();
   }
 
   override tsOnMouseDownR(_x: number, _y: number): boolean {

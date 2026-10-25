@@ -23,6 +23,7 @@
 
 import { OD, type ObjectModule, type XObject } from "../objects.js";
 import { getWall, segIndex, SEG_ROTATION, type TileWalls } from "../tilewalls.js";
+import { setFixedWall } from "./wallworld.js";
 import type { FixedWorld } from "../world.js";
 
 /** Object data indices used by placement (Behavior.iff STR# 141), beyond objects.ts OD. */
@@ -129,6 +130,8 @@ export class Placement {
   obstacle: XObject | null = null;
   /** lbl_105BA244: build/buy anywhere (cheat); off. */
   anywhere = false;
+  /** WallManager::AsynchronousRefresh after a portal changed a wall style (cXPortal::ApplyWallStyle / Pickup). */
+  onWallsChanged: ((level: number) => void) | null = null;
 
   constructor(
     readonly module: ObjectModule,
@@ -808,9 +811,56 @@ export class Placement {
         else if (firstAlt !== a && err === 0) err = 0x11;
       }
     }
-    if (err === 0) return true;
+    if (err === 0) return obj.kind === "portal" ? this.portalCanPlace(obj, hx, hy, level) : true;
     this.error = err;
     return false;
+  }
+
+  /** The part's wall style (OBJD +0x5c) and the segment it needs, or null. */
+  private portalWall(part: XObject): { style: number; seg: number } | null {
+    const style = part.selector.objd.i16(0x5c);
+    if (style === 0) return null;
+    const seg = this.getRequiredSegment(part);
+    return seg === 0 ? null : { style, seg };
+  }
+
+  /** cXPortal::CanPlace after cXMTObject::CanPlace: plain walls (style 1) where the parts go, centered on the tile. */
+  private portalCanPlace(obj: XObject, hx: number, hy: number, level: number): boolean {
+    const [, , ol] = Placement.offsets(obj);
+    for (const part of this.chain(obj)) {
+      const w = this.portalWall(part);
+      if (!w) continue;
+      const [px, py, pl] = Placement.offsets(part);
+      const x = tileOf(hx + px * 16);
+      const y = tileOf(hy + py * 16);
+      if (this.outOfBounds(x, y)) continue;
+      if (getWall(this.world, x, y, level - ol + pl).styles[segIndex(w.seg)] !== 1) {
+        this.error = 0x16;
+        return false;
+      }
+    }
+    if ((hx & ~0xf) + 8 !== hx || (hy & ~0xf) + 8 !== hy) {
+      this.error = 3;
+      return false;
+    }
+    return true;
+  }
+
+  /** cXPortal::ApplyWallStyle (place) / the style reset of cXPortal::Pickup: the wall under each part. */
+  private portalApplyWallStyle(obj: XObject, placing: boolean): void {
+    const levels = new Set<number>();
+    for (const part of this.chain(obj)) {
+      const w = this.portalWall(part);
+      if (!w) continue;
+      const x = tileOf(part.fx);
+      const y = tileOf(part.fy);
+      if (this.outOfBounds(x, y)) continue;
+      const t = getWall(this.world, x, y, part.level);
+      for (let b = 1; b <= 0x20; b <<= 1) if (w.seg & b) t.styles[segIndex(b)] = placing ? w.style : 1;
+      setFixedWall(this.world, x, y, part.level, t);
+      levels.add(part.level);
+    }
+    for (const l of levels) this.onWallsChanged?.(l);
   }
 
   /** Place (cXObject or cXMTObject). */
@@ -833,6 +883,7 @@ export class Placement {
       }
     }
     for (const part of parts) this.hooks.runCheckTree?.(part, FN.place, 0);
+    if (obj.kind === "portal" && this.isInWorld(parts[0]!)) this.portalApplyWallStyle(obj, true);
     if (wasOut && notify) this.hooks.onEnterWorld?.(obj);
   }
 
@@ -843,6 +894,7 @@ export class Placement {
       return;
     }
     const parts = this.chain(obj);
+    if (obj.kind === "portal" && this.isInWorld(parts[0]!)) this.portalApplyWallStyle(obj, false);
     for (const part of parts) this.hooks.runCheckTree?.(part, FN.pickup, 0);
     for (const part of parts) this.pickupSingle(part, false);
     if (notify) this.hooks.onExitWorld?.(obj);

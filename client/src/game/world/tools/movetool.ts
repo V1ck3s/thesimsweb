@@ -33,7 +33,21 @@ import { Placement, type FPt, type PlacementSpec } from "./placement.js";
 export const MoveMode = {
   Hand: 1,
   Buy: 2,
+  /** Build mode lists (SetParameter / UpdateSelector), by OBJD build mode type + 2. */
+  Door: 3,
+  Window: 4,
+  Stair: 5,
+  Plant: 6,
+  Fireplace: 7,
+  Column: 8,
+  PoolEquipment: 9,
 } as const;
+
+/** OBJD +0x8a build mode type -> cMoveTool mode (the lists lbl_105BBDDC .. lbl_105BBDC4), else 0. */
+export function buildModeOf(sel: ObjSelector): number {
+  const t = sel.objd.i16(0x8a);
+  return t >= 1 && t <= 7 ? t + 2 : 0;
+}
 
 /** Placement error codes the tool sets itself (UIText STR# 137 "PlacementErrs", index code - 1). */
 export const PlacementErr = {
@@ -68,7 +82,7 @@ export interface MoveToolHost {
   renderer(res: ResFile): Renderer;
   /** cSimulator::GetFunds / Spend. */
   getFunds(): number;
-  spend(amount: number): void;
+  spend(amount: number, expense?: number): void;
   /** CPState::ShopSoldItem. */
   shopSoldItem(): void;
   /** cDDDSimsView::SetTip / ResetTip (screen position in view pixels). */
@@ -123,6 +137,12 @@ export class MoveTool {
   /** +0x77: build mode item (80 % refund); +0x78: refundable at all. */
   private buildItem = false;
   private refundable = true;
+  /** +0xad: plants go on the ground floor only. */
+  private firstFloorOnly = false;
+  /** cTool +0x20: 6 furnishings, 7 build items (OBJD +0x8a). */
+  expenseType = 6;
+  /** cTool +0x24: doors and windows open the dynamic cutaway around the cursor. */
+  adjustsCutaway = false;
   /** +0x7b: the button is down with an object (drag rotates); +0x7c: rotation quadrant. */
   private mouseRotate = false;
   private rotateDir = -1;
@@ -176,7 +196,7 @@ export class MoveTool {
 
   /** cTool::FinalizePurchase: cSimulator::Spend(running total). */
   private finalizePurchase(): void {
-    if (this.runningTotal !== 0) this.host.spend(this.runningTotal);
+    if (this.runningTotal !== 0) this.host.spend(this.runningTotal, this.expenseType);
     this.runningTotal = 0;
   }
 
@@ -196,6 +216,24 @@ export class MoveTool {
     this.buildItem = false;
     this.keepBuying = false;
     this.refundable = true;
+    this.firstFloorOnly = false;
+    this.adjustsCutaway = false;
+    const build = sel ? buildModeOf(sel) : 0;
+    if (sel && build !== 0) {
+      // SetParameter's build lists: keep buying; plants are not refundable and first floor only.
+      this.mode = build;
+      this.newPurchase = true;
+      this.keepBuying = true;
+      this.buildItem = true;
+      this.refundable = build !== MoveMode.Plant;
+      this.firstFloorOnly = build === MoveMode.Plant;
+      this.adjustsCutaway = build === MoveMode.Door || build === MoveMode.Window;
+      this.selector = sel;
+      this.expenseType = 7;
+      this.grabV = 0;
+      this.grabH = 0;
+      return;
+    }
     if (!sel) {
       this.mode = MoveMode.Hand;
       this.newPurchase = false;
@@ -205,6 +243,7 @@ export class MoveTool {
     }
     if (sel !== this.selector) {
       this.selector = sel;
+      this.expenseType = sel && sel.objd.i16(0x8a) !== 0 ? 7 : 6;
       // CPState +0x44 == 0: the simulator's "not in a community lot" check is assumed.
       if (sel && sel.objd.i16(0xc0) === 1) this.keepBuying = true;
     }
@@ -518,7 +557,10 @@ export class MoveTool {
       this.play(this.p.error === 0 ? ToolSound.movePlace : ToolSound.denied, false);
       if (c.anchor) {
         this.attemptDrop = true;
-        if (!(c.inWorld && this.cursorValid())) this.showPlacementTip(this.p.error);
+        if (!(c.inWorld && this.cursorValid())) {
+          if (this.firstFloorOnly && this.level() > 1) this.p.error = PlacementErr.firstFloorOnly;
+          this.showPlacementTip(this.p.error);
+        }
       }
     }
     this.host.invalidate();
@@ -551,9 +593,18 @@ export class MoveTool {
 
   /** cMoveTool::UpdateSelector for a picked-up object: build items refund 80 %. */
   private updateSelector(sel: ObjSelector): void {
+    const master = sel.getMasterSelector();
+    this.expenseType = master.objd.i16(0x8a) !== 0 ? 7 : 6;
+    this.adjustsCutaway = false;
+    this.firstFloorOnly = false;
+    const build = buildModeOf(master);
+    this.mode = build || MoveMode.Hand;
     this.newPurchase = false;
-    this.buildItem = sel.objd.i16(0x8a) !== 0;
-    this.refundable = true;
+    this.keepBuying = false;
+    this.buildItem = build >= MoveMode.Door && build <= MoveMode.Column;
+    this.refundable = build !== MoveMode.Plant;
+    this.firstFloorOnly = build === MoveMode.Plant;
+    this.adjustsCutaway = build === MoveMode.Door || build === MoveMode.Window;
   }
 
   /** cMoveTool::DropObject. */

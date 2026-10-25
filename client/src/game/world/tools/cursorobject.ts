@@ -309,7 +309,7 @@ class DimRenderer extends Renderer {
 }
 
 /** DrawIso adapter for a cursor part or a floater drawn at the cursor. */
-class CursorDrawable implements DrawableObject {
+export class CursorDrawable implements DrawableObject {
   next: DrawableObject | null = null;
   isDynamic = true;
   hidden = 0;

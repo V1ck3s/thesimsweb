@@ -336,6 +336,66 @@ export class RotatableWorld {
     return [d[o + PACKED_ALT_PERM[p]!]!, d[o + PACKED_ALT_PERM[p + 1]!]!, d[o + PACKED_ALT_PERM[p + 2]!]!, d[o + PACKED_ALT_PERM[p + 3]!]!];
   }
 
+  /**
+   * cRotatableWorld::SetPackedAlt: a view tile's corners (view order), then
+   * the copies of its own corners its eight neighbors keep.
+   */
+  setPackedAlt(x: number, y: number, alt: readonly [number, number, number, number]): void {
+    const [wx, wy] = this.toWorld(x, y);
+    // View -> world byte order (the inverse of PACKED_ALT_PERM).
+    const p = this.rotation * 4;
+    const w = [0, 0, 0, 0];
+    for (let k = 0; k < 4; k++) w[PACKED_ALT_PERM[p + k]!] = alt[k]!;
+    const a = this.fixed.alt;
+    const set = (tx: number, ty: number, byte: number, v: number): void => {
+      if (this.fixed.outOfGrid(tx, ty)) return;
+      a.data[a.offset(tx, ty) + byte] = v;
+    };
+    for (let k = 0; k < 4; k++) set(wx, wy, k, w[k]!);
+    set(wx - 1, wy, 2, w[1]!);
+    set(wx - 1, wy, 3, w[0]!);
+    set(wx, wy - 1, 0, w[1]!);
+    set(wx, wy - 1, 3, w[2]!);
+    set(wx + 1, wy, 1, w[2]!);
+    set(wx + 1, wy, 0, w[3]!);
+    set(wx, wy + 1, 1, w[0]!);
+    set(wx, wy + 1, 2, w[3]!);
+    set(wx + 1, wy - 1, 0, w[2]!);
+    set(wx - 1, wy + 1, 2, w[0]!);
+    set(wx + 1, wy + 1, 1, w[3]!);
+    set(wx - 1, wy - 1, 3, w[1]!);
+  }
+
+  /** cRotatableWorld::GetTargetGrass */
+  getTargetGrass(x: number, y: number): number {
+    const [wx, wy] = this.toWorld(x, y);
+    return this.fixed.targetGrass.s8(wx, wy);
+  }
+
+  /** cRotatableWorld::SetGrass (signed char). */
+  setGrass(x: number, y: number, v: number): void {
+    const [wx, wy] = this.toWorld(x, y);
+    const a = this.fixed.grass;
+    a.data[a.offset(wx, wy)] = v & 0xff;
+  }
+
+  /** cRotatableWorld::SetTargetGrass (signed char). */
+  setTargetGrass(x: number, y: number, v: number): void {
+    const [wx, wy] = this.toWorld(x, y);
+    const a = this.fixed.targetGrass;
+    a.data[a.offset(wx, wy)] = v & 0xff;
+  }
+
+  /**
+   * cRotatableWorld::MayEditTile: build/buy anywhere (lbl_105BA244), else the
+   * ground floor tile's flag 0x20 is clear.
+   */
+  mayEditTile(x: number, y: number, anywhere: boolean): boolean {
+    if (anywhere) return true;
+    const [wx, wy] = this.toWorld(x, y);
+    return (this.fixed.flags[0]!.u8(wx, wy) & 0x20) === 0;
+  }
+
   getFloor(x: number, y: number, level: number): number {
     const [wx, wy] = this.toWorld(x, y);
     return this.fixed.floors[level - 1]!.u16(wx, wy);

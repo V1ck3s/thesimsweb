@@ -24,7 +24,7 @@
  */
 
 import type { GameContext } from "../../context.js";
-import { OBJD, type Product } from "../../data/catalog.js";
+import { OBJD, Product } from "../../data/catalog.js";
 import { makeMoneyString } from "../../nbhd/nghinterface.js";
 import { ALIGN_LEFT, type FfnFont } from "../../res/ffn.js";
 import { LANG_FRENCH } from "../../res/uires.js";
@@ -47,6 +47,22 @@ const SEPARATOR = " -- ";
 const GREEN = rgb(0, 0xca, 0x39);
 const RED = rgb(0xff, 0, 0);
 const SLIDE_MS = 0xfa;
+
+/**
+ * What the sheet reads from a product: object products are data/catalog
+ * Products (picture from the object's sprites, restrictions from its tree
+ * table); the build mode tool, floor and wall products draw their own
+ * picture (Product::DrawIcon) and have no ratings.
+ */
+export interface PopupProduct {
+  getProductName(): string;
+  getPrice(): number;
+  getDescription(): string;
+  getCatalogRating(i: number): number;
+  canAfford(funds: number): boolean;
+  /** Product::DrawIcon into (0, 0, w, h) of `g`. */
+  drawPopupIcon?(ctx: GameContext, g: CanvasRenderingContext2D, w: number, h: number): Promise<void>;
+}
 
 /** Restriction kinds in BuildMyBuffer's order, with their STR# 160 entry (0-based). */
 const enum Restriction {
@@ -113,7 +129,7 @@ async function interactions(file: ResFile, p: Product): Promise<Interaction[]> {
 export class WinCatalogPopup extends TSWin {
   /** cWinCatalogPopup+0xe0 */
   shown = false;
-  private product: Product | null = null;
+  private product: PopupProduct | null = null;
   private owner: TSWin | null = null;
   private tiles: ImageBitmap | null = null;
   private textFont: FfnFont | null = null;
@@ -138,7 +154,7 @@ export class WinCatalogPopup extends TSWin {
   }
 
   /** cWinCatalogPopup::EnablePopup */
-  enablePopup(product: Product, owner: TSWin): void {
+  enablePopup(product: PopupProduct, owner: TSWin): void {
     this.shown = true;
     this.owner = owner;
     this.setProductInfo(product);
@@ -157,7 +173,7 @@ export class WinCatalogPopup extends TSWin {
   }
 
   /** cWinCatalogPopup::SetProductInfo */
-  setProductInfo(product: Product): void {
+  setProductInfo(product: PopupProduct): void {
     this.product = product;
     void this.buildMyBuffer(product);
   }
@@ -167,7 +183,7 @@ export class WinCatalogPopup extends TSWin {
   }
 
   /** cWinCatalogPopup::BuildMyBuffer */
-  private async buildMyBuffer(p: Product): Promise<void> {
+  private async buildMyBuffer(p: PopupProduct): Promise<void> {
     const serial = ++this.serial;
     const text = this.textFont!;
     const title = this.titleFont!;
@@ -187,21 +203,24 @@ export class WinCatalogPopup extends TSWin {
     const ratingText = ratings.join("\n");
     const ratingBottom = descBottom + lines(ratingText) * text.height;
 
-    const file = await p.openFile().catch(() => null);
+    const obj = p instanceof Product ? p : null;
+    const file = obj ? await obj.openFile().catch(() => null) : null;
     if (serial !== this.serial) return;
-    const list = file ? await interactions(file, p) : [];
+    const list = obj && file ? await interactions(file, obj) : [];
     const restrict = restriction(list);
     const restrictBottom = ratingBottom + (restrict !== Restriction.None ? text.height : 0);
     const group = hasGroupActions(list);
     const groupBottom = restrictBottom + (group ? text.height : 0);
     const height = Math.max(MIN_HEIGHT, groupBottom + MARGIN);
-    const icon = file ? await ObjectIcon.create(file, p.rec.objdId).catch(() => null) : null;
+    const icon = obj && file ? await ObjectIcon.create(file, obj.rec.objdId).catch(() => null) : null;
     if (serial !== this.serial) return;
 
     const c = new OffscreenCanvas(WIDTH, height);
     const g = c.getContext("2d") as unknown as CanvasRenderingContext2D;
     if (this.tiles) bltEdge(g, this.tiles, WIDTH, height);
-    icon?.draw(g, 0, 0, ICON_W, height);
+    if (icon) icon.draw(g, 0, 0, ICON_W, height);
+    else await p.drawPopupIcon?.(this.ctx, g, ICON_W, height);
+    if (serial !== this.serial) return;
 
     // Title line: name, separator, price.
     let x = TEXT_X;

@@ -25,13 +25,20 @@ export const CMD_ASYNC_CANCEL = 0x14;
 /** lbl_105BA774 (cOptionsMgr: quick tips on). */
 const ASYNC_TIMEOUT_MS = 0xfa;
 
-export class ProductButton extends TSWinBtn {
+/** What a product button reads from its product (data/catalog Product, data/buildcatalog BuildProduct). */
+export interface ButtonProduct {
+  getPrice(): number;
+  /** Product::GenerateGraphics: the 74x37 picture, null when there is none. */
+  icon(): Promise<ImageBitmap | null>;
+}
+
+export class ProductButton<P extends ButtonProduct = Product> extends TSWinBtn {
   private icon: ImageBitmap | null = null;
   private asyncPending = false;
   private asyncStart = 0;
 
   constructor(
-    readonly product: Product,
+    readonly product: P,
     template: ImageBitmap,
     cols: number,
   ) {

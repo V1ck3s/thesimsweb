@@ -927,7 +927,7 @@ export class WallManager implements WallDrawer {
   static async create(house: ResFile, world: RotatableWorld): Promise<WallManager> {
     const gfx = new WallGraphicsMgr();
     await gfx.initialize();
-    await gfx.loadUsageMap(house);
+    await gfx.loadUsageMap(house, world.fixed);
     const m = new WallManager(world.fixed, world, gfx);
     m.buildGraphFromMap();
     return m;
@@ -975,6 +975,25 @@ export class WallManager implements WallDrawer {
       for (const v of this.vertices[l]!) v.buildWalls(this);
     }
     this.rotation = 0;
+  }
+
+  /**
+   * WallManager::AsynchronousRebuild + HandleDirty (+ cFixedWorld::SetWall's
+   * vertex configurations): the walls of `level` (0 = both) changed in the
+   * world arrays; the graph is rebuilt from the map and the cutaway redone.
+   * Pattern / style only changes (AsynchronousRefresh -> Wall::RefreshFromMap)
+   * take the same path.
+   */
+  rebuildFromMap(level = 0): void {
+    for (let l = 1; l <= 2; l++) {
+      if (level !== 0 && l !== level) continue;
+      const c = this.configs[l - 1]!;
+      for (let x = 0; x < ARRAY_SIZE; x++) for (let y = 0; y < ARRAY_SIZE; y++) c[x * ARRAY_SIZE + y] = analyzeWallVertex(this.fixed, x, y, l);
+    }
+    this.buildGraphFromMap();
+    const rot = this.world.rotation;
+    if (rot !== 0) this.setRotation(rot);
+    this.preparedKey = "";
   }
 
   /** WallManager::SetRotation. */
