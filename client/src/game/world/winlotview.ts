@@ -18,6 +18,7 @@ import { FloorGraphicsMgr } from "./floors.js";
 import { HouseViewer, type ObjectDrawer, type TerrainDrawer, type WallDrawer } from "./houseviewer.js";
 import { ResFile } from "./iffres.js";
 import { loadLotObjectDrawer, type LotObjects } from "./lotobjects.js";
+import { LotPeople } from "./lotpeople.js";
 import { Terrain } from "./terrain.js";
 import { WallManager } from "./walls.js";
 import { FixedWorld, RotatableWorld } from "./world.js";
@@ -85,6 +86,7 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
   wallManager: WallManager | null = null;
   /** The lot objects when this view loaded them (no `parts.objects`). */
   lotObjects: LotObjects | null = null;
+  people: LotPeople | null = null;
   /** CPState listeners registered by init, removed by shutdown. */
   private readonly listeners: Array<(s: CPState) => void> = [];
   private readonly onKey = (e: KeyboardEvent): void => {
@@ -150,6 +152,8 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
     } else {
       this.lotObjects = await loadLotObjectDrawer(house, world.fixed);
       v.objects = this.lotObjects.drawer;
+      this.people = await LotPeople.load(comp, this.housePath.split("/")[0] ?? "UserData", this.lotObjects.objects.values());
+      v.people = this.people;
     }
     const saved = readSavedView(house);
     if (saved) {
@@ -226,6 +230,10 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
   override pump(nowMs: number): void {
     this.edge?.pump(nowMs);
     this.viewer?.pump(nowMs);
+    if (this.viewer && this.people?.people.length) {
+      this.people.update(nowMs);
+      this.viewer.dirty = true;
+    }
     super.pump(nowMs);
   }
 

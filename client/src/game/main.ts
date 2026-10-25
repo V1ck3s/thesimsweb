@@ -45,7 +45,7 @@ async function createContext(): Promise<GameContext> {
 class Game {
   private nbhdDir = "UserData";
   private nbhd: Neighborhood | null = null;
-  private lotView: WinLotView | null = null;
+  lotView: WinLotView | null = null;
 
   constructor(
     private readonly ctx: GameContext,
@@ -145,6 +145,8 @@ async function boot(): Promise<void> {
   splash.setSplashMessage("ocns");
   await ObjectFolder.get("UserData");
   const game = new Game(ctx, mgr);
+  // Dev handle for the screenshot tooling (`eval:game.lotView...`).
+  (window as unknown as { game: Game }).game = game;
   await splash.finished();
   mgr.main.childDelete(splash);
   // `?house=N` (dev): straight into a lot of the default neighborhood.

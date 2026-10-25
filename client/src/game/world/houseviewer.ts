@@ -69,6 +69,8 @@ export class HouseViewer {
   terrain: TerrainDrawer | null = null;
   walls: WallDrawer | null = null;
   objects: ObjectDrawer | null = null;
+  /** People (3D meshes), drawn after the dynamic objects with the shared depth buffer. */
+  people: { draw(viewer: HouseViewer): void } | null = null;
   /** XSmoothScroller state. */
   private scroll: { fromX: number; fromY: number; toX: number; toY: number; start: number; dur: number } | null = null;
   dirty = true;
@@ -409,6 +411,7 @@ export class HouseViewer {
       this.renderStatic(l, false, rp);
     }
     this.objects?.drawDynamicObjects?.(this, comp, rp);
+    this.people?.draw(this);
     this.dirty = false;
   }
 
