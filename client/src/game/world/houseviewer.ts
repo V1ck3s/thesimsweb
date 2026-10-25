@@ -15,9 +15,11 @@
  * split and the scroll blits (the whole view is re-rendered on change).
  */
 
-import type { Compositor } from "./compositor.js";
+import type { Compositor, SpriteTex } from "./compositor.js";
 import { drawFloor, type FloorGraphicsMgr } from "./floors.js";
 import { RenderParam } from "./renderparam.js";
+import { getOverlappingSprite, poolCornerSpriteId, poolSpriteId, rotateTileBits, type ByteLayer } from "./pools.js";
+import { LIGHT_POOLS_ENABLED, lightMapSet, NO_LIGHT, processFloorLightEntry } from "./lightmaps.js";
 import { DIRS, RotatableWorld } from "./world.js";
 import { LEVEL_PX, makeZSpriteLookup, ZBufferLookup } from "./zbuffer.js";
 
@@ -46,6 +48,8 @@ export interface ObjectDrawer {
   drawDynamicObjects?(viewer: HouseViewer, comp: Compositor, rp: RenderParam): void;
 }
 
+const NO_ENTRY: readonly number[] = [NO_LIGHT, NO_LIGHT, NO_LIGHT, NO_LIGHT];
+
 /** HouseViewer::GetClearColor for daytime (0x737373). */
 const CLEAR_COLOR = 0x737373;
 
@@ -65,12 +69,19 @@ export class HouseViewer {
   readonly zbuf: ZBufferLookup;
   private readonly zLookupIndex: number;
   private readonly floorIndex = new Map<number, number>();
+  /** Water sprites with their transparent color keyed out, by (id << 2) | frame. */
+  private readonly waterTex = new Map<number, SpriteTex | null>();
   private target: TerrainTarget;
   terrain: TerrainDrawer | null = null;
   walls: WallDrawer | null = null;
   objects: ObjectDrawer | null = null;
   /** Room lighting (lighting.ts): RoomManager::GetRoomAmbientLight; null = full light. */
-  lighting: { getRoomAmbientLight(fx: number, fy: number, level: number): number; clampAmbient(level: number): number } | null = null;
+  lighting: {
+    getRoomAmbientLight(fx: number, fy: number, level: number): number;
+    clampAmbient(level: number): number;
+    /** cRotatableWorld::GetLightEntry of a view tile (lightmaps.ts). */
+    getLightEntry?(x: number, y: number, level: number): readonly number[];
+  } | null = null;
   /** HouseViewer's dynamic cutaway (cutaway.ts), told about scale / rotation / level changes. */
   cutawayCtl: { onScale(): void; onRotation(): void; onLevel(old: number): void } | null = null;
   /** People (3D meshes), drawn after the dynamic objects with the shared depth buffer. */
@@ -145,6 +156,37 @@ export class HouseViewer {
   /** Ambient at a view tile's center (FTilePt(x + 1/2, y + 1/2), as RenderStaticRow asks). */
   ambientAtTile(x: number, y: number, level: number): number {
     return this.ambientAt((x << 4) | 8, (y << 4) | 8, level);
+  }
+
+  /**
+   * cRotatableWorld::GetLightEntry of a view tile, or no light ([0x7f] * 4)
+   * when lighting is off.
+   */
+  lightEntry(x: number, y: number, level: number): readonly number[] {
+    return this.lighting?.getLightEntry?.(x, y, level) ?? NO_ENTRY;
+  }
+
+  /**
+   * cRenderer::DrawFloor's choice between FloorBlit and the lit blitters for
+   * a floor sprite whose top-left corner is at (sx, sy): LitFloorBlit /
+   * LitFloorAddBlit when the tile's light entry has lights within the floor
+   * maps' range (ProcessFloorLightEntry) and the ambient level is not 1.
+   * Sets Compositor.light for the draw; clearFloorLight resets it.
+   */
+  setFloorLight(x: number, y: number, level: number, sx: number, sy: number): void {
+    this.comp.light = null;
+    if (!LIGHT_POOLS_ENABLED) return;
+    const a = this.comp.ambient;
+    if (Math.abs(a - 1) <= 1e-6) return;
+    const s = this.scale;
+    const lights = processFloorLightEntry(this.lightEntry(x, y, level), lightMapSet.floorRange(s));
+    if (lights.length === 0) return;
+    const tex = this.comp.lightMapTexture(lightMapSet.floor(s));
+    const maps = lights.map(([dx, dy]) => {
+      const o = lightMapSet.floorOrigin(s, dx, dy);
+      return { tex, x: sx - o.col, y: sy - o.row };
+    });
+    this.comp.light = { base: Math.trunc(255 * a + 0.5), maps };
   }
 
   /** Origin rescaled to another scale (the TileToPoint branch for scale != current). */
@@ -554,13 +596,112 @@ export class HouseViewer {
         }
       }
       const floor = w.getFloor(x, y, 1);
-      if (floor === 0) continue;
-      this.comp.ambient = this.ambientAtTile(x, y, 1);
-      if (w.getWallStorage(x, y, 1).segs !== 0 && isDiagonal(w, x, y, 1)) continue; // diagonal floor halves: not ported
-      const g = this.floors.getFloorGraphic(floor, s);
-      if (g) drawFloor(this.comp, this, g.renderer, { x, y, level: 1 }, g.id, fx, fy);
+      if (floor !== 0) this.drawTerrainFloor(x, y, floor, fx, fy);
+      this.drawWaterTile(x, y, alt[1]);
     }
-    void rp;
+  }
+
+  /** RenderTerrainRow's ground floor tile. */
+  private drawTerrainFloor(x: number, y: number, floor: number, fx: number, fy: number): void {
+    const w = this.world;
+    this.comp.ambient = this.ambientAtTile(x, y, 1);
+    if (w.getWallStorage(x, y, 1).segs !== 0 && isDiagonal(w, x, y, 1)) return; // diagonal floor halves: not ported
+    const g = this.floors.getFloorGraphic(floor, this.scale);
+    if (!g) return;
+    this.setFloorLight(x, y, 1, fx, fy);
+    drawFloor(this.comp, this, g.renderer, { x, y, level: 1 }, g.id, fx, fy);
+    this.comp.light = null;
+  }
+
+  /**
+   * RenderTerrainRow's water: an interior tile with a cWaterLayer entry
+   * draws sprite 0x800 + its edge bits (cWaterTile::Rotate) of the water
+   * renderer (floors.iff), frame 3 - scale, one pixel left and 4 (scale 3) or
+   * 1 pixels up (cRenderer::DrawWaterTile -> SpriteListInfo::Render with the
+   * floor flag: the frame's transparent color is skipped, depth from the
+   * floor table at GetTerrainZ + 0x50).
+   */
+  private drawWaterTile(x: number, y: number, altTop: number): void {
+    const w = this.world;
+    if (!w.inInterior(x, y)) return;
+    const [wx, wy] = w.toWorld(x, y);
+    // cWaterTool's preview replaces the (then empty) world layer.
+    const raw = (this.dynamicWaterLayer ?? w.fixed.water).u8(wx, wy);
+    if (raw === 0xff) return;
+    const s = this.scale;
+    const id = rotateTileBits(raw, w.rotation) + 0x800;
+    const frame = 3 - s;
+    const key = (id << 2) | frame;
+    let tex = this.waterTex.get(key);
+    if (tex === undefined) {
+      const f = this.floors.global.frame(id, frame);
+      tex = null;
+      if (f && f.width > 0 && f.height > 0) {
+        const keyed = { ...f, mode: f.mode.map((m, i) => (f.index[i] === f.transparentIndex ? 0 : m)) };
+        tex = this.comp.uploadSprite(keyed, this.floors.global.palette(f.paletteId));
+      }
+      this.waterTex.set(key, tex);
+    }
+    if (!tex) return;
+    this.comp.ambient = this.ambientAtTile(x, y, 1);
+    const top = this.tileToPoint(x, y, 1, s, 0);
+    const sx = top.h - (8 << s) - 1;
+    const sy = top.v - (altTop << (s + 1)) - (s === 3 ? 4 : 1);
+    const zb = this.zbuf;
+    const base = this.getTerrainZ(x, y) + 0x50 - zb.floorAt(s, sy, this.originY);
+    this.comp.drawFloorSprite(tex, sx, sy, false, base, this.floorRowIndex(sy));
+  }
+
+  /** +0x4b4: cPoolTool's preview layer (HouseViewer::ApplyDynamicPoolLayer). */
+  dynamicPoolLayer: ByteLayer | null = null;
+
+  /** HouseViewer::ApplyDynamicPoolLayer */
+  applyDynamicPoolLayer(layer: ByteLayer): void {
+    this.dynamicPoolLayer = layer;
+  }
+
+  /** HouseViewer::RemoveDynamicPoolLayer */
+  removeDynamicPoolLayer(): void {
+    this.dynamicPoolLayer = null;
+  }
+
+  /** cWaterTool's preview layer (HouseViewer::ApplyDynamicWaterLayer). */
+  dynamicWaterLayer: ByteLayer | null = null;
+
+  /** HouseViewer::ApplyDynamicWaterLayer */
+  applyDynamicWaterLayer(layer: ByteLayer): void {
+    this.dynamicWaterLayer = layer;
+  }
+
+  /** HouseViewer::RemoveDynamicWaterLayer */
+  removeDynamicWaterLayer(): void {
+    this.dynamicWaterLayer = null;
+  }
+
+  /**
+   * RenderStaticRow, level 1: the tile's pool layer entry. A pool tile draws
+   * floor sprite 0x400 + its rotated edge bits, a deck tile floor 0x0c, then
+   * the inner corners (cPoolLayer::GetOverlappingSprite), all with the
+   * global floor renderer, at the tile center's RenderParam position minus
+   * half a tile, without light pools.
+   */
+  private drawPoolTile(x: number, y: number, rp: RenderParam): void {
+    const w = this.world;
+    const [wx, wy] = w.toWorld(x, y);
+    // While cPoolTool is selected the world layer is empty and its preview is
+    // drawn instead (the original draws it in RenderDynamicPoolLayer).
+    const layer = this.dynamicPoolLayer ?? w.fixed.pool;
+    const raw = layer.u8(wx, wy);
+    if (raw > 0x10) return;
+    const s = this.scale;
+    const g = this.floors.global;
+    rp.setGridCoords((wx << 4) | 8, (wy << 4) | 8, 1);
+    const sx = rp.sx - (8 << s);
+    const sy = rp.sy - (4 << s);
+    const tile = { x, y, level: 1 };
+    drawFloor(this.comp, this, g, tile, poolSpriteId(rotateTileBits(raw, w.rotation), s), sx, sy);
+    const corners = getOverlappingSprite(w.fixed, layer, wx, wy, w.rotation);
+    for (let k = 0; k < 4; k++) if (corners & (1 << k)) drawFloor(this.comp, this, g, tile, poolCornerSpriteId(k, s), sx, sy);
   }
 
   /** RenderStaticRow: upper-level floors and the objects standing on each tile. */
@@ -578,9 +719,16 @@ export class HouseViewer {
         const floor = w.getFloor(x, y, level);
         if (floor !== 0 && !(w.getWallStorage(x, y, level).segs !== 0 && isDiagonal(w, x, y, level))) {
           const g = this.floors.getFloorGraphic(floor, s);
-          if (g) drawFloor(this.comp, this, g.renderer, { x, y, level }, g.id, base.h - (8 << s), base.v - (alt[1] << (s + 1)));
+          if (g) {
+            const fx = base.h - (8 << s);
+            const fy = base.v - (alt[1] << (s + 1));
+            this.setFloorLight(x, y, level, fx, fy);
+            drawFloor(this.comp, this, g.renderer, { x, y, level }, g.id, fx, fy);
+            this.comp.light = null;
+          }
         }
       }
+      if (level === 1) this.drawPoolTile(x, y, rp);
       if (this.objects && w.getTileObjectID(x, y, level) !== 0) this.objects.drawTileObjects(this, this.comp, x, y, level, rp);
     }
   }

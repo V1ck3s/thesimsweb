@@ -63,7 +63,19 @@ uniform int uColIdx[8];     // wall: per zone, table index of the column term fo
 uniform float uZoneOff[8];  // wall: per zone depth offset
 uniform float uLeft;        // wall: target x of the sprite's first column
 uniform float uAmbientL;    // PalWrap dark map level 0..31, < 0 = full light (plain palette)
+uniform int uLitN;          // lit blit: number of light maps (0 = plain blit)
+uniform int uLitBase;       // lit blit: (int)(255 * ambient + 0.5)
+uniform sampler2D uLit0;    // R8 light maps (Surface8)
+uniform sampler2D uLit1;
+uniform vec2 uLit0Org;      // target pixel of the maps' texel (0, 0)
+uniform vec2 uLit1Org;
 out vec4 outColor;
+float litAt(sampler2D m, vec2 org) {
+  ivec2 t = ivec2(floor(gl_FragCoord.x), int(floor(uViewH - gl_FragCoord.y))) - ivec2(org);
+  ivec2 n = textureSize(m, 0);
+  if (t.x < 0 || t.y < 0 || t.x >= n.x || t.y >= n.y) return 0.0;
+  return floor(texelFetch(m, t, 0).r * 255.0 + 0.5);
+}
 float tableAt(int i) {
   return texelFetch(uTable, ivec2(i % 4096, i / 4096), 0).r;
 }
@@ -96,12 +108,20 @@ void main() {
       depth = uBase + tableAt(uRowOffset + r);
     }
   }
-  if (uAmbientL >= 0.0 && uMode != 2) {
+  float level = uAmbientL;
+  if (uLitN > 0 && uMode != 2) {
+    // Lit*Blit: the light maps add to the ambient byte, clamped, then the
+    // dark map row (level & 0xf8) / 8.
+    float l = float(uLitBase) + litAt(uLit0, uLit0Org);
+    if (uLitN > 1) l += litAt(uLit1, uLit1Org);
+    level = floor(clamp(l, 0.0, 255.0) / 8.0);
+  }
+  if (level >= 0.0 && uMode != 2) {
     // PrecomputeDarkMap: per 5-bit channel, b + c * (max(b, L) - b) / 31 with
     // the night color (0, 0, 10) >> 3 as b.
     vec3 c5 = floor(c.rgb * 255.0 / 8.0 + 0.001);
     vec3 b = vec3(0.0, 0.0, 1.0);
-    vec3 o = floor(0.5 + b + c5 * (max(b, vec3(uAmbientL)) - b) / 31.0);
+    vec3 o = floor(0.5 + b + c5 * (max(b, vec3(level)) - b) / 31.0);
     c.rgb = o * 8.0 / 255.0;
   }
   gl_FragDepth = clamp((depth - ${DEPTH_MIN.toFixed(1)}) / ${DEPTH_RANGE.toFixed(1)}, 0.0, 1.0);
@@ -128,7 +148,21 @@ const UNIFORMS = [
   "uZoneOff",
   "uLeft",
   "uAmbientL",
+  "uLitN",
+  "uLitBase",
+  "uLit0",
+  "uLit1",
+  "uLit0Org",
+  "uLit1Org",
 ] as const;
+
+/** A light map placed on the target (see Compositor.light). */
+export interface LitMap {
+  tex: WebGLTexture;
+  /** Target pixel of the map's (0, 0). */
+  x: number;
+  y: number;
+}
 
 export class Compositor {
   readonly canvas: HTMLCanvasElement;
@@ -147,6 +181,13 @@ export class Compositor {
    * through the dark map at level ((255 * ambient + 0.5) & 0xf8) / 8.
    */
   ambient = 1;
+  /**
+   * Lit blit for the next draws (LitFloorBlit / LitFloorAddBlit /
+   * LitWallBlit / LitWallAddBlit): `base` = (int)(255 * ambient + 0.5) and one
+   * or two light maps; null = the plain blit at `ambient`.
+   */
+  light: { base: number; maps: LitMap[] } | null = null;
+  private readonly lightTex = new Map<object, WebGLTexture>();
   /** Raw layer textures (terrain), reused across frames. */
   private rawColor: WebGLTexture | null = null;
   private rawZ: WebGLTexture | null = null;
@@ -180,6 +221,8 @@ export class Compositor {
     gl.uniform1i(this.u.uColor!, 0);
     gl.uniform1i(this.u.uZMode!, 1);
     gl.uniform1i(this.u.uTable!, 2);
+    gl.uniform1i(this.u.uLit0!, 3);
+    gl.uniform1i(this.u.uLit1!, 4);
     gl.viewport(0, 0, width, height);
     gl.enable(gl.DEPTH_TEST);
     gl.depthFunc(gl.LEQUAL);
@@ -271,6 +314,17 @@ export class Compositor {
     return { width: f.width, height: f.height, color, zmode, hasOpaque, hasAlpha };
   }
 
+  /** R8 texture of a light map (Surface8), uploaded once per map object. */
+  lightMapTexture(m: { width: number; height: number; data: Uint8Array }): WebGLTexture {
+    let t = this.lightTex.get(m);
+    if (t) return t;
+    const gl = this.gl;
+    t = this.texture();
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.R8, m.width, m.height, 0, gl.RED, gl.UNSIGNED_BYTE, m.data);
+    this.lightTex.set(m, t);
+    return t;
+  }
+
   // --- frame ----------------------------------------------------------------
 
   clear(r: number, g: number, b: number): void {
@@ -309,6 +363,21 @@ export class Compositor {
     gl.uniform1i(this.u.uFlip!, flip ? 1 : 0);
     const a = this.ambient;
     gl.uniform1f(this.u.uAmbientL!, Math.abs(a - 1) > 1e-6 ? (Math.trunc(255 * a + 0.5) & 0xf8) / 8 : -1);
+    const lit = this.light;
+    gl.uniform1i(this.u.uLitN!, lit ? Math.min(2, lit.maps.length) : 0);
+    if (lit) {
+      gl.uniform1i(this.u.uLitBase!, lit.base);
+      const m0 = lit.maps[0];
+      const m1 = lit.maps[1] ?? m0;
+      if (m0 && m1) {
+        gl.activeTexture(gl.TEXTURE3);
+        gl.bindTexture(gl.TEXTURE_2D, m0.tex);
+        gl.activeTexture(gl.TEXTURE4);
+        gl.bindTexture(gl.TEXTURE_2D, m1.tex);
+        gl.uniform2f(this.u.uLit0Org!, m0.x, m0.y);
+        gl.uniform2f(this.u.uLit1Org!, m1.x, m1.y);
+      }
+    }
     setup();
     // Pass 0: opaque pixels with depth write; pass 1: alpha pixels blended.
     if (tex.hasOpaque) {

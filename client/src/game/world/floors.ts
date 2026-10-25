@@ -509,5 +509,8 @@ export function drawFloor(
   const oy = viewer.originY;
   let base = viewer.getTerrainZ(tile.x, tile.y) + (tile.level - 1) * zb.levelZ.get(s)! + 0x41 + extraZ;
   base -= zb.floorAt(s, y - f.yLoc, oy);
-  comp.drawFloorSprite(tex, x, y, false, base, viewer.floorRowIndex(y));
+  // DrawFloor: the sprite's offsets move its top-left corner (pool corner pieces have some).
+  const sx = x + f.xLoc;
+  const sy = y + f.yLoc;
+  comp.drawFloorSprite(tex, sx, sy, false, base, viewer.floorRowIndex(sy));
 }

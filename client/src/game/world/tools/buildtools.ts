@@ -7,6 +7,7 @@ import { ToolId, type ToolFactory } from "./gametools.js";
 import { NewFloorTool } from "./floortool.js";
 import { GrassTool } from "./grasstool.js";
 import { LevelDirtTool } from "./leveldirttool.js";
+import { PoolTool, WaterTool } from "./pooltool.js";
 import { SimpleAltTool } from "./simplealttool.js";
 import { NewWallTool } from "./walltool.js";
 import { NewWallpaperTool } from "./wallpapertool.js";
@@ -19,4 +20,6 @@ export const BUILD_TOOLS: Array<[number, ToolFactory]> = [
   [ToolId.Wall, (h) => new NewWallTool(h)],
   [ToolId.Floor, (h) => new NewFloorTool(h)],
   [ToolId.Wallpaper, (h) => new NewWallpaperTool(h)],
+  [ToolId.Pool, (h) => new PoolTool(h)],
+  [ToolId.Water, (h) => new WaterTool(h)],
 ];

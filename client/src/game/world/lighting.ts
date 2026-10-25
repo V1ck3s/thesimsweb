@@ -16,12 +16,15 @@
  * ambient, see Compositor.ambient); people through
  * HouseViewer::Render3DObject -> RenderParam::SetAmbientLightLevel.
  *
- * Not ported: LightMapSet / LightLayer (the light maps lamps and windows
- * paint on floors and walls: LitFloorBlit / LitWallBlit), the "overhead
- * lights" flag (Room +0x73) and the score part of ComputeRoom.
+ * Point lights (light source 1) are positioned on the LightLayer of their
+ * level here too (lightmaps.ts); the floors and walls draw their pools.
+ *
+ * Not ported: the "overhead lights" flag (Room +0x73) and the score part of
+ * ComputeRoom.
  */
 
-import type { PlacedObject } from "./objects.js";
+import { LightLayer } from "./lightmaps.js";
+import { OD, type PlacedObject } from "./objects.js";
 import { OBJ_TYPE_PORTAL } from "./objselector.js";
 import { ROOM_DEGENERATE, type Room, type RoomManager } from "./rooms.js";
 import { getWall, SEG_HORIZ, SEG_VERT } from "./tilewalls.js";
@@ -71,6 +74,8 @@ export class RoomLighting {
   /** RoomManager +0x50 + level * 4: ambient byte per world tile. */
   private readonly maps = [new Uint8Array(ARRAY_SIZE * ARRAY_SIZE), new Uint8Array(ARRAY_SIZE * ARRAY_SIZE)];
   phase = 0;
+  /** cFixedWorld +0x68 / +0x6c: LightLayer per level. */
+  readonly layers = [new LightLayer(), new LightLayer()];
 
   constructor(
     private readonly rooms: RoomManager,
@@ -86,6 +91,9 @@ export class RoomLighting {
   compute(phase: number): void {
     this.phase = phase;
     this.lights.clear();
+    // Every light is removed then positioned again below; starting from empty
+    // also drops lights of objects that left (cXObject's RemoveLight).
+    for (const l of this.layers) l.clear();
     for (const r of this.rooms.inUseRooms()) {
       const l: RoomLight = { area: 0, windowLight: 0, lampLight: 0, pool: false, ambient: 0 };
       const first = r.tiles[0];
@@ -133,9 +141,18 @@ export class RoomLighting {
       if (o.hidden !== 0 || d[OD_ROOM_COUNTED]! < 0) continue;
       if ((d[OD_LIGHT_FLAGS]! & 0x400) === 0 || o.tileX < 0) continue;
       const c = d[OD_LIGHT]!;
-      if (c === 0) continue;
+      const layer = this.layers[o.level - 1];
+      if (c === 0) {
+        layer?.removeLight(this.fixed, o.tileX, o.tileY);
+        continue;
+      }
       if (o.selector.objd.objectType === OBJ_TYPE_PORTAL) l.windowLight += c;
       else l.lampLight += c;
+      // Light source 1 (point light): LightLayer::RemoveLight, PositionLight.
+      if (d[OD.lightSource] === 1 && layer) {
+        layer.removeLight(this.fixed, o.tileX, o.tileY);
+        layer.positionLight(this.fixed, this.rooms, o.tileX, o.tileY, o.level);
+      }
     }
   }
 
@@ -207,6 +224,14 @@ export class RoomLighting {
   /** Ambient of a view tile's center (RenderStaticRow: FTilePt(x + 1/2, y + 1/2)). */
   tileAmbient(x: number, y: number, level: number): number {
     return this.getRoomAmbientLight((x << 4) | 8, (y << 4) | 8, level);
+  }
+
+  /** cRotatableWorld::GetLightEntry of a view tile. */
+  getLightEntry(x: number, y: number, level: number): readonly number[] {
+    const [wx, wy] = this.world.toWorld(x, y);
+    const layer = this.layers[level - 1];
+    if (!layer || wx < 0 || wy < 0 || wx >= ARRAY_SIZE || wy >= ARRAY_SIZE) return [0x7f, 0x7f, 0x7f, 0x7f];
+    return layer.getEntry(wx, wy, this.world.rotation);
   }
 
   /** Room::GetAmbientLight of the room id 0 of a level (the walls' outside face). */

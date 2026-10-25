@@ -13,9 +13,10 @@
  *    (colors 0x1400 + s - 1, zones 0x1800 + s - 1): each pixel's zone byte
  *    (lbl_105BBED0) picks a column lookup and a depth offset.
  *
- * Lighting is not ported: the lit variants (LitWallBlit, LitWallAddBlit,
- * ProcessWallLightEntry) and PalWrap::ChooseBestCLUT's darkened palettes
- * are replaced by the sprite's own palette at full brightness.
+ * Lighting: PalWrap::ChooseBestCLUT's dark map at the compositor's ambient,
+ * or LitWallBlit / LitWallAddBlit with the sheared light maps when the
+ * wall tile's light entry has lights in front of segment 0x01 / 0x02
+ * (ProcessWallLightEntry) and the ambient level is not 1.
  */
 
 import type { Compositor, SpriteTex } from "./compositor.js";
@@ -23,6 +24,7 @@ import type { HouseViewer } from "./houseviewer.js";
 import type { Renderer } from "./renderer.js";
 import type { RenderParam } from "./renderparam.js";
 import { PX_COLOR, type SpriteFrame } from "./spr.js";
+import { LIGHT_POOLS_ENABLED, LightMapSet, lightMapSet, processWallLightEntry } from "./lightmaps.js";
 import { SEG_HORIZ, SEG_VERT } from "./tilewalls.js";
 
 /** Clip rectangle (lbl_105BA5F4) in view pixels. */
@@ -131,6 +133,7 @@ export class WallBlitter {
     y: number,
     colOffset: number,
     seg: number,
+    lightEntry: readonly number[] | null = null,
   ): void {
     const sr = styleR ?? this.global;
     const pr = patR ?? this.global;
@@ -165,7 +168,28 @@ export class WallBlitter {
     const diag = seg === SEG_HORIZ || seg === SEG_VERT;
     const col = diag ? t.zero : t.ortho + (16 << s) + colOffset;
     const extra = seg === SEG_VERT ? -300 : 0;
+    this.setWallLight(s, seg, lightEntry, x, y);
     this.withClip(clip, () => this.comp.drawWallSprite(tex, x, y, rp.depth + extra - 1, t.vert + rp.depthRow + (8 << s), [col], [0]));
+    this.comp.light = null;
+  }
+
+  /**
+   * DrawWall's lit path: LightMapSet::GetWallBits(lateral, distance, scale,
+   * seg == 1) gives the sheared map (type 0 for 0x01, 1 for 0x02) read from
+   * GetSkipCount rows above the sprite's first row.
+   */
+  private setWallLight(s: number, seg: number, entry: readonly number[] | null, x: number, y: number): void {
+    const comp = this.comp;
+    comp.light = null;
+    if (!LIGHT_POOLS_ENABLED || !entry) return;
+    const a = comp.ambient;
+    if (Math.abs(a - 1) <= 1e-6) return;
+    const lights = processWallLightEntry(entry, seg);
+    if (lights.length === 0) return;
+    const type = seg === 1 ? 0 : 1;
+    const skip = LightMapSet.wallSkip(s);
+    const maps = lights.map(([lat, dist]) => ({ tex: comp.lightMapTexture(lightMapSet.wall(s, type, dist, lat)), x, y: y + skip }));
+    comp.light = { base: Math.trunc(255 * a + 0.5), maps };
   }
 
   /** cRenderer::DrawThickWallPiece (FloorBlit) of the global renderer's list `id`. */

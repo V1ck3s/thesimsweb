@@ -734,7 +734,9 @@ export class Wall {
           if (seg === SEG_TL || seg === SEG_BR) clip.left = Math.max(clip.left, r.left + r26);
           else if (seg === SEG_TR || seg === SEG_BL) clip.right = Math.min(clip.right, r.right - r26);
         }
-        blit.drawWall(viewer, rp, clip, styleR, styleId, patR, patId, frame, r.left, r.top, colOff, seg);
+        // Wall::Draw: the tile's cRotatableWorld::GetLightEntry, except on the second pass.
+        const light = pass !== 1 ? viewer.lightEntry(tile.x, tile.y, this.v0.level) : null;
+        blit.drawWall(viewer, rp, clip, styleR, styleId, patR, patId, frame, r.left, r.top, colOff, seg, light);
         Object.assign(clip, saved);
       }
     }
