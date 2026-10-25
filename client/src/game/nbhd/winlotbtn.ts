@@ -17,7 +17,7 @@
  */
 
 import { TSWinBtn } from "../ui/btn.js";
-import type { Gfx, Rect } from "../ui/tswin.js";
+import { WF_HIT_ALPHA, type Gfx, type Rect } from "../ui/tswin.js";
 import { getHouseInfo, type HouseInfo, type Neighborhood, type Thmb } from "./nghinterface.js";
 
 /** RampGenerator::SetupConstantTimeRamp duration used by CalcRowCol. */
@@ -51,6 +51,8 @@ export class WinLotBtn extends TSWinBtn {
     private readonly small: boolean,
   ) {
     super(1);
+    // cWinLotBtn::Init: SetFlag(0x200), clicks go through the lot's transparent pixels.
+    this.setFlag(WF_HIT_ALPHA, true);
   }
 
   /** cWinLotBtn::LoadHouseInfo */

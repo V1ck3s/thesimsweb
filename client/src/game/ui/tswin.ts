@@ -16,6 +16,8 @@
 
 export const WF_VISIBLE = 0x1;
 export const WF_ENABLED = 0x2;
+/** Hit testing skips the transparent pixels of the window's image (cTSWinBtn, cWinViewControl). */
+export const WF_HIT_ALPHA = 0x200;
 export const WF_NO_FOCUS = 0x2000;
 export const WF_MODAL = 0x10000;
 

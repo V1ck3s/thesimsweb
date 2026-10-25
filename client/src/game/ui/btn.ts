@@ -15,7 +15,7 @@
  */
 
 import type { FfnFont } from "../res/ffn.js";
-import { Gfx, TSWin } from "./tswin.js";
+import { Gfx, TSWin, WF_HIT_ALPHA } from "./tswin.js";
 import { winMgr } from "./winmgr.js";
 
 export const BTN_PUSH = 0;
@@ -103,8 +103,9 @@ export class TSWinBtn extends TSWin {
     }
   }
 
+  /** cTSWinBtn::IsPointInWindowWindowCoordinates: the image is only tested with tWinFlag 0x200. */
   protected override isPointTransparent(x: number, y: number): boolean {
-    if (!this.image) return false;
+    if (!this.image || !this.getFlag(WF_HIT_ALPHA)) return false;
     // Test against the current frame of the button image.
     if (!this.hitImage) this.hitImage = this.image;
     return super.isPointTransparent(x + this.frameColumn() * this.getW(), y + this.row * this.getH());
