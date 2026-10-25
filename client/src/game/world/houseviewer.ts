@@ -69,6 +69,8 @@ export class HouseViewer {
   terrain: TerrainDrawer | null = null;
   walls: WallDrawer | null = null;
   objects: ObjectDrawer | null = null;
+  /** HouseViewer's dynamic cutaway (cutaway.ts), told about scale / rotation / level changes. */
+  cutawayCtl: { onScale(): void; onRotation(): void; onLevel(old: number): void } | null = null;
   /** People (3D meshes), drawn after the dynamic objects with the shared depth buffer. */
   people: { draw(viewer: HouseViewer): void } | null = null;
   /** XSmoothScroller state. */
@@ -112,6 +114,19 @@ export class HouseViewer {
       h: ox + (8 << scale) * (x - y),
       v: oy + (4 << scale) * (x + y) - (level - 1) * this.levelPx(scale) - (a << (scale + 1)),
     };
+  }
+
+  /**
+   * HouseViewer::GetTheoreticalWallExtent: screen rectangle a full-height
+   * wall standing on view tile (x, y) would cover.
+   */
+  getTheoreticalWallExtent(x: number, y: number, level: number): { left: number; top: number; right: number; bottom: number } {
+    const s = this.scale;
+    const lp = this.levelPx(s);
+    const a = this.world.getPackedAlt(x, y)[1];
+    const h = this.originX + (8 << s) * (x - y);
+    const v = this.originY + (4 << s) * (x + y) - (level - 1) * lp - (a << (s + 1));
+    return { left: h - (8 << s) - 1, top: v - lp, right: h + (8 << s) - 1, bottom: v + (8 << s) };
   }
 
   /** Origin rescaled to another scale (the TileToPoint branch for scale != current). */
@@ -363,6 +378,7 @@ export class HouseViewer {
     this.scroll = null;
     this.scrollToTile(c.fx, c.fy, this.level, false);
     this.dirty = true;
+    this.cutawayCtl?.onScale();
   }
 
   /** HouseViewer::SetRotation: rotate around the centermost tile. */
@@ -385,13 +401,16 @@ export class HouseViewer {
     this.scroll = null;
     this.scrollToTile(wx, wy, this.level, false);
     this.dirty = true;
+    this.cutawayCtl?.onRotation();
   }
 
   /** HouseViewer::SetLevel. */
   setLevel(level: number): void {
     if (level === this.level) return;
+    const old = this.level;
     this.level = level;
     this.dirty = true;
+    this.cutawayCtl?.onLevel(old);
   }
 
   // --- rendering --------------------------------------------------------------

@@ -13,12 +13,14 @@ import type { GameContext } from "../context.js";
 import { Mode, type CPState, type HouseViewerHooks, type WallState } from "../cpstate.js";
 import { Gfx, TSWin } from "../ui/tswin.js";
 import { Compositor } from "./compositor.js";
+import { DynamicCutaway } from "./cutaway.js";
 import { EdgeDetectScroller } from "./edgescroll.js";
 import { FloorGraphicsMgr } from "./floors.js";
 import { HouseViewer, type ObjectDrawer, type TerrainDrawer, type WallDrawer } from "./houseviewer.js";
 import { ResFile } from "./iffres.js";
 import { loadLotObjectDrawer, type LotObjects } from "./lotobjects.js";
 import { LotPeople } from "./lotpeople.js";
+import { computeRooms, RoomManager } from "./rooms.js";
 import { Terrain } from "./terrain.js";
 import { WallManager } from "./walls.js";
 import { FixedWorld, RotatableWorld } from "./world.js";
@@ -87,6 +89,11 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
   /** The lot objects when this view loaded them (no `parts.objects`). */
   lotObjects: LotObjects | null = null;
   people: LotPeople | null = null;
+  /** Rooms and the dynamic cutaway (only with the view's own wall graph). */
+  rooms: RoomManager | null = null;
+  cutaway: DynamicCutaway | null = null;
+  /** Last mouse position over the view (the dynamic cutaway reads the cursor). */
+  private cursor: { x: number; y: number } | null = null;
   /** CPState listeners registered by init, removed by shutdown. */
   private readonly listeners: Array<(s: CPState) => void> = [];
   private readonly onKey = (e: KeyboardEvent): void => {
@@ -168,6 +175,7 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
       v.setOffsets(0, 0);
     }
     this.viewer = v;
+    if (this.wallManager) this.initCutaway(v, this.wallManager);
     this.edge = new EdgeDetectScroller(v, this.ctx.width, this.ctx.height);
     const st = this.ctx.state;
     st.viewer = this;
@@ -176,6 +184,38 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
     st.setLevel(v.level);
     window.addEventListener("keydown", this.onKey);
     return true;
+  }
+
+  /** House load: cFixedWorld::ComputeRooms(0), RoomManager::ComputeCutaway(0), then the dynamic cutaway. */
+  private initCutaway(v: HouseViewer, walls: WallManager): void {
+    const fixed = v.world.fixed;
+    const rooms = new RoomManager(fixed);
+    computeRooms(fixed, rooms);
+    rooms.computeCutaway(v, 0);
+    const st = this.ctx.state;
+    const cut = new DynamicCutaway(v, walls, rooms, {
+      mode: () => st.getMode(),
+      selectedPerson: () => {
+        const guid = st.personGetSelected()?.guid;
+        const objs = this.lotObjects?.objects;
+        if (guid === undefined || !objs) return null;
+        for (const o of objs.values()) if (o.isPerson && o.guid === guid && o.hidden === 0) return { x: o.tileX, y: o.tileY, level: o.level };
+        return null;
+      },
+      cursor: () => this.cursor,
+    });
+    this.rooms = rooms;
+    this.cutaway = cut;
+    v.cutawayCtl = cut;
+    let mode = st.getMode();
+    let sel = st.selectedIndex();
+    this.listen(() => {
+      if (st.getMode() === mode && st.selectedIndex() === sel) return;
+      mode = st.getMode();
+      sel = st.selectedIndex();
+      cut.onModeChange();
+    });
+    cut.doDynamicCutaway(false);
   }
 
   private listen(fn: (s: CPState) => void): void {
@@ -221,7 +261,8 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
   }
 
   setWallState(state: WallState): void {
-    this.wallManager?.setWallState(state);
+    if (this.cutaway) this.cutaway.setWallState(state);
+    else this.wallManager?.setWallState(state);
     if (this.viewer) this.viewer.dirty = true;
   }
 
@@ -230,6 +271,7 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
   override pump(nowMs: number): void {
     this.edge?.pump(nowMs);
     this.viewer?.pump(nowMs);
+    this.cutaway?.updateWorld();
     if (this.viewer && this.people?.people.length) {
       this.people.update(nowMs);
       this.viewer.dirty = true;
@@ -291,11 +333,14 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
 
   override tsOnMouseMove(x: number, y: number): boolean {
     this.edge?.onMouseMove(x, y);
+    this.cursor = { x, y };
+    this.cutaway?.mouseTrack(x, y);
     return this.viewer !== null;
   }
 
   override tsOnMouseExit(): void {
     this.edge?.stop();
+    this.cursor = null;
   }
 
   override tsOnMouseDownR(_x: number, _y: number): boolean {
