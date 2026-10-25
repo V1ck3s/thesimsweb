@@ -3,6 +3,7 @@
  * the services load (Init), then the neighborhood screen (DoNbhdScreen), then
  * the lot with its control panel when a house is picked.
  *
+ * `game.html?house=N` skips the neighborhood screen and enters house N.
  * `game.html?test=<name>` mounts a dev test from src/game/dev/tests/<name>.ts
  * instead (each exports `mount(ctx, mgr)`).
  */
@@ -18,9 +19,9 @@ import { Fonts } from "./res/fonts.js";
 import { Strings } from "./res/strings.js";
 import { UIRes } from "./res/uires.js";
 import { TSWinSplashScreen } from "./screens/splash.js";
-import { TSWin } from "./ui/tswin.js";
 import { DefaultTTWindow } from "./ui/ttwindow.js";
 import { WinMgr } from "./ui/winmgr.js";
+import { WinLotView } from "./world/winlotview.js";
 
 const SCREEN_W = 1024;
 const SCREEN_H = 768;
@@ -40,21 +41,34 @@ async function createContext(): Promise<GameContext> {
   };
 }
 
-/** Lot view placeholder (cDDDSimsView): full screen, hosts the control panel. */
-class LotView extends TSWin {}
-
 class Game {
   private nbhdDir = "UserData";
+  private nbhd: Neighborhood | null = null;
+  private lotView: WinLotView | null = null;
 
   constructor(
     private readonly ctx: GameContext,
     private readonly mgr: WinMgr,
-  ) {}
+  ) {
+    ctx.hooks = {
+      showNeighborhood: () => {
+        this.leaveLot();
+        void this.showNeighborhood();
+      },
+    };
+  }
+
+  private leaveLot(): void {
+    if (!this.lotView) return;
+    this.mgr.main.childDelete(this.lotView);
+    this.lotView = null;
+  }
 
   /** cSimsApp::DoNbhdScreen */
   async showNeighborhood(): Promise<void> {
     const { ctx, mgr } = this;
     const nb = await Neighborhood.load(this.nbhdDir);
+    this.nbhd = nb;
     const screen: WinNeighborhoodUL = new WinNeighborhoodUL(ctx, nb, {
       onEnterLot: (house) => {
         mgr.main.childDelete(screen);
@@ -78,8 +92,13 @@ class Game {
     const { ctx, mgr } = this;
     const state = ctx.state;
     await activateFamily(state, await loadNeighborhood(this.nbhdDir), house);
-    const view = new LotView();
+    this.nbhd ??= await Neighborhood.load(this.nbhdDir);
+    const view = new WinLotView(ctx, this.nbhd.getHousePath(house));
     view.setArea(0, 0, ctx.width, ctx.height);
+    const t0 = performance.now();
+    if (!(await view.init())) throw new Error("lot view init failed");
+    console.log(`lot ${house} loaded in ${Math.round(performance.now() - t0)} ms`);
+    this.lotView = view;
     const cpanel = new WinCPanel(ctx);
     cpanel.setArea(0, ctx.height - CPANEL_HEIGHT, ctx.width, ctx.height);
     if (!(await cpanel.init())) throw new Error("control panel init failed");
@@ -91,6 +110,7 @@ class Game {
     state.setMode(state.family.length ? Mode.Live : Mode.Buy, true);
     state.setCPMode(0);
     state.setSelectedPerson(0);
+    view.centerOnPerson(state.family[0]?.guid);
     state.dirty = DIRTY_ALL;
   }
 }
@@ -122,7 +142,10 @@ async function boot(): Promise<void> {
   const game = new Game(ctx, mgr);
   await splash.finished();
   mgr.main.childDelete(splash);
-  await game.showNeighborhood();
+  // `?house=N` (dev): straight into a lot of the default neighborhood.
+  const house = Number(new URLSearchParams(location.search).get("house"));
+  if (house > 0) await game.enterLot(house);
+  else await game.showNeighborhood();
 }
 
 boot().then(

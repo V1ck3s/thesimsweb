@@ -114,6 +114,8 @@ export interface PersonInfo {
   personData?: Int16Array;
   /** Neighbor id (relationship matrix key). */
   neighborId?: number;
+  /** The character's OBJD GUID (the person object on the lot). */
+  guid?: number;
   /** BMP_ 2002 of the character file: three faces (normal, happy, sad) side by side. */
   face?: ImageBitmap | null;
   /** BMP_ 2003 of the character file: the relationship picture. */

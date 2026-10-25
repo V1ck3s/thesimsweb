@@ -10,7 +10,7 @@
  */
 
 import type { GameContext } from "../context.js";
-import { Mode, type HouseViewerHooks, type WallState } from "../cpstate.js";
+import { Mode, type CPState, type HouseViewerHooks, type WallState } from "../cpstate.js";
 import { Gfx, TSWin } from "../ui/tswin.js";
 import { Compositor } from "./compositor.js";
 import { EdgeDetectScroller } from "./edgescroll.js";
@@ -85,6 +85,8 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
   wallManager: WallManager | null = null;
   /** The lot objects when this view loaded them (no `parts.objects`). */
   lotObjects: LotObjects | null = null;
+  /** CPState listeners registered by init, removed by shutdown. */
+  private readonly listeners: Array<(s: CPState) => void> = [];
   private readonly onKey = (e: KeyboardEvent): void => {
     if (this.tsOnKeyDown(e.key)) e.preventDefault();
   };
@@ -127,7 +129,7 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
         v.dirty = true;
       };
       syncOverlay();
-      this.ctx.state.onChange(syncOverlay);
+      this.listen(syncOverlay);
       v.terrain = terrain;
     }
     if (this.parts.walls) {
@@ -137,7 +139,7 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
       const st = this.ctx.state;
       walls.setWallState(st.getWallState());
       walls.mode = st.getMode();
-      st.onChange(() => {
+      this.listen(() => {
         walls.mode = st.getMode();
       });
       this.wallManager = walls;
@@ -172,10 +174,32 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
     return true;
   }
 
+  private listen(fn: (s: CPState) => void): void {
+    this.listeners.push(fn);
+    this.ctx.state.onChange(fn);
+  }
+
   override shutdown(): void {
+    for (const fn of this.listeners) this.ctx.state.offChange(fn);
     window.removeEventListener("keydown", this.onKey);
     if (this.ctx.state.viewer === this) this.ctx.state.viewer = null;
     super.shutdown();
+  }
+
+  /**
+   * cXObject::CenterHouseViewOnMe (not smooth): CPState::SetSelectedPerson
+   * centers the view on the selected sim when the lot opens. The head-height
+   * adjustment of the person branch (ScrollToCenter) is not ported.
+   */
+  centerOnPerson(guid: number | undefined): void {
+    const v = this.viewer;
+    const objs = this.lotObjects?.objects;
+    if (!v || !objs) return;
+    const people = [...objs.values()].filter((o) => o.isPerson && o.hidden === 0);
+    const o = people.find((p) => p.guid === guid) ?? people[0];
+    if (!o) return;
+    const [fx, fy] = RotatableWorld.rotateCoords(o.fx, o.fy, v.world.rotation, 0x400);
+    v.scrollToTile(fx, fy, o.level, false);
   }
 
   // --- HouseViewerHooks ---------------------------------------------------------

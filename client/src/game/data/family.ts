@@ -28,6 +28,7 @@ export async function personFromNeighbor(n: NeighborhoodData, nb: Neighbor, last
   const age = pd[PD.personAge] ?? 0;
   return {
     id: nb.id,
+    guid: nb.guid,
     firstName: c?.firstName ?? nb.name,
     lastName,
     motives: new Array<number>(16).fill(0),
