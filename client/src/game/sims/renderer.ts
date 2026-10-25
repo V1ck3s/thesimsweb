@@ -21,6 +21,7 @@ import type { SkeletonBinding } from "./deformablemesh.js";
 import { VERTEX_FLOATS } from "./deformablemesh.js";
 import { engageLights, loadStdLights, type U3DLight } from "./lighting.js";
 import type { VitaBoy } from "./vitaboy.js";
+import type { Mat4 } from "./math3d.js";
 
 const VS = `#version 300 es
 in vec3 aPos;
@@ -121,6 +122,11 @@ export class SimRenderer {
    * writes on), face culling off and blending as it was.
    */
   renderSim(vb: VitaBoy, place: SimPlacement, view: SimView, opts: RenderSimOptions = {}): void {
+    this.renderSimModel(vb, rootTransform(place, view.rotation), view, opts);
+  }
+
+  /** renderSim with an explicit root transform (Create-a-Sim's cWinVitaBtn, portraits). */
+  renderSimModel(vb: VitaBoy, model: Mat4, view: SimView, opts: RenderSimOptions = {}): void {
     const gl = this.gl;
     const cam = this.cameraFor(view);
     const light = engageLights(this.lights, cam, opts.ambient ?? 1);
@@ -136,7 +142,7 @@ export class SimRenderer {
     gl.enable(gl.CULL_FACE);
     gl.frontFace(gl.CW);
     gl.cullFace(gl.BACK);
-    gl.uniformMatrix4fv(this.u["uModel"]!, false, rootTransform(place, view.rotation));
+    gl.uniformMatrix4fv(this.u["uModel"]!, false, model);
     gl.uniformMatrix4fv(this.u["uViewProj"]!, false, cam.viewProjection);
     gl.uniform2f(this.u["uPixelFix"]!, 1 / view.width, -1 / view.height);
     gl.uniform3fv(this.u["uLightDir"]!, light.direction);

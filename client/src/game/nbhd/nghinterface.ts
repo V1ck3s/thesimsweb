@@ -111,6 +111,11 @@ export function readIff(path: string): Promise<{ data: Uint8Array; chunks: IffCh
   return p;
 }
 
+/** Drops the cached files (called after the game writes one, see data/files.ts). */
+export function clearIffFileCache(): void {
+  fileCache.clear();
+}
+
 function payload(data: Uint8Array, c: IffChunkInfo): Uint8Array {
   return data.subarray(c.dataStart, c.dataStart + c.dataLen);
 }

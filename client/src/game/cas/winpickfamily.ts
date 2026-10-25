@@ -1,0 +1,544 @@
+/**
+ * cWinPickFamily: "Sélectionner une famille", the families without a house
+ * (Move In from the neighborhood), with cPickFamilyList / cPickFamilyItem.
+ *
+ * From the decompiled classes (WinPickFamily.cpp, PickFamilyList.cpp,
+ * PickFamilyItem.cpp):
+ *  - cWinPickFamily::Init: kPickFamilyBkg centered, the dialog color
+ *    around; the list at lbl_105BC768 = (0x29, 0x4c) (tooltip STR# 128
+ *    entry 16); the title (entry 8, size 16 font); CreateButton for
+ *    "new family" (5103), "move in" (5106), "delete" (5105) at
+ *    lbl_105BC770 = (0x142, 0x212), (0x1fa, 0x212), (0x19e, 0x212)
+ *    (tooltips entries 2..4) and Cancel, a kNghDefaultBtn cTSSystemButton
+ *    200 px wide centered on (200, 0x211) (caption entry 5, tooltip 15);
+ *    the column icons' tooltips (entries 10, 11) on 26 x 23 windows at
+ *    (0x24a, 0x2a) and (0x296, 0x2a); move in / delete start disabled;
+ *  - TSOnCommand: 1 = a button (HandleButton), 0x15 = selection changed
+ *    (move in / delete enabled with a selection), 0x1a = double click on a
+ *    family (move in), 0x1e = a family was created (AddNewFamily),
+ *    0x21 = click on an empty row (new family);
+ *  - HandleButton: 0 runs cWinDesignFamily modally in this window's area
+ *    (this one hidden meanwhile); 1 posts {3, 0x20, family} to the owner
+ *    (cWinNeighborhoodUL: Move In mode) and closes; 2 asks (entries 6 / 7,
+ *    OK / Cancel) and deletes the family (RemoveFamily); 3 closes;
+ *  - cPickFamilyList: one item per unhoused family (GetUnhousedFamilies),
+ *    six rows shown, kPickScrollbar when there are more, the empty rows
+ *    drawn with the item background's first frame; selecting posts 0x15;
+ *    a new family is inserted first and selected;
+ *  - cPickFamilyItem: kPickFamilyItemBkg (3 frames: normal, hover,
+ *    selected), the family name (size 12 font at (0x14, 0)), net worth
+ *    (budget + house value, size 10, at (0x20e, 0x15)) and friend count
+ *    ("%d" at (0x26c, 0x15)), colored UI_FONT_COLOR / white (hover) /
+ *    cyan (selected); up to 8 member portraits (45 px wide) from
+ *    lbl_105BC6BC = (0x6e, 0xe) every 0x30 px.
+ *
+ * Not ported: the first-run hint (timer, entries 13 / 14), the scroll ramp
+ * (scrolling is immediate), the Shift smiley, the Makin' Magic coins
+ * column, the member tooltip window (cPickFamilyPersonInfo).
+ */
+
+import type { GameContext } from "../context.js";
+import { buildPersonBtn } from "../cpanel/live/peoplebuttons.js";
+import type { NeighborhoodStore } from "../data/nbhdstore.js";
+import { loadCharacter, loadNeighborhood, type NeighborhoodData } from "../data/neighborhood.js";
+import { makeMoneyString } from "../nbhd/nghinterface.js";
+import { decodeImage } from "../res/bmp.js";
+import type { FfnFont } from "../res/ffn.js";
+import { LANG_FRENCH } from "../res/uires.js";
+import { TSWinBtn } from "../ui/btn.js";
+import { TSWinCtrlMgr } from "../ui/ctrlmgr.js";
+import { GENDLG_FILL, TSWinGenDlg } from "../ui/gendlg.js";
+import { IDOK, MB_OKCANCEL, TSWinMsgBox } from "../ui/msgbox.js";
+import { CMD_SLIDER_CHANGED, SLIDER_VERTICAL } from "../ui/slider.js";
+import { rgb, UI_FONT_COLOR } from "../ui/syscolors.js";
+import { TSSystemButton } from "../ui/systembutton.js";
+import { TSWinScrollbar } from "../ui/scrollbar.js";
+import { TSWinText } from "../ui/text.js";
+import { Gfx, TSWin } from "../ui/tswin.js";
+import { winMgr } from "../ui/winmgr.js";
+import { CasSession } from "./personfinder.js";
+import { WinDesignFamily } from "./windesignfamily.js";
+
+const STRINGS = 128;
+const S = {
+  firstButton: 2,
+  deleteTitle: 6,
+  deleteMessage: 7,
+  title: 8,
+  netWorthTip: 10,
+  friendsTip: 11,
+  cancelTip: 15,
+  listTip: 16,
+} as const;
+
+/** Commands (TSOnCommand jump table lbl_105BC774). */
+const CMD_SELECTION = 0x15;
+const CMD_DOUBLE_CLICK = 0x1a;
+const CMD_EMPTY_ROW = 0x21;
+
+/** lbl_105BC76C / lbl_105BC770 */
+const BUTTONS = [
+  { image: 5103, x: 0x142, y: 0x212 },
+  { image: 5106, x: 0x1fa, y: 0x212 },
+  { image: 5105, x: 0x19e, y: 0x212 },
+  { image: 0, x: 200, y: 0x211 },
+];
+const B = { create: 0, moveIn: 1, delete: 2, cancel: 3 } as const;
+const BUTTON_ID_BASE = 0x5200;
+/** lbl_105BC768 */
+const LIST = { x: 0x29, y: 0x4c };
+const ROWS = 6;
+/** lbl_105BC6BC / lbl_105BC6C0 / lbl_105BC6B4 / lbl_105BC6A8 */
+const ITEM_MEMBERS = { x: 0x6e, y: 0xe, step: 0x30 };
+const ITEM_NAME = { x: 0x14, y: 0 };
+const ITEM_WORTH = { x: 0x20e, y: 0x15 };
+const ITEM_FRIENDS = { x: 0x26c, y: 0x15 };
+const MEMBER_W = 0x2d;
+/** lbl_105BA6F8 / lbl_105BA928 / lbl_105BA954 */
+const TEXT_COLORS = [UI_FONT_COLOR, rgb(0xff, 0xff, 0xff), rgb(0, 0xff, 0xff)];
+const DLG_FILL = rgb(0, 0x32, 0);
+const DOUBLE_CLICK_MS = 500;
+
+/** Who is told which family moves in ({3, 0x20, family} to +0x12c). */
+export interface PickFamilyOwner {
+  moveIn(familyId: number): void;
+}
+
+interface FamilyRow {
+  id: number;
+  name: string;
+  netWorth: number;
+  friends: number;
+  faces: Array<ImageBitmap | null>;
+}
+
+async function familyRow(store: NeighborhoodStore, n: NeighborhoodData, id: number): Promise<FamilyRow | null> {
+  const f = store.family(id);
+  if (!f) return null;
+  const faces = await Promise.all(
+    f.memberGuids.map(async (guid) => {
+      const nb = n.neighbors.find((x) => x.guid >>> 0 === guid >>> 0);
+      const c = nb ? await loadCharacter(n.dir, nb.name).catch(() => null) : null;
+      const bytes = c?.bitmaps.get(2002);
+      if (!bytes) return null;
+      const img = decodeImage(bytes, "face.bmp", { colorKey: true });
+      return createImageBitmap(new ImageData(img.data, img.width, img.height));
+    }),
+  );
+  return { id, name: f.name, netWorth: f.budget + f.netWorth, friends: f.friends, faces };
+}
+
+/** cPickFamilyItemMember: a portrait (4 x 3 cells of 45 px), drawn (rowH - 45) / 2 - 5 px down. */
+class PickFamilyItemMember extends TSWinBtn {
+  constructor(
+    image: ImageBitmap,
+    private readonly rowH: number,
+  ) {
+    super(0, image, 4, 3);
+    this.setArea(0, 0, MEMBER_W, rowH);
+  }
+
+  override tsPaint(g: Gfx): void {
+    const img = this.image;
+    if (!img) return;
+    const cw = Math.trunc(img.width / 4);
+    const ch = Math.trunc(img.height / 3);
+    g.blitPart(img, this.frameColumn() * cw, 0, cw, ch, 0, Math.trunc((this.rowH - MEMBER_W) / 2) - 5);
+  }
+}
+
+/** cPickFamilyItem */
+class PickFamilyItem extends TSWinBtn {
+  private readonly members: PickFamilyItemMember[] = [];
+  private lastClick = -Infinity;
+
+  constructor(
+    readonly family: FamilyRow,
+    private readonly bkg: ImageBitmap,
+    private readonly template: ImageBitmap,
+    private readonly fonts: { f10: FfnFont; f12: FfnFont },
+  ) {
+    super(0, bkg, 1, 3);
+    this.mode = 1;
+    const rowH = Math.trunc(bkg.height / 3);
+    this.setArea(0, 0, bkg.width, rowH);
+    family.faces.slice(0, 8).forEach((face, i) => {
+      const b = new PickFamilyItemMember(buildPersonBtn(face, template), rowH);
+      this.members.push(b);
+      this.childAdd(b);
+      // One row from lbl_105BC6BC, every 0x30 px (8 portraits fit in 0x180).
+      b.moveTo(ITEM_MEMBERS.x + i * ITEM_MEMBERS.step, ITEM_MEMBERS.y);
+    });
+  }
+
+  /** CalcRowCol: 2 selected, 1 hovered, 0 normal. */
+  private frameRow(): number {
+    return this.state ? 2 : this.entered ? 1 : 0;
+  }
+
+  override windowFromPoint(x: number, y: number): TSWin | null {
+    // The member portraits only take the mouse once the family is selected (SetFlag(2, selected)).
+    if (!this.state) return this.isVisible() && this.isPointInWindowWindowCoordinates(x, y) ? this : null;
+    return super.windowFromPoint(x, y);
+  }
+
+  override tsOnMouseDownL(): boolean {
+    const now = performance.now();
+    const double = now - this.lastClick < DOUBLE_CLICK_MS;
+    this.lastClick = double ? -Infinity : now;
+    if (double && this.state) {
+      this.parent?.tsOnCommand(CMD_DOUBLE_CLICK, this);
+      return true;
+    }
+    this.state = 1;
+    this.parent?.tsOnCommand(1, this);
+    return true;
+  }
+
+  override tsOnMouseUpL(): boolean {
+    return true;
+  }
+
+  override tsPaint(g: Gfx): void {
+    const rowH = this.getH();
+    g.blitPart(this.bkg, 0, this.frameRow() * rowH, this.bkg.width, rowH, 0, 0);
+    const color = TEXT_COLORS[this.frameRow()]!;
+    const { f10, f12 } = this.fonts;
+    f12.drawText(g.ctx, this.family.name, g.ox + ITEM_NAME.x, g.oy + ITEM_NAME.y, color);
+    const worth = makeMoneyString(this.family.netWorth, LANG_FRENCH);
+    // Alignment 3: right-aligned on the column position.
+    f10.drawText(g.ctx, worth, g.ox + ITEM_WORTH.x - f10.stringWidth(worth), g.oy + ITEM_WORTH.y, color);
+    const friends = String(this.family.friends);
+    f10.drawText(g.ctx, friends, g.ox + ITEM_FRIENDS.x - f10.stringWidth(friends), g.oy + ITEM_FRIENDS.y, color);
+  }
+}
+
+/** cPickFamilyList */
+class PickFamilyList extends TSWin {
+  readonly items: PickFamilyItem[] = [];
+  /** +0x104: selected row, -1 for none. */
+  selected = -1;
+  /** +0xf8: first row shown. */
+  private top = 0;
+  private scrollbar: TSWinScrollbar | null = null;
+  private itemH = 0x4b;
+  private itemW = 700;
+
+  constructor(private readonly bkg: ImageBitmap) {
+    super();
+  }
+
+  async build(scrollImage: ImageBitmap, rows: PickFamilyItem[]): Promise<void> {
+    for (const it of rows) {
+      this.items.push(it);
+      this.childAdd(it);
+    }
+    if (this.items.length) {
+      this.itemW = this.items[0]!.getW();
+      this.itemH = this.items[0]!.getH();
+    }
+    const sb = new TSWinScrollbar();
+    sb.setDirection(SLIDER_VERTICAL);
+    sb.setArea(0, 0, 1, this.itemH * ROWS);
+    sb.setImage(scrollImage);
+    sb.setArea(this.itemW + 0x20, 0, this.itemW + 0x20 + sb.getW(), sb.getH());
+    this.childAdd(sb);
+    this.scrollbar = sb;
+    this.setArea(this.area.left, this.area.top, this.area.left + this.itemW + 0x20 + sb.getW(), this.area.top + this.itemH * ROWS);
+    this.syncScrollbar();
+    this.tileItems();
+  }
+
+  private syncScrollbar(): void {
+    const sb = this.scrollbar;
+    if (!sb) return;
+    if (this.items.length < 7) {
+      sb.hideWindow();
+      return;
+    }
+    sb.showWindow();
+    sb.setMinimumValue(0);
+    sb.setMaximumValue(this.items.length - ROWS);
+    sb.setValue(this.top);
+    sb.setPageSize(ROWS);
+  }
+
+  /** TileItems: one item per row from the top row. */
+  private tileItems(): void {
+    this.items.forEach((it, i) => {
+      const row = i - this.top;
+      it.moveTo(0, row * this.itemH);
+      if (row >= 0 && row < ROWS) it.showWindow();
+      else it.hideWindow();
+    });
+  }
+
+  selectedId(): number {
+    return this.items[this.selected]?.family.id ?? -1;
+  }
+
+  private notify(): void {
+    this.parent?.tsOnCommand(CMD_SELECTION, this);
+  }
+
+  /** AddItem: inserted first and selected. */
+  addItem(it: PickFamilyItem): void {
+    const prev = this.items[this.selected];
+    if (prev) prev.setState(0);
+    this.items.unshift(it);
+    this.childAdd(it);
+    this.selected = 0;
+    this.top = 0;
+    it.setState(1);
+    this.syncScrollbar();
+    this.tileItems();
+    this.notify();
+  }
+
+  /** DeleteSelection (RemoveFamily is done by the caller). */
+  deleteSelection(): PickFamilyItem | null {
+    const it = this.items[this.selected];
+    if (!it) return null;
+    this.items.splice(this.selected, 1);
+    this.childRemove(it);
+    this.selected = -1;
+    this.notify();
+    if (this.items.length > 6 && this.items.length - 6 <= this.top) this.top--;
+    if (this.items.length < 7) this.top = 0;
+    this.syncScrollbar();
+    this.tileItems();
+    return it;
+  }
+
+  override tsOnMouseDownL(): boolean {
+    this.parent?.tsOnCommand(CMD_EMPTY_ROW, this);
+    return true;
+  }
+
+  override tsOnCommand(cmd: number, source: TSWin): boolean {
+    if (cmd === CMD_SLIDER_CHANGED && source === this.scrollbar) {
+      this.top = this.scrollbar.getValue();
+      this.tileItems();
+      return true;
+    }
+    if (cmd === 1 && source instanceof PickFamilyItem) {
+      const i = this.items.indexOf(source);
+      if (i >= 0 && i !== this.selected) {
+        this.items[this.selected]?.setState(0);
+        this.selected = i;
+      }
+      this.notify();
+      return true;
+    }
+    return super.tsOnCommand(cmd, source);
+  }
+
+  override tsPaint(g: Gfx): void {
+    // The empty rows below the last item: the background's first frame.
+    const shown = this.items.length - this.top;
+    if (shown >= ROWS) return;
+    const rowH = Math.trunc(this.bkg.height / 3);
+    for (let r = Math.max(0, shown); r < ROWS; r++) g.blitPart(this.bkg, 0, 0, this.bkg.width, rowH, 0, r * rowH);
+  }
+}
+
+export class WinPickFamily extends TSWinGenDlg {
+  private owner: PickFamilyOwner | null = null;
+  private bkg: ImageBitmap | null = null;
+  private offX = 0;
+  private offY = 0;
+  private list: PickFamilyList | null = null;
+  private readonly buttons: TSWinBtn[] = [];
+  private store: NeighborhoodStore | null = null;
+  private itemBkg: ImageBitmap | null = null;
+  private template: ImageBitmap | null = null;
+  private fonts: { f10: FfnFont; f12: FfnFont } | null = null;
+  /** +0x140: a button is being handled. */
+  private busy = false;
+
+  constructor(
+    ctx: GameContext,
+    private readonly dir: string,
+  ) {
+    super(ctx, GENDLG_FILL);
+  }
+
+  setOwner(o: PickFamilyOwner): void {
+    this.owner = o;
+  }
+
+  private str(i: number): string {
+    return this.ctx.strings.get("UIText", STRINGS, i);
+  }
+
+  override async init(): Promise<boolean> {
+    const { ctx } = this;
+    const { NeighborhoodStore } = await import("../data/nbhdstore.js");
+    this.store = await NeighborhoodStore.open(this.dir);
+    this.fillColor = DLG_FILL;
+    const sysImage = await ctx.res.image("kNghDefaultBtn");
+    this.bkg = await ctx.res.image("kPickFamilyBkg");
+    this.offX = this.bkg.width < this.getW() ? (this.getW() - this.bkg.width) >> 1 : 0;
+    this.offY = this.bkg.height < this.getH() ? (this.getH() - this.bkg.height) >> 1 : 0;
+    await super.init();
+    const ox = this.offX;
+    const oy = this.offY;
+    const mgr = await TSWinCtrlMgr.get(ctx);
+    this.itemBkg = await ctx.res.image("kPickFamilyItemBkg");
+    this.template = await ctx.res.image("kPeopleTemplate");
+    this.fonts = { f10: await ctx.fonts.acquire(10), f12: await ctx.fonts.acquire(12) };
+    const f16 = await ctx.fonts.acquire(16);
+
+    const list = new PickFamilyList(this.itemBkg);
+    list.moveTo(LIST.x + ox, LIST.y + oy);
+    list.tooltip = this.str(S.listTip);
+    const n = await loadNeighborhood(this.dir);
+    const rows = await Promise.all(this.store.unhousedFamilies().map((id) => familyRow(this.store!, n, id)));
+    await list.build(
+      await ctx.res.image("kPickScrollbar"),
+      rows.filter((r): r is FamilyRow => !!r).map((r) => this.makeItem(r)),
+    );
+    this.childAdd(list);
+    this.list = list;
+
+    const title = new TSWinText();
+    title.setFont(f16);
+    title.setArea(0, oy + 6, this.getW(), f16.height + 6 + oy);
+    title.setCaption(this.str(S.title));
+    title.setAlignment(2);
+    title.setBackgroundOpaque(false);
+    this.childAdd(title);
+
+    for (let i = 0; i < BUTTONS.length; i++) {
+      const def = BUTTONS[i]!;
+      const caption = this.str(S.firstButton + i);
+      let b: TSWinBtn;
+      if (i === B.cancel) {
+        const s = new TSSystemButton(mgr, sysImage);
+        s.setArea(s.area.left, s.area.top, s.area.left + 200, s.area.top + sysImage.height);
+        const cx = def.x + ox;
+        const cy = def.y + oy + (sysImage.height >> 1);
+        const left = cx - (s.getW() >> 1);
+        const top = cy - (s.getH() >> 1);
+        s.setArea(left, top, left + s.getW(), top + s.getH());
+        s.setCaption(caption);
+        s.tooltip = this.str(S.cancelTip);
+        b = s;
+      } else {
+        const img = await ctx.res.image(def.image);
+        b = new TSWinBtn(0, img, 4, 1);
+        b.setArea(0, 0, Math.trunc(img.width / 4), img.height);
+        b.moveTo(def.x + ox, def.y + oy);
+        b.tooltip = caption;
+      }
+      b.id = BUTTON_ID_BASE + i;
+      this.childAdd(b);
+      this.buttons.push(b);
+    }
+    for (const [x, tip] of [
+      [0x24a, S.netWorthTip],
+      [0x296, S.friendsTip],
+    ] as const) {
+      const w = new TSWin();
+      w.setArea(x + ox, 0x2a + oy, x + ox + 0x1a, 0x2a + oy + 0x17);
+      w.tooltip = this.str(tip);
+      this.childAdd(w);
+    }
+    this.buttons[B.moveIn]!.enabled = false;
+    this.buttons[B.delete]!.enabled = false;
+    return true;
+  }
+
+  private makeItem(r: FamilyRow): PickFamilyItem {
+    return new PickFamilyItem(r, this.itemBkg!, this.template!, this.fonts!);
+  }
+
+  /** cWinPickFamily::HandleButton */
+  private async handleButton(i: number): Promise<void> {
+    if (this.busy) return;
+    this.busy = true;
+    try {
+      const list = this.list;
+      const store = this.store;
+      if (!list || !store) return;
+      if (i === B.delete) {
+        const item = list.items[list.selected];
+        if (!item) return;
+        const r = await TSWinMsgBox.show(this.ctx, this.str(S.deleteMessage).replace("%s", item.family.name), this.str(S.deleteTitle), MB_OKCANCEL);
+        if (r === IDOK) {
+          list.deleteSelection();
+          await store.removeFamily(item.family.id);
+        }
+      } else if (i === B.create) {
+        // The design screens edit the same neighborhood file through their own store.
+        const session = new CasSession(store, this.ctx.res);
+        const dlg = new WinDesignFamily(this.ctx, session);
+        this.hideWindow();
+        dlg.setArea(this.area.left, this.area.top, this.area.right, this.area.bottom);
+        dlg.setMessageTarget({ familyDesigned: (id) => void this.familyDesigned(id) });
+        if (await dlg.init()) await winMgr.doModalWin(dlg, this.parent ?? undefined);
+        this.showWindow();
+        winMgr.setFocus(this);
+      } else if (i === B.moveIn) {
+        const id = list.selectedId();
+        if (id === -1) return;
+        this.owner?.moveIn(id);
+        this.tsEndDialog(1);
+      } else {
+        this.tsEndDialog(0);
+      }
+    } finally {
+      this.busy = false;
+    }
+  }
+
+  /** Command 0x1e: AddNewFamily */
+  private async familyDesigned(id: number): Promise<void> {
+    if (!this.list || !this.store) return;
+    const n = await loadNeighborhood(this.dir);
+    const r = await familyRow(this.store, n, id);
+    if (r) this.list.addItem(this.makeItem(r));
+  }
+
+  override tsOnCommand(cmd: number, source: TSWin): boolean {
+    if (cmd === CMD_SELECTION) {
+      const on = (this.list?.selected ?? -1) !== -1;
+      this.buttons[B.moveIn]!.enabled = on;
+      this.buttons[B.delete]!.enabled = on;
+      return true;
+    }
+    if (cmd === CMD_DOUBLE_CLICK) {
+      void this.handleButton(B.moveIn);
+      return true;
+    }
+    if (cmd === CMD_EMPTY_ROW) {
+      void this.handleButton(B.create);
+      return true;
+    }
+    const i = this.buttons.indexOf(source as TSWinBtn);
+    if (i >= 0) void this.handleButton(i);
+    return true;
+  }
+
+  override tsOnKeyDown(key: string): boolean {
+    if (key !== "Escape") return false;
+    void this.handleButton(B.cancel);
+    return true;
+  }
+
+  override tsPaint(g: Gfx): void {
+    const bkg = this.bkg;
+    if (!bkg) return;
+    const w = this.getW();
+    const h = this.getH();
+    const ox = this.offX;
+    const oy = this.offY;
+    if (ox > 0 || oy > 0) {
+      g.fill(0, 0, w, oy, DLG_FILL);
+      g.fill(0, oy + bkg.height, w, h - oy - bkg.height, DLG_FILL);
+      g.fill(0, oy, ox, bkg.height, DLG_FILL);
+      g.fill(ox + bkg.width, oy, w - ox - bkg.width, bkg.height, DLG_FILL);
+    }
+    g.blit(bkg, ox, oy);
+  }
+}

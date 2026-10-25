@@ -65,3 +65,85 @@ export class ReconReader {
     return s;
   }
 }
+
+const cp1252Table = (() => {
+  const t = new Map<string, number>();
+  const dec = new TextDecoder("windows-1252");
+  for (let b = 0; b < 256; b++) t.set(dec.decode(new Uint8Array([b])), b);
+  return t;
+})();
+
+/** Encodes a string as Windows-1252 bytes (unmapped characters become "?"). */
+export function encodeCp1252(s: string): Uint8Array {
+  const out = new Uint8Array(s.length);
+  let i = 0;
+  for (const ch of s) out[i++] = cp1252Table.get(ch) ?? 0x3f;
+  return out.subarray(0, i);
+}
+
+/** Writer side of ReconBuffer (uncompressed mode), mirror of ReconReader. */
+export class ReconWriter {
+  private buf = new Uint8Array(256);
+  private view = new DataView(this.buf.buffer);
+  pos = 0;
+
+  private ensure(n: number): void {
+    if (this.pos + n <= this.buf.length) return;
+    let size = this.buf.length * 2;
+    while (size < this.pos + n) size *= 2;
+    const next = new Uint8Array(size);
+    next.set(this.buf.subarray(0, this.pos));
+    this.buf = next;
+    this.view = new DataView(next.buffer);
+  }
+
+  i32(v: number): void {
+    this.ensure(4);
+    this.view.setInt32(this.pos, v | 0, true);
+    this.pos += 4;
+  }
+
+  i16(v: number): void {
+    this.ensure(2);
+    this.view.setInt16(this.pos, v, true);
+    this.pos += 2;
+  }
+
+  i16s(values: ArrayLike<number>): void {
+    for (let i = 0; i < values.length; i++) this.i16(values[i]!);
+  }
+
+  u8(v: number): void {
+    this.ensure(1);
+    this.buf[this.pos++] = v & 0xff;
+  }
+
+  bool(v: boolean): void {
+    this.u8(v ? 1 : 0);
+  }
+
+  /** ReconString: C string padded to an even length with `pad` (the game leaves garbage there). */
+  cstr(s: string, pad = 0): void {
+    const b = encodeCp1252(s);
+    this.ensure(b.length + 2);
+    this.buf.set(b, this.pos);
+    this.pos += b.length;
+    this.buf[this.pos++] = 0;
+    if (this.pos & 1) this.buf[this.pos++] = pad;
+  }
+
+  /** Four ASCII characters stored as a little-endian u32. */
+  tag(t: string): void {
+    for (let i = 0; i < 4; i++) this.u8(t.charCodeAt(i));
+  }
+
+  bytes(b: Uint8Array): void {
+    this.ensure(b.length);
+    this.buf.set(b, this.pos);
+    this.pos += b.length;
+  }
+
+  finish(): Uint8Array {
+    return this.buf.slice(0, this.pos);
+  }
+}

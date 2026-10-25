@@ -60,6 +60,13 @@ export class Strings {
     return (this.tables.get(name)?.get(id) ?? []).map((s) => s.text);
   }
 
+  /** One STR# chunk's strings (0-based), languages resolved like `load` (plugin files' own string sets). */
+  async parse(bytes: Uint8Array): Promise<string[]> {
+    const wasm = await engine();
+    const parsed = wasm.parseStrTable(bytes) as { entries: StrEntry[] };
+    return this.pick(parsed.entries).map((s) => s.text);
+  }
+
   private pick(entries: StrEntry[]): Str[] {
     const str = (e: StrEntry): Str => ({
       text: latin1.decode(e.data),

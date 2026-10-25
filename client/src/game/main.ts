@@ -13,6 +13,7 @@ import { CPState, DIRTY_ALL, Mode } from "./cpstate.js";
 import type { GameContext } from "./context.js";
 import { CPANEL_HEIGHT, WinCPanel } from "./cpanel/cpanel.js";
 import { activateFamily } from "./data/family.js";
+import { NeighborhoodStore } from "./data/nbhdstore.js";
 import { loadNeighborhood } from "./data/neighborhood.js";
 import { Neighborhood } from "./nbhd/nghinterface.js";
 import { getOptionsMgr } from "./optionsmgr.js";
@@ -53,7 +54,8 @@ async function createContext(): Promise<GameContext> {
 }
 
 class Game {
-  private nbhdDir = "UserData";
+  /** `?nbhd=UserData3` (dev): start in another neighborhood. */
+  private nbhdDir = new URLSearchParams(location.search).get("nbhd") ?? "UserData";
   private nbhd: Neighborhood | null = null;
   lotView: WinLotView | null = null;
   /** Mode whose music plays (null outside a lot). */
@@ -102,10 +104,22 @@ class Game {
         void this.showNeighborhood();
       },
       onUnported: (what) => console.log(`not ported: ${what}`),
+      onMoveIn: (house, family, value) => {
+        mgr.main.childDelete(screen);
+        void this.moveIn(house, family, value);
+      },
     });
     screen.setArea(0, 0, ctx.width, ctx.height);
     if (!(await screen.init())) throw new Error("neighborhood init failed");
     mgr.main.childAdd(screen);
+  }
+
+  /** cSimsApp::LoadGame(house, family): Neighborhood::LoadHouse moves the family in first. */
+  async moveIn(house: number, family: number, houseValue: number): Promise<void> {
+    const store = await NeighborhoodStore.open(this.nbhdDir);
+    store.setFamilyHouse(family, house, houseValue);
+    await store.save();
+    await this.enterLot(house);
   }
 
   /** Neighborhood::LoadHouse + cSimsApp control panel setup. */

@@ -34,6 +34,9 @@ import { Gfx, TSWin } from "../ui/tswin.js";
 import { listNeighborhoodDirs, neighborhoodNumber, type Neighborhood } from "./nghinterface.js";
 import { WinLotBtn, type LotBtnOwner } from "./winlotbtn.js";
 import { WinLotPopup } from "./winlotpopup.js";
+import { WinPickFamily } from "../cas/winpickfamily.js";
+import { NeighborhoodStore } from "../data/nbhdstore.js";
+import { IDYES, MB_OK, MB_YESNO, TSWinMsgBox } from "../ui/msgbox.js";
 
 /** cWinNeighborhood::Mode */
 export const enum NbhdMode {
@@ -124,11 +127,29 @@ export interface NeighborhoodCallbacks {
   onSwitchNeighborhood(dir: string): void;
   /** A button whose target window is not ported (pick family, credits, web pages, evict, rezone). */
   onUnported(what: string): void;
+  /**
+   * MoveInModeLotHandler: cSimsApp::LoadGame(house, family), the family
+   * moving into the lot (optional: without it the screen asks onEnterLot).
+   */
+  onMoveIn?(house: number, familyId: number, houseValue: number): void;
 }
+
+/** UIText STR# 132 "MoveInModeStrs" (title, text pairs). */
+const STR_MOVE_IN = 132;
+const MOVE_IN = {
+  buyHouse: 0,
+  tooExpensive: 2,
+  buyLot: 6,
+  community: 12,
+  occupied: 14,
+  tutorial: 16,
+} as const;
 
 export class WinNeighborhoodUL extends TSWin implements LotBtnOwner {
   /** +0xcc */
   private mode = NbhdMode.Regular;
+  /** +0x1b0: the family moving in (Move In mode). */
+  private moveInFamily = -1;
   private largeMask: ImageBitmap | null = null;
   private waves: Array<ImageBitmap | null> = [];
   private currentBox: ImageBitmap | null = null;
@@ -338,13 +359,81 @@ export class WinNeighborhoodUL extends TSWin implements LotBtnOwner {
     if (cmd !== 1) return false;
     if (source instanceof WinLotBtn) {
       if (this.mode === NbhdMode.Regular) this.regularModeLotHandler(source.houseNumber);
+      else if (this.mode === NbhdMode.MoveIn) void this.moveInModeLotHandler(source.houseNumber);
       else this.callbacks.onUnported(`lot click in mode ${this.mode}`);
       return true;
     }
     const index = this.buttons.indexOf(source as TSWinBtn);
     if (index < 0) return false;
+    if (this.mode === NbhdMode.MoveIn) this.setMode(NbhdMode.Regular);
     if (this.mode === NbhdMode.Regular) this.regularModeBtnHandler(index);
     return true;
+  }
+
+  /** TSOnCommand 0x20 (posted by cWinPickFamily): Move In mode for that family. */
+  private startMoveIn(familyId: number): void {
+    this.setMode(NbhdMode.MoveIn);
+    this.buttons[BTN_MOVE_IN]!.setState(1);
+    this.moveInFamily = familyId;
+  }
+
+  /** RegularModeBtnHandler(MoveIn): cWinPickFamily over the whole screen, family music. */
+  private async pickFamily(): Promise<void> {
+    const dlg = new WinPickFamily(this.ctx, this.nb.dir);
+    dlg.setOwner({ moveIn: (id) => this.startMoveIn(id) });
+    this.setMode(NbhdMode.Regular);
+    this.hideWindow();
+    dlg.setArea(0, 0, this.ctx.width, this.ctx.height);
+    soundPlayer.playBySource(MUSIC.family, -1);
+    if (await dlg.init()) await winMgr.doModalWin(dlg);
+    soundPlayer.playBySource(MUSIC.hood, -1);
+    this.showWindow();
+  }
+
+  private moveInMessage(index: number, type = MB_OK): Promise<number> {
+    const str = (i: number): string => this.ctx.strings.get("UIText", STR_MOVE_IN, i);
+    return TSWinMsgBox.show(this.ctx, str(index + 1), str(index), type);
+  }
+
+  /** cWinNeighborhoodUL::MoveInModeLotHandler */
+  private async moveInModeLotHandler(house: number): Promise<void> {
+    const info = this.lots.get(house)?.info;
+    if (!info) return;
+    if (info.isTutorial) {
+      await this.moveInMessage(MOVE_IN.tutorial);
+      return;
+    }
+    if (this.nb.getZoningType(house) !== 1) {
+      await this.moveInMessage(MOVE_IN.community);
+      return;
+    }
+    // GetFamilyInfo: the moving family's net worth (budget + house value).
+    const store = await NeighborhoodStore.open(this.nb.dir);
+    const fam = store.family(this.moveInFamily);
+    if (!fam) {
+      this.setMode(NbhdMode.Regular);
+      return;
+    }
+    const funds = fam.budget + fam.netWorth;
+    if (!info.isEmpty) {
+      await this.moveInMessage(MOVE_IN.tooExpensive);
+      return;
+    }
+    if (info.familyNumber !== -1) {
+      await this.moveInMessage(MOVE_IN.occupied);
+      return;
+    }
+    if (funds < info.value) {
+      await this.moveInMessage(MOVE_IN.tooExpensive);
+      return;
+    }
+    const r = await this.moveInMessage(info.hasHouse ? MOVE_IN.buyHouse : MOVE_IN.buyLot, MB_YESNO);
+    if (r !== IDYES) return;
+    this.setMode(NbhdMode.Regular);
+    // The game also refills townies and tourist families here (simulation, not ported).
+    soundPlayer.playBySource(MUSIC.fade, -1);
+    if (this.callbacks.onMoveIn) this.callbacks.onMoveIn(house, this.moveInFamily, info.value);
+    else this.callbacks.onEnterLot(house);
   }
 
   /** cWinNeighborhoodUL::RegularModeLotHandler (main screen) */
@@ -360,8 +449,8 @@ export class WinNeighborhoodUL extends TSWin implements LotBtnOwner {
     switch (index) {
       case BTN_MOVE_IN:
         // Opens cWinPickFamily modally, then returns to regular mode.
-        this.callbacks.onUnported("cWinPickFamily");
         this.buttons[BTN_MOVE_IN]!.setState(0);
+        void this.pickFamily();
         break;
       case BTN_BULLDOZE:
       case BTN_REZONE:

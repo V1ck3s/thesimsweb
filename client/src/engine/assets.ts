@@ -161,17 +161,23 @@ export interface IffChunkInfo {
   dataLen: number;
 }
 
+/** Paths the save overlay can write (server/src/routes/userdata.ts). */
+const WRITABLE_PATH = /^Sims\/UserData\d*\//i;
+
 /** Open a standalone .iff/.flr/.wll file on disk (no FAR wrapping). */
 export async function readStandaloneIff(
   path: string,
 ): Promise<{ data: Uint8Array; chunks: IffChunkInfo[] }> {
   const wasm = await engine();
-  let data = await idbGetIffFile(path);
+  // Files the game writes (UserData*, served from the save overlay) change:
+  // they are never kept in the persistent cache.
+  const writable = WRITABLE_PATH.test(path);
+  let data = writable ? null : await idbGetIffFile(path);
   if (!data) {
-    const res = await fetch(`${ASSETS_BASE}${path}`);
+    const res = await fetch(`${ASSETS_BASE}${path}`, writable ? { cache: "no-store" } : {});
     if (!res.ok) throw new Error(`${path}: ${res.status}`);
     data = new Uint8Array(await res.arrayBuffer());
-    void idbPutIffFile(path, data);
+    if (!writable) void idbPutIffFile(path, data);
   }
   const chunks = wasm.parseIffChunks(data) as IffChunkInfo[];
   return { data, chunks };

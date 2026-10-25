@@ -62,6 +62,8 @@ export interface Neighbor {
   name: string;
   personData: Int16Array | null;
   relationships: Relationship[];
+  /** Neighbor::DoStream version (Neighbor +0x18; LoadPersistentData compares it with each field's minimum). */
+  version?: number;
 }
 
 export interface Family {
@@ -122,7 +124,7 @@ export function parseNbrs(bytes: Uint8Array): Neighbor[] {
     }
     const id = r.i16();
     const guid = r.u32();
-    out.push({ id, guid, name, personData, relationships: readRelMatrix(r, version) });
+    out.push({ id, guid, name, personData, relationships: readRelMatrix(r, version), version: local });
   }
   return out;
 }

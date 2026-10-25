@@ -143,6 +143,25 @@ export class VBAnimMgr {
     return p;
   }
 
+  /**
+   * Names of the suits the manager knows (the animation manager's suit
+   * table that EditPerson::GetSuit walks): every suit of the .ndx indexes
+   * plus the loose ".cmx" files of the skin folders (one suit each, named
+   * after the file). Lowercased.
+   */
+  suitNames(): string[] {
+    const out = new Set(this.suitIndex.keys());
+    for (const [n, src] of this.files) if ("path" in src && n.endsWith(".cmx")) out.add(n.slice(0, -4));
+    return [...out];
+  }
+
+  /** Texture names (".bmp" files, extension dropped), the TextureScanner's directory contents. Lowercased. */
+  textureNames(): string[] {
+    const out: string[] = [];
+    for (const n of this.files.keys()) if (n.endsWith(".bmp")) out.push(n.slice(0, -4));
+    return out;
+  }
+
   /** VBAnimMgr::FindSkeleton (shared, never animated: clone before use). */
   async findSkeleton(name: string): Promise<Skeleton | null> {
     const k = name.toLowerCase();
