@@ -195,11 +195,9 @@ Files: `client/src/game/nbhd/winneighborhoodul.ts`, `nbhd/winlotbtn.ts`, `nbhd/n
 - EvictFamily = Neighborhood::MoveOut + ExportFamily. Ported: the family side
   (`NeighborhoodStore.moveOutFamily`: house 0, flags &= ~8, budget += lot value, value 0; saved), the
   bulldoze side of NeighborhoodDesc.iff (STR# 2000 + house entries 1 / 2 emptied).
-  **Not ported**: the house file side (LoadHouse, kill IsDeletedByEvict objects; on bulldoze kill objects /
-  walls / floors / pool off 0x20 tiles, delete the house's characters; funds and global 26 = 0, clear
-  history, SaveHouse). It needs a headless lot load + save (world/**): the screen calls the optional
-  callback `onMoveOutHouse(house, bulldoze)` and otherwise logs `onUnported`. ExportFamily (Export/*.FAM)
-  and the HTML export are not ported.
+  The house file side (`onMoveOutHouse(house, bulldoze, store)`, `world/moveout.ts`) and ExportFamily
+  (`NeighborhoodStore.exportFamily`) are described in "Lot transitions, MoveOut house side, ExportFamily"
+  below. The HTML export is not ported.
 - EvictModeBtnHandler: Move In -> regular + picker; Bulldoze -> regular; Exit / Inet / Credits / Import /
   logo as regular; the rest nothing.
 
@@ -232,6 +230,94 @@ Files: `client/src/game/nbhd/winneighborhoodul.ts`, `nbhd/winlotbtn.ts`, `nbhd/n
 - The run count (cOptionsMgr) is `localStorage["thesimsweb.runCount"]`, incremented at boot.
 
 ### Gaps
-- MoveOut house file side, ExportFamily (see above); tourist families (DoFirstTimeTouristFamilies /
+- Tourist families (DoFirstTimeTouristFamilies /
   RefillTouristFamilies(10)) are not called; the dev Move mode (5) and the digit / arrow keys are not ported;
   the internet update busy flag (+0x1b4) is never set.
+
+## Lot transitions, MoveOut house side, ExportFamily, the game at "/"
+
+Files: `client/src/game/screens/frozen.ts` (new), `world/moveout.ts` (new), `main.ts` (callbacks),
+`data/nbhdstore.ts` (`exportFamily`, `charactersOfHouse`, `deleteCharacter` now returns a boolean),
+`data/iff.ts` (`stringSetMultiSaveLocal`, `stringSetBaseResave`), `world/housesave.ts` (`clearHistory`),
+`world/winlotview.ts` (`readLotSize` exported), `nbhd/winneighborhoodul.ts` (the store goes to
+`onMoveOutHouse`; ExportFamily after MoveOut), `client/vite.config.ts`, `client/legacy.html`.
+
+### Entering and leaving a lot (cSimsApp::LoadGame, ShowNbhdDialog)
+- The original has **no loading screen and no progress dialog** for a lot. Checked: LoadGame,
+  Neighborhood::LoadHouse / UnloadHouse, ShowNbhdDialog, DoNbhdScreen; the splash stages "hous" / "lobj" /
+  "hvwr" belong to InitGame (startup only); cWinProgressPictureDialog is only used by the townie / tourist /
+  Makin' Magic refills (`nbhd/townies.ts`, which runs before LoadGame on the first lot click);
+  cWinPictureSplashDialog is CreateTaxiDialog, used by ObjectModule's transit primitives (not ported).
+- Entering (RegularModeLotHandler / MoveInModeLotHandler): `bkground_fade` (already played by the screen),
+  NPC refills, then LoadGame: cDDDSimsView::StartWatchCursor (global standard cursor 3, the hourglass),
+  LoadHouse synchronously with the neighborhood screen still on screen, PlaySoundA of the lot's ambience
+  (`setambience_beach` for houses 0x1c-0x1d / 0x2e-0x30, `_park` for 0x15-0x1e / 0x2b-0x2d, `_magictown`
+  for 0x5a-0x5c, else `_backyard`), then the screen ends, the view is shown, and the hourglass is removed at
+  the end of the view's next draw (cDDDSimsView +0x11a8 / +0x11a4).
+- Leaving (Options > Neighborhood): CPState::LeavingHouse, UnloadHouse, the screen built, the view hidden,
+  DoModalWin: the last lot frame stays until the neighborhood draws, no cursor change. The mode music
+  goes on until the screen's Init plays `bkground_nhood1`.
+- Port: `whileFrozen(mgr, watchCursor, work)` copies the current canvas into a front-most modal window that
+  paints it and swallows input while the asynchronous load runs (the original is frozen), so the windows
+  behind can be swapped; the hourglass is cleared two animation frames after the lot view is added. Used by
+  onEnterLot, onMoveIn (hourglass), showNeighborhood and onSwitchNeighborhood (no hourglass).
+- Gaps: the ambience events resolve (HotDate.hot / sep7snds.hot, kSetAmbienceMode = 52) but cBoxX::Event
+  has no case 52 and cBoxX::UpdateAmbienceLoop is not ported, so nothing is heard. The NPC refill before
+  LoadGame is not frozen (the original's handler is synchronous as a whole). LoadGame's vacation /
+  downtown / visitor branches are not ported (main.ts enterLot).
+
+### Neighborhood::MoveOut, house file side (`world/moveout.ts`, `moveOutHouse(ctx, store, house, bulldoze)`)
+- Headless LoadHouse: ResFile, FixedWorld (lot size from SIMI), FloorGraphicsMgr / WallGraphicsMgr with
+  the usage maps, `loadLotModule`, `Simulator.create` (ObjectModule::PostLoad: Load / Init trees), a
+  Placement whose onKill drops the sim object, and minimal WorldHooks. No view, no WebGL.
+- LoadHouse's person pass: family-less people whose person data 0x43 is another house, and people of a
+  resident family (not 0 / 2000 / 3000-3009 / 4000 / 5000 / 5500 / 6000) without a house (the evicted
+  family: moveOutFamily has run on the store) are killed.
+- BroadcastMessage("evict lot", 0): the BHAV named so (Behavior::GetTreeID by name; Bills.iff has it) runs
+  once per object (RunOneTickTree, param 0), then the kill queue.
+- Kill pass in module order, objects not held by another (PlacementSpec container null): IsDeletedByEvict
+  (world/housestats.ts); bulldoze adds out-of-world objects with OBJD +0x54 == 0 and objects without
+  movement flag 0x10 on a tile without flag 0x20 (an out-of-lot tile reads 0, the original reads past the
+  array).
+- Bulldoze: levels 1 and 2, inner tiles without flag 0x20: floor 0 and `fixedSetWall` with an empty
+  TileWalls; cPoolLayer::Clear (every lot tile 0xff).
+- Funds 0 (SetFunds), global 26 = 0, ClearHistory (global 28 and the six SIMI history blocks: new
+  `clearHistory` option of buildHouseFile), GlobalDispatch(0x91) = cFixedWorld::ComputeRooms.
+- Bulldoze: DeleteCharacter for each neighbor whose Neighbor +0xfa (person data 0x43) is the house, in NBRS
+  order, until one is refused; the person objects with that GUID are killed first.
+- GViewer::SetLevel(1) (HOUS 0 level patched, the HOUS 0 chunk being carried without a viewer), SaveHouse:
+  stats (summarizeHouseStats) and buildHouseFile with the live simulator, written to the overlay.
+- A load or save failure resolves false: evictFamily then returns before saving the store (the family keeps
+  its house, as MoveOut puts +0x110 back) and the screen shows STR# 131 [11]/[10].
+- Not ported: House::ClearRouteHistory, the family 0 budget reset in SaveHouse, SaveHouse's DeleteCharacter
+  loop over family-less house-less characters, the GUID 0xc3249a1d object LoadHouse may create, the
+  "import lot" broadcast, **the thumbnail** (HouseViewer::SaveThumbnail is not ported: a bulldozed lot keeps
+  its old THMB / BMP_ pictures on the neighborhood screen).
+- Checked (UserData, overlay, then deleted): evicting house 7 kept 106 of 182 objects (all build-mode objects
+  plus those with movement flag 0x10: mailbox, trash can), no person, funds 0, globals 26 / 28 = 0; the lot
+  reloads in buy mode. Bulldozing house 5 removed walls, floors and every object but trees, tombstones,
+  mailbox and trash can (movement flag 0x10 or a locked tile). A MoveOut takes about 0.9 s (warm cache).
+
+### ExportFamily (`NeighborhoodStore.exportFamily(id)`)
+- EvictFamily calls Neighborhood::ExportFamily(ConstructUserDataPath("Export"), family) after MoveOut when
+  the family exists (result ignored); ExportFamilyHTML (option) is not ported.
+- File `<dir>/Export/<name>_<id>.FAM` (Family::GetExportName; `.MTF` for a Magic Town house 0x5a-0x5c);
+  with a house, the house file is the base (CopyFileA) and the chunks are added. Chunks in order: FAMI (v9),
+  FAMs, FAMh (copied), CTSS 1000 (name, language slot 0), EXPi 0 (ExpFamilyInfo v0x3f: id, 8 member
+  neighbor ids, language byte 3), then per neighbor of the family (Neighbor +0xee) in NBRS order: uChr id
+  (STR# 200 re-saved by StringSetBase: entries re-tagged with the current language), CTSS id
+  (CatalogResource::Save: name and description in the current language), CTSS 2000 + id (SaveLocal: all 20
+  language slots, missing ones copied from US English), BMP_ id (BMP_ 2004); NBRS 1; FINV 2 (version 0x49:
+  the members' SimInventory records from the NGBH vector, `i32 0` for none); rsmp. `.FAM` and `.MTF` are
+  deleted first (overlay copies only).
+- Checked against the game's own `UserData/Export/Fez_7.FAM` after evicting house 1 (Fez, id 7): FAMs,
+  FAMh, CTSS 1000, EXPi, every uChr / CTSS / BMP_, NBRS and FINV are byte-identical except the slack bytes
+  the game leaves uninitialized after string sets; FAMI differs only by the state (house 0, budget = net
+  worth after the eviction); the game's file was exported with its house, ours has none (eviction).
+
+### The game at "/" (task: game.html as the main entry)
+- `client/vite.config.ts`: a `game-as-root` plugin rewrites `/` and `/index.html` (query kept) to
+  `/game.html` in the dev and preview servers; the build has two inputs (game, legacy). `game.html?...`
+  URLs keep working. The old prototype page moved to `client/legacy.html` (`src/main.ts`, unchanged).
+- The Fastify server does not serve the client (only /api and /assets): nothing to change there.
+

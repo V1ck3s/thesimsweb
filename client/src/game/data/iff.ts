@@ -264,3 +264,30 @@ export function stringSetMultiSave(existing: Uint8Array | null, lang: number, va
   slots.forEach((s, l) => s.forEach((p) => entries.push({ lang: l + 1, value: p.value, comment: p.comment })));
   return encodeStrSet(entries);
 }
+
+/**
+ * StringSetMulti::Load followed by StringSetMulti::SaveLocal: every one of
+ * the language slots is written, a slot the chunk lacks holding the US
+ * English strings (as Neighborhood::ExportFamily's CTSS 2000 + id copies).
+ */
+export function stringSetMultiSaveLocal(existing: Uint8Array): Uint8Array {
+  const slots: StrEntry[][] = Array.from({ length: LANG_SLOTS }, () => []);
+  for (const e of decodeStrSet(existing)) slots[e.lang - 1]?.push(e);
+  const english = slots[0]!;
+  const entries: StrEntry[] = [];
+  slots.forEach((s, l) => {
+    for (const e of s.length ? s : english) entries.push({ lang: l + 1, value: e.value, comment: e.comment });
+  });
+  return encodeStrSet(entries);
+}
+
+/**
+ * StringSetBase::Load then Save into another file (single language): the
+ * current language's entries (else US English's, else all) re-tagged with
+ * the current language.
+ */
+export function stringSetBaseResave(existing: Uint8Array, lang: number): Uint8Array {
+  const all = decodeStrSet(existing);
+  const pick = all.some((e) => e.lang === lang) ? all.filter((e) => e.lang === lang) : all.some((e) => e.lang === 1) ? all.filter((e) => e.lang === 1) : all;
+  return encodeStrSet(pick.map((e) => ({ ...e, lang })));
+}

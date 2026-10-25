@@ -95,7 +95,7 @@ Rules:
 
 ## Testing
 
-- Dev server: `http://localhost:5173/game.html` (full game shell) and
+- Dev server: `http://localhost:5173/` (= `game.html`, the full game shell) and
   `http://localhost:5173/game.html?test=<name>` for a test page you add as
   `client/src/game/dev/tests/<name>.ts` exporting
   `export async function mount(ctx: GameContext, mgr: WinMgr): Promise<void>`.

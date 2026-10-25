@@ -19,8 +19,8 @@
 import { fetchManifest } from "../../engine/assets.js";
 import { LANG_FRENCH } from "../res/uires.js";
 import { createCharacterFile, createCharacterFileFrom, deleteCharacterFile, GUID_TEMPLATE_PERSON } from "./character.js";
-import { writeGameFile } from "./files.js";
-import { buildIff, decodeStrSet, parseIff, stringSetMultiSave, type IffChunk } from "./iff.js";
+import { deleteGameFile, writeGameFile } from "./files.js";
+import { buildIff, decodeStrSet, parseIff, stringSetBaseResave, stringSetMultiSave, stringSetMultiSaveLocal, type IffChunk } from "./iff.js";
 import { PD } from "./neighborhood.js";
 import { ReconReader, ReconWriter } from "./recon.js";
 
@@ -102,6 +102,11 @@ const PD_67 = 67;
 
 /** The game's current language (StringSetMulti saves the family name in it). */
 const CURRENT_LANG = LANG_FRENCH;
+
+/** A neighbor's character file name (its short name, capitalized: "user00000" -> "User00000.iff"). */
+function characterFileName(name: string): string {
+  return `${name.charAt(0).toUpperCase()}${name.slice(1)}.iff`;
+}
 
 function streamLocal(words: number[]): number {
   return words.length ? words[words.length - 1]! : 0;
@@ -411,11 +416,11 @@ export class NeighborhoodStore {
     return slot + 1;
   }
 
-  /** Neighborhood::DeleteCharacter: refused while the person belongs to a family. */
-  async deleteCharacter(guid: number): Promise<void> {
+  /** Neighborhood::DeleteCharacter: refused (false) while the person belongs to a family. */
+  async deleteCharacter(guid: number): Promise<boolean> {
     const n = this.neighborByGuid(guid);
-    if (!n) return;
-    if (this.families.some((f) => f.memberGuids.includes(guid >>> 0))) return;
+    if (!n) return false;
+    if (this.families.some((f) => f.memberGuids.includes(guid >>> 0))) return false;
     // RemoveNeighbor: free the slot and drop the relationships to it.
     this.nbrs.entries[n.id - 1] = null;
     for (const e of this.nbrs.entries) {
@@ -424,7 +429,16 @@ export class NeighborhoodStore {
       if (e.rels.count >= 0) e.rels.count = e.rels.entries.length;
       else e.rels.vecCount = e.rels.entries.length;
     }
-    await deleteCharacterFile(this.dir, `${n.name.charAt(0).toUpperCase()}${n.name.slice(1)}.iff`);
+    await deleteCharacterFile(this.dir, characterFileName(n.name));
+    return true;
+  }
+
+  /**
+   * The characters Neighborhood::MoveOut(bulldoze) deletes: neighbors whose
+   * Neighbor +0xfa (person data 0x43) is `house`, in neighbor order.
+   */
+  charactersOfHouse(house: number): number[] {
+    return this.nbrs.entries.filter((e): e is NeighborRaw => e !== null && e.personData[PD_67] === house).map((e) => e.guid >>> 0);
   }
 
   /** Neighborhood::MakeNewFamily */
@@ -570,6 +584,124 @@ export class NeighborhoodStore {
     f.netWorth = 0;
     f.dirty = true;
     return f.id;
+  }
+
+  /**
+   * Neighborhood::ExportFamily(<dir>/Export/, family): the family file
+   * Family::GetExportName ("<name>_<id>") + ".FAM" (".MTF" for a Magic Town
+   * house, 0x5a..0x5c). When the family has a house, the house file is the
+   * base (CopyFileA) and the family chunks are added to it. Chunks:
+   * - Family::SaveFamily: FAMI (version 9), FAMs (its name), FAMh (the
+   *   history, copied from the neighborhood file);
+   * - CTSS 1000: the family name (entry 1, language slot 0);
+   * - EXPi 0 (ExpFamilyInfo, version 0x3f): family id, the members' neighbor
+   *   ids (8 shorts), the game's language;
+   * - per neighbor of the family (Neighbor +0xee), in neighbor order, with
+   *   its neighbor id: uChr (the character's STR# 200 body strings,
+   *   StringSetBase: in the current language), CTSS
+   *   (CatalogResource::Save: catalog name and description in the current
+   *   language), CTSS 2000 + id (its CTSS 2000, StringSetMulti::SaveLocal:
+   *   all language slots) and BMP_ (its BMP_ 2004 portrait);
+   * - NBRS 1 (every neighbor) and FINV 2 (the members' SimInventory records
+   *   from NGBH, null where a member has none), in version 0x49.
+   * Then <base>.FAM and <base>.MTF are deleted and the new file takes the
+   * name. Resolves false when a file could not be read or written.
+   */
+  async exportFamily(familyId: number): Promise<boolean> {
+    const f = this.familyRaw(familyId);
+    if (!f) return false;
+    const base = `${this.dir}/Export/${f.name}_${f.id}`;
+    const read = async (path: string): Promise<IffChunk[] | null> => {
+      const res = await fetch(`/assets/Sims/${path}`, { cache: "no-store" });
+      return res.ok ? parseIff(new Uint8Array(await res.arrayBuffer())) : null;
+    };
+    const out: IffChunk[] = [];
+    if (f.houseNumber !== 0) {
+      const house = await read(`${this.dir}/Houses/House${String(f.houseNumber).padStart(2, "0")}.iff`);
+      if (!house) return false;
+      out.push(...house);
+    }
+    const add = (c: IffChunk): void => {
+      const i = out.findIndex((x) => x.type === c.type && x.id === c.id);
+      if (i >= 0) out.splice(i, 1);
+      out.push(c);
+    };
+    const fams = this.chunks.find((c) => c.type === "FAMs" && c.id === f.id);
+    add({ type: "FAMI", id: f.id, flags: 0x10, label: "", data: serializeFamily(f) });
+    add({ type: "FAMs", id: f.id, flags: 0x10, label: "", data: stringSetMultiSave(fams?.data ?? null, CURRENT_LANG, [f.name]) });
+    const famh = this.chunks.find((c) => c.type === "FAMh" && c.id === f.id);
+    if (famh) add({ ...famh, data: famh.data.slice() });
+    add({ type: "CTSS", id: 1000, flags: 0x10, label: "", data: stringSetMultiSave(null, 1, [f.name]) });
+    // ExpFamilyInfo: the members' neighbor ids in family order (the first neighbor with the GUID).
+    const memberIds = f.memberGuids.map((g) => this.neighborByGuid(g)?.id ?? 0);
+    const expi = new ReconWriter();
+    expi.i32(0);
+    expi.i32(0x3f);
+    expi.tag("iPXE");
+    expi.i16(f.id);
+    for (let i = 0; i < 8; i++) expi.i16(memberIds[i] ?? 0);
+    expi.u8(CURRENT_LANG);
+    add({ type: "EXPi", id: 0, flags: 0x10, label: "", data: expi.finish() });
+    for (const n of this.nbrs.entries) {
+      if (!n || n.personData[PD.familyNumber] !== f.id) continue;
+      const chr = await read(`${this.dir}/Characters/${characterFileName(n.name)}`);
+      const body = chr?.find((c) => c.type === "STR#" && c.id === 200);
+      if (!chr || !body) return false;
+      add({ type: "uChr", id: n.id, flags: 0x10, label: body.label, data: stringSetBaseResave(body.data, CURRENT_LANG) });
+      const ctss = chr.find((c) => c.type === "CTSS" && c.id === 2000);
+      const entries = ctss ? decodeStrSet(ctss.data) : [];
+      const pick = (i: number): string => (entries.filter((e) => e.lang === CURRENT_LANG)[i] ?? entries.filter((e) => e.lang === 1)[i])?.value ?? "";
+      add({ type: "CTSS", id: n.id, flags: 0x10, label: "", data: stringSetMultiSave(null, CURRENT_LANG, [pick(0), pick(1)]) });
+      if (ctss) add({ type: "CTSS", id: n.id + 2000, flags: 0x10, label: "", data: stringSetMultiSaveLocal(ctss.data) });
+      const portrait = chr.find((c) => c.type === "BMP_" && c.id === 2004);
+      if (portrait) add({ type: "BMP_", id: n.id, flags: 0x10, label: "", data: portrait.data.slice() });
+    }
+    add({ type: "NBRS", id: 1, flags: 0x10, label: "", data: serializeNbrs(this.nbrs) });
+    add({ type: "FINV", id: 2, flags: 0x10, label: "", data: this.familyInventories(memberIds) });
+    const magic = f.houseNumber >= 0x5a && f.houseNumber <= 0x5c;
+    for (const ext of [".FAM", ".MTF"]) await deleteGameFile(`${base}${ext}`).catch(() => undefined);
+    try {
+      await writeGameFile(`${base}${magic ? ".MTF" : ".FAM"}`, buildIff(out));
+    } catch {
+      return false;
+    }
+    return true;
+  }
+
+  /**
+   * ReconSavePtrVector<SimInventory>(FINV, version 0x49) of
+   * GetInventoryByNeighbourID for each id: the records are copied from the
+   * NGBH SimInventory vector (i32 present, i16 neighbor id, i32 token count,
+   * 10-byte tokens).
+   */
+  private familyInventories(neighborIds: number[]): Uint8Array {
+    const records = new Map<number, Uint8Array>();
+    const inv = this.ngbh().inventory;
+    if (inv && inv.length >= 4) {
+      const v = new DataView(inv.buffer, inv.byteOffset, inv.byteLength);
+      const count = v.getInt32(0, true);
+      let p = 4;
+      for (let i = 0; i < count && p + 4 <= inv.length; i++) {
+        const present = v.getInt32(p, true);
+        p += 4;
+        if (!present) continue;
+        const id = v.getInt16(p, true);
+        const end = p + 6 + v.getInt32(p + 2, true) * 10;
+        if (!records.has(id)) records.set(id, inv.slice(p, end));
+        p = end;
+      }
+    }
+    const w = new ReconWriter();
+    w.i32(0);
+    w.i32(NGBH_CURRENT_VERSION);
+    w.tag("VNIF");
+    w.i32(neighborIds.length);
+    for (const id of neighborIds) {
+      const r = records.get(id);
+      w.i32(r ? 1 : 0);
+      if (r) w.bytes(r);
+    }
+    return w.finish();
   }
 
   /** Family +0x13c: the lot the family is on vacation on (0 = none). */

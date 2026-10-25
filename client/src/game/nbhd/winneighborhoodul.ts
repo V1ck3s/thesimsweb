@@ -155,8 +155,10 @@ export interface NeighborhoodCallbacks {
    * Neighbor +0xfa is this house deleted, funds and global 26 zeroed, the
    * history cleared, SaveHouse. Resolves false on failure (optional: without
    * it the screen only does the neighborhood side and reports onUnported).
+   * `store` holds the family side already applied (saved after this
+   * resolves); a bulldoze deletes the house's characters through it.
    */
-  onMoveOutHouse?(house: number, bulldoze: boolean): Promise<boolean>;
+  onMoveOutHouse?(house: number, bulldoze: boolean, store: NeighborhoodStore): Promise<boolean>;
 }
 
 /** UIText STR# 131 "BulldozeModeStrs" (title, text pairs; also the rezone eviction questions). */
@@ -732,9 +734,11 @@ export class WinNeighborhoodUL extends TSWin implements LotBtnOwner {
   }
 
   /**
-   * EvictFamily(house, bulldoze): Neighborhood::MoveOut, then the family is
-   * exported (Export/<name>.FAM, not ported). The family side is
-   * NeighborhoodStore.moveOutFamily; the house file side goes to the
+   * EvictFamily(house, bulldoze): Neighborhood::MoveOut, then
+   * Neighborhood::ExportFamily of the family that lived there
+   * (Export/<name>_<id>.FAM; its result is ignored, as in the original;
+   * ExportFamilyHTML, an option, is not ported). The family side of MoveOut
+   * is NeighborhoodStore.moveOutFamily; the house file side goes to the
    * onMoveOutHouse callback when the lot code provides it. A bulldoze also
    * clears the lot's name and description (Houses\NeighborhoodDesc.iff
    * STR# 2000 + house, entries 1 and 2 set to "").
@@ -743,10 +747,11 @@ export class WinNeighborhoodUL extends TSWin implements LotBtnOwner {
     const store = await NeighborhoodStore.open(this.nb.dir);
     const fam = store.moveOutFamily(house);
     if (fam === -1 && !bulldoze) return false;
-    if (this.callbacks.onMoveOutHouse && !(await this.callbacks.onMoveOutHouse(house, bulldoze))) return false;
+    if (this.callbacks.onMoveOutHouse && !(await this.callbacks.onMoveOutHouse(house, bulldoze, store))) return false;
     if (!this.callbacks.onMoveOutHouse) this.callbacks.onUnported(`Neighborhood::MoveOut house file side (house ${house}, bulldoze ${bulldoze})`);
     await store.save();
     if (bulldoze) await this.clearLotDescription(house);
+    if (fam !== -1 && !(await store.exportFamily(fam))) console.warn(`[evict] ExportFamily ${fam} failed`);
     await this.nb.reloadData();
     return true;
   }

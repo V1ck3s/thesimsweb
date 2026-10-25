@@ -7,7 +7,8 @@ on a WebGL 2 canvas to prove the build pipeline.
 
 ```bash
 pnpm --filter @thesimsweb/client dev
-# → http://localhost:5173/
+# → http://localhost:5173/            the game (game.html, src/game/)
+# → http://localhost:5173/legacy.html the old prototype client (src/main.ts)
 ```
 
 The client proxies `/api/*` and `/assets/*` to the dev server on port 3000.

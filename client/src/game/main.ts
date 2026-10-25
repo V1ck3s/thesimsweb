@@ -8,7 +8,7 @@
  * instead (each exports `mount(ctx, mgr)`).
  */
 
-import { MUSIC, soundPlayer } from "./audio/index.js";
+import { MUSIC, soundPlayer, UI_SOURCE } from "./audio/index.js";
 import { CPState, DIRTY_ALL, Mode } from "./cpstate.js";
 import type { GameContext } from "./context.js";
 import { CPANEL_HEIGHT, WinCPanel } from "./cpanel/cpanel.js";
@@ -21,12 +21,14 @@ import { NBHD_END_NOTES, WinNeighborhoodUL } from "./nbhd/winneighborhoodul.js";
 import { Fonts } from "./res/fonts.js";
 import { Strings } from "./res/strings.js";
 import { UIRes } from "./res/uires.js";
+import { whileFrozen } from "./screens/frozen.js";
 import { TSWinSplashScreen } from "./screens/splash.js";
 import { DefaultTTWindow } from "./ui/ttwindow.js";
 import { WinMgr } from "./ui/winmgr.js";
 import { ObjectFolder } from "./world/objectfolder.js";
 import { WinLotView } from "./world/winlotview.js";
 import { doSave, isLotDirty, markLotClean, saveGame } from "./world/savegame.js";
+import { moveOutHouse } from "./world/moveout.js";
 
 const SCREEN_W = 1024;
 const SCREEN_H = 768;
@@ -38,6 +40,19 @@ const MODE_MUSIC: Record<Mode, string> = {
   [Mode.Options]: MUSIC.options,
   [Mode.Camera]: MUSIC.camera,
 };
+
+/**
+ * cSimsApp::LoadGame's PlaySoundA after a successful load: the outdoor
+ * ambience of the lot (Hot Date / Makin' Magic SetAmbienceMode events; the
+ * cBoxX ambience loop itself is not ported).
+ */
+function lotAmbience(house: number): string {
+  if (house - 0x1c >= 0 && house - 0x1c < 2) return "setambience_beach";
+  if (house > 0x2d && house < 0x31) return "setambience_beach";
+  if ((house >= 0x15 && house <= 0x1e) || (house >= 0x2b && house <= 0x2d)) return "setambience_park";
+  if (house >= 0x5a && house <= 0x5c) return "setambience_magictown";
+  return "setambience_backyard";
+}
 
 export type TestMount = (ctx: GameContext, mgr: WinMgr) => Promise<void>;
 
@@ -79,9 +94,13 @@ class Game {
         await saveGame(ctx, this.lotView, this.nbhdDir);
       },
       doSave: () => doSave(ctx, this.lotView, this.nbhdDir),
+      // cSimsApp::ShowNbhdDialog: the lot is unloaded and the neighborhood
+      // screen built while the last lot frame stays up (screens/frozen.ts).
       showNeighborhood: () => {
-        this.leaveLot();
-        void this.showNeighborhood();
+        void whileFrozen(mgr, false, async () => {
+          this.leaveLot();
+          await this.showNeighborhood();
+        });
       },
     };
   }
@@ -99,22 +118,30 @@ class Game {
     const nb = await Neighborhood.load(this.nbhdDir);
     this.nbhd = nb;
     const screen: WinNeighborhoodUL = new WinNeighborhoodUL(ctx, nb, {
+      // cSimsApp::LoadGame runs under the neighborhood screen (frozen, hourglass).
       onEnterLot: (house) => {
-        mgr.main.childDelete(screen);
-        void this.enterLot(house);
+        void whileFrozen(mgr, true, async () => {
+          await this.enterLot(house);
+          mgr.main.childDelete(screen);
+        });
       },
       onEndModal: (result) => console.log(`not ported: ${NBHD_END_NOTES[result] ?? `neighborhood screen ended with ${result}`}`),
       onSwitchNeighborhood: (next) => {
         this.nbhdDir = next;
         storeCurrentNeighborhoodDir(next);
-        mgr.main.childDelete(screen);
-        void this.showNeighborhood();
+        void whileFrozen(mgr, false, async () => {
+          mgr.main.childDelete(screen);
+          await this.showNeighborhood();
+        });
       },
       onUnported: (what) => console.log(`not ported: ${what}`),
       onMoveIn: (house, family, value) => {
-        mgr.main.childDelete(screen);
-        void this.moveIn(house, family, value);
+        void whileFrozen(mgr, true, async () => {
+          await this.moveIn(house, family, value);
+          mgr.main.childDelete(screen);
+        });
       },
+      onMoveOutHouse: (house, bulldoze, store) => moveOutHouse(ctx, store, house, bulldoze),
     });
     screen.setArea(0, 0, ctx.width, ctx.height);
     if (!(await screen.init())) throw new Error("neighborhood init failed");
@@ -140,6 +167,7 @@ class Game {
     const t0 = performance.now();
     if (!(await view.init())) throw new Error("lot view init failed");
     console.log(`lot ${house} loaded in ${Math.round(performance.now() - t0)} ms`);
+    soundPlayer.playBySource(lotAmbience(house), UI_SOURCE);
     this.lotView = view;
     markLotClean(view);
     const cpanel = new WinCPanel(ctx);

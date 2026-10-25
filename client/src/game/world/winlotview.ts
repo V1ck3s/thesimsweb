@@ -86,7 +86,7 @@ function readSavedView(house: ResFile): SavedView | null {
  * Lot size: simulator global 23 (cSimulator+0x3e), saved in the SIMI chunk
  * as 16-bit globals from offset 12 (House::LoadFile; 0 means 64).
  */
-function readLotSize(house: ResFile): number {
+export function readLotSize(house: ResFile): number {
   const b = house.get("SIMI", 1) ?? house.list("SIMI").map((c) => house.payload(c))[0];
   if (!b || b.length < 12 + 24 * 2) return 64;
   const n = new DataView(b.buffer, b.byteOffset, b.byteLength).getInt16(12 + 23 * 2, true);

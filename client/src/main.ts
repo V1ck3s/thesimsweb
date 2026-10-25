@@ -62,7 +62,7 @@ const viewerState: {
 };
 
 // ============================================================================
-// Debug-panel toggle. The static panels in index.html (sprite overlay, BHAV /
+// Debug-panel toggle. The static panels in legacy.html (sprite overlay, BHAV /
 // HIT disassemblers, HIT sandbox, manifest HUD) are gated behind `.debug-only`
 // CSS and only revealed when the user presses F9 / Ctrl+Shift+D or clicks the
 // small "D" button bottom-right. Also respects `?debug=1` in the URL.

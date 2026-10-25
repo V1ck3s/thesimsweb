@@ -202,6 +202,8 @@ export interface SimiSaveValues {
   /** cSimulator +0xa0 / +0xa4 (ObjectModule::ComputeStats, cFixedWorld::ComputeArchValue). */
   objectValue?: number;
   archValue?: number;
+  /** cSimulator::ClearHistory ran (Neighborhood::MoveOut): the +0x184 and +0xe4 blocks are zero. */
+  clearHistory?: boolean;
 }
 
 /** cSimulator::DoStream (write, version 0x49). */
@@ -220,7 +222,9 @@ export function saveSimulator(sim: Simulator, loaded: Uint8Array | null, extra: 
     w.recon32(c.f9c);
     w.recon32(extra.objectValue ?? c.fa0);
     w.recon32(extra.archValue ?? c.fa4);
-    for (const b of c.blocks) {
+    // DoStream writes the "full" flag as 1 (eight ints per block).
+    const blocks = extra.clearHistory ? c.blocks.map(() => ({ full: 1, values: new Array<number>(8).fill(0) })) : c.blocks;
+    for (const b of blocks) {
       w.recon32(b.full);
       for (let i = 0; i < (b.full === 0 ? 7 : 8); i++) w.recon32(b.values[i]!);
     }
@@ -584,7 +588,8 @@ function writePerson(w: ReconOut, rec: PersonRecord | null, live: PersonSim | nu
   const q = t?.queue ?? [];
   w.recon32(q.length);
   for (const i of q) writeInteraction(w, i);
-  const recs = (t?.objectRecords ?? []).filter((x) => x.object === 0 || exists(x.object));
+  const saved = live ? live.objectRecords.map((x) => ({ object: x.id, value: x.depth, flag: x.action })) : (t?.objectRecords ?? []);
+  const recs = saved.filter((x) => x.object === 0 || exists(x.object));
   w.recon32(recs.length);
   for (const x of recs) {
     w.recon16(x.object);
@@ -699,6 +704,8 @@ export interface HouseSaveInput {
   selectedPersonId: number;
   /** Stats House::SaveFile computes before streaming the simulator (null: carried). */
   stats?: { objectValue: number; archValue: number; global16: number; global25: number } | null;
+  /** cSimulator::ClearHistory before the save (Neighborhood::MoveOut). */
+  clearHistory?: boolean;
   /** Dev check: number the saved types in the loaded table's order (that of the folder which wrote it). */
   keepLoadedTypeOrder?: boolean;
 }
@@ -725,6 +732,7 @@ export async function buildHouseFile(input: HouseSaveInput): Promise<Uint8Array>
       sim.globals[0x25] = input.stats.global25;
     }
     const extra: SimiSaveValues = input.stats ? { objectValue: input.stats.objectValue, archValue: input.stats.archValue } : {};
+    if (input.clearHistory) extra.clearHistory = true;
     add({ type: "SIMI", id: 1, flags: FLAGS, label: "", data: saveSimulator(sim, simi, extra) });
   } else if (simi) add({ type: "SIMI", id: 1, flags: FLAGS, label: "", data: simi.slice() });
   const hous1 = house.get("HOUS", 1);
