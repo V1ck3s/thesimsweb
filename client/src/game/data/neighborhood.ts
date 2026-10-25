@@ -224,3 +224,14 @@ export function familyInHouse(n: NeighborhoodData, houseNumber: number): Family 
 export function neighborByGuid(n: NeighborhoodData, guid: number): Neighbor | undefined {
   return n.neighbors.find((x) => x.guid === guid);
 }
+
+/**
+ * The character's body strings (STR# 200 "bodystring", read by
+ * BodyStrings::Load): skeleton, suits and textures, see sims/bodystrings.ts.
+ */
+export async function loadBodyStrings(dir: string, shortName: string): Promise<string[]> {
+  const file = shortName.charAt(0).toUpperCase() + shortName.slice(1);
+  const { data, chunks } = await readStandaloneIff(`Sims/${dir}/Characters/${file}.iff`);
+  const c = chunks.find((c) => c.kind === "STR#" && c.id === 200);
+  return c ? localizedStrings(payload(data, c), 1) : [];
+}
