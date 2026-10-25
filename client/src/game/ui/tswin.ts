@@ -75,6 +75,8 @@ export class TSWin {
   tooltipDelay = 750;
   /** cTSWin+0xa0: tooltip fade-in time. */
   tooltipUnfurl = 150;
+  /** cTSWin+0x68 (SetCursor): CSS cursor shown over this window and its children without one (ui/cursor.ts). */
+  winCursor: string | null = null;
   /** Image whose transparent pixels let clicks fall through (optional). */
   hitImage: ImageBitmap | null = null;
   private hitAlpha: Uint8ClampedArray | null = null;

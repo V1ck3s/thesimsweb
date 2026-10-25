@@ -44,6 +44,10 @@ export class WinPersonality extends TSWinBtn {
   private textRect: Rect = { left: 0, top: 0, right: 0, bottom: 0 };
   private slotX = 0;
   private slotY = 0;
+  /** Person data of a Sim outside the family (SetPerson on a neighbor GUID), or null. */
+  private data: ArrayLike<number> | null = null;
+  /** cTSWinBtn::SetCol: the hilite column forced by the owner, -1 = from the state. */
+  fixedCol = -1;
 
   constructor(
     readonly ctx: GameContext,
@@ -84,6 +88,12 @@ export class WinPersonality extends TSWinBtn {
     // UpdateClient (popup name/description/portrait): not ported.
   }
 
+  /** cWinPersonality::SetPerson with a neighbor (cPickFamilyPersonInfo): data read directly. */
+  setPersonData(data: ArrayLike<number>, isPet: boolean): void {
+    this.data = data;
+    this.caption = isPet ? this.pet.name : this.sim.name;
+  }
+
   /** cWinPersonality::ComputeTextRect. */
   computeTextRect(): Rect {
     const w = this.captionFont?.stringWidth(this.caption) ?? 0;
@@ -109,8 +119,8 @@ export class WinPersonality extends TSWinBtn {
   }
 
   override tsPaint(g: Gfx): void {
-    if (this.person === -1) return;
-    const data = this.ctx.state.family[this.person]?.personData;
+    if (this.person === -1 && !this.data) return;
+    const data = this.data ?? this.ctx.state.family[this.person]?.personData;
     const value = Math.min(10, Math.max(0, Math.trunc((data?.[this.trait] ?? 0) / 100)));
     if (this.bars && this.persBkg) {
       g.blit(this.persBkg, this.slotX, this.slotY);
@@ -121,7 +131,7 @@ export class WinPersonality extends TSWinBtn {
     if (font) {
       const r = this.textRect;
       const rect = { left: g.ox + r.left, top: g.oy + r.top, right: g.ox + r.right, bottom: g.oy + r.bottom };
-      font.drawTextPara(g.ctx, rect, this.caption, ALIGN_RIGHT, hiliteColor(this.cols, this.frameColumn()));
+      font.drawTextPara(g.ctx, rect, this.caption, ALIGN_RIGHT, hiliteColor(this.cols, this.fixedCol >= 0 ? this.fixedCol : this.frameColumn()));
     }
   }
 }

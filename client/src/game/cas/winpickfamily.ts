@@ -32,9 +32,20 @@
  *    cyan (selected); up to 8 member portraits (45 px wide) from
  *    lbl_105BC6BC = (0x6e, 0xe) every 0x30 px.
  *
- * Not ported: the first-run hint (timer, entries 13 / 14), the scroll ramp
- * (scrolling is immediate), the Shift smiley, the Makin' Magic coins
- * column, the member tooltip window (cPickFamilyPersonInfo).
+ *  - cPickFamilyItemMember::GetToolTipsWindow: one shared
+ *    cPickFamilyPersonInfo (lbl_105BAB50) set to the member (cas/personinfo.ts);
+ *  - cPickFamilyList::ScrollTo: a RampGenerator from the current (possibly
+ *    fractional) row to the new one at 0.001 * clamp(5.0909 * rows - 1.0909,
+ *    4, 60) rows per ms (lbl_105BC6D0); TSPaint takes the nearest row as the
+ *    top row and offsets the items by the remainder (TileItems +0x100);
+ *  - first-run hint: Init subscribes a 500 ms timer once per session when
+ *    cOptionsMgr::GetRunCount() < 2; TSOnTimerMsg shows MessageDialog(entry
+ *    14, title 13) ("Créer une famille ?").
+ *
+ * Not ported: the Shift smiley, the Makin' Magic coins column and its hint
+ * (GetRunPAFMagicCount, entries 18 / 19), cPickFamilyList::GetTTPosition.
+ * The game's run count is not kept: getRunCount() reads a counter nobody
+ * increments yet, so the hint shows once per session.
  */
 
 import type { GameContext } from "../context.js";
@@ -48,15 +59,16 @@ import { LANG_FRENCH } from "../res/uires.js";
 import { TSWinBtn } from "../ui/btn.js";
 import { TSWinCtrlMgr } from "../ui/ctrlmgr.js";
 import { GENDLG_FILL, TSWinGenDlg } from "../ui/gendlg.js";
-import { IDOK, MB_OKCANCEL, TSWinMsgBox } from "../ui/msgbox.js";
+import { IDOK, MB_OK, MB_OKCANCEL, TSWinMsgBox } from "../ui/msgbox.js";
 import { CMD_SLIDER_CHANGED, SLIDER_VERTICAL } from "../ui/slider.js";
 import { rgb, UI_FONT_COLOR } from "../ui/syscolors.js";
 import { TSSystemButton } from "../ui/systembutton.js";
 import { TSWinScrollbar } from "../ui/scrollbar.js";
 import { TSWinText } from "../ui/text.js";
 import { Gfx, TSWin } from "../ui/tswin.js";
-import { winMgr } from "../ui/winmgr.js";
+import { winMgr, type ToolTipWindow, type ToolTipsWindowSource } from "../ui/winmgr.js";
 import { CasSession } from "./personfinder.js";
+import { PickFamilyPersonInfo, type PersonInfoData } from "./personinfo.js";
 import { WinDesignFamily } from "./windesignfamily.js";
 
 const STRINGS = 128;
@@ -65,6 +77,8 @@ const S = {
   deleteTitle: 6,
   deleteMessage: 7,
   title: 8,
+  hintTitle: 13,
+  hintMessage: 14,
   netWorthTip: 10,
   friendsTip: 11,
   cancelTip: 15,
@@ -98,6 +112,48 @@ const MEMBER_W = 0x2d;
 const TEXT_COLORS = [UI_FONT_COLOR, rgb(0xff, 0xff, 0xff), rgb(0, 0xff, 0xff)];
 const DLG_FILL = rgb(0, 0x32, 0);
 const DOUBLE_CLICK_MS = 500;
+/** lbl_105BC6D0: ScrollTo speed (a, b, min, max, scale) and TSPaint rounding. */
+const SCROLL = { a: -1.0909091, b: 5.090909, min: 4, max: 60, scale: 0.001, round: 0.5 };
+/** Init: the first-run hint timer. */
+const HINT_DELAY_MS = 500;
+/** lbl_105C14AA: the hint was already scheduled this session. */
+let hintScheduled = false;
+
+/** cOptionsMgr::GetRunCount: the number of times the game was started (not kept yet). */
+function getRunCount(): number {
+  try {
+    return Number(localStorage.getItem("thesimsweb.runCount") ?? 0) || 0;
+  } catch {
+    return 0;
+  }
+}
+
+/** RampGenerator with SetupConstantSpeedRamp / GetVal. */
+class RampGenerator {
+  private target = 0;
+  private speed = 0;
+  private end = 0;
+
+  constructor(value: number) {
+    this.target = value;
+  }
+
+  setupConstantSpeedRamp(from: number, to: number, speed: number, now: number): void {
+    this.target = to;
+    const s = to - from <= 0 ? -Math.abs(speed) : Math.abs(speed);
+    this.speed = s;
+    this.end = now + (s === 0 ? 0 : (to - from) / s);
+  }
+
+  getVal(now: number): number {
+    if (this.end <= now) return this.target;
+    return this.target - (this.end - now) * this.speed;
+  }
+
+  isDone(now: number): boolean {
+    return this.end <= now;
+  }
+}
 
 /** Who is told which family moves in ({3, 0x20, family} to +0x12c). */
 export interface PickFamilyOwner {
@@ -110,32 +166,47 @@ interface FamilyRow {
   netWorth: number;
   friends: number;
   faces: Array<ImageBitmap | null>;
+  /** PersonFinder data of each member, for the tooltip. */
+  people: PersonInfoData[];
 }
 
 async function familyRow(store: NeighborhoodStore, n: NeighborhoodData, id: number): Promise<FamilyRow | null> {
   const f = store.family(id);
   if (!f) return null;
+  const people: PersonInfoData[] = [];
   const faces = await Promise.all(
-    f.memberGuids.map(async (guid) => {
+    f.memberGuids.map(async (guid, i) => {
       const nb = n.neighbors.find((x) => x.guid >>> 0 === guid >>> 0);
       const c = nb ? await loadCharacter(n.dir, nb.name).catch(() => null) : null;
+      people[i] = { name: c?.firstName ?? nb?.name ?? "", bio: c?.bio ?? "", personData: store.getPersonData(guid) };
       const bytes = c?.bitmaps.get(2002);
       if (!bytes) return null;
       const img = decodeImage(bytes, "face.bmp", { colorKey: true });
       return createImageBitmap(new ImageData(img.data, img.width, img.height));
     }),
   );
-  return { id, name: f.name, netWorth: f.budget + f.netWorth, friends: f.friends, faces };
+  return { id, name: f.name, netWorth: f.budget + f.netWorth, friends: f.friends, faces, people };
 }
 
 /** cPickFamilyItemMember: a portrait (4 x 3 cells of 45 px), drawn (rowH - 45) / 2 - 5 px down. */
-class PickFamilyItemMember extends TSWinBtn {
+class PickFamilyItemMember extends TSWinBtn implements ToolTipsWindowSource {
   constructor(
     image: ImageBitmap,
     private readonly rowH: number,
+    private readonly person: PersonInfoData | undefined,
+    private readonly info: PickFamilyPersonInfo | null,
   ) {
     super(0, image, 4, 3);
     this.setArea(0, 0, MEMBER_W, rowH);
+    // Any text: the window manager only asks windows that have a tooltip.
+    this.tooltip = person?.name || " ";
+  }
+
+  /** cPickFamilyItemMember::GetToolTipsWindow */
+  getToolTipsWindow(): ToolTipWindow | null {
+    if (!this.info || !this.person) return null;
+    this.info.setPerson(this.person);
+    return this.info;
   }
 
   override tsPaint(g: Gfx): void {
@@ -157,13 +228,14 @@ class PickFamilyItem extends TSWinBtn {
     private readonly bkg: ImageBitmap,
     private readonly template: ImageBitmap,
     private readonly fonts: { f10: FfnFont; f12: FfnFont },
+    info: PickFamilyPersonInfo | null,
   ) {
     super(0, bkg, 1, 3);
     this.mode = 1;
     const rowH = Math.trunc(bkg.height / 3);
     this.setArea(0, 0, bkg.width, rowH);
     family.faces.slice(0, 8).forEach((face, i) => {
-      const b = new PickFamilyItemMember(buildPersonBtn(face, template), rowH);
+      const b = new PickFamilyItemMember(buildPersonBtn(face, template), rowH, family.people[i], info);
       this.members.push(b);
       this.childAdd(b);
       // One row from lbl_105BC6BC, every 0x30 px (8 portraits fit in 0x180).
@@ -223,6 +295,11 @@ class PickFamilyList extends TSWin {
   private scrollbar: TSWinScrollbar | null = null;
   private itemH = 0x4b;
   private itemW = 700;
+  /** +0x108 / +0x118: the scroll ramp (rows) and whether it runs. */
+  private readonly ramp = new RampGenerator(0);
+  private ramping = false;
+  /** +0x100: pixel offset of the rows while scrolling. */
+  private offset = 0;
 
   constructor(private readonly bkg: ImageBitmap) {
     super();
@@ -263,14 +340,66 @@ class PickFamilyList extends TSWin {
     sb.setPageSize(ROWS);
   }
 
-  /** TileItems: one item per row from the top row. */
+  /** TileItems: one item per row from the top row, shifted by the scroll offset. */
   private tileItems(): void {
     this.items.forEach((it, i) => {
-      const row = i - this.top;
-      it.moveTo(0, row * this.itemH);
-      if (row >= 0 && row < ROWS) it.showWindow();
+      const y = (i - this.top) * this.itemH + this.offset;
+      it.moveTo(0, y);
+      // The list clips its children (Plot); rows wholly outside are hidden.
+      if (y + this.itemH > 0 && y < ROWS * this.itemH) it.showWindow();
       else it.hideWindow();
     });
+  }
+
+  /** Immediate positioning (SetTopRow): stops a running scroll. */
+  private setTopRow(row: number): void {
+    this.ramping = false;
+    this.offset = 0;
+    this.top = row;
+    this.tileItems();
+  }
+
+  /** cPickFamilyList::ScrollTo */
+  private scrollTo(row: number): void {
+    const now = performance.now();
+    const cur = this.ramping ? this.ramp.getVal(now) : this.top;
+    this.ramping = true;
+    let speed = SCROLL.b * Math.abs(cur - row) + SCROLL.a;
+    speed = Math.min(SCROLL.max, Math.max(SCROLL.min, speed));
+    this.ramp.setupConstantSpeedRamp(cur, row, SCROLL.scale * speed, now);
+  }
+
+  /** The ramp part of cPickFamilyList::TSPaint, run once per frame. */
+  override pump(nowMs: number): void {
+    if (this.ramping) {
+      const now = performance.now();
+      const val = this.ramp.getVal(now);
+      let row = Math.trunc(SCROLL.round + val);
+      let off = Math.trunc((val - row) * this.itemH + SCROLL.round);
+      if (this.itemH <= off) {
+        off = 0;
+        row++;
+      }
+      this.offset = -off;
+      this.top = row;
+      this.tileItems();
+      if (this.ramp.isDone(now)) this.ramping = false;
+    }
+    super.pump(nowMs);
+  }
+
+  override plot(ctx: CanvasRenderingContext2D, ox: number, oy: number): void {
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(ox + this.area.left, oy + this.area.top, this.getW(), this.getH());
+    ctx.clip();
+    super.plot(ctx, ox, oy);
+    ctx.restore();
+  }
+
+  override windowFromPoint(x: number, y: number): TSWin | null {
+    if (x < 0 || y < 0 || x >= this.getW() || y >= this.getH()) return null;
+    return super.windowFromPoint(x, y);
   }
 
   selectedId(): number {
@@ -288,10 +417,9 @@ class PickFamilyList extends TSWin {
     this.items.unshift(it);
     this.childAdd(it);
     this.selected = 0;
-    this.top = 0;
     it.setState(1);
     this.syncScrollbar();
-    this.tileItems();
+    this.setTopRow(0);
     this.notify();
   }
 
@@ -303,10 +431,12 @@ class PickFamilyList extends TSWin {
     this.childRemove(it);
     this.selected = -1;
     this.notify();
-    if (this.items.length > 6 && this.items.length - 6 <= this.top) this.top--;
-    if (this.items.length < 7) this.top = 0;
+    let top = this.top;
+    if (this.items.length > 6 && this.items.length - 6 <= top) top--;
+    if (this.items.length < 7) top = 0;
+    this.top = top;
     this.syncScrollbar();
-    this.tileItems();
+    this.setTopRow(top);
     return it;
   }
 
@@ -317,8 +447,7 @@ class PickFamilyList extends TSWin {
 
   override tsOnCommand(cmd: number, source: TSWin): boolean {
     if (cmd === CMD_SLIDER_CHANGED && source === this.scrollbar) {
-      this.top = this.scrollbar.getValue();
-      this.tileItems();
+      this.scrollTo(this.scrollbar.getValue());
       return true;
     }
     if (cmd === 1 && source instanceof PickFamilyItem) {
@@ -338,7 +467,8 @@ class PickFamilyList extends TSWin {
     const shown = this.items.length - this.top;
     if (shown >= ROWS) return;
     const rowH = Math.trunc(this.bkg.height / 3);
-    for (let r = Math.max(0, shown); r < ROWS; r++) g.blitPart(this.bkg, 0, 0, this.bkg.width, rowH, 0, r * rowH);
+    const dy = this.ramping ? this.offset : 0;
+    for (let r = Math.max(0, shown); r < ROWS; r++) g.blitPart(this.bkg, 0, 0, this.bkg.width, rowH, 0, r * rowH + dy);
   }
 }
 
@@ -353,6 +483,9 @@ export class WinPickFamily extends TSWinGenDlg {
   private itemBkg: ImageBitmap | null = null;
   private template: ImageBitmap | null = null;
   private fonts: { f10: FfnFont; f12: FfnFont } | null = null;
+  /** lbl_105BAB50: the members' tooltip window. */
+  private personInfo: PickFamilyPersonInfo | null = null;
+  private hintTimer = 0;
   /** +0x140: a button is being handled. */
   private busy = false;
 
@@ -387,6 +520,7 @@ export class WinPickFamily extends TSWinGenDlg {
     this.itemBkg = await ctx.res.image("kPickFamilyItemBkg");
     this.template = await ctx.res.image("kPeopleTemplate");
     this.fonts = { f10: await ctx.fonts.acquire(10), f12: await ctx.fonts.acquire(12) };
+    this.personInfo = await PickFamilyPersonInfo.create(ctx).catch(() => null);
     const f16 = await ctx.fonts.acquire(16);
 
     const list = new PickFamilyList(this.itemBkg);
@@ -446,11 +580,28 @@ export class WinPickFamily extends TSWinGenDlg {
     }
     this.buttons[B.moveIn]!.enabled = false;
     this.buttons[B.delete]!.enabled = false;
+    if (!hintScheduled) {
+      hintScheduled = true;
+      if (getRunCount() < 2) this.hintTimer = window.setTimeout(() => void this.tsOnTimerMsg(), HINT_DELAY_MS);
+    }
     return true;
   }
 
+  /** cWinPickFamily::TSOnTimerMsg: the first-run hint. */
+  private async tsOnTimerMsg(): Promise<void> {
+    this.hintTimer = 0;
+    await TSWinMsgBox.show(this.ctx, this.str(S.hintMessage), this.str(S.hintTitle), MB_OK);
+  }
+
+  override tsEndDialog(result: number): void {
+    // Shutdown: UnsubscribeTimerMsg.
+    if (this.hintTimer) window.clearTimeout(this.hintTimer);
+    this.hintTimer = 0;
+    super.tsEndDialog(result);
+  }
+
   private makeItem(r: FamilyRow): PickFamilyItem {
-    return new PickFamilyItem(r, this.itemBkg!, this.template!, this.fonts!);
+    return new PickFamilyItem(r, this.itemBkg!, this.template!, this.fonts!, this.personInfo);
   }
 
   /** cWinPickFamily::HandleButton */

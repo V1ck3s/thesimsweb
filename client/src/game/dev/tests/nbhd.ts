@@ -24,6 +24,7 @@ export async function mount(ctx: GameContext, mgr: WinMgr): Promise<void> {
     screen.setArea(0, 0, ctx.width, ctx.height);
     if (!(await screen.init())) throw new Error("neighborhood init failed");
     mgr.main.childAdd(screen);
+    (window as unknown as { nbhdScreen: WinNeighborhoodUL }).nbhdScreen = screen;
   };
   await show(new URLSearchParams(location.search).get("dir") ?? "UserData");
 }

@@ -18,6 +18,14 @@ const TT_SHOWN = 3;
 /** A shown tooltip goes away after this long (SetupToolTipsWindow). */
 const TT_SHOW_MS = 5000;
 
+/** A tooltip window: placed and faded in by UnfurlToolTip(rect, t). */
+export type ToolTipWindow = TSWin & { unfurlToolTip(rect: Rect, t: number): void };
+
+/** A window with its own tooltip window (an override of cTSWin::GetToolTipsWindow). */
+export interface ToolTipsWindowSource {
+  getToolTipsWindow(): ToolTipWindow | null;
+}
+
 /** The single window manager, like the game's global cTSWinMgrW95 pointer. */
 export let winMgr: WinMgr;
 
@@ -39,7 +47,7 @@ export class WinMgr {
   private ttTime = 0;
   private ttUnfurlStart = 0;
   private ttPos = { x: 0, y: 0 };
-  private ttWindow: DefaultTTWindow | null = null;
+  private ttWindow: ToolTipWindow | null = null;
 
   constructor(
     host: HTMLElement,
@@ -144,8 +152,13 @@ export class WinMgr {
     return { x, y };
   }
 
-  /** cTSWin::GetToolTipsWindow: the default window showing `w`'s text. */
-  private getToolTipsWindow(w: TSWin): DefaultTTWindow | null {
+  /**
+   * cTSWin::GetToolTipsWindow: the default window showing `w`'s text, unless
+   * the window overrides it (ToolTipsWindowSource, e.g. cPickFamilyItemMember).
+   */
+  private getToolTipsWindow(w: TSWin): ToolTipWindow | null {
+    const custom = (w as Partial<ToolTipsWindowSource>).getToolTipsWindow?.();
+    if (custom) return custom;
     this.ttDefault?.setToolTip(w.tooltip, 0);
     return this.ttDefault;
   }
@@ -309,14 +322,38 @@ export class WinMgr {
     return { win, x: x - o.x, y: y - o.y };
   }
 
+  /** cTSWinMgrW95::SetGlobalCursor: a cursor shown everywhere (null = the windows' own). */
+  private globalCursor: string | null = null;
+
+  setGlobalCursor(cursor: string | null): void {
+    this.globalCursor = cursor;
+    this.applyCursor();
+  }
+
+  /** The hovered window's cursor (cTSWin::SetCursor, inherited from the parents), or the global one. */
+  applyCursor(): void {
+    let c = this.globalCursor;
+    for (let w = this.hover; !c && w; w = w.parent) c = w.winCursor;
+    const v = c ?? "";
+    if (this.canvas.style.cursor !== v) this.canvas.style.cursor = v;
+  }
+
   private updateHover(x: number, y: number): void {
     const t = this.route(x, y);
     const under = this.capture ? this.main.windowFromPoint(x, y) : (t?.win ?? null);
+    this.applyCursorFor(under);
     if (under === this.hover) return;
     this.hover?.tsOnMouseExit();
     this.hover = under;
     under?.tsOnMouseEnter();
     this.toolTipHover(under);
+  }
+
+  private applyCursorFor(under: TSWin | null): void {
+    let c = this.globalCursor;
+    for (let w = under; !c && w; w = w.parent) c = w.winCursor;
+    const v = c ?? "";
+    if (this.canvas.style.cursor !== v) this.canvas.style.cursor = v;
   }
 
   /** Deliver to the window, bubbling to parents until someone handles it. */

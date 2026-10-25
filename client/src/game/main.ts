@@ -15,9 +15,9 @@ import { CPANEL_HEIGHT, WinCPanel } from "./cpanel/cpanel.js";
 import { activateFamily } from "./data/family.js";
 import { NeighborhoodStore } from "./data/nbhdstore.js";
 import { loadNeighborhood } from "./data/neighborhood.js";
-import { Neighborhood } from "./nbhd/nghinterface.js";
+import { currentNeighborhoodDir, Neighborhood, storeCurrentNeighborhoodDir } from "./nbhd/nghinterface.js";
 import { getOptionsMgr } from "./optionsmgr.js";
-import { WinNeighborhoodUL } from "./nbhd/winneighborhoodul.js";
+import { NBHD_END_NOTES, WinNeighborhoodUL } from "./nbhd/winneighborhoodul.js";
 import { Fonts } from "./res/fonts.js";
 import { Strings } from "./res/strings.js";
 import { UIRes } from "./res/uires.js";
@@ -56,7 +56,7 @@ async function createContext(): Promise<GameContext> {
 
 class Game {
   /** `?nbhd=UserData3` (dev): start in another neighborhood. */
-  private nbhdDir = new URLSearchParams(location.search).get("nbhd") ?? "UserData";
+  private nbhdDir = new URLSearchParams(location.search).get("nbhd") ?? currentNeighborhoodDir();
   private nbhd: Neighborhood | null = null;
   lotView: WinLotView | null = null;
   /** Mode whose music plays (null outside a lot). */
@@ -103,9 +103,10 @@ class Game {
         mgr.main.childDelete(screen);
         void this.enterLot(house);
       },
-      onEndModal: (result) => console.log(`neighborhood screen ended: ${result}`),
+      onEndModal: (result) => console.log(`not ported: ${NBHD_END_NOTES[result] ?? `neighborhood screen ended with ${result}`}`),
       onSwitchNeighborhood: (next) => {
         this.nbhdDir = next;
+        storeCurrentNeighborhoodDir(next);
         mgr.main.childDelete(screen);
         void this.showNeighborhood();
       },
@@ -190,6 +191,12 @@ async function boot(): Promise<void> {
   splash.setSplashMessage("ocns");
   await ObjectFolder.get("UserData");
   const game = new Game(ctx, mgr);
+  // cOptionsMgr run count (registry), read by cWinPickFamily's first-run hint.
+  try {
+    localStorage.setItem("thesimsweb.runCount", String((Number(localStorage.getItem("thesimsweb.runCount")) || 0) + 1));
+  } catch {
+    // not kept
+  }
   // Dev handle for the screenshot tooling (`eval:game.lotView...`).
   (window as unknown as { game: Game }).game = game;
   await splash.finished();

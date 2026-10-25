@@ -25,6 +25,8 @@ import {
   type Family,
   type NeighborhoodData,
 } from "../data/neighborhood.js";
+import { writeGameFile } from "../data/files.js";
+import { buildIff, decodeStrSet, encodeStrSet, parseIff } from "../data/iff.js";
 import { ReconReader } from "../data/recon.js";
 import { decodeImage } from "../res/bmp.js";
 
@@ -135,10 +137,41 @@ function splitInts(s: string): number[] {
 export class Neighborhood {
   private constructor(
     readonly dir: string,
-    readonly data: NeighborhoodData,
+    /** Replaced by reloadData() after the neighborhood file is saved. */
+    public data: NeighborhoodData,
     /** The zoning list (Neighborhood+0x16c), in LotZoning.iff order. */
-    readonly zoning: ReadonlyArray<{ house: number; zone: Zone }>,
+    readonly zoning: Array<{ house: number; zone: Zone }>,
   ) {}
+
+  /** Re-reads Neighborhood.iff (the screen's view of the families after a save). */
+  async reloadData(): Promise<void> {
+    this.data = await loadNeighborhood(this.dir);
+  }
+
+  /**
+   * Neighborhood::SetZoningType: the lot's entry of the zoning list changes,
+   * then LotZoning.iff STR# 1 (loaded English only) gets the entry whose atoi
+   * matches rewritten as "<house>, residential|community" and is saved.
+   * Returns false when the lot is not in the list or already has that zone.
+   */
+  async setZoningType(house: number, zone: Zone): Promise<boolean> {
+    const z = this.zoning.find((e) => e.house === house);
+    if (!z || z.zone === zone) return false;
+    z.zone = zone;
+    const path = `${this.dir}/LotZoning.iff`;
+    const res = await fetch(`/assets/Sims/${path}`, { cache: "no-store" });
+    if (!res.ok) return false;
+    const chunks = parseIff(new Uint8Array(await res.arrayBuffer()));
+    const str = chunks.find((c) => c.type === "STR#" && c.id === 1);
+    if (!str) return false;
+    // LoadOnlyEnglish keeps the US English entries; Save writes them back.
+    const entries = decodeStrSet(str.data).filter((e) => e.lang === LANG_US_ENGLISH);
+    const i = entries.findIndex((e) => e.value.includes(",") && (Number.parseInt(e.value, 10) || 0) === house);
+    if (i >= 0) entries[i] = { ...entries[i]!, value: `${house}, ${zone === Zone.Community ? "community" : "residential"}` };
+    str.data = encodeStrSet(entries);
+    await writeGameFile(path, buildIff(chunks));
+    return true;
+  }
 
   /** Neighborhood::Load (the parts the neighborhood screen needs). */
   static async load(dir: string): Promise<Neighborhood> {
@@ -387,4 +420,27 @@ export function makeMoneyString(amount: number, lang: number): string {
   const sep = lang === 3 ? "." : ",";
   const grouped = digits.replace(/\B(?=(\d{3})+(?!\d))/g, sep);
   return `${amount < 0 ? "-" : ""}$${grouped}`;
+}
+
+/** localStorage key standing for the registry values SIMS_CURRENT_NEIGHBORHOOD_NUM / _PATH. */
+const CURRENT_NBHD_KEY = "thesimsweb.currentNeighborhood";
+
+/** The neighborhood directory SwitchToNewNeighborhood last stored ("UserData" by default). */
+export function currentNeighborhoodDir(): string {
+  try {
+    const v = localStorage.getItem(CURRENT_NBHD_KEY);
+    if (v && /^UserData\d*$/.test(v)) return v;
+  } catch {
+    // storage unavailable: the default neighborhood
+  }
+  return "UserData";
+}
+
+/** Neighborhood::SwitchToNewNeighborhood: the registry write. */
+export function storeCurrentNeighborhoodDir(dir: string): void {
+  try {
+    localStorage.setItem(CURRENT_NBHD_KEY, dir);
+  } catch {
+    // not persisted
+  }
 }

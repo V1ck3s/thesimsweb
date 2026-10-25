@@ -36,7 +36,14 @@ import { WinLotBtn, type LotBtnOwner } from "./winlotbtn.js";
 import { WinLotPopup } from "./winlotpopup.js";
 import { WinPickFamily } from "../cas/winpickfamily.js";
 import { NeighborhoodStore } from "../data/nbhdstore.js";
-import { IDYES, MB_OK, MB_YESNO, TSWinMsgBox } from "../ui/msgbox.js";
+import { IDOK, IDYES, MB_OK, MB_OKCANCEL, MB_YESNO, TSWinMsgBox } from "../ui/msgbox.js";
+import { getCursor, getStandardCursor } from "../ui/cursor.js";
+import { WinRadioDialogBox } from "../ui/radiodialog.js";
+import { writeGameFile } from "../data/files.js";
+import { buildIff, parseIff, stringSetMultiSave } from "../data/iff.js";
+import { makeMoneyString, Zone } from "./nghinterface.js";
+import { WinCredits } from "./wincredits.js";
+import { doFirstTimeTownies, refillTownies, TOWNIE_COUNT } from "./townies.js";
 
 /** cWinNeighborhood::Mode */
 export const enum NbhdMode {
@@ -54,6 +61,15 @@ export const NBHD_DOWNTOWN = -20;
 export const NBHD_VACATION = -30;
 export const NBHD_STUDIOTOWN = -40;
 export const NBHD_MAGICTOWN = -50;
+
+/** What cSimsApp::ShowNbhdDialog does with each end code (none of these screens is ported yet). */
+export const NBHD_END_NOTES: Readonly<Record<number, string>> = {
+  [NBHD_EXIT]: "cSimsApp::Quit after the confirmation (the browser page cannot close itself)",
+  [NBHD_DOWNTOWN]: "cWinDowntown (Hot Date town screen, ShowNbhdDialog flag for -20)",
+  [NBHD_VACATION]: "cWinVacation (Vacation island screen, ShowNbhdDialog flag for -30)",
+  [NBHD_STUDIOTOWN]: "cWinStudiotown (Superstar Studio Town screen, ShowNbhdDialog flag for -40)",
+  [NBHD_MAGICTOWN]: "cWinMagicland (Makin' Magic Magic Town screen, ShowNbhdDialog flag for -50)",
+};
 
 /** Button indices (cWinNeighborhoodUL+0x148 + 4 * index). */
 const BTN_MOVE_IN = 0;
@@ -132,7 +148,35 @@ export interface NeighborhoodCallbacks {
    * moving into the lot (optional: without it the screen asks onEnterLot).
    */
   onMoveIn?(house: number, familyId: number, houseValue: number): void;
+  /**
+   * The house file side of Neighborhood::MoveOut(house, bulldoze): LoadHouse,
+   * the objects with IsDeletedByEvict killed, on a bulldoze every object,
+   * wall, floor and the pool off the 0x20 tiles, the characters whose
+   * Neighbor +0xfa is this house deleted, funds and global 26 zeroed, the
+   * history cleared, SaveHouse. Resolves false on failure (optional: without
+   * it the screen only does the neighborhood side and reports onUnported).
+   */
+  onMoveOutHouse?(house: number, bulldoze: boolean): Promise<boolean>;
 }
+
+/** UIText STR# 131 "BulldozeModeStrs" (title, text pairs; also the rezone eviction questions). */
+const STR_BULLDOZE = 131;
+/** UIText STR# 250: rezone dialog title and "currently zoned as a %s lot" text. */
+const STR_REZONE = 250;
+/** UIText STR# 251: zone names (Residential, Community), the radio choices. */
+const STR_ZONE_NAMES = 251;
+/** UIText STR# 153: cSimsApp::Quit (entry 1 title, 2 text). */
+const STR_QUIT = 153;
+
+const SND_BDOZE = "UI_Nhood_bdoze";
+const SND_BDOZE_CANCEL = "UI_Nhood_bdoze_cancel";
+const SND_DEMOLISH = "UI_Nhood_bdoze_demolish";
+const SND_EVICT = "UI_Nhood_bdoze_evict";
+const SND_CREDITS_MUSIC = MUSIC.credits;
+
+/** lbl_105C3419 / lbl_105C3418: one family picker / credits window at a time. */
+let pickFamilyOpen = false;
+let creditsOpen = false;
 
 /** UIText STR# 132 "MoveInModeStrs" (title, text pairs). */
 const STR_MOVE_IN = 132;
@@ -171,6 +215,12 @@ export class WinNeighborhoodUL extends TSWin implements LotBtnOwner {
   private hoveredLot: WinLotBtn | null = null;
   private popupShownMs = 0;
   private popupTargetH = 0;
+  /** GetFamilyInfo(+0x1b0): the moving family's budget + lot value (roof rule in move in mode). */
+  private moveInFunds: number | null = null;
+  /** +0x1b4: an internet update is running (commands and keys ignored). */
+  private busy = false;
+  /** +0x20c: a handler is running. */
+  private handling = false;
 
   constructor(
     private readonly ctx: GameContext,
@@ -259,6 +309,8 @@ export class WinNeighborhoodUL extends TSWin implements LotBtnOwner {
     TSWinBtn.overrideDefaultUISound(null, UI.nhoodClick);
     this.setMode(NbhdMode.Regular);
     soundPlayer.playBySource(MUSIC.hood, -1);
+    // The screen takes the keyboard (Escape leaves the modes).
+    winMgr.setFocus(this);
     return true;
   }
 
@@ -271,21 +323,112 @@ export class WinNeighborhoodUL extends TSWin implements LotBtnOwner {
     return r?.ok ? createImageBitmap(await r.blob()).catch(() => null) : null;
   }
 
-  /** cWinNeighborhoodUL::SetMode */
   override shutdown(): void {
     TSWinBtn.overrideDefaultUISound();
+    winMgr.setGlobalCursor(null);
     super.shutdown();
   }
 
+  /** cTSWin::SetCursor on the screen and every lot (SetMode). */
+  private setCursor(cursor: string | null): void {
+    this.winCursor = cursor;
+    for (const lot of this.lots.values()) lot.winCursor = cursor;
+    winMgr.applyCursor();
+  }
+
+  private setButtonsEnabled(indices: readonly number[], on: boolean): void {
+    for (const i of indices) this.buttons[i]!.setEnabled(on);
+  }
+
+  /**
+   * cWinNeighborhoodUL::SetMode. Leaving rezone or evict puts their button
+   * up, the lots back in mode 0 and plays "UI_Nhood_bdoze_cancel"; leaving
+   * move in puts its button up. Entering:
+   *  - regular (main screen): every button enabled (the four town buttons when
+   *    their pack is installed, cSimsApp +0x66 bits 4 / 8 / 0x40 / 0x80, all
+   *    set in the Complete Collection), Import by CheckForNewImports, the
+   *    standard arrow;
+   *  - move in: cursor 0x21 (MOVEIN.cur), its button down;
+   *  - evict: every button but Bulldoze and Import disabled, cursor 0x22
+   *    (bulldoze.cur), Bulldoze down, lots in mode 1, "UI_Nhood_bdoze";
+   *  - rezone: every button but Rezone and Import disabled, cursor 0x28
+   *    (Rezone2.cur), Rezone down, lots in mode 1;
+   *  - visit (the town screens only): cursor 0x29, lots in mode 2.
+   * The per-mode handlers (+0x198 lot, +0x1a4 button member pointers):
+   * regular = RegularModeLot/BtnHandler, move in = MoveInModeLotHandler +
+   * RegularModeBtnHandler, evict / rezone = their own pair. Then the lots'
+   * cursor and HighlightLotsForMode.
+   */
   setMode(mode: NbhdMode): void {
-    if (this.mode === NbhdMode.Rezone) this.buttons[BTN_REZONE]!.setState(0);
-    if (this.mode === NbhdMode.MoveIn) this.buttons[BTN_MOVE_IN]!.setState(0);
-    if (this.mode === NbhdMode.Evict) this.buttons[BTN_BULLDOZE]!.setState(0);
+    const old = this.mode;
+    if (old === NbhdMode.Rezone || old === NbhdMode.Evict) {
+      this.buttons[old === NbhdMode.Rezone ? BTN_REZONE : BTN_BULLDOZE]!.setState(0);
+      for (const lot of this.lots.values()) lot.setMode(0);
+      soundPlayer.playBySource(SND_BDOZE_CANCEL, -4);
+    } else if (old === NbhdMode.MoveIn) {
+      this.buttons[BTN_MOVE_IN]!.setState(0);
+    }
     this.mode = mode;
-    if (mode === NbhdMode.Regular) {
-      // Every button is enabled; Import only when an import file waits (CheckForNewImports).
-      for (let i = 0; i < BTN_COUNT; i++) if (i !== BTN_IMPORT) this.buttons[i]!.setEnabled(true);
-      void this.checkForNewImports();
+    let cursor: string | null = null;
+    switch (mode) {
+      case NbhdMode.Regular:
+        this.setButtonsEnabled(
+          [BTN_CREDITS, BTN_LOGO, BTN_MOVE_IN, BTN_EXIT, BTN_INET, BTN_PREVIOUS, BTN_NEXT, BTN_BULLDOZE, BTN_REZONE],
+          true,
+        );
+        this.setButtonsEnabled([BTN_DOWNTOWN, BTN_VACATION, BTN_STUDIOTOWN, BTN_MAGICTOWN], true);
+        void this.checkForNewImports();
+        cursor = getStandardCursor(4);
+        break;
+      case NbhdMode.MoveIn:
+        cursor = getCursor(0x21);
+        this.buttons[BTN_MOVE_IN]!.setState(1);
+        break;
+      case NbhdMode.Evict:
+        this.setButtonsEnabled(
+          [BTN_CREDITS, BTN_LOGO, BTN_MOVE_IN, BTN_EXIT, BTN_INET, BTN_PREVIOUS, BTN_NEXT, BTN_DOWNTOWN, BTN_VACATION, BTN_STUDIOTOWN, BTN_MAGICTOWN, BTN_REZONE],
+          false,
+        );
+        cursor = getCursor(0x22);
+        this.buttons[BTN_BULLDOZE]!.setState(1);
+        for (const lot of this.lots.values()) lot.setMode(1);
+        soundPlayer.playBySource(SND_BDOZE, -4);
+        break;
+      case NbhdMode.Rezone:
+        this.setButtonsEnabled(
+          [BTN_CREDITS, BTN_LOGO, BTN_MOVE_IN, BTN_EXIT, BTN_INET, BTN_PREVIOUS, BTN_NEXT, BTN_DOWNTOWN, BTN_VACATION, BTN_STUDIOTOWN, BTN_MAGICTOWN, BTN_BULLDOZE],
+          false,
+        );
+        cursor = getCursor(0x28);
+        this.buttons[BTN_REZONE]!.setState(1);
+        for (const lot of this.lots.values()) lot.setMode(1);
+        break;
+      case NbhdMode.Visit:
+        cursor = getCursor(0x29);
+        for (const lot of this.lots.values()) lot.setMode(2);
+        break;
+      default:
+        break;
+    }
+    if (cursor) this.setCursor(cursor);
+    this.highlightLotsForMode();
+  }
+
+  /**
+   * cWinNeighborhoodUL::HighlightLotsForMode (main screen): every import
+   * hilite off; in rezone mode (or with the "show_zones" cheat) community
+   * lots are outlined blue, empty residential lots green and occupied ones red.
+   */
+  private highlightLotsForMode(): void {
+    for (const lot of this.lots.values()) {
+      lot.hiliteForImport(false);
+      if (this.mode !== NbhdMode.Rezone) continue;
+      const zone = this.nb.getZoningType(lot.houseNumber);
+      if (zone === Zone.Community) lot.hiliteForCommunity(true);
+      else if (zone === Zone.Residential) {
+        if ((lot.info?.familyNumber ?? -1) === -1) lot.hiliteForResidential(true);
+        else lot.hiliteForDisabled(true);
+      }
     }
   }
 
@@ -305,12 +448,22 @@ export class WinNeighborhoodUL extends TSWin implements LotBtnOwner {
     const info = btn.info;
     if (!info) return false;
     switch (this.mode) {
+      case NbhdMode.MoveIn: {
+        // GetFamilyInfo of the moving family: the roof lifts only on what it can buy.
+        const funds = this.moveInFunds;
+        if (funds === null) return true;
+        if (funds < info.value) return false;
+        if (!info.isEmpty) return false;
+        return info.familyNumber === -1;
+      }
+      case NbhdMode.Evict:
+      case NbhdMode.Rezone:
+        if (info.familyNumber === -1 && !info.hasHouse) return false;
+        return !info.isTutorial;
       case NbhdMode.Visit:
-        return this.nb.getZoningType(btn.houseNumber) === 2;
-      case NbhdMode.Regular:
-        return info.familyNumber !== -1;
+        return this.nb.getZoningType(btn.houseNumber) === Zone.Community;
       default:
-        return true;
+        return info.familyNumber !== -1;
     }
   }
 
@@ -355,44 +508,156 @@ export class WinNeighborhoodUL extends TSWin implements LotBtnOwner {
     popup.showWindow();
   }
 
+  /**
+   * cWinNeighborhoodUL::TSOnCommand: 0x20 (from cWinPickFamily) starts Move
+   * In mode for that family; 1 from a lot or a bar button goes to the current
+   * mode's lot / button handler, guarded against re-entry (+0x20c) and
+   * ignored while busy (+0x1b4).
+   */
   override tsOnCommand(cmd: number, source: TSWin): boolean {
-    if (cmd !== 1) return false;
+    if (this.busy) return false;
+    if (cmd !== 1 || this.handling) return false;
     if (source instanceof WinLotBtn) {
-      if (this.mode === NbhdMode.Regular) this.regularModeLotHandler(source.houseNumber);
-      else if (this.mode === NbhdMode.MoveIn) void this.moveInModeLotHandler(source.houseNumber);
-      else this.callbacks.onUnported(`lot click in mode ${this.mode}`);
+      this.handling = true;
+      void this.lotHandler(source.houseNumber).finally(() => (this.handling = false));
       return true;
     }
     const index = this.buttons.indexOf(source as TSWinBtn);
     if (index < 0) return false;
-    if (this.mode === NbhdMode.MoveIn) this.setMode(NbhdMode.Regular);
-    if (this.mode === NbhdMode.Regular) this.regularModeBtnHandler(index);
+    this.handling = true;
+    void this.btnHandler(index).finally(() => (this.handling = false));
     return true;
+  }
+
+  /** The +0x198 member pointer: the lot handler of the current mode. */
+  private lotHandler(house: number): Promise<void> {
+    switch (this.mode) {
+      case NbhdMode.Regular:
+        return this.regularModeLotHandler(house);
+      case NbhdMode.MoveIn:
+        return this.moveInModeLotHandler(house);
+      case NbhdMode.Evict:
+        return this.evictModeLotHandler(house);
+      case NbhdMode.Rezone:
+        return this.rezoneModeLotHandler(house);
+      default:
+        return Promise.resolve();
+    }
+  }
+
+  /** The +0x1a4 member pointer: the button handler of the current mode. */
+  private btnHandler(index: number): Promise<void> {
+    switch (this.mode) {
+      case NbhdMode.Regular:
+      case NbhdMode.MoveIn:
+        return this.regularModeBtnHandler(index);
+      case NbhdMode.Evict:
+        return this.evictModeBtnHandler(index);
+      case NbhdMode.Rezone:
+        return this.rezoneModeBtnHandler(index);
+      default:
+        return Promise.resolve();
+    }
+  }
+
+  /**
+   * cWinNeighborhoodUL::EvictModeBtnHandler (jump table lbl_105BCCF4):
+   * Move In leaves the mode then opens the family picker, Bulldoze leaves
+   * the mode, Exit / Inet / Credits / Import / Logo act as in regular mode,
+   * the others do nothing (they are disabled anyway).
+   */
+  private async evictModeBtnHandler(index: number): Promise<void> {
+    switch (index) {
+      case BTN_MOVE_IN:
+        this.setMode(NbhdMode.Regular);
+        return this.regularModeBtnHandler(index);
+      case BTN_BULLDOZE:
+        this.setMode(NbhdMode.Regular);
+        return;
+      case BTN_EXIT:
+      case BTN_INET:
+      case BTN_CREDITS:
+      case BTN_IMPORT:
+      case BTN_LOGO:
+        return this.regularModeBtnHandler(index);
+      default:
+        return;
+    }
+  }
+
+  /** cWinNeighborhoodUL::RezoneModeBtnHandler (lbl_105BCCF8): as evict, Rezone leaving the mode. */
+  private async rezoneModeBtnHandler(index: number): Promise<void> {
+    switch (index) {
+      case BTN_MOVE_IN:
+        this.setMode(NbhdMode.Regular);
+        return this.regularModeBtnHandler(index);
+      case BTN_REZONE:
+        this.setMode(NbhdMode.Regular);
+        return;
+      case BTN_EXIT:
+      case BTN_INET:
+      case BTN_CREDITS:
+      case BTN_IMPORT:
+      case BTN_LOGO:
+        return this.regularModeBtnHandler(index);
+      default:
+        return;
+    }
   }
 
   /** TSOnCommand 0x20 (posted by cWinPickFamily): Move In mode for that family. */
   private startMoveIn(familyId: number): void {
     this.setMode(NbhdMode.MoveIn);
-    this.buttons[BTN_MOVE_IN]!.setState(1);
     this.moveInFamily = familyId;
+    void this.refreshMoveInFunds();
   }
 
-  /** RegularModeBtnHandler(MoveIn): cWinPickFamily over the whole screen, family music. */
+  /** GetFamilyInfo(+0x1b0): the moving family's funds (budget + lot value), for the roof rule. */
+  private async refreshMoveInFunds(): Promise<void> {
+    const store = await NeighborhoodStore.open(this.nb.dir);
+    const fam = store.family(this.moveInFamily);
+    this.moveInFunds = fam ? fam.budget + fam.netWorth : null;
+  }
+
+  /**
+   * RegularModeBtnHandler(Move In): cWinPickFamily over the screen's area
+   * (only one at a time, lbl_105C3419), regular mode first, the lot popup
+   * cleared, this screen hidden, "bkground_family" while it is up, then
+   * "bkground_nhood1"; Move In's button goes up unless the picker started
+   * Move In mode.
+   */
   private async pickFamily(): Promise<void> {
-    const dlg = new WinPickFamily(this.ctx, this.nb.dir);
-    dlg.setOwner({ moveIn: (id) => this.startMoveIn(id) });
-    this.setMode(NbhdMode.Regular);
-    this.hideWindow();
-    dlg.setArea(0, 0, this.ctx.width, this.ctx.height);
-    soundPlayer.playBySource(MUSIC.family, -1);
-    if (await dlg.init()) await winMgr.doModalWin(dlg);
-    soundPlayer.playBySource(MUSIC.hood, -1);
-    this.showWindow();
+    if (pickFamilyOpen) return;
+    pickFamilyOpen = true;
+    try {
+      const dlg = new WinPickFamily(this.ctx, this.nb.dir);
+      this.setMode(NbhdMode.Regular);
+      this.popup?.hideWindow();
+      this.hideWindow();
+      dlg.setArea(this.area.left, this.area.top, this.area.right, this.area.bottom);
+      dlg.setOwner({ moveIn: (id) => this.startMoveIn(id) });
+      soundPlayer.playBySource(MUSIC.family, -1);
+      if (await dlg.init()) await winMgr.doModalWin(dlg);
+      soundPlayer.playBySource(MUSIC.hood, -1);
+      this.showWindow();
+      if (this.mode !== NbhdMode.MoveIn) this.buttons[BTN_MOVE_IN]!.setState(0);
+      winMgr.setFocus(this);
+    } finally {
+      pickFamilyOpen = false;
+    }
+  }
+
+  private str(set: number, index: number): string {
+    return this.ctx.strings.get("UIText", set, index);
+  }
+
+  /** cSimsApp::MessageDialog(text, title, type) with entries of a string set. */
+  private message(set: number, text: number, title: number, type = MB_OK): Promise<number> {
+    return TSWinMsgBox.show(this.ctx, this.str(set, text), this.str(set, title), type);
   }
 
   private moveInMessage(index: number, type = MB_OK): Promise<number> {
-    const str = (i: number): string => this.ctx.strings.get("UIText", STR_MOVE_IN, i);
-    return TSWinMsgBox.show(this.ctx, str(index + 1), str(index), type);
+    return this.message(STR_MOVE_IN, index + 1, index, type);
   }
 
   /** cWinNeighborhoodUL::MoveInModeLotHandler */
@@ -403,7 +668,7 @@ export class WinNeighborhoodUL extends TSWin implements LotBtnOwner {
       await this.moveInMessage(MOVE_IN.tutorial);
       return;
     }
-    if (this.nb.getZoningType(house) !== 1) {
+    if (this.nb.getZoningType(house) !== Zone.Residential) {
       await this.moveInMessage(MOVE_IN.community);
       return;
     }
@@ -430,77 +695,302 @@ export class WinNeighborhoodUL extends TSWin implements LotBtnOwner {
     const r = await this.moveInMessage(info.hasHouse ? MOVE_IN.buyHouse : MOVE_IN.buyLot, MB_YESNO);
     if (r !== IDYES) return;
     this.setMode(NbhdMode.Regular);
-    // The game also refills townies and tourist families here (simulation, not ported).
+    await this.refillNpcs();
     soundPlayer.playBySource(MUSIC.fade, -1);
     if (this.callbacks.onMoveIn) this.callbacks.onMoveIn(house, this.moveInFamily, info.value);
     else this.callbacks.onEnterLot(house);
   }
 
+  /**
+   * DoFirstTimeTownies, RefillTownies(30), DoFirstTimeTouristFamilies,
+   * RefillTouristFamilies(10): run before a lot is loaded (regular lot click,
+   * move in, Downtown).
+   */
+  private async refillNpcs(): Promise<void> {
+    const store = await NeighborhoodStore.open(this.nb.dir);
+    await doFirstTimeTownies(this.ctx, store);
+    await refillTownies(this.ctx, store, TOWNIE_COUNT);
+  }
+
   /** cWinNeighborhoodUL::RegularModeLotHandler (main screen) */
-  private regularModeLotHandler(house: number): void {
-    if (!this.lots.has(house)) return;
+  private async regularModeLotHandler(house: number): Promise<void> {
+    const info = this.lots.get(house)?.info;
+    if (!info) return;
     soundPlayer.playBySource(MUSIC.fade, -1);
-    // The game also refills townies and tourist families here (simulation, not ported).
+    await this.refillNpcs();
+    // A family on vacation (Family +0x13c) is loaded on its vacation lot.
+    if (info.familyNumber !== -1) {
+      const store = await NeighborhoodStore.open(this.nb.dir);
+      const id = store.familyOfHouse(house);
+      const away = id !== undefined ? store.familyVacationLot(id) : 0;
+      if (away) {
+        this.callbacks.onEnterLot(away);
+        return;
+      }
+    }
     this.callbacks.onEnterLot(house);
   }
 
-  /** cWinNeighborhoodUL::RegularModeBtnHandler */
-  private regularModeBtnHandler(index: number): void {
-    switch (index) {
-      case BTN_MOVE_IN:
-        // Opens cWinPickFamily modally, then returns to regular mode.
-        this.buttons[BTN_MOVE_IN]!.setState(0);
-        void this.pickFamily();
-        break;
-      case BTN_BULLDOZE:
-      case BTN_REZONE:
-        // SetMode(Evict / Rezone): those modes' handlers are not ported.
-        this.callbacks.onUnported(index === BTN_BULLDOZE ? "evict mode" : "rezone mode");
-        this.buttons[index]!.setState(0);
-        break;
-      case BTN_EXIT:
-        soundPlayer.playBySource(MUSIC.fade, -1);
-        this.callbacks.onEndModal(NBHD_EXIT);
-        break;
-      case BTN_INET:
-        this.callbacks.onUnported("DoInternetUpdate");
-        break;
-      case BTN_CREDITS:
-      case BTN_LOGO:
-        this.callbacks.onUnported("cWinCredits");
-        break;
-      case BTN_PREVIOUS:
-      case BTN_NEXT:
-        void this.switchNeighborhood(index === BTN_NEXT ? 1 : -1);
-        break;
-      case BTN_IMPORT:
-        this.callbacks.onUnported("CycleThroughImports");
-        break;
-      case BTN_DOWNTOWN:
-        this.callbacks.onEndModal(NBHD_DOWNTOWN);
-        break;
-      case BTN_VACATION:
-        this.callbacks.onEndModal(NBHD_VACATION);
-        break;
-      case BTN_STUDIOTOWN:
-        this.callbacks.onEndModal(NBHD_STUDIOTOWN);
-        break;
-      case BTN_MAGICTOWN:
-        this.callbacks.onEndModal(NBHD_MAGICTOWN);
-        break;
+  /**
+   * EvictFamily(house, bulldoze): Neighborhood::MoveOut, then the family is
+   * exported (Export/<name>.FAM, not ported). The family side is
+   * NeighborhoodStore.moveOutFamily; the house file side goes to the
+   * onMoveOutHouse callback when the lot code provides it. A bulldoze also
+   * clears the lot's name and description (Houses\NeighborhoodDesc.iff
+   * STR# 2000 + house, entries 1 and 2 set to "").
+   */
+  private async evictFamily(house: number, bulldoze: boolean): Promise<boolean> {
+    const store = await NeighborhoodStore.open(this.nb.dir);
+    const fam = store.moveOutFamily(house);
+    if (fam === -1 && !bulldoze) return false;
+    if (this.callbacks.onMoveOutHouse && !(await this.callbacks.onMoveOutHouse(house, bulldoze))) return false;
+    if (!this.callbacks.onMoveOutHouse) this.callbacks.onUnported(`Neighborhood::MoveOut house file side (house ${house}, bulldoze ${bulldoze})`);
+    await store.save();
+    if (bulldoze) await this.clearLotDescription(house);
+    await this.nb.reloadData();
+    return true;
+  }
+
+  /** MoveOut(bulldoze): StringSetMulti 2000 + house of Houses\NeighborhoodDesc.iff, entries 1 and 2 emptied. */
+  private async clearLotDescription(house: number): Promise<void> {
+    const path = `${this.nb.dir}/Houses/NeighborhoodDesc.iff`;
+    const res = await fetch(`/assets/Sims/${path}`, { cache: "no-store" });
+    if (!res.ok) return;
+    const chunks = parseIff(new Uint8Array(await res.arrayBuffer()));
+    const id = 2000 + house;
+    const c = chunks.find((x): boolean => x.type === "STR#" && x.id === id);
+    if (!c) return;
+    c.data = stringSetMultiSave(c.data, LANG_FRENCH, ["", ""]);
+    await writeGameFile(path, buildIff(chunks));
+  }
+
+  /** The wait cursor around EvictFamily, then the lot's thumbnail again (ReloadThumbnail). */
+  private async runEvict(house: number, bulldoze: boolean): Promise<void> {
+    winMgr.setGlobalCursor(getCursor(3));
+    let ok = false;
+    try {
+      ok = await this.evictFamily(house, bulldoze);
+    } finally {
+      winMgr.setGlobalCursor(null);
+    }
+    if (!ok) {
+      await this.message(STR_BULLDOZE, 11, 10);
+      return;
+    }
+    await this.lots.get(house)?.reloadThumbnail();
+  }
+
+  /** cWinNeighborhoodUL::EvictModeLotHandler */
+  private async evictModeLotHandler(house: number): Promise<void> {
+    const info = this.lots.get(house)?.info;
+    if (!info) return;
+    const store = await NeighborhoodStore.open(this.nb.dir);
+    if (store.familyOnVacationAt(house) !== undefined) {
+      await this.message(STR_BULLDOZE, 16, 17);
+      return;
+    }
+    if (info.familyNumber === -1) {
+      if (!info.hasHouse) {
+        soundPlayer.playBySource(SND_BDOZE_CANCEL, -4);
+        await this.message(STR_BULLDOZE, 5, 4);
+        soundPlayer.playBySource(SND_BDOZE, -4);
+        return;
+      }
+      if ((await this.message(STR_BULLDOZE, 1, 0, MB_YESNO)) !== IDYES) return;
+      soundPlayer.playBySource(SND_DEMOLISH, -4);
+      await this.runEvict(house, true);
+    } else {
+      const text = this.str(STR_BULLDOZE, 3).replace("%s", info.familyName).replace("%s", makeMoneyString(info.netWorth, LANG_FRENCH));
+      if ((await TSWinMsgBox.show(this.ctx, text, this.str(STR_BULLDOZE, 2), MB_YESNO)) !== IDYES) return;
+      const bulldoze = info.hasHouse && (await this.message(STR_BULLDOZE, 1, 0, MB_YESNO)) === IDYES;
+      soundPlayer.playBySource(bulldoze ? SND_DEMOLISH : SND_EVICT, -4);
+      await this.runEvict(house, bulldoze);
     }
   }
 
-  /** Neighborhood::Previous / Next: cycle through the UserData directories, wrapping around. */
+  /**
+   * cWinNeighborhoodUL::RezoneModeLotHandler: cSimsApp::RadioDialog (STR#
+   * 250: title, "currently zoned as a %s lot" with the zone's STR# 251
+   * name; choices STR# 251 Residential / Community). A new zone: refused for
+   * a family on vacation; an empty lot is rezoned at once; a house must be
+   * bulldozed first (STR# 131 9 / 8, yes / no), an occupied lot evicted
+   * first (7 / 6, then the bulldoze question when there is a house).
+   */
+  private async rezoneModeLotHandler(house: number): Promise<void> {
+    const info = this.lots.get(house)?.info;
+    if (!info) return;
+    const zone = this.nb.getZoningType(house);
+    const names = [this.str(STR_ZONE_NAMES, 0), this.str(STR_ZONE_NAMES, 1)];
+    const msg = this.str(STR_REZONE, 1).replace("%s", zone === Zone.Community ? names[1]! : names[0]!);
+    const choice = await WinRadioDialogBox.show(this.ctx, msg, this.str(STR_REZONE, 0), names);
+    if (choice === -1) return;
+    if (choice === 0 && zone === Zone.Residential) return;
+    if (choice === 1 && zone === Zone.Community) return;
+    const store = await NeighborhoodStore.open(this.nb.dir);
+    if (store.familyOnVacationAt(house) !== undefined) {
+      await this.message(STR_BULLDOZE, 16, 17);
+      return;
+    }
+    const newZone = choice === 1 ? Zone.Community : Zone.Residential;
+    if (info.familyNumber === -1) {
+      if (info.hasHouse) {
+        if ((await this.message(STR_BULLDOZE, 9, 8, MB_YESNO)) !== IDYES) return;
+        soundPlayer.playBySource(SND_DEMOLISH, -4);
+        winMgr.setGlobalCursor(getCursor(3));
+        let ok = false;
+        try {
+          ok = await this.evictFamily(house, true);
+        } finally {
+          winMgr.setGlobalCursor(null);
+        }
+        if (!ok) {
+          await this.message(STR_BULLDOZE, 11, 10);
+          return;
+        }
+      }
+      await this.nb.setZoningType(house, newZone);
+    } else {
+      const text = this.str(STR_BULLDOZE, 7).replace("%s", info.familyName).replace("%s", makeMoneyString(info.netWorth, LANG_FRENCH));
+      if ((await TSWinMsgBox.show(this.ctx, text, this.str(STR_BULLDOZE, 6), MB_YESNO)) !== IDYES) return;
+      let bulldoze = false;
+      if (info.hasHouse) {
+        if ((await this.message(STR_BULLDOZE, 9, 8, MB_YESNO)) !== IDYES) return;
+        bulldoze = true;
+      }
+      soundPlayer.playBySource(bulldoze ? SND_DEMOLISH : SND_EVICT, -4);
+      winMgr.setGlobalCursor(getCursor(3));
+      let ok = false;
+      try {
+        ok = await this.evictFamily(house, bulldoze);
+      } finally {
+        winMgr.setGlobalCursor(null);
+      }
+      if (!ok) {
+        await this.message(STR_BULLDOZE, 11, 10);
+        return;
+      }
+      await this.nb.setZoningType(house, newZone);
+    }
+    await this.lots.get(house)?.reloadThumbnail();
+    this.highlightLotsForMode();
+  }
+
+  /**
+   * cWinNeighborhoodUL::RegularModeBtnHandler (jump table lbl_105BCCF0):
+   *  0 Move In: the family picker; 1 Bulldoze: evict mode; 11 Rezone: rezone mode;
+   *  2 Exit: cSimsApp::Quit ("Quitter ?", STR# 153), then "bkground_fade" and
+   *    the screen ends with 1001;
+   *  3 Inet: DoInternetUpdate; 4 Credits / 9 logo: cWinCredits modally over
+   *    the screen ("bkground_credits", then "bkground_nhood1");
+   *  5 / 6 Previous / Next: Neighborhood::Previous / Next, the wait cursor,
+   *    every button disabled, DoNbhdScreen (the screen is rebuilt);
+   *  7 Import: CycleThroughImports;
+   *  8 Downtown: the lots' tutorial hilites off, townies and tourists
+   *    refilled, "bkground_fade", ends with 1020; 10 Vacation (1030),
+   *    12 Studio Town (1040), 13 Magic Town (1050) without the refill.
+   */
+  private async regularModeBtnHandler(index: number): Promise<void> {
+    switch (index) {
+      case BTN_MOVE_IN:
+        return this.pickFamily();
+      case BTN_BULLDOZE:
+        this.setMode(NbhdMode.Evict);
+        return;
+      case BTN_REZONE:
+        this.setMode(NbhdMode.Rezone);
+        return;
+      case BTN_EXIT: {
+        // cSimsApp::Quit outside a lot: UIText STR# 153 entries 2 / 3, OK / Cancel.
+        const r = await this.message(STR_QUIT, 2, 1, MB_OKCANCEL);
+        if (r !== IDOK) return;
+        soundPlayer.playBySource(MUSIC.fade, -1);
+        this.callbacks.onEndModal(NBHD_EXIT);
+        return;
+      }
+      case BTN_INET:
+        this.callbacks.onUnported(
+          "cWinNeighborhoodUL::DoInternetUpdate (STR# 167: update the families' web pages, ExportFamilyHTML, then open <neighborhood>/neighborhood.html in the browser)",
+        );
+        return;
+      case BTN_CREDITS:
+      case BTN_LOGO:
+        return this.showCredits();
+      case BTN_PREVIOUS:
+      case BTN_NEXT:
+        return this.switchNeighborhood(index === BTN_NEXT ? 1 : -1);
+      case BTN_IMPORT:
+        this.callbacks.onUnported(
+          "cWinNeighborhoodUL::CycleThroughImports (Neighborhood::ImportFamily of <neighborhood>/Import/*.FAM, *.rdt, *.cmt with the STR# 143 dialog)",
+        );
+        return;
+      case BTN_DOWNTOWN:
+        await this.refillNpcs();
+        soundPlayer.playBySource(MUSIC.fade, -1);
+        this.callbacks.onEndModal(NBHD_DOWNTOWN);
+        return;
+      case BTN_VACATION:
+        soundPlayer.playBySource(MUSIC.fade, -1);
+        this.callbacks.onEndModal(NBHD_VACATION);
+        return;
+      case BTN_STUDIOTOWN:
+        soundPlayer.playBySource(MUSIC.fade, -1);
+        this.callbacks.onEndModal(NBHD_STUDIOTOWN);
+        return;
+      case BTN_MAGICTOWN:
+        soundPlayer.playBySource(MUSIC.fade, -1);
+        this.callbacks.onEndModal(NBHD_MAGICTOWN);
+        return;
+    }
+  }
+
+  /** RegularModeBtnHandler(Credits): one cWinCredits at a time (lbl_105C3418). */
+  private async showCredits(): Promise<void> {
+    if (creditsOpen) return;
+    creditsOpen = true;
+    try {
+      const dlg = new WinCredits(this.ctx);
+      this.hideWindow();
+      soundPlayer.playBySource(SND_CREDITS_MUSIC, -1);
+      dlg.setArea(this.area.left, this.area.top, this.area.right, this.area.bottom);
+      if (await dlg.init()) await winMgr.doModalWin(dlg);
+      soundPlayer.playBySource(MUSIC.hood, -1);
+      this.showWindow();
+      winMgr.setFocus(this);
+    } finally {
+      creditsOpen = false;
+    }
+  }
+
+  /** cWinNeighborhoodUL::TSOnKeyDown: Escape leaves move in (back to the picker), evict and rezone. */
+  override tsOnKeyDown(key: string): boolean {
+    if (this.busy) return false;
+    if (key === "Escape") {
+      if (this.mode === NbhdMode.MoveIn) {
+        this.setMode(NbhdMode.Regular);
+        void this.regularModeBtnHandler(BTN_MOVE_IN);
+      } else if (this.mode === NbhdMode.Evict || this.mode === NbhdMode.Rezone) {
+        this.setMode(NbhdMode.Regular);
+      }
+      return true;
+    }
+    return super.tsOnKeyDown(key);
+  }
+
+  /**
+   * Neighborhood::Previous / Next (the UserData directories by number,
+   * wrapping), then the wait cursor, every button disabled and
+   * cSimsApp::DoNbhdScreen rebuilding the screen. SwitchToNewNeighborhood
+   * also stores the choice in the registry (SIMS_CURRENT_NEIGHBORHOOD_NUM /
+   * _PATH); the caller keeps it.
+   */
   private async switchNeighborhood(step: number): Promise<void> {
-    // All buttons are disabled until the screen is rebuilt.
+    this.setCursor(getCursor(3));
     for (const b of this.buttons) b.setEnabled(false);
     const dirs = await listNeighborhoodDirs();
     const i = dirs.findIndex((d) => neighborhoodNumber(d) === this.nb.number);
     const next = dirs[(i + step + dirs.length) % dirs.length] ?? this.nb.dir;
     this.callbacks.onSwitchNeighborhood(next);
   }
-
   override pump(now: number): void {
     if (this.openedMs < 0) {
       this.openedMs = now;

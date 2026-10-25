@@ -5,6 +5,7 @@
  *   game.html?test=cas                    cWinPickFamily (UserData3)
  *   game.html?test=cas&screen=family      cWinDesignFamily
  *   game.html?test=cas&screen=char        cWinDesignCharacter (a new person, saved on Done)
+ *   game.html?test=cas&screen=credits     cWinCredits
  *   &dir=UserData2                        another neighborhood
  *
  * The screens write through the save overlay (server/data/overlay).
@@ -14,6 +15,7 @@ import { CasSession } from "../../cas/personfinder.js";
 import { WinDesignCharacter } from "../../cas/windesigncharacter.js";
 import { WinDesignFamily } from "../../cas/windesignfamily.js";
 import { WinPickFamily } from "../../cas/winpickfamily.js";
+import { WinCredits } from "../../nbhd/wincredits.js";
 import type { GameContext } from "../../context.js";
 import { NeighborhoodStore } from "../../data/nbhdstore.js";
 import { DefaultTTWindow } from "../../ui/ttwindow.js";
@@ -26,10 +28,13 @@ export async function mount(ctx: GameContext, mgr: WinMgr): Promise<void> {
   const dir = params.get("dir") ?? "UserData3";
   const screen = params.get("screen") ?? "pick";
   const log: string[] = [];
-  (window as unknown as { __cas: unknown }).__cas = { log, dir };
+  const probe: { log: string[]; dir: string; dlg?: TSWin } = { log, dir };
+  (window as unknown as { __cas: unknown }).__cas = probe;
 
   let dlg: TSWin;
-  if (screen === "pick") {
+  if (screen === "credits") {
+    dlg = new WinCredits(ctx);
+  } else if (screen === "pick") {
     const pick = new WinPickFamily(ctx, dir);
     pick.setOwner({ moveIn: (id) => log.push(`move in ${id}`) });
     dlg = pick;
@@ -50,6 +55,7 @@ export async function mount(ctx: GameContext, mgr: WinMgr): Promise<void> {
       dlg = ch;
     }
   }
+  probe.dlg = dlg;
   dlg.setArea(0, 0, ctx.width, ctx.height);
   if (!(await dlg.init())) throw new Error(`${screen} init failed`);
   log.push("ready");

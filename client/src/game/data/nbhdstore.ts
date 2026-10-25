@@ -18,7 +18,7 @@
 
 import { fetchManifest } from "../../engine/assets.js";
 import { LANG_FRENCH } from "../res/uires.js";
-import { createCharacterFile, deleteCharacterFile, GUID_TEMPLATE_PERSON } from "./character.js";
+import { createCharacterFile, createCharacterFileFrom, deleteCharacterFile, GUID_TEMPLATE_PERSON } from "./character.js";
 import { writeGameFile } from "./files.js";
 import { buildIff, decodeStrSet, parseIff, stringSetMultiSave, type IffChunk } from "./iff.js";
 import { PD } from "./neighborhood.js";
@@ -577,6 +577,11 @@ export class NeighborhoodStore {
     return this.families.find((f) => f.houseNumber === house && f.unk13c !== 0)?.id;
   }
 
+  /** Family +0x13c of family `id`: its vacation lot (0 = none). */
+  familyVacationLot(id: number): number {
+    return this.families.find((f) => f.id === id)?.unk13c ?? 0;
+  }
+
   private put(c: IffChunk): void {
     const i = this.chunks.findIndex((x) => x.type === c.type && x.id === c.id);
     if (i >= 0) this.chunks[i] = c;
@@ -601,6 +606,183 @@ export class NeighborhoodStore {
       });
       f.dirty = false;
     }
+    // NGBH, written in the current version once something changed it (townie flags).
+    if (this.ngbhRaw?.dirty) {
+      const ngbh = this.chunks.find((c) => c.type === "NGBH");
+      this.put({ type: "NGBH", id: ngbh?.id ?? 1, flags: ngbh?.flags ?? 0x10, label: ngbh?.label ?? "", data: serializeNgbh(this.ngbhRaw, NGBH_CURRENT_VERSION) });
+      this.ngbhRaw.dirty = false;
+    }
     await writeGameFile(`${this.dir}/Neighborhood.iff`, buildIff(this.chunks));
   }
+
+  // --- Townies (Neighborhood::DoFirstTimeTownies / RefillTownies / AddNewTownie, nbhd/townies.ts) ---
+
+  /** Parsed NGBH (Neighborhood::DoStream), read on first use. */
+  private ngbhRaw: NgbhRaw | null = null;
+
+  /** The NGBH flags block (Neighborhood +0x19c..+0x1a6). */
+  ngbh(): NgbhRaw {
+    if (!this.ngbhRaw) {
+      const c = this.chunks.find((x) => x.type === "NGBH");
+      if (!c) throw new Error(`${this.dir}/Neighborhood.iff: no NGBH`);
+      this.ngbhRaw = parseNgbh(c.data);
+    }
+    return this.ngbhRaw;
+  }
+
+  /** Marks the NGBH as changed: Save writes it in version 0x49. */
+  touchNgbh(): void {
+    this.ngbh().dirty = true;
+  }
+
+  /** The families' ids (Neighborhood::GetFamilies). */
+  familyIds(): number[] {
+    return this.families.map((f) => f.id);
+  }
+
+  /** Family +0x130: the number of members. */
+  familyMemberCount(familyId: number): number {
+    return this.familyRaw(familyId)?.memberGuids.length ?? 0;
+  }
+
+  /** DoFirstTimeTownies: a family that already uses id 2000 moves to max id + 1. */
+  renumberFamily(oldId: number, newId: number): void {
+    const f = this.familyRaw(oldId);
+    if (!f) return;
+    this.chunks = this.chunks.filter((c) => !((c.type === "FAMI" || c.type === "FAMs" || c.type === "FAMh") && c.id === oldId));
+    f.id = newId;
+    f.dirty = true;
+  }
+
+  /** `new Family(module, id)` + SetName + insertion into the family vector (RefillTownies). */
+  newFamily(id: number, name: string): void {
+    if (this.familyRaw(id)) return;
+    this.families.push({
+      id,
+      name,
+      houseNumber: 0,
+      familyNumber: -1,
+      budget: 0,
+      netWorth: 0,
+      unk120: 0,
+      flags: 0,
+      memberGuids: [],
+      unk13c: 0,
+      spells: [0, 0, 0, 0, 0, 0],
+      dirty: true,
+    });
+  }
+
+  /** Family::AddMember: the GUID joins the member list (the neighbor itself is not touched). */
+  addFamilyMember(familyId: number, guid: number): void {
+    const f = this.familyRaw(familyId);
+    if (!f || f.memberGuids.includes(guid >>> 0)) return;
+    f.memberGuids.push(guid >>> 0);
+    f.dirty = true;
+  }
+
+  /**
+   * The file part of AddNewTownie: StubObject::CreateNew of the template into
+   * the first free Characters/User%05d.iff (Neighborhood +0x160 counter, 32000
+   * wrap), the OBJD type set to 2 (person), then AddNewNeighbor for it.
+   */
+  async addNewCharacterFrom(template: readonly IffChunk[]): Promise<{ guid: number; neighborId: number; shortName: string; fileName: string }> {
+    const prefix = `sims/${this.dir}/characters/`.toLowerCase();
+    const taken = new Set(
+      (await fetchManifest()).files.map((f) => f.path.toLowerCase()).filter((p) => p.startsWith(prefix)).map((p) => p.slice(prefix.length)),
+    );
+    let base = "";
+    while (this.nextUserFile < 32000) {
+      const candidate = `User${String(this.nextUserFile).padStart(5, "0")}`;
+      this.nextUserFile++;
+      if (!taken.has(`${candidate}.iff`.toLowerCase())) {
+        base = candidate;
+        break;
+      }
+    }
+    if (this.nextUserFile > 31999) this.nextUserFile = 0;
+    if (!base) throw new Error("no free character file name");
+    const fileName = `${base}.iff`;
+    let created = await createCharacterFileFrom(this.dir, fileName, base, template, 2);
+    // Two files made in the same millisecond could draw the same GUID: draw again.
+    while (this.neighborByGuid(created.guid)) created = await createCharacterFileFrom(this.dir, fileName, base, template, 2);
+    const neighborId = this.addNewNeighbor(created.guid, base.toLowerCase());
+    return { guid: created.guid, neighborId, shortName: base.toLowerCase(), fileName };
+  }
+}
+
+/** Neighborhood::Save's NGBH version (Complete Collection). */
+export const NGBH_CURRENT_VERSION = 0x49;
+
+/**
+ * NGBH (Neighborhood::DoStream): the 16 shorts at +0x128 (1 before version
+ * 0x14), the SimInventory pointer vector (versions > 0x3f, kept as raw
+ * bytes) and the one-byte bools; versions without a bool get DoStream's
+ * defaults.
+ */
+export interface NgbhRaw {
+  head: number;
+  version: number;
+  shorts: number[];
+  /** The SimInventory vector as stored (null before version 0x40: an empty vector). */
+  inventory: Uint8Array | null;
+  /** +0x19c townies done, +0x19d townies needed (DoFirstTimeTownies). */
+  townies: [boolean, boolean];
+  /** +0x19e / +0x19f */
+  b19e: [boolean, boolean];
+  /** +0x1a6 */
+  b1a6: boolean;
+  /** +0x1a0..+0x1a3 */
+  b1a0: [boolean, boolean, boolean, boolean];
+  /** +0x1a4 / +0x1a5 */
+  b1a4: [boolean, boolean];
+  dirty: boolean;
+}
+
+function ngbhBoolCount(v: number): number {
+  return (v >= 0x42 ? 2 : 0) + (v >= 0x44 ? 2 : 0) + (v >= 0x45 ? 1 : 0) + (v >= 0x46 ? 4 : 0) + (v >= 0x49 ? 2 : 0);
+}
+
+export function parseNgbh(bytes: Uint8Array): NgbhRaw {
+  const v = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const head = v.getInt32(0, true);
+  const version = v.getInt32(4, true);
+  const tag = String.fromCharCode(bytes[8]!, bytes[9]!, bytes[10]!, bytes[11]!);
+  if (tag !== "HBGN" && tag !== "NGBH") throw new Error("NGBH: bad magic");
+  const nShorts = version < 0x14 ? 1 : 0x10;
+  const shorts: number[] = [];
+  for (let i = 0; i < nShorts; i++) shorts.push(v.getInt16(12 + 2 * i, true));
+  const nBools = ngbhBoolCount(version);
+  const end = bytes.length - nBools;
+  const inventory = version > 0x3f ? bytes.slice(12 + 2 * nShorts, end) : null;
+  const b = (i: number): boolean => bytes[end + i] !== 0;
+  let k = 0;
+  const next = (dflt: boolean, present: boolean): boolean => (present ? b(k++) : dflt);
+  const townies: [boolean, boolean] = [next(false, version >= 0x42), next(true, version >= 0x42)];
+  const b19e: [boolean, boolean] = [next(false, version >= 0x44), next(true, version >= 0x44)];
+  const b1a6 = next(true, version >= 0x45);
+  const has46 = version >= 0x46;
+  const b1a0: [boolean, boolean, boolean, boolean] = [next(false, has46), next(true, has46), next(false, has46), next(true, has46)];
+  const b1a4: [boolean, boolean] = [next(false, version >= 0x49), next(true, version >= 0x49)];
+  return { head, version, shorts, inventory, townies, b19e, b1a6, b1a0, b1a4, dirty: false };
+}
+
+export function serializeNgbh(n: NgbhRaw, version = n.version): Uint8Array {
+  const nShorts = version < 0x14 ? 1 : 0x10;
+  const inv = version > 0x3f ? (n.inventory ?? new Uint8Array(4)) : new Uint8Array(0);
+  const bools: boolean[] = [];
+  if (version >= 0x42) bools.push(...n.townies);
+  if (version >= 0x44) bools.push(...n.b19e);
+  if (version >= 0x45) bools.push(n.b1a6);
+  if (version >= 0x46) bools.push(...n.b1a0);
+  if (version >= 0x49) bools.push(...n.b1a4);
+  const out = new Uint8Array(12 + 2 * nShorts + inv.length + bools.length);
+  const v = new DataView(out.buffer);
+  v.setInt32(0, n.head, true);
+  v.setInt32(4, version, true);
+  out.set([0x4e, 0x47, 0x42, 0x48].reverse(), 8);
+  for (let i = 0; i < nShorts; i++) v.setInt16(12 + 2 * i, n.shorts[i] ?? 0, true);
+  out.set(inv, 12 + 2 * nShorts);
+  bools.forEach((x, i) => (out[12 + 2 * nShorts + inv.length + i] = x ? 1 : 0));
+  return out;
 }

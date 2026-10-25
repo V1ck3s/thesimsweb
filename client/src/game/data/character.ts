@@ -66,6 +66,26 @@ function rand(): number {
 /** StubObject::CreateNew: the new character file's resources. */
 export async function createCharacterFile(dir: string, fileName: string, baseName: string): Promise<{ guid: number; bytes: Uint8Array }> {
   const template = parseIffMapOrder(await readFarEntry(TEMPLATE_FAR, TEMPLATE_ENTRY));
+  return createCharacterFileFrom(dir, fileName, baseName, template);
+}
+
+/** OBJD object type (+0x12). */
+const OBJD_TYPE = 0x12;
+
+/**
+ * StubObject::CreateNew of any person template (TemplatePerson, the
+ * TemplateNPCs townies): the template's resources copied in map order, a new
+ * GUID, the "User%05d " label prefix. `objectType`, when given, is written to
+ * the OBJD (Neighborhood::AddNewTownie sets the new townie's type to 2,
+ * person, then ObjSelector::ChangedDef saves it).
+ */
+export async function createCharacterFileFrom(
+  dir: string,
+  fileName: string,
+  baseName: string,
+  template: readonly IffChunk[],
+  objectType?: number,
+): Promise<{ guid: number; bytes: Uint8Array }> {
   // timeGetTime() << 16 ^ rand()
   const guid = (((Math.trunc(performance.now()) << 16) ^ rand()) >>> 0) || 1;
   // StubObject::SetPrefix("User%05d" + " ")
@@ -76,6 +96,7 @@ export async function createCharacterFile(dir: string, fileName: string, baseNam
     const v = new DataView(data.buffer);
     v.setUint32(OBJD_ORIGINAL_GUID, v.getUint32(OBJD_GUID, true), true);
     v.setUint32(OBJD_GUID, guid, true);
+    if (objectType !== undefined) v.setInt16(OBJD_TYPE, objectType, true);
     return { ...c, flags: OBJD_FLAGS, label: prefix + c.label, data };
   });
   const bytes = buildIff(chunks);

@@ -32,8 +32,11 @@
  *    {3, 0x1e, family} to the family picker; Cancel with members asks
  *    (7 / 8, OK / Cancel), deletes them and FinishFamily(-1).
  *
- * Not ported: the member tooltip window (cPickFamilyPersonInfo), the .FAM
- * export of FinishFamily.
+ *  - cWinDesignFamPeopleBtn::GetToolTipsWindow: the dialog's own
+ *    cPickFamilyPersonInfo (+0x170, created in the constructor) set to the
+ *    button's person (cas/personinfo.ts).
+ *
+ * Not ported: the .FAM export of FinishFamily.
  */
 
 import type { GameContext } from "../context.js";
@@ -48,8 +51,9 @@ import { TSSystemButton } from "../ui/systembutton.js";
 import { TSWinText } from "../ui/text.js";
 import { TE_CHANGED, TE_ESCAPE, TSWinTextEdit2 } from "../ui/textedit.js";
 import { Gfx, TSWin } from "../ui/tswin.js";
-import { winMgr } from "../ui/winmgr.js";
+import { winMgr, type ToolTipWindow, type ToolTipsWindowSource } from "../ui/winmgr.js";
 import type { CasPerson, CasSession } from "./personfinder.js";
+import { PickFamilyPersonInfo } from "./personinfo.js";
 import { WinDesignCharacter } from "./windesigncharacter.js";
 
 const STRINGS = 129;
@@ -91,8 +95,10 @@ const WHITE = rgb(0xff, 0xff, 0xff);
 const DOUBLE_CLICK_MS = 500;
 
 /** cWinDesignFamPeopleBtn: a member's portrait and first name. */
-class WinDesignFamPeopleBtn extends TSWinBtn {
+class WinDesignFamPeopleBtn extends TSWinBtn implements ToolTipsWindowSource {
   person: CasPerson | null = null;
+  /** +0x18c: the owner's tooltip window. */
+  info: PickFamilyPersonInfo | null = null;
   private lastClick = -Infinity;
   onDoubleClick: (() => void) | null = null;
 
@@ -109,6 +115,14 @@ class WinDesignFamPeopleBtn extends TSWinBtn {
     super.tsOnMouseDownL();
     if (double) this.onDoubleClick?.();
     return true;
+  }
+
+  /** cWinDesignFamPeopleBtn::GetToolTipsWindow */
+  getToolTipsWindow(): ToolTipWindow | null {
+    const p = this.person;
+    if (!this.info || !p) return null;
+    this.info.setPerson({ name: p.firstName, bio: p.bio, personData: p.personData });
+    return this.info;
   }
 
   override tsPaint(g: Gfx): void {
@@ -182,6 +196,7 @@ export class WinDesignFamily extends TSWinGenDlg {
     const f12 = await ctx.fonts.acquire(12);
     const f16 = await ctx.fonts.acquire(16);
     this.memberFont = f10;
+    const info = await PickFamilyPersonInfo.create(ctx).catch(() => null);
 
     const name = new TSWinTextEdit2();
     name.setFont(f10);
@@ -211,6 +226,7 @@ export class WinDesignFamily extends TSWinGenDlg {
       const b = new WinDesignFamPeopleBtn(BUTTON_ID_BASE + 0x10 + i);
       b.setArea(0, 0, MEMBER_W, MEMBER_H);
       b.onDoubleClick = () => this.editSelected();
+      b.info = info;
       this.childAdd(b);
       this.memberBtns.push(b);
     }
@@ -283,6 +299,8 @@ export class WinDesignFamily extends TSWinGenDlg {
       if (this.template) b.setImage(buildPersonBtn(p.face, this.template), 4, 3);
       b.setArea(b.area.left, b.area.top, b.area.left + MEMBER_W, b.area.top + MEMBER_H);
       b.caption = p.firstName;
+      // Any text: the window manager only asks windows that have a tooltip.
+      b.tooltip = p.firstName || " ";
       b.font = this.memberFont;
       b.setState(0);
       b.showWindow();
