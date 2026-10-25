@@ -22,7 +22,43 @@ export const BTN_PUSH = 0;
 export const BTN_TOGGLE = 1;
 export const BTN_TOGGLE_ON_DOWN = 2;
 
+/** cTSWinBtn::Action: when a button plays its UI sound (bit mask, +0x148). */
+export const UISOUND_DOWN = 1;
+export const UISOUND_UP = 2;
+export const UISOUND_ENTER = 4;
+export const UISOUND_DISABLED = 8;
+
+/** Defaults of cTSWinBtn::OverrideDefaultUISound(0, 0, 0, 0) (lbl_105BB350..5C). */
+const DEFAULT_UI_SOUNDS = { enter: "", down: "UI_click", up: "", disabled: "UI_error" };
+
 export class TSWinBtn extends TSWin {
+  /**
+   * PlaySoundA: how a button plays its sound event (cSoundPlayer::PlayBySource
+   * with source -4). Installed by the sound player; buttons stay silent without it.
+   */
+  static uiSoundHook: ((event: string) => void) | null = null;
+  private static defaultUISounds = { ...DEFAULT_UI_SOUNDS };
+
+  /** cTSWinBtn::OverrideDefaultUISound: a null/empty argument restores that default. */
+  static overrideDefaultUISound(enter?: string | null, down?: string | null, up?: string | null, disabled?: string | null): void {
+    TSWinBtn.defaultUISounds = {
+      enter: enter || DEFAULT_UI_SOUNDS.enter,
+      down: down || DEFAULT_UI_SOUNDS.down,
+      up: up || DEFAULT_UI_SOUNDS.up,
+      disabled: disabled || DEFAULT_UI_SOUNDS.disabled,
+    };
+  }
+
+  /** +0x148: actions that play a sound (constructor default 9 = down | disabled). */
+  uiSoundActions = UISOUND_DOWN | UISOUND_DISABLED;
+  /** +0x178..0x184: per-button sound events (OverrideUISound); null = the default. */
+  private uiSounds: { enter: string | null; down: string | null; up: string | null; disabled: string | null } = {
+    enter: null,
+    down: null,
+    up: null,
+    disabled: null,
+  };
+
   image: ImageBitmap | null = null;
   cols = 1;
   rows = 1;
@@ -58,6 +94,20 @@ export class TSWinBtn extends TSWin {
     const w = Math.floor(image.width / cols);
     const h = Math.floor(image.height / rows);
     this.setArea(this.area.left, this.area.top, this.area.left + w, this.area.top + h);
+  }
+
+  /** cTSWinBtn::OverrideUISound (enter, down, up, disabled). */
+  overrideUISound(enter?: string | null, down?: string | null, up?: string | null, disabled?: string | null): void {
+    this.uiSounds = { enter: enter ?? null, down: down ?? null, up: up ?? null, disabled: disabled ?? null };
+  }
+
+  /** cTSWinBtn::PlayUISound */
+  playUISound(action: number): void {
+    if ((action & this.uiSoundActions) === 0) return;
+    const key = action === UISOUND_ENTER ? "enter" : action === UISOUND_DOWN ? "down" : action === UISOUND_UP ? "up" : action === UISOUND_DISABLED ? "disabled" : null;
+    if (!key) return;
+    const name = this.uiSounds[key] ?? TSWinBtn.defaultUISounds[key];
+    if (name) TSWinBtn.uiSoundHook?.(name);
   }
 
   setState(s: number): void {
@@ -113,6 +163,7 @@ export class TSWinBtn extends TSWin {
 
   override tsOnMouseEnter(): void {
     this.entered = true;
+    if (this.enabled) this.playUISound(UISOUND_ENTER);
   }
 
   override tsOnMouseExit(): void {
@@ -125,7 +176,11 @@ export class TSWinBtn extends TSWin {
   }
 
   override tsOnMouseDownL(): boolean {
-    if (!this.enabled) return true;
+    if (!this.enabled) {
+      this.playUISound(UISOUND_DISABLED);
+      return true;
+    }
+    this.playUISound(UISOUND_DOWN);
     winMgr.setCapture(this);
     const before = this.state;
     if (this.mode === BTN_TOGGLE_ON_DOWN) this.state = this.state ? 0 : 1;
@@ -147,7 +202,10 @@ export class TSWinBtn extends TSWin {
       if (!this.entered && this.changedOnDown) this.state = 0;
       else if (this.entered && !this.changedOnDown) this.state = 0;
     }
-    if (!this.sendOnDown && this.entered) this.fire();
+    if (!this.sendOnDown && this.entered) {
+      this.fire();
+      this.playUISound(UISOUND_UP);
+    }
     return true;
   }
 
