@@ -21,6 +21,7 @@ import { UIRes } from "./res/uires.js";
 import { TSWinSplashScreen } from "./screens/splash.js";
 import { DefaultTTWindow } from "./ui/ttwindow.js";
 import { WinMgr } from "./ui/winmgr.js";
+import { ObjectFolder } from "./world/objectfolder.js";
 import { WinLotView } from "./world/winlotview.js";
 
 const SCREEN_W = 1024;
@@ -136,9 +137,13 @@ async function boot(): Promise<void> {
   const splash = new TSWinSplashScreen(ctx);
   await splash.init();
   mgr.main.childAdd(splash);
-  for (const stage of ["stap", "regr", "ctrl", "grph", "main", "cpnl", "char", "ocns"] as const) {
+  for (const stage of ["stap", "regr", "ctrl", "grph", "main", "cpnl", "char"] as const) {
     splash.setSplashMessage(stage);
   }
+  // "ocns": the object folder scan (ObjectFolder::ScanForNewFiles) runs under
+  // the splash screen; the first run indexes every object file (cached after).
+  splash.setSplashMessage("ocns");
+  await ObjectFolder.get("UserData");
   const game = new Game(ctx, mgr);
   await splash.finished();
   mgr.main.childDelete(splash);
