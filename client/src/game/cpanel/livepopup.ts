@@ -22,6 +22,7 @@
  */
 
 import type { GameContext } from "../context.js";
+import { soundPlayer, UI } from "../audio/index.js";
 import { getOptionsMgr } from "../optionsmgr.js";
 import { ALIGN_LEFT, type FfnFont } from "../res/ffn.js";
 import { SYS_POPUP_TILES, TSWinCtrlMgr } from "../ui/ctrlmgr.js";
@@ -224,7 +225,7 @@ export class WinLivePopup extends TSWin {
     this.setClient(client);
     const now = performance.now();
     if (!this.closing) {
-      // sound: UI_whoosh
+      soundPlayer.playUISound(UI.whoosh);
       this.ramp = { from: 0, to: 1, start: now };
     } else {
       this.ramp = { from: this.rampValue(now), to: 1, start: now };
@@ -237,7 +238,7 @@ export class WinLivePopup extends TSWin {
     if (!this.enabled) return;
     this.enabled = false;
     this.ramp = { from: 1, to: 0, start: performance.now() };
-    // sound: UI_whoosh
+    soundPlayer.playUISound(UI.whoosh);
     this.closing = true;
   }
 

@@ -29,6 +29,7 @@
  * port exposes `onPaintCenter` for it.
  */
 
+import { soundPlayer, UI } from "../audio/index.js";
 import type { GameContext } from "../context.js";
 import type { FfnFont } from "../res/ffn.js";
 import { TSWinBtn } from "./btn.js";
@@ -325,7 +326,7 @@ export class TSPieMenu extends TSWin {
    */
   popupBegin(x: number, y: number, clickMode: boolean, endOnSelect: boolean): void {
     this.inEventLoop = false;
-    // sound: pie menu popup
+    soundPlayer.playUISound(UI.pieAppear);
     winMgr.setCapture(this);
     this.popupX = x;
     this.popupY = y;
@@ -446,7 +447,7 @@ export class TSPieMenu extends TSWin {
       if (prev !== -1) this.items[prev]?.btn?.setState(0);
       if (this.current >= 0) {
         this.items[this.current]?.btn?.setState(1);
-        // sound: pie menu item rollover
+        soundPlayer.playUISound(UI.pieHighlight);
       }
       this.setSelection(this.current, false);
     }
@@ -477,7 +478,7 @@ export class TSPieMenu extends TSWin {
   override tsOnMouseDownL(x: number, y: number): boolean {
     if (this.clickMode && this.abbreviated) this.tsOnMouseUpL(x, y);
     else this.tsOnMouseMove(x, y);
-    // sound: pie menu click (when an item is selected)
+    if (this.current >= 0) soundPlayer.playUISound(UI.pieSelect);
     return true;
   }
 

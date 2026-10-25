@@ -19,6 +19,7 @@
  */
 
 import type { GameContext } from "../context.js";
+import { soundPlayer, UI } from "../audio/index.js";
 import { personGender, type CPState, type PersonInfo } from "../cpstate.js";
 import { BTN_TOGGLE, TSWinBtn } from "../ui/btn.js";
 import { TSWinText, WTF_MULTILINE } from "../ui/text.js";
@@ -556,7 +557,10 @@ export class WinPeople extends TSWin {
       const def = PAGE_BUTTONS[page]!;
       const residential = def.panel !== LivePanel.House || this.ctx.state.zoningType === 1;
       if (this.personSlot !== -1 && residential) this.setPanel(def.panel);
-      else this.pageBtns[page]!.setState(0); // sound: house button refused
+      else {
+        this.pageBtns[page]!.setState(0);
+        soundPlayer.playUISound(UI.error);
+      }
       return true;
     }
     return super.tsOnCommand(cmd, source);

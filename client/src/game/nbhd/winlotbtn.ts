@@ -16,8 +16,9 @@
  * shown whatever the state. Drawing is clipped to the map (cWinLotBtn+0x220).
  */
 
-import { TSWinBtn } from "../ui/btn.js";
+import { TSWinBtn, UISOUND_DOWN, UISOUND_ENTER } from "../ui/btn.js";
 import { WF_HIT_ALPHA, type Gfx, type Rect } from "../ui/tswin.js";
+import { UI } from "../audio/index.js";
 import { getHouseInfo, type HouseInfo, type Neighborhood, type Thmb } from "./nghinterface.js";
 
 /** RampGenerator::SetupConstantTimeRamp duration used by CalcRowCol. */
@@ -53,6 +54,9 @@ export class WinLotBtn extends TSWinBtn {
     super(1);
     // cWinLotBtn::Init: SetFlag(0x200), clicks go through the lot's transparent pixels.
     this.setFlag(WF_HIT_ALPHA, true);
+    // cWinLotBtn::Init: OverrideUISound(rollover, click), sounds on enter and down.
+    this.overrideUISound(UI.nhoodRollover, UI.nhoodClick);
+    this.uiSoundActions = UISOUND_ENTER | UISOUND_DOWN;
   }
 
   /** cWinLotBtn::LoadHouseInfo */

@@ -31,6 +31,7 @@
  */
 
 import { CPState, DIRTY_OPTIONS, DIRTY_SAVE_DISABLED } from "../cpstate.js";
+import { soundPlayer, UI } from "../audio/index.js";
 import type { GameContext } from "../context.js";
 import { getOptionsMgr, type TriState } from "../optionsmgr.js";
 import type { FfnFont } from "../res/ffn.js";
@@ -826,7 +827,7 @@ export class WinOptions extends TSWin {
           (h >= 0x51 && h <= 0x59) ||
           (h >= 0x5d && h <= 0x62);
         if (!allowed) {
-          // sound: UI_error
+          soundPlayer.playUISound(UI.error);
           return false;
         }
         o.setFreeWill(!o.getFreeWill());

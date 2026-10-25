@@ -8,12 +8,14 @@
  * instead (each exports `mount(ctx, mgr)`).
  */
 
+import { MUSIC, soundPlayer } from "./audio/index.js";
 import { CPState, DIRTY_ALL, Mode } from "./cpstate.js";
 import type { GameContext } from "./context.js";
 import { CPANEL_HEIGHT, WinCPanel } from "./cpanel/cpanel.js";
 import { activateFamily } from "./data/family.js";
 import { loadNeighborhood } from "./data/neighborhood.js";
 import { Neighborhood } from "./nbhd/nghinterface.js";
+import { getOptionsMgr } from "./optionsmgr.js";
 import { WinNeighborhoodUL } from "./nbhd/winneighborhoodul.js";
 import { Fonts } from "./res/fonts.js";
 import { Strings } from "./res/strings.js";
@@ -26,6 +28,14 @@ import { WinLotView } from "./world/winlotview.js";
 
 const SCREEN_W = 1024;
 const SCREEN_H = 768;
+
+const MODE_MUSIC: Record<Mode, string> = {
+  [Mode.Build]: MUSIC.build,
+  [Mode.Buy]: MUSIC.buy,
+  [Mode.Live]: MUSIC.live,
+  [Mode.Options]: MUSIC.options,
+  [Mode.Camera]: MUSIC.camera,
+};
 
 export type TestMount = (ctx: GameContext, mgr: WinMgr) => Promise<void>;
 
@@ -46,11 +56,20 @@ class Game {
   private nbhdDir = "UserData";
   private nbhd: Neighborhood | null = null;
   lotView: WinLotView | null = null;
+  /** Mode whose music plays (null outside a lot). */
+  private musicMode: Mode | null = null;
 
   constructor(
     private readonly ctx: GameContext,
     private readonly mgr: WinMgr,
   ) {
+    // The mode music follows CPState (cSimsApp::UpdateWorldFromCPState).
+    ctx.state.onChange((st) => {
+      if (!this.lotView || st.getMode() === this.musicMode) return;
+      this.musicMode = st.getMode();
+      soundPlayer.quietBySourceID(-1);
+      soundPlayer.playBySource(MODE_MUSIC[this.musicMode], -1);
+    });
     ctx.hooks = {
       showNeighborhood: () => {
         this.leaveLot();
@@ -63,6 +82,7 @@ class Game {
     if (!this.lotView) return;
     this.mgr.main.childDelete(this.lotView);
     this.lotView = null;
+    this.musicMode = null;
   }
 
   /** cSimsApp::DoNbhdScreen */
@@ -134,6 +154,10 @@ async function boot(): Promise<void> {
     await (await load()).mount(ctx, mgr);
     return;
   }
+  // cSimsApp::Init: the sound player, then the load loop under the splash
+  // (audio starts with the first click or key: browser autoplay rules).
+  await soundPlayer.initialize(getOptionsMgr());
+  void soundPlayer.startLoadMusic(getOptionsMgr());
   const splash = new TSWinSplashScreen(ctx);
   await splash.init();
   mgr.main.childAdd(splash);
@@ -149,6 +173,7 @@ async function boot(): Promise<void> {
   (window as unknown as { game: Game }).game = game;
   await splash.finished();
   mgr.main.childDelete(splash);
+  soundPlayer.stopLoadMusic();
   // `?house=N` (dev): straight into a lot of the default neighborhood.
   const house = Number(new URLSearchParams(location.search).get("house"));
   if (house > 0) await game.enterLot(house);

@@ -15,6 +15,7 @@
  */
 
 import { Mode, WallState } from "../cpstate.js";
+import { soundPlayer, speedTransitionSound } from "../audio/index.js";
 import type { GameContext } from "../context.js";
 import type { FfnFont } from "../res/ffn.js";
 import { LANG_FRENCH } from "../res/uires.js";
@@ -545,7 +546,7 @@ export class WinViewControl extends TSWin {
     };
     const speedClick = (speed: number): void => {
       if (s.getMode() === Mode.Live) this.speedThrottled = false;
-      // sound: DoSpeedTransitionSound(current or paused -> speed)
+      soundPlayer.playUISound(speedTransitionSound(s.isPaused() ? 0 : s.getSpeed(), speed));
       if (s.getMode() === Mode.Live) s.pause(false);
       s.setSpeed(speed);
     };
@@ -610,7 +611,7 @@ export class WinViewControl extends TSWin {
         s.setMode(Mode.Camera);
         break;
       case this.pauseBtn:
-        // sound: DoSpeedTransitionSound(speed <-> paused)
+        soundPlayer.playUISound(s.isPaused() ? speedTransitionSound(0, s.getSpeed()) : speedTransitionSound(s.getSpeed(), 0));
         s.pause(!s.isPaused());
         break;
       case this.speed1:

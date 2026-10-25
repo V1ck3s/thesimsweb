@@ -24,6 +24,7 @@
  */
 
 import { fetchManifest } from "../../engine/assets.js";
+import { MUSIC, soundPlayer, UI } from "../audio/index.js";
 import type { GameContext } from "../context.js";
 import type { FfnFont } from "../res/ffn.js";
 import { LANG_FRENCH } from "../res/uires.js";
@@ -218,7 +219,6 @@ export class WinNeighborhoodUL extends TSWin implements LotBtnOwner {
       // Credits uses entry 9 (1-based); the others take the entries in order.
       const tip = i === BTN_CREDITS ? 8 : i < BTN_CREDITS ? i : i - 1;
       btn.tooltip = ctx.strings.get("UIText", STR_BTN_TIPS, tip);
-      // sound: UI_Nhood_click
       const [x, y] = BTN_POS[i]!;
       btn.moveTo(x, y);
       (i === BTN_CREDITS ? waveBtn : barBtn).childAdd(btn);
@@ -234,8 +234,10 @@ export class WinNeighborhoodUL extends TSWin implements LotBtnOwner {
     this.childAdd(popup);
     this.popup = popup;
 
+    // Every button of the screen clicks with the neighborhood sound (restored by shutdown).
+    TSWinBtn.overrideDefaultUISound(null, UI.nhoodClick);
     this.setMode(NbhdMode.Regular);
-    // sound: bkground_nhood1
+    soundPlayer.playBySource(MUSIC.hood, -1);
     return true;
   }
 
@@ -249,6 +251,11 @@ export class WinNeighborhoodUL extends TSWin implements LotBtnOwner {
   }
 
   /** cWinNeighborhoodUL::SetMode */
+  override shutdown(): void {
+    TSWinBtn.overrideDefaultUISound();
+    super.shutdown();
+  }
+
   setMode(mode: NbhdMode): void {
     if (this.mode === NbhdMode.Rezone) this.buttons[BTN_REZONE]!.setState(0);
     if (this.mode === NbhdMode.MoveIn) this.buttons[BTN_MOVE_IN]!.setState(0);
@@ -343,7 +350,7 @@ export class WinNeighborhoodUL extends TSWin implements LotBtnOwner {
   /** cWinNeighborhoodUL::RegularModeLotHandler (main screen) */
   private regularModeLotHandler(house: number): void {
     if (!this.lots.has(house)) return;
-    // sound: bkground_fade
+    soundPlayer.playBySource(MUSIC.fade, -1);
     // The game also refills townies and tourist families here (simulation, not ported).
     this.callbacks.onEnterLot(house);
   }
@@ -363,7 +370,7 @@ export class WinNeighborhoodUL extends TSWin implements LotBtnOwner {
         this.buttons[index]!.setState(0);
         break;
       case BTN_EXIT:
-        // sound: bkground_fade
+        soundPlayer.playBySource(MUSIC.fade, -1);
         this.callbacks.onEndModal(NBHD_EXIT);
         break;
       case BTN_INET:
