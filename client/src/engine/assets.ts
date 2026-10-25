@@ -58,6 +58,11 @@ async function fetchRange(path: string, start: number, endInclusive: number): Pr
   return new Uint8Array(await res.arrayBuffer());
 }
 
+/** Bytes [start, end) of a file under /assets (one Range request, not cached). */
+export function readAssetRange(path: string, start: number, end: number): Promise<Uint8Array> {
+  return fetchRange(path, start, end - 1);
+}
+
 /**
  * Read the FAR header (first 16 B) + the manifest tail and parse the entry table via WASM.
  * Pulls only `header_size + tail_size` bytes from the network — typically a few hundred B.
