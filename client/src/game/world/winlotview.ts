@@ -10,6 +10,7 @@
  */
 
 import type { GameContext } from "../context.js";
+import { soundPlayer } from "../audio/index.js";
 import { DIRTY_SHOP_ITEM, Mode, type CPState, type HouseViewerHooks, type WallState } from "../cpstate.js";
 import { DefaultTTWindow } from "../ui/ttwindow.js";
 import { Gfx, TSWin } from "../ui/tswin.js";
@@ -287,8 +288,10 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
       },
       // UIText STR# 137 "PlacementErrs".
       placementErrorText: (code) => this.ctx.strings.get("UIText", 137, code - 1),
-      // sound: the tool's events (UI_object_place, UI_buy_moneyback, UI_error, ...) once the audio system plays them.
-      playSound: () => undefined,
+      // cSoundPlayer::PlayBySource(event, -4): UI_object_place, UI_buy_moneyback, UI_error, ...
+      playSound: (event) => {
+        soundPlayer.playBySource(event);
+      },
       shiftDown: () => this.shift,
       invalidate: () => {
         v.dirty = true;
