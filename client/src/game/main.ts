@@ -26,6 +26,7 @@ import { DefaultTTWindow } from "./ui/ttwindow.js";
 import { WinMgr } from "./ui/winmgr.js";
 import { ObjectFolder } from "./world/objectfolder.js";
 import { WinLotView } from "./world/winlotview.js";
+import { doSave, isLotDirty, markLotClean, saveGame } from "./world/savegame.js";
 
 const SCREEN_W = 1024;
 const SCREEN_H = 768;
@@ -73,6 +74,11 @@ class Game {
       soundPlayer.playBySource(MODE_MUSIC[this.musicMode], -1);
     });
     ctx.hooks = {
+      isLotDirty: () => isLotDirty(this.lotView),
+      saveGame: async () => {
+        await saveGame(ctx, this.lotView, this.nbhdDir);
+      },
+      doSave: () => doSave(ctx, this.lotView, this.nbhdDir),
       showNeighborhood: () => {
         this.leaveLot();
         void this.showNeighborhood();
@@ -134,6 +140,7 @@ class Game {
     if (!(await view.init())) throw new Error("lot view init failed");
     console.log(`lot ${house} loaded in ${Math.round(performance.now() - t0)} ms`);
     this.lotView = view;
+    markLotClean(view);
     const cpanel = new WinCPanel(ctx);
     cpanel.setArea(0, ctx.height - CPANEL_HEIGHT, ctx.width, ctx.height);
     if (!(await cpanel.init())) throw new Error("control panel init failed");

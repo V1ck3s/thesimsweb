@@ -534,6 +534,49 @@ export class NeighborhoodStore {
     f.dirty = true;
   }
 
+  /** The family living in house `house` (Neighborhood::GetFamily of the house's family number), if any. */
+  familyOfHouse(house: number): number | undefined {
+    return this.families.find((f) => f.houseNumber === house && house !== 0 && !SPECIAL_FAMILY_IDS.has(f.id))?.id;
+  }
+
+  /**
+   * Saving the lot of a resident family (House::SaveFile, Neighborhood::SaveHouse):
+   * Family +0x138 bits 0 / 1 from ObjectModule::ComputeStats, bit 3 cleared,
+   * and the budget (+0x118) set to the simulator's funds.
+   */
+  setFamilyLotSave(familyId: number, budget: number, statFlags: number): void {
+    const f = this.familyRaw(familyId);
+    if (!f) return;
+    f.flags = ((f.flags & ~3) | (statFlags & 3)) & ~8;
+    f.budget = budget | 0;
+    f.dirty = true;
+  }
+
+  /**
+   * The family part of Neighborhood::MoveOut(house, bulldoze): the family
+   * living in `house` (Family +0x110, or +0x13c, the vacation lot) leaves it
+   * (house 0), its +0x138 bit 3 is cleared, and it sells the lot: budget =
+   * GetFamilyNetWorth (budget + lot value, the house being no longer theirs),
+   * lot value 0. Returns the family id, or -1 when nobody lives there. The
+   * house file side (objects killed, walls / floors / pool cleared on a
+   * bulldoze, funds and global 26 zeroed, SaveHouse) is not done here.
+   */
+  moveOutFamily(house: number): number {
+    const f = this.families.find((x) => x.houseNumber === house || x.unk13c === house);
+    if (!f || house === 0) return -1;
+    f.houseNumber = 0;
+    f.flags &= ~8;
+    f.budget = f.budget + f.netWorth;
+    f.netWorth = 0;
+    f.dirty = true;
+    return f.id;
+  }
+
+  /** Family +0x13c: the lot the family is on vacation on (0 = none). */
+  familyOnVacationAt(house: number): number | undefined {
+    return this.families.find((f) => f.houseNumber === house && f.unk13c !== 0)?.id;
+  }
+
   private put(c: IffChunk): void {
     const i = this.chunks.findIndex((x) => x.type === c.type && x.id === c.id);
     if (i >= 0) this.chunks[i] = c;

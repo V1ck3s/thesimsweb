@@ -252,6 +252,11 @@ export class XObject implements PlacedObject {
     const { objectSlots, spriteSlots } = this.selector.loadSlots();
     this.objectSlots = [emptyObjectSlot(), ...objectSlots];
     this.spriteSlots = spriteSlots;
+    if (this.kind === "person") {
+      // cXPerson::Initialize: five more object slots (height 6; flag 2; height 1 x3).
+      const mk = (height: number, f1c: number): ObjectSlot => ({ ...emptyObjectSlot(), height, f1c });
+      this.objectSlots.push(mk(6, 0), mk(0, 2), mk(1, 0), mk(1, 0), mk(1, 0));
+    }
     this.objectData[OD.slotHierNumber] = -1;
     this.objectData[OD.slotNumber] = -1;
     this.objectData[OD.slotCount] = this.objectSlots.length - 1;
@@ -493,6 +498,11 @@ export class ObjectModule {
   readonly objects = new Map<number, XObject>();
   /** +0xac: selected person. */
   selectedPersonId = 0;
+  /** +0x38 object vector and the string ObjM ends with (v > 0x33), kept for saving. */
+  trailerIds: number[] = [];
+  trailerString = "";
+  /** Object ids in the order the stream listed them (the module list at load). */
+  loadOrder: number[] = [];
 
   /** ObjectModule::Load: ObjectFolder::PrepareForModuleLoad, then the "ObjM" chunk. */
   static async load(house: ResFile, folder: ObjectFolder): Promise<ObjectModule> {
@@ -533,6 +543,7 @@ export class ObjectModule {
       obj.objFlags |= 0x80;
     }
     buf.reconMark();
+    this.loadOrder = [...this.objects.keys()];
     for (const obj of this.objects.values()) {
       const placeholder = placeholderSet.has(obj.selector);
       obj.reconStream(buf, v, placeholder);
@@ -550,6 +561,8 @@ export class ObjectModule {
       if (obj.isPerson) {
         try {
           obj.personRecord = readPersonStream(buf, v);
+          // Past a parsed tail the sim flags follow, as for other objects.
+          if (obj.personRecord.tail && v > 0x35 && !placeholder) obj.simFlags = buf.recon32();
         } catch {
           obj.personRecord = null;
         }
@@ -558,6 +571,17 @@ export class ObjectModule {
       buf.reconMark();
     }
     this.selectedPersonId = buf.recon16();
+    if (v > 0x33) {
+      try {
+        const n = buf.recon32();
+        const ids: number[] = [];
+        for (let i = 0; i < n && i < 0x10000; i++) ids.push(buf.recon16());
+        this.trailerIds = ids;
+        this.trailerString = buf.reconString();
+      } catch {
+        this.trailerIds = [];
+      }
+    }
   }
 
   /** The placeholder ObjectModule::DoStream substitutes for a missing type. */

@@ -26,6 +26,7 @@ import { Strings } from "../res/strings.js";
 import { getWall, SEG_HORIZ, SEG_VERT } from "./tilewalls.js";
 import { fixedSetWall, patternSlot } from "./tools/worldedit.js";
 import type { FixedWorld } from "./world.js";
+import { buildUsageMap, encodeUsageMap } from "./usagemap.js";
 
 /** WallPattNode (0x20 bytes). */
 interface WallPattNode {
@@ -233,6 +234,51 @@ export class WallGraphicsMgr {
         }
       }
     }
+  }
+
+  /**
+   * WallGraphicsMgr::SaveUsageMap: the WALm payloads (chunk 0: byte fields,
+   * chunk 1: 16-bit fields) for the plugin wallpapers on the lot's walls
+   * (world/usagemap.ts). The segment walk is the original's: from the first
+   * segment bit up, stopping before 0x20 unless it is the first one.
+   */
+  saveUsageMap(fixed: FixedWorld): [Uint8Array, Uint8Array] {
+    const used = new Uint8Array(0x10000);
+    const n = fixed.size;
+    for (let level = 1; level <= 2; level++) {
+      for (let x = 0; x < n; x++) {
+        for (let y = 0; y < n; y++) {
+          const t = getWall(fixed, y, x, level);
+          let seg = 0;
+          if (t.segs !== 0) for (seg = 1; seg !== (seg & t.segs); seg <<= 1);
+          while (seg !== 0) {
+            const sides = seg === 0x20 ? [1, 3] : seg === 0x10 ? [2, 4] : [0];
+            for (const side of sides) {
+              let i = 31 - Math.clz32(seg);
+              if (side === 1 || side === 4) i += 1;
+              else if (side === 3) i += 2;
+              used[t.patterns[i]!] = 1;
+            }
+            do {
+              seg <<= 1;
+              if (seg === (seg & t.segs)) break;
+            } while (seg < 0x20);
+            if (seg > 0x1f) seg = 0;
+          }
+        }
+      }
+    }
+    const map = buildUsageMap(
+      used,
+      0x1f,
+      0xf8,
+      (p) => {
+        const node = this.patterns.get(p);
+        return node ? { plugin: node.plugin, index: node.ids[0], data: node.color } : null;
+      },
+      (plugin) => this.plugins[plugin]?.file ?? "",
+    );
+    return [encodeUsageMap(map, "WALm", false), encodeUsageMap(map, "WALm", true)];
   }
 
   /** WallGraphicsMgr::GetWallPatternGraphic: null when the pattern is unknown. */

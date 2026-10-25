@@ -23,6 +23,7 @@ import { Renderer } from "./renderer.js";
 import { getWall } from "./tilewalls.js";
 import { fixedSetWall } from "./tools/worldedit.js";
 import type { FixedWorld } from "./world.js";
+import { buildUsageMap, encodeUsageMap } from "./usagemap.js";
 
 /** FloorIDNode (0x20 bytes). */
 interface FloorNode {
@@ -376,6 +377,31 @@ export class FloorGraphicsMgr {
         }
       }
     }
+  }
+
+  /**
+   * FloorGraphicsMgr::SaveUsageMap: the FLRm payloads (chunk 0: byte fields,
+   * chunk 1: 16-bit fields) for the plugin floors the lot's floor arrays use
+   * (world/usagemap.ts).
+   */
+  saveUsageMap(fixed: FixedWorld): [Uint8Array, Uint8Array] {
+    const used = new Uint8Array(0x10000);
+    const n = fixed.size;
+    for (let level = 1; level <= 2; level++) {
+      const a = fixed.floors[level - 1]!;
+      for (let x = 0; x < n; x++) for (let y = 0; y < n; y++) used[a.u16(x, y)] = 1;
+    }
+    const map = buildUsageMap(
+      used,
+      0x1e,
+      0xff,
+      (p) => {
+        const node = this.patterns.get(p);
+        return node ? { plugin: node.plugin, index: node.ids[0], data: node.data } : null;
+      },
+      (plugin) => this.plugins[plugin]?.file ?? "",
+    );
+    return [encodeUsageMap(map, "FLRm", false), encodeUsageMap(map, "FLRm", true)];
   }
 
   private sortedEntries(): Array<[number, FloorNode]> {

@@ -16,8 +16,12 @@
  * Each tick is two game seconds.
  */
 
+import { loadNeighborhood } from "../data/neighborhood.js";
+import { VBAnimMgr } from "../sims/vbanimmgr.js";
 import { Mode, type CPState } from "../cpstate.js";
-import type { ResFile } from "../world/iffres.js";
+import { ResFile } from "../world/iffres.js";
+import { FixedWorld } from "../world/world.js";
+import { loadStringSet } from "./behavior.js";
 import type { XObject } from "../world/objects.js";
 import { getNextRandomNumber, getSRandSeed, setSRandSeed } from "../world/random.js";
 import { ReconBuffer } from "../world/reconbuffer.js";
@@ -102,6 +106,10 @@ export class Simulator {
   readonly loadErrors = new Map<number, number>();
   /** CPState to keep in sync (clock, funds, speed, pause, mode). */
   state: CPState | null = null;
+  /** The lot's tile arrays (routing). */
+  world: FixedWorld | null = null;
+  /** Tick the people (cXPerson); false keeps them frozen (debug). */
+  static simulatePeople = true;
 
   /** cSimulator::Init defaults. */
   constructor() {
@@ -128,7 +136,25 @@ export class Simulator {
     const placed = [...objects];
     const res = await SimResources.load();
     await res.prepare(placed.map((o) => o.selector));
+    // Objects created later (buy / build mode) need their semi-globals synchronously.
+    await res.prepareAll();
     sim.module = new SimModule(sim, res, placed);
+    try {
+      sim.world = FixedWorld.load(house);
+    } catch {
+      sim.world = null;
+    }
+    const nbhdDir = house.name.split("/")[0] ?? "UserData";
+    sim.module.initPeople(await loadNeighborhood(nbhdDir).catch(() => null));
+    // Neighborhood::Load reads the lot zoning from <neighborhood>/LotZoning.iff.
+    const zoning = await ResFile.open(`${nbhdDir}/LotZoning.iff`).catch(() => null);
+    if (zoning) sim.module.loadZoning(loadStringSet(zoning, 1) ?? []);
+    // SAnimator::Initialize: a skeleton per person (the lot view attaches its VitaBoy's instead).
+    const mgr = await VBAnimMgr.get().catch(() => null);
+    for (const p of sim.module.persons) {
+      const sk = await mgr?.findSkeleton(p.isChild ? "child" : "adult").catch(() => null);
+      if (sk && !p.animator.skeleton) p.animator.attach(sk.clone());
+    }
     sim.postLoad();
     return sim;
   }
@@ -174,8 +200,7 @@ export class Simulator {
       }
     }
     for (const o of m.list) {
-      if (o.isPerson) {
-        // cXPerson's Main loop needs routing / animation / the interaction queue: not ticked in this phase.
+      if (o.isPerson && !Simulator.simulatePeople) {
         m.setSimFlag(o.id, 1, false);
         continue;
       }
@@ -350,7 +375,24 @@ export class Simulator {
     }
     // ObjectModule::PostSim: object dialogs are recorded only; the kill queue runs here.
     this.module.runKillQueue();
+    if (advanced) this.pushPeople();
     return advanced;
+  }
+
+  /**
+   * UpdateCPStateFromWorld's people part: the family's motives and person
+   * data (the Live panel reads them each pump) come from their cXPerson.
+   */
+  private pushPeople(): void {
+    const s = this.state;
+    if (!s) return;
+    for (const info of s.family) {
+      if (info.guid === undefined) continue;
+      const p = this.module.persons.find((x) => (x.obj.selector.guid | 0) === (info.guid! | 0));
+      if (!p) continue;
+      for (let i = 0; i < 16; i++) info.motives[i] = p.motives[i]!;
+      info.personData = p.pd;
+    }
   }
 
   /** The clock as CPState shows it (UpdateCPStateFromWorld). */

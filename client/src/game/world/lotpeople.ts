@@ -11,6 +11,7 @@
 
 import { loadNeighborhood, neighborByGuid } from "../data/neighborhood.js";
 import { loadPerson, SimRenderer, type SAnimator } from "../sims/index.js";
+import type { Skeleton } from "../sims/skeleton.js";
 import type { Compositor } from "./compositor.js";
 import type { HouseViewer } from "./houseviewer.js";
 import type { PlacedObject } from "./objects.js";
@@ -19,6 +20,8 @@ import { RotatableWorld } from "./world.js";
 export interface LotPerson {
   obj: PlacedObject;
   anim: SAnimator;
+  /** Set when the simulation drives the person (bindSim): its facing (45 degree units, fractional). */
+  simDir?: () => number;
 }
 
 export class LotPeople {
@@ -46,7 +49,34 @@ export class LotPeople {
     return new LotPeople(renderer, people);
   }
 
+  /** A person object that joined the lot (move-in, arrival): its animator, dressed from its character file. */
+  async addPerson(nbhdDir: string, obj: PlacedObject): Promise<boolean> {
+    if (this.people.some((x) => x.obj === obj)) return true;
+    const nbhd = await loadNeighborhood(nbhdDir);
+    const nb = neighborByGuid(nbhd, obj.guid);
+    if (!nb) return false;
+    const anim = await loadPerson(nbhdDir, nb.name).catch(() => null);
+    if (!anim || !(await anim.startIdle())) return false;
+    this.people.push({ obj, anim });
+    return true;
+  }
+
+  /**
+   * The simulation animates `obj` from now on: its practices are dropped,
+   * `attach` receives the VitaBoy skeleton (the sim's SAnimator poses it),
+   * and `dir` gives the facing to draw. False when `obj` has no animator.
+   */
+  bindSim(obj: PlacedObject, attach: (skeleton: Skeleton) => void, dir: () => number): boolean {
+    const p = this.people.find((x) => x.obj === obj);
+    if (!p) return false;
+    p.anim.vitaboy.practices.length = 0;
+    attach(p.anim.vitaboy.skeleton);
+    p.simDir = dir;
+    return true;
+  }
+
   update(nowMs: number): void {
+    // Sim-driven people have no practices here: this only deforms their meshes.
     for (const p of this.people) p.anim.update(nowMs);
   }
 
@@ -60,14 +90,14 @@ export class LotPeople {
       width: viewer.viewW,
       height: viewer.viewH,
     };
-    for (const { obj, anim } of this.people) {
+    for (const { obj, anim, simDir } of this.people) {
       if (obj.level > viewer.level) continue;
       // HouseViewer::Render3DObject: RoomManager::GetRoomAmbientLight at the person's view position.
       const [vx, vy] = RotatableWorld.rotateCoords(obj.fx, obj.fy, viewer.world.rotation, 0x400);
       const ambient = viewer.ambientAt(vx, vy, obj.level);
       this.renderer.renderSim(
         anim.vitaboy,
-        { x: obj.fx / 16, y: obj.fy / 16, level: obj.level, alt: viewer.world.fixed.getFAlt(obj.fx, obj.fy), direction: obj.dir },
+        { x: obj.fx / 16, y: obj.fy / 16, level: obj.level, alt: viewer.world.fixed.getFAlt(obj.fx, obj.fy), direction: simDir ? simDir() : obj.dir },
         view,
         { ambient },
       );

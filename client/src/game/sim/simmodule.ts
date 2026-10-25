@@ -22,6 +22,17 @@ import type { ObjSelector } from "../world/objselector.js";
 import { Behavior } from "./behavior.js";
 import type { Simulator } from "./simulator.js";
 import { SimObject } from "./xobject.js";
+import { EP } from "./objfntable.js";
+import { PersonSim, SCORE_CURVE_MOTIVES } from "./person.js";
+import { curvesFromStrings, HAPPY_CURVE_MOTIVES, type MotiveCurve } from "./motives.js";
+import { loadStringSet } from "./behavior.js";
+import type { NeighborhoodData } from "../data/neighborhood.js";
+import { TreeTable } from "./treetable.js";
+import { loadFloatConstants } from "./floatconstants.js";
+import { setMotiveConstants } from "./motives.js";
+import { autonomyConstants, type AutonomyConstants } from "./person.js";
+import { readSlotChunk } from "../world/slots.js";
+import { routingSlotFrom, type RoutingSlot } from "./routing.js";
 
 const GLOBAL_FAR = "GameData/Global/Global.far";
 
@@ -59,6 +70,25 @@ export class SimResources {
     );
   }
 
+  /**
+   * Opens every semi-global file of the global folder (24 files), so objects
+   * created later (buy / build mode, Create Object Instance) find their
+   * semi-global trees synchronously.
+   */
+  async prepareAll(): Promise<void> {
+    await Promise.all(
+      this.entries
+        .filter((e) => e.filename.toLowerCase() !== "global.iff" && e.filename.toLowerCase().endsWith(".iff"))
+        .map(async (e) => {
+          const n = e.filename.toLowerCase().replace(/\.iff$/, "");
+          if (this.semi.has(n) || this.semi.has(`${n}.iff`)) return;
+          const f = await ResFile.openInFar(GLOBAL_FAR, e.filename).catch(() => null);
+          this.semi.set(n, f);
+          this.semi.set(`${n}.iff`, f);
+        }),
+    );
+  }
+
   semiGlobal(name: string): ResFile | null {
     return name ? (this.semi.get(name.toLowerCase()) ?? null) : null;
   }
@@ -81,6 +111,11 @@ export class SimModule {
   readonly list: SimObject[] = [];
   /** +0x90 */
   readonly people: SimObject[] = [];
+  /** The neighborhood (person persistent data, relationships); null when it failed to load. */
+  nbhd: NeighborhoodData | null = null;
+  /** cXPerson's happiness weight curves (Global.iff STR# 0x1f6 adult, 0x1f8 child). */
+  happyCurves: MotiveCurve[] = [];
+  happyCurvesChild: MotiveCurve[] = [];
   /** Kill queue (ObjectModule::AddToKillQueue), emptied after each tick. */
   private readonly killQueue: Array<{ id: number; flag: number }> = [];
   private readonly behaviors = new Map<ObjSelector, Behavior>();
@@ -92,6 +127,8 @@ export class SimModule {
   /** Called when an object's look changed (cXObject::Dirty) or it was killed. */
   onDirty: ((o: SimObject) => void) | null = null;
   onKill: ((o: SimObject) => void) | null = null;
+  /** Neighborhood +0x16c zoning: house number -> 1 residential / 2 community (UserData LotZoning.iff STR# 1). */
+  readonly zoning = new Map<number, number>();
   /** ObjectModule::DisableBuyAndBuild: the object that disabled buy and build modes (0 = enabled). */
   buyBuildDisabledBy = 0;
 
@@ -101,16 +138,131 @@ export class SimModule {
     placed: Iterable<XObject>,
   ) {
     for (const x of placed) {
-      const o = new SimObject(x, this);
+      const o = x.isPerson ? new PersonSim(x, this) : new SimObject(x, this);
       const id = x.objectId;
       while (this.objects.length < id) {
         this.objects.push(null);
         this.simFlags.push(0xffff);
       }
       this.objects[id - 1] = o;
-      this.simFlags[id - 1] = x.isPerson ? 0xffff : x.simFlags >>> 0;
+      this.simFlags[id - 1] = x.isPerson ? 0x1ffff : x.simFlags >>> 0;
       this.list.push(o);
       if (x.isPerson) this.people.push(o);
+    }
+  }
+
+  /** The people as PersonSim. */
+  get persons(): PersonSim[] {
+    return this.people.filter((p): p is PersonSim => p instanceof PersonSim);
+  }
+
+  /**
+   * The world side of Create New Object Instance (set by the lot view):
+   * `selector` looks a GUID up (undefined while its object file opens, null
+   * when unknown), `make` builds the object out of the world (its Init runs
+   * through the placement hooks) and places it per the primitive's mode;
+   * null when it cannot be placed.
+   */
+  worldHooks: {
+    selector(guid: number): ObjSelector | null | undefined;
+    make(sel: ObjSelector, mode: number, me: XObject, stack: XObject | null): XObject | null;
+  } | null = null;
+
+  /** Called when a person's interaction queue or current action changes (the Live panel). */
+  onQueueChanged: ((p: PersonSim) => void) | null = null;
+
+  /**
+   * ObjectModule::AddObject + cXObject::Reset for an object made at run time
+   * (buy / build mode): it joins the module under its object id and, with
+   * `runInit`, its data is reset and its Init tree runs (lead objects only,
+   * as Reset does); without it (an object coming back, e.g. undo of a
+   * deletion) its data is kept and Main restarts. Returns the existing
+   * SimObject when the object is already in the module.
+   */
+  addObject(x: XObject, runInit: boolean): SimObject {
+    const id = x.objectId;
+    const cur = this.objects[id - 1];
+    if (cur && cur.obj === x && !cur.killed) return cur;
+    const o = x.isPerson ? new PersonSim(x, this) : new SimObject(x, this);
+    while (this.objects.length < id) {
+      this.objects.push(null);
+      this.simFlags.push(0xffff);
+    }
+    if (cur) {
+      const i = this.list.indexOf(cur);
+      if (i >= 0) this.list.splice(i, 1);
+    }
+    this.objects[id - 1] = o;
+    this.simFlags[id - 1] = x.isPerson ? 0x1ffff : 0xffff;
+    // The list stays in object id order (TickAllObjects, Set To Next).
+    let k = this.list.findIndex((y) => y.id > id);
+    if (k < 0) k = this.list.length;
+    this.list.splice(k, 0, o);
+    if (x.isPerson) this.people.push(o);
+    // A multi-tile part arrives alone (the factory adds them one by one): its own Init runs.
+    if (runInit) {
+      if (x.selector.objd.masterId === 0) o.reset(false);
+      else o.resetPart(false);
+    } else o.resetTree(o.behavior, o.fnTable.getTreeID(EP.main));
+    return o;
+  }
+
+  /** ObjectModule::KillObject's module part for an object removed by the world (buy / build tools). */
+  removeObject(x: XObject): void {
+    const o = this.objects[x.objectId - 1];
+    if (!o || o.obj !== x) return;
+    o.killed = true;
+    this.objects[x.objectId - 1] = null;
+    const i = this.list.indexOf(o);
+    if (i >= 0) this.list.splice(i, 1);
+    const j = this.people.indexOf(o);
+    if (j >= 0) this.people.splice(j, 1);
+  }
+
+  /** AutonomyConstantsClient (FCNS 2 of Global.iff). */
+  autonomy: AutonomyConstants = autonomyConstants(new Map());
+
+  /** cXPerson::Initialize / PostLoad's person part: neighbor data and motive curves. */
+  initPeople(nbhd: NeighborhoodData | null): void {
+    this.nbhd = nbhd;
+    const g = this.res.glob;
+    // GlobalConstantsClient: FCNS 1 / 5 / 6 motives, FCNS 2 autonomy.
+    setMotiveConstants([1, 5, 6].map((id) => loadFloatConstants(g, id)));
+    this.autonomy = autonomyConstants(loadFloatConstants(g, 2));
+    if (g) {
+      this.happyCurves = curvesFromStrings(loadStringSet(g, 0x1f6) ?? [], HAPPY_CURVE_MOTIVES);
+      this.happyCurvesChild = curvesFromStrings(loadStringSet(g, 0x1f8) ?? [], HAPPY_CURVE_MOTIVES);
+    }
+    for (const p of this.persons) this.initPerson(p);
+  }
+
+  /** Neighborhood::LoadPersistentData + the motive curve sets of one person. */
+  initPerson(p: PersonSim): void {
+    const g = this.res.glob;
+    const nb = this.nbhd?.neighbors.find((n) => (n.guid | 0) === (p.obj.selector.guid | 0));
+    if (nb) p.loadPersistentData(nb);
+    p.happyCurves = p.isChild ? this.happyCurvesChild : this.happyCurves;
+    // cXPerson::PostLoad: MotiveEffects curves from OBJD +0x66 (private file), else Global.iff 0x1f7 (child) / 0x1f5.
+    const own = p.obj.selector.objd.i16(0x66);
+    const strings = own !== 0 ? loadStringSet(p.obj.selector.res, own) : g ? loadStringSet(g, p.isChild ? 0x1f7 : 0x1f5) : null;
+    p.scoreCurves = curvesFromStrings(strings ?? [], SCORE_CURVE_MOTIVES, 4);
+  }
+
+  /** Neighborhood::GetZoningType: house 0 -> 1, listed -> its type, else 0. */
+  getZoningType(house: number): number {
+    if (house === 0) return 1;
+    return this.zoning.get(house) ?? 0;
+  }
+
+  /** The zoning file's lines "house, residential|community" (other words count as residential). */
+  loadZoning(lines: readonly string[]): void {
+    this.zoning.clear();
+    for (const l of lines) {
+      const i = l.indexOf(",");
+      if (i < 0) continue;
+      const h = Number.parseInt(l.slice(0, i), 10);
+      const word = l.slice(i + 1).trim().toLowerCase();
+      if (Number.isFinite(h)) this.zoning.set(h, word === "community" ? 2 : 1);
     }
   }
 
@@ -140,6 +292,60 @@ export class SimModule {
       this.typeAttrs.set(key, b);
     }
     return b;
+  }
+
+  private readonly treeTables = new Map<ObjSelector, TreeTable | null>();
+  private readonly routingSlots = new Map<ObjSelector, RoutingSlot[]>();
+
+  /**
+   * ObjSelector::GetTreeTable: TTAB OBJD +0xe (-1: the master's id) from the
+   * private file, else the semi-global one.
+   */
+  treeTableOf(sel: ObjSelector): TreeTable | null {
+    let t = this.treeTables.get(sel);
+    if (t === undefined) {
+      let id = sel.objd.i16(0xe);
+      if (id === -1) id = sel.getMasterSelector().objd.i16(0xe);
+      else if (id < 0) id = 0;
+      t = TreeTable.load(sel.res, id);
+      if (!t) {
+        const semi = this.res.semiGlobal(sel.semiGlobalName);
+        if (semi) t = TreeTable.load(semi, id);
+      }
+      this.treeTables.set(sel, t);
+    }
+    return t;
+  }
+
+  /** The routing slots (SLOT records of type 3, in order) of a selector. */
+  routingSlotsOf(sel: ObjSelector): RoutingSlot[] {
+    let r = this.routingSlots.get(sel);
+    if (!r) {
+      r = [];
+      const id = sel.objd.slotsId;
+      const payload = id !== 0 ? sel.res.get("SLOT", id) : null;
+      if (payload) for (const d of readSlotChunk(payload)) if (d.type === 3) r.push(routingSlotFrom(d));
+      this.routingSlots.set(sel, r);
+    }
+    return r;
+  }
+
+  private globalSlots: RoutingSlot[] | null = null;
+
+  /** ObjectModule +0xa0: the global routing slots (SLOT 100 of the global file, loaded on message 0x10b). */
+  globalRoutingSlots(): RoutingSlot[] {
+    if (!this.globalSlots) {
+      const payload = this.res.glob?.get("SLOT", 100) ?? null;
+      this.globalSlots = payload ? readSlotChunk(payload).filter((d) => d.type === 3).map(routingSlotFrom) : [];
+    }
+    return this.globalSlots;
+  }
+
+  /** The selector whose Behavior `b` is (the object whose tree a frame runs). */
+  selectorOfBehavior(b: Behavior | null): ObjSelector | null {
+    if (!b) return null;
+    for (const [sel, beh] of this.behaviors) if (beh === b) return sel;
+    return null;
   }
 
   /** +0x1c */
@@ -211,9 +417,12 @@ export class SimModule {
    */
   nextMultiTilePart(o: SimObject): SimObject | null {
     const lead = o.obj.mtLeadId !== 0 ? o.obj.mtLeadId : o.id;
-    const parts = this.list.filter((x) => x.obj.mtLeadId === lead || x.id === lead);
+    // The lead first, then its parts; the iteration wraps around.
+    const head = this.getObject(lead);
+    const parts = this.list.filter((x) => x.obj.mtLeadId === lead && x.id !== lead);
+    if (head) parts.unshift(head);
     const i = parts.indexOf(o);
-    return parts[i + 1] ?? this.getObject(lead);
+    return parts[(i + 1) % parts.length] ?? null;
   }
 
   /** ObjectModule::AddToKillQueue. */

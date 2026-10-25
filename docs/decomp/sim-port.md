@@ -1,4 +1,4 @@
-# SimAntics VM port (phase 1) — handoff
+# SimAntics VM port (phases 1–2) — handoff
 
 Port of the object simulation from the decompiled Mac build (cSimulator,
 TreeSim, TreeStack, StackElem, Behavior, TreeTable, cXObject::Try*,
@@ -84,6 +84,85 @@ neighborhood data, 38 neighbor definition. Person data / motives of people
 are zero placeholders. Type attributes (36/37) are per-session (the
 original saves them with the neighborhood).
 
+## Phase 2 — people (handoff)
+
+Live mode plays: the family sims run their Main loop, decay motives, pick
+objects autonomously, walk there and use them; the user can click an object
+for a pie menu, queue interactions, see them as icons and cancel them.
+
+### Files
+
+- `world/personstream.ts` — cXPerson::ReconStream (SAnimator part, motives,
+  person data) read by `ObjectModule.doStream` into `XObject.personRecord`.
+- `sim/person.ts` — `PersonSim` (cXPerson): person data / motives, motive
+  engine per tick (Motives::Sim every 60 ticks, MotiveInc, tick counter
+  pd[27]), person primitives (Animate 44, Idle For Input 17, Set Motive
+  Change 29, Find Best Action 3, Gosub Found Action 30, Look Towards 22,
+  Goto Relative 27, Goto Routing Slot 45, Change Suit 6 recorded), Reset
+  (cXPerson::Reset), interaction queue (AddAction, RemoveAction,
+  ShouldInterrupt, SetCurrentAction), TestInteraction, autonomy scoring
+  (MotiveEffects), pie menu entries (AppendInteractionsForMenu).
+- `sim/personanim.ts` — SAnimator: main / carry / background practices at
+  42 ms per tick, time props (xevt events, interruptible, hands, censor,
+  discontinuity), skills loaded asynchronously (the primitive waits).
+- `sim/routing.ts` — routing slots (SLOT type 3 → RoutingSlot, incl. the
+  snap target +0x20), goals, A* over tiles, path following.
+- `sim/motives.ts` — Motives::Sim, CalcHappy, PiecewiseFn, constants
+  (`setMotiveConstants` from FCNS 1 / 5 / 6).
+- `sim/floatconstants.ts` — FCNS loader (Global.iff FCNS 1, 2, 5, 6).
+- `world/actionicons.ts` — the selected sim's action icons (cDDDSimsView /
+  cActionIcon): current + queued, (0x20 + 0x32 i, 0x20), click = cancel.
+- `world/lotpeople.ts` — `bindSim` (the sim's animator poses the VitaBoy
+  skeleton, facing from `PersonSim.renderDir`), `addPerson` (move-in).
+- `world/winlotview.ts` — sim hooks (`module.addObject` / `removeObject`),
+  Live click → pie menu (`liveClick`), action icons, Create Object world
+  hooks (`createObjectHooks`), `bringInFamily` (move-in).
+
+### Constants (Global.iff FCNS)
+
+FCNS 1 motive constants (energy span 180, wake hours 16, …), FCNS 2
+autonomy (min score family / visitors 1e-7, sitting 1e-6, attenuation low
+0.1 / moderate 0.3 / high 0.6, visitors 0.01 / 0.02 / 0.03, random
+selection count 4). Ad effect enters the curves as `motive + effect * 0.001`
+(rodata constant), so scores are tiny and the 1e-7 minimum is meaningful.
+
+### Object-side additions (xobject.ts)
+
+Push Interaction 13, Find 5 Worst Motives 33 (motives 5,6,7,8,9,13,14,15
+sorted), Snap 46 (modes 0/3/4 routing slots incl. global SLOT 100, 1 on the
+object, 2 in front; no wall / footprint checks), Create New Object Instance
+42 (world side in the lot view; an object file not yet open makes the
+primitive wait), cXMTObject::Reset (lead resets all parts, each part's Init
+runs), `SimModule.addObject(obj, runInit)` / `removeObject` (buy / build
+tools, undo of deletions), `prepareAll` (all 24 semi-global files opened at
+start so run-time objects find their trees synchronously). XObject
+initialize gives persons their five extra object slots (cXPerson::Initialize).
+
+### Move-in
+
+`bringInFamily`: a family member without a person object on the lot gets
+one (PersonFinder::CreateInstance): MakeNewOutOfWorldObject → cXPerson::Reset
+(persistent data from the neighbor, Init) → FindGoodLocation simplified as a
+spiral from the view's centermost tile (level 1). The arrival by car / road
+walk is not ported (they appear in place).
+
+### Known gaps (phase 2)
+
+- Carrying (hand slot, Drop Onto 43): a snack is created out of the world
+  and the sim does not visibly eat it; hunger does not rise from snacks.
+- Routing: no people avoidance, stairs, room permissions, failure trees;
+  turning is instant; no walk start / stop animations.
+- ShouldInterrupt ignores motive emergencies; cancelling the running action
+  queues the person's interaction 0x21 like the original.
+- Social interactions (people are not pickable; relationship primitive
+  person↔person, Test Sim Interacting With 37, set to next neighbor types)
+  are unported. Kyle in House01 waits forever in a saved joke state.
+- Error 0x44c in "Interaction - Flirt Suggestion" (saved state of the child).
+- Pie menu: no head in the center, no sub-menus ("a/b" strings shown raw).
+- Action icons for person targets show an empty frame.
+- Debug: `PersonSim.traceOn` fills `trace` and `autonomyLog` (decisions,
+  routes, errors with stacks); the `?test=sim` page prints them.
+
 ## Open questions / deviations
 
 - Tree version change on load (+0xb4 bit 1 → reset) is not detected.
@@ -91,20 +170,15 @@ original saves them with the neighborhood).
 - `nextMultiTilePart` approximates the part chain (module order).
 - RunCheckTree restores the check-tree flag in a `finally` (the original
   restores it on the normal path only).
-- Objects created or deleted by the buy tool are not added to / removed
-  from the simulator yet (`SimModule` is built once from the loaded set).
 - At night the lot is very dark: lamps' light depends on their state, which
   the sim now drives; to check against the lighting port.
 
 ## Next steps
 
-1. cXPerson: load person data + motives (ReconStream after the SAnimator
-   stream), port the person Main loop primitives (animate, go to relative /
-   routing slot, look towards, idle for input, motive change).
-2. Routing (cRouter) and animation playback hooked to `LotPeople`.
-3. Interactions: TTAB (`treetable.ts`) → pie menu, interaction queue
-   (Push interaction, Gosub found action), check trees.
-4. Motive decay (person Main / global motive trees), Find 5 worst motives.
-5. Create object + placement (shares the buy tool's Placement), sync with the
-   buy tool's module edits.
-6. Neighborhood (relationships, zoning, neighbor scopes, type attributes save).
+1. Carry / hand slots (Snap into person slots, Drop Onto, accessories) so
+   food interactions complete; then sims eat.
+2. People picking (3D bounds) → social pie menus; relationship person↔person,
+   neighbor scopes, Test Sim Interacting With.
+3. Routing fidelity (cRouter: people avoidance, walk start/stop/turns,
+   failure trees, stairs), FindGoodLocation port, arrival by car on move-in.
+4. Pie menu head (PopupHead) and sub-menus.

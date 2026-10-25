@@ -38,6 +38,12 @@ import type { XObject } from "./objects.js";
 import type { ObjSelector } from "./objselector.js";
 import { Simulator } from "../sim/simulator.js";
 import { SimObject } from "../sim/xobject.js";
+import type { PersonSim } from "../sim/person.js";
+import { TSPieMenu } from "../ui/piemenu.js";
+import { pointToObjectId, PickMode } from "./tools/picking.js";
+import { ActionIcons } from "./actionicons.js";
+import { killObject, makeNewOutOfWorldObject } from "./tools/objectfactory.js";
+import { DIR_VEC } from "../sim/routing.js";
 
 /** HOUS chunk id 0: HouseViewer::DoStream (saved camera). */
 interface SavedView {
@@ -115,6 +121,8 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
   private cursor: { x: number; y: number } | null = null;
   /** Buy mode: cGameTools' cMoveTool, its placement rules and the tip it shows (cDDDSimsView::SetTip). */
   buyTool: MoveTool | null = null;
+  /** Buy / build commands submitted, undone or redone (the save's dirty test). */
+  editCount = 0;
   placement: Placement | null = null;
   private tip: { win: DefaultTTWindow; x: number; y: number; text: string } | null = null;
   private tipWin: DefaultTTWindow | null = null;
@@ -214,6 +222,7 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
     this.viewer = v;
     if (this.wallManager) this.initCutaway(v, this.wallManager);
     if (this.lotObjects) await this.initBuyTool(v, this.lotObjects);
+    if (this.lotObjects && this.sim) await this.bringInFamily(v, this.lotObjects);
     this.edge = new EdgeDetectScroller(v, this.ctx.width, this.ctx.height);
     const st = this.ctx.state;
     st.viewer = this;
@@ -435,7 +444,10 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
     };
     const tools = new GameTools(host, new MoveToolAdapter(host, move), (g) => this.selectorForPurchase(lot, g));
     for (const [id, make] of BUILD_TOOLS) tools.tools[id] = make(host);
-    undo.onChange = () => st.setDirty(DIRTY_ARCH_UNDO);
+    undo.onChange = () => {
+      this.editCount++;
+      st.setDirty(DIRTY_ARCH_UNDO);
+    };
     st.archUndoHooks = {
       undo: () => undo.undoLastCommand(),
       redo: () => undo.redoLastCommand(),
@@ -471,31 +483,33 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
    * allow-intersection / place / pickup check trees, and KillObject.
    */
   private simHooks(): ObjectBehaviorHooks {
+    // An object of the world module the simulator does not hold (e.g. back
+    // from an undone deletion) joins it with its data kept, Main restarted.
     const simObject = (obj: XObject): SimObject | null => {
-      const o = this.sim?.module.getObject(obj.objectId) ?? null;
-      return o && o.obj === obj ? o : null;
+      const m = this.sim?.module;
+      if (!m) return null;
+      const o = m.getObject(obj.objectId);
+      if (o && o.obj === obj && !o.killed) return o;
+      if (this.lotObjects?.module.objects.get(obj.objectId) !== obj) return null;
+      try {
+        return m.addObject(obj, false);
+      } catch (e) {
+        console.warn("[sim] could not take object back", obj.selector.guid.toString(16), e);
+        return null;
+      }
     };
     return {
       runInitTree: (obj) => {
         const m = this.sim?.module;
         if (!m) return false;
-        const id = obj.objectId;
-        const o = new SimObject(obj, m);
-        while (m.objects.length < id) {
-          m.objects.push(null);
-          m.simFlags.push(0xffff);
-        }
-        m.objects[id - 1] = o;
-        m.simFlags[id - 1] = 0xffff;
-        m.list.push(o);
         try {
-          o.reset(false);
+          m.addObject(obj, true);
         } catch (e) {
           console.warn("[buy] init tree failed", obj.selector.guid.toString(16), e);
           return false;
         }
-        // Reset runs Init on lead objects only (masterId 0): multi-tile parts are seeded.
-        return obj.selector.objd.masterId === 0;
+        // Every part ran its Init (cXMTObject::Reset runs each part's).
+        return true;
       },
       runCheckTree: (obj, entry, stackObj) => {
         const o = simObject(obj);
@@ -508,16 +522,170 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
           return false;
         }
       },
+      onEnterWorld: (obj) => {
+        simObject(obj);
+      },
       onKill: (obj) => {
-        const m = this.sim?.module;
-        const o = simObject(obj);
-        if (!m || !o) return;
-        o.killed = true;
-        m.objects[obj.objectId - 1] = null;
-        const i = m.list.indexOf(o);
-        if (i >= 0) m.list.splice(i, 1);
+        this.sim?.module.removeObject(obj);
       },
     };
+  }
+
+  /**
+   * Create New Object Instance's world side: ObjectFolder::GetSelectorByGUID
+   * (an object file not opened yet opens in the background: the primitive
+   * waits), ObjectModule::MakeNewOutOfWorldObject and the placement of the
+   * primitive's mode. In front of / underneath an object: that tile, the
+   * object fails (and is killed) when it cannot go there. In a slot of the
+   * stack object: its first object slot that takes it. On top of me / in
+   * my hand / out of the world and the other modes: it stays out of the
+   * world (people carry nothing visible yet).
+   */
+  private createObjectHooks(): NonNullable<Simulator["module"]["worldHooks"]> {
+    const loading = new Map<number, boolean>();
+    return {
+      selector: (guid) => {
+        const lot = this.lotObjects;
+        if (!lot) return null;
+        const sel = lot.folder.selectorByGUID(guid);
+        if (sel) return sel;
+        const g = guid >>> 0;
+        if (loading.get(g) === false) return null;
+        if (!loading.has(g)) {
+          loading.set(g, true);
+          void lot.folder
+            .getSelectorByGUID(g)
+            .then((s) => loading.set(g, s !== null))
+            .catch(() => loading.set(g, false));
+        }
+        return undefined;
+      },
+      make: (sel, mode, me, stack) => {
+        const p = this.placement;
+        const lot = this.lotObjects;
+        if (!p || !lot) return null;
+        const obj = makeNewOutOfWorldObject(p, lot.folder, sel);
+        if (!obj) return null;
+        const at = (o: XObject, front: boolean): boolean => {
+          const [dx, dy] = front ? DIR_VEC[o.dir & 7]! : [0, 0];
+          const pos = { fx: ((o.fx >> 4) + dx) * 16 + 8, fy: ((o.fy >> 4) + dy) * 16 + 8 };
+          if (!p.canPlace(obj, pos, o.level, null, 0)) return false;
+          p.place(obj, pos, o.level, null, 0, true);
+          return true;
+        };
+        let ok = true;
+        if (mode === 0) ok = at(me, true);
+        else if (mode === 3) ok = stack !== null && at(stack, true);
+        else if (mode === 5) ok = at(me, false);
+        else if (mode === 4 && stack) {
+          for (let k = 1; k < stack.objectSlots.length; k++) {
+            if (p.canPlace(obj, { fx: stack.fx, fy: stack.fy }, stack.level, stack, k)) {
+              p.place(obj, { fx: stack.fx, fy: stack.fy }, stack.level, stack, k, true);
+              break;
+            }
+          }
+        }
+        if (!ok) {
+          killObject(p, obj);
+          return null;
+        }
+        if (this.viewer) this.viewer.dirty = true;
+        return obj;
+      },
+    };
+  }
+
+  /**
+   * Family members without a person object on the lot (a new move-in, or
+   * members away) get one: PersonFinder::CreateInstance (CPState::
+   * SetSelectedPerson creates the missing instance) makes the character's
+   * object out of the world (cXPerson::Reset: persistent data, Init) and
+   * cXObject::FindGoodLocation places it from the view's centermost tile
+   * outwards (level 1). The lot view then dresses and draws it. The
+   * arrival by car / from the road is not ported: they appear in place.
+   */
+  private async bringInFamily(v: HouseViewer, lot: LotObjects): Promise<void> {
+    const sim = this.sim;
+    const p = this.placement;
+    if (!sim || !p) return;
+    const nbhdDir = this.housePath.split("/")[0] ?? "UserData";
+    const present = new Set([...lot.module.objects.values()].filter((o) => o.isPerson).map((o) => o.guid | 0));
+    for (const info of this.ctx.state.family) {
+      if (info.guid === undefined || present.has(info.guid | 0)) continue;
+      const sel = await lot.folder.getSelectorByGUID(info.guid).catch(() => null);
+      if (!sel) continue;
+      const obj = makeNewOutOfWorldObject(p, lot.folder, sel);
+      if (!obj) continue;
+      const w = v.world;
+      const c = v.pointToWholeTile(v.viewW >> 1, v.viewH >> 1, 1);
+      const [cx, cy] = RotatableWorld.rotateCoords(c.x, c.y, (4 - w.rotation) & 3, 0x40);
+      let placed = false;
+      for (let r = 0; r < w.size && !placed; r++) {
+        for (let dy = -r; dy <= r && !placed; dy++) {
+          for (let dx = -r; dx <= r && !placed; dx++) {
+            if (Math.max(Math.abs(dx), Math.abs(dy)) !== r) continue;
+            const pos = { fx: ((cx + dx) << 4) | 8, fy: ((cy + dy) << 4) | 8 };
+            if (p.outOfBounds(cx + dx, cy + dy) || !p.canPlace(obj, pos, 1, null, 0)) continue;
+            p.place(obj, pos, 1, null, 0, true);
+            placed = true;
+          }
+        }
+      }
+      if (!placed) {
+        killObject(p, obj);
+        continue;
+      }
+      present.add(info.guid | 0);
+      const ps = sim.module.persons.find((x) => x.obj === obj);
+      if (ps && this.people && (await this.people.addPerson(nbhdDir, obj))) {
+        this.people.bindSim(obj, (sk) => ps.animator.attach(sk), () => ps.renderDir ?? ps.obj.dir);
+      }
+    }
+    v.dirty = true;
+  }
+
+  /** The selected sim's action icons (Live mode). */
+  private readonly actionIcons = new ActionIcons();
+
+  /** The Live mode pie menu (cWinPeople's cTSPieMenu), made on first use. */
+  private pie: TSPieMenu | null = null;
+
+  /** The selected family member's cXPerson. */
+  selectedPerson(): PersonSim | null {
+    const info = this.ctx.state.personGetSelected();
+    if (!info || info.guid === undefined || !this.sim) return null;
+    return this.sim.module.persons.find((p) => (p.obj.selector.guid | 0) === (info.guid! | 0)) ?? null;
+  }
+
+  /**
+   * cObjPickerTool::TryClick in Live mode: the object under the cursor
+   * (HouseViewer::PointToObjectID; people are not pickable yet) offers the
+   * interactions the selected sim passes (DoMenu: ObjTestSim's menu); the
+   * one picked is queued on the sim with priority 50 (MenuItemSelected ->
+   * cXPerson::AddAction).
+   */
+  private async liveClick(x: number, y: number): Promise<void> {
+    const sim = this.sim;
+    const v = this.viewer;
+    const p = this.placement;
+    const lot = this.lotObjects;
+    const person = this.selectedPerson();
+    if (!sim || !v || !p || !lot || !person) return;
+    const id = pointToObjectId(v, p, (r) => lot.renderer(r), x, y, v.level || 1, PickMode.Any);
+    const target = id ? sim.module.getObject(id) : null;
+    if (!target) return;
+    const entries = person.menuFor(target);
+    if (!entries.length) return;
+    this.pie ??= await TSPieMenu.forLiveMode(this.ctx);
+    this.pie.show(
+      this.area.left + x,
+      this.area.top + y,
+      entries.map((e) => e.name),
+      (i) => {
+        const e = entries[i];
+        if (e) person.addAction(person.makeInteraction(target, e, 50));
+      },
+    );
   }
 
   /** XViewer routes the mouse to cGameTools' current tool in buy and build modes. */
@@ -527,6 +695,10 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
   }
 
   override postChildDraw(g: Gfx): void {
+    if (this.sim && this.ctx.state.getMode() === Mode.Live) {
+      const p = this.selectedPerson();
+      if (p) this.actionIcons.paint(g, p);
+    }
     const t = this.tip;
     if (!t) return;
     t.win.setToolTip(t.text);
@@ -536,6 +708,13 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
 
   override tsOnMouseDownL(x: number, y: number): boolean {
     const tools = this.activeTools();
+    if (!tools && this.viewer && this.ctx.state.getMode() === Mode.Live && this.sim) {
+      const p = this.selectedPerson();
+      const a = p ? this.actionIcons.hit(p, x, y) : null;
+      if (p && a) p.removeAction(a);
+      else void this.liveClick(x, y);
+      return true;
+    }
     if (!tools || !this.viewer) return false;
     this.buttonDown = true;
     tools.mouseDown(x, y);
@@ -572,6 +751,7 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
         if (this.viewer) this.viewer.dirty = true;
       };
       this.sim = sim;
+      sim.module.worldHooks = this.createObjectHooks();
       // The people's VitaBoys follow the simulation's animators.
       for (const ps of sim.module.persons) {
         this.people?.bindSim(
