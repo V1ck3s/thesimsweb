@@ -54,3 +54,40 @@ cursor room + room below it cut, MRU of 3 rooms, outside cursor cuts a 4x4 block
 back wall, rotations 0..3 x zooms 1..3 OK, Up/Down/Roof/Cutaway cycle OK.
 `?house=1`: the selected sim's room is cut on entry (the Fez family is visible).
 House02 level 2 OK (incl. diagonal walls).
+
+## Follow-up 1: wall objects in cut walls
+
+HouseViewer::RenderStaticRow (not DrawIso): a static object with object-data flag 0x400
+(+0x5a) on a tile in the cutaway mask (or any tile with walls down) gets +0x8e = 1 for the
+draw (no draw group) when, with the dynamic cutaway, the tile across its required segment
+(cXObject::GetRequiredSegment: wall placement 1 -> seg 2, 4 -> seg 8, turned by dir/2, then
+by the view rotation) is in the mask too, and it stands on the current level. Skipped while
+the roof is drawn or CPState::ShouldAlwaysShowWallStuff (build mode + wall/door tool). The
+cut wall draws the opening itself. Ported in objectdraw.ts (ObjectModuleDrawer.cutawayView,
+WallManager passes as the view) + lotobjects.ts (flags, requiredSegment).
+
+## Follow-up 2: room lighting (lighting.ts)
+
+- Room::ComputeRoom lighting: outside = k(time of day) (global 4: 0 day 1.0, 1/3 0.5, 2 night 0)
+  x LightingParameters+0xc (1.0); inside = min(k, win/100/(area/2)*k*30) + lamps/100/(area/2)*30,
+  clamped (<0.01 -> 0, >0.99 -> 1). area +0x38 (2 per square tile, 1 per diagonal), window light
+  +0x44 = lighting contribution (OD 51, +0xb0) of portals, lamp light +0x48 = other objects, both
+  for objects with OD 40 (+0x9a) & 0x400, OD 29 >= 0, not hidden, over ObjectIterator (tile
+  object + hierarchy children: next on tile and contained). Pool rooms 0.8.
+- Tile byte maps (RoomManager +0x50): (int)(0.5 + 255 * ambient), 0xcc for pools.
+- RoomManager::GetRoomAmbientLight ported incl. degenerate diagonal tiles.
+- RenderParam::SetAmbientLightLevel clamps to [0.5 (lbl_105BA6A8), max] with max = 1.0 by day,
+  0.8 otherwise (RoomManager::AllRoomsLightingChanged). This is why night is not black.
+- Sprites: PalWrap::ChooseBestCLUT -> PrecomputeDarkMap: per 5-bit channel
+  b + c * (max(b, L) - b) / 31, L = ((255 * a + 0.5) & 0xf8) / 8, b = night color (0,0,10)>>3;
+  plain palette when a == 1. In the compositor shader (uAmbientL), set through
+  Compositor.ambient by HouseViewer (floors / tile objects per tile), WallManager (per segment
+  and vertex: approximated by the segment's tile, the original uses the wall's side rooms),
+  dynamic objects per object. Lamps (contribution != 0, not portal) draw at full light
+  (SetMaxAmbient).
+- People: lotpeople uses viewer.ambientAt (Render3DObject).
+- Terrain: setLatitudeByTimeOfDay on time-of-day change (cSimulator::SetCurrentHour 0xdd).
+- Not ported: LightMapSet / LightLayer / Lit*Blit (lamp and window light pools on floors and
+  walls), Room +0x73 overhead lights, the score part. Lighting is recomputed only on
+  time-of-day changes: RoomManager::RoomLightingChanged / ComputeRooms when objects change their
+  lighting contribution (lamps switched by the VM) should call RoomLighting.compute again.

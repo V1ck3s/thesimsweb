@@ -14,10 +14,28 @@
  * RenderLoc::UpdateScreenCoords.
  */
 
+import { Mode } from "../cpstate.js";
 import type { Compositor } from "./compositor.js";
 import type { HouseViewer, ObjectDrawer } from "./houseviewer.js";
 import type { Renderer } from "./renderer.js";
 import type { RenderParam } from "./renderparam.js";
+import { getAdjacentTile, SEG_ROTATION } from "./tilewalls.js";
+
+/** Object data flags (+0x5a) bit 10: hidden where the wall cutaway cuts its wall. */
+const FLAG_HIDE_FOR_CUTAWAY = 0x400;
+
+/** The HouseViewer wall state RenderStaticRow reads to hide wall objects (WallManager). */
+export interface CutawayView {
+  /** +0x48 walls down, +0x49 dynamic cutaway, +0x51 draw roof. */
+  cutaway: boolean;
+  dynamicCutaway: boolean;
+  drawRoof: boolean;
+  /** +0x204 (view tiles). */
+  cutawayMask: { has(x: number, y: number): boolean };
+  /** CPState mode and the wall / door tool (CPState::ShouldAlwaysShowWallStuff). */
+  mode: Mode;
+  wallToolActive: boolean;
+}
 
 /** DrawGroupItem: one sprite of a draw group image. */
 export interface DrawGroupItem {
@@ -54,6 +72,12 @@ export interface DrawableObject {
   /** +0x34 / +0x38: per-sprite visibility (relative to OBJD +0x80), or null. */
   spriteMask: ArrayLike<number> | null;
   spriteMaskBase: number;
+  /** +0x5a object data flags (absent = 0). */
+  readonly flags?: number;
+  /** cXObject::GetRequiredSegment: the wall segment the object needs (world space, absent / 0 = none). */
+  readonly requiredSegment?: number;
+  /** Lighting contribution (+0xb0) on a non-portal: DrawIso draws it at full light (SetMaxAmbient). */
+  readonly fullBright?: boolean;
   /** ObjSelector +8: the object's sprite file. */
   renderer: Renderer;
   /** DrawGroup::GetItemList(graphic draw group, direction bit, scale). */
@@ -63,12 +87,14 @@ export interface DrawableObject {
 }
 
 /** cXObject::DrawIso (draw group part; slots and head text are not drawn here). */
-export function drawIso(obj: DrawableObject, viewer: HouseViewer, comp: Compositor, rp: RenderParam): void {
-  if (obj.hidden !== 0) return;
+export function drawIso(obj: DrawableObject, viewer: HouseViewer, comp: Compositor, rp: RenderParam, hidden = obj.hidden): void {
+  if (hidden !== 0) return;
   const s = viewer.scale;
   const list = obj.items(obj.graphic, (rp.rotation2 + obj.dir) & 7, s);
   if (!list) return;
   const r = obj.renderer;
+  const ambient = comp.ambient;
+  if (obj.fullBright) comp.ambient = 1;
   for (const it of list) {
     const m = obj.spriteMask;
     if (m && m.length) {
@@ -106,6 +132,7 @@ export function drawIso(obj: DrawableObject, viewer: HouseViewer, comp: Composit
     q.updateScreenCoords();
     r.drawShape(comp, q, it.sprId, it.frame, q.sx + it.xOff, q.sy + it.yOff - b.height, it.flags & 0xff);
   }
+  comp.ambient = ambient;
 }
 
 /**
@@ -118,6 +145,32 @@ export class ObjectModuleDrawer implements ObjectDrawer {
     private readonly dynamic: () => Iterable<DrawableObject>,
   ) {}
 
+  /** Wall state for hiding wall objects (doors, windows) in cut walls; null = never hidden. */
+  cutawayView: CutawayView | null = null;
+
+  /**
+   * RenderStaticRow: a wall object (flag 0x400) on a cut tile is drawn with
+   * +0x8e set (no draw group) when its wall is cut: with walls down, always;
+   * with the dynamic cutaway, when the tile across its required segment is
+   * in the cutaway mask too. The cut wall itself draws the object's opening
+   * (custom wall style). Not while the roof is drawn or the wall / door tool
+   * shows wall stuff.
+   */
+  private hiddenByCutaway(o: DrawableObject, viewer: HouseViewer, x: number, y: number): boolean {
+    const c = this.cutawayView;
+    if (!c || c.drawRoof || (c.mode === Mode.Build && c.wallToolActive)) return false;
+    if (!(c.cutaway || (c.dynamicCutaway && c.cutawayMask.has(x, y)))) return false;
+    if (((o.flags ?? 0) & FLAG_HIDE_FOR_CUTAWAY) === 0) return false;
+    let ax = x;
+    let ay = y;
+    const req = o.requiredSegment ?? 0;
+    if (!c.cutaway && req !== 0) {
+      const seg = SEG_ROTATION[viewer.world.rotation]![req]!;
+      if (seg !== 0) [ax, ay] = getAdjacentTile(seg, x, y);
+    }
+    return viewer.level === o.level && (c.cutaway || c.cutawayMask.has(ax, ay));
+  }
+
   /** RenderStaticRow's object loop for one view tile. */
   drawTileObjects(viewer: HouseViewer, comp: Compositor, x: number, y: number, level: number, rp: RenderParam): void {
     const w = viewer.world;
@@ -125,7 +178,7 @@ export class ObjectModuleDrawer implements ObjectDrawer {
     for (let o = this.byId(w.getTileObjectID(x, y, level)); o; o = o.next) {
       if (o.isDynamic) continue;
       rp.setGridCoords(o.fx, o.fy, level);
-      drawIso(o, viewer, comp, rp);
+      drawIso(o, viewer, comp, rp, this.hiddenByCutaway(o, viewer, x, y) ? 1 : o.hidden);
     }
   }
 
@@ -138,6 +191,8 @@ export class ObjectModuleDrawer implements ObjectDrawer {
       const ty = o.fy >> 4;
       if (tx < 1 || ty < 1 || tx >= n - 1 || ty >= n - 1) continue;
       rp.setGridCoords(o.fx, o.fy, o.level);
+      const [vx, vy] = viewer.world.toView(tx, ty);
+      comp.ambient = viewer.ambientAtTile(vx, vy, o.level);
       drawIso(o, viewer, comp, rp);
     }
   }

@@ -9,8 +9,11 @@
 
 import type { ResFile } from "./iffres.js";
 import { ObjectModuleDrawer, type DrawableObject } from "./objectdraw.js";
-import { loadLotObjects, type IntegrityWorld, type PlacedObject } from "./objects.js";
+import type { ObjectFolder } from "./objectfolder.js";
+import { loadLotModule, type IntegrityWorld, type ObjectModule, type PlacedObject } from "./objects.js";
+import { OBJ_TYPE_PORTAL } from "./objselector.js";
 import { Renderer } from "./renderer.js";
+import { SEG_ROTATION } from "./tilewalls.js";
 
 class DrawableLotObject implements DrawableObject {
   next: DrawableObject | null = null;
@@ -38,6 +41,19 @@ class DrawableLotObject implements DrawableObject {
   get hidden(): number {
     return this.obj.hidden;
   }
+  get fullBright(): boolean {
+    return this.obj.lightingContribution !== 0 && this.obj.selector.objd.objectType !== OBJ_TYPE_PORTAL;
+  }
+  get flags(): number {
+    return this.obj.flags;
+  }
+  /** cXObject::GetRequiredSegment: wall placement flags 1 -> segment 2, 4 -> 8, turned by the object direction. */
+  get requiredSegment(): number {
+    const p = this.obj.wallPlacementFlags & 5;
+    const seg = p === 1 ? 2 : p === 4 ? 8 : 0;
+    const d = this.obj.dir;
+    return seg !== 0 && d !== 0 ? SEG_ROTATION[(d >> 1) & 3]![seg]! : seg;
+  }
   /** Objects load dynamic and settle on the static layer once idle (RenderDynamicObjects). */
   get isDynamic(): boolean {
     return !(this.obj.isStatic || this.obj.staticWhenIdle);
@@ -57,28 +73,51 @@ class DrawableLotObject implements DrawableObject {
 export interface LotObjects {
   objects: Map<number, PlacedObject>;
   drawer: ObjectModuleDrawer;
+  /** The module and folder behind `objects` (the buy tools add, move and delete objects). */
+  module: ObjectModule;
+  folder: ObjectFolder;
+  /** The cRenderer of a sprite file (one per object IFF). */
+  renderer(res: ResFile): Renderer;
 }
 
-/** House::LoadFile's object part, ready for HouseViewer.objects. */
+/**
+ * House::LoadFile's object part, ready for HouseViewer.objects. Drawables
+ * follow the module live: objects created, moved or deleted at run time are
+ * drawn from their current state.
+ */
 export async function loadLotObjectDrawer(house: ResFile, world: IntegrityWorld): Promise<LotObjects> {
-  const objects = await loadLotObjects(house, world);
+  const { module, folder } = await loadLotModule(house, world);
+  const objects = module.objects;
   const renderers = new Map<ResFile, Renderer>();
-  const drawables = new Map<number, DrawableLotObject>();
-  for (const [id, o] of objects) {
-    if (o.isPerson) continue;
-    const res = o.selector.res;
+  const renderer = (res: ResFile): Renderer => {
     let r = renderers.get(res);
     if (!r) {
       r = new Renderer(res);
       renderers.set(res, r);
     }
-    drawables.set(id, new DrawableLotObject(o, r));
-  }
-  for (const d of drawables.values()) d.next = drawables.get(d.obj.nextSiblingId) ?? null;
-  const dynamic = [...drawables.values()].filter((d) => d.isDynamic);
+    return r;
+  };
+  const drawables = new Map<PlacedObject, DrawableLotObject>();
+  const drawableOf = (o: PlacedObject | undefined): DrawableLotObject | null => {
+    if (!o || o.isPerson) return null;
+    let d = drawables.get(o);
+    if (!d) {
+      d = new DrawableLotObject(o, renderer(o.selector.res));
+      drawables.set(o, d);
+      Object.defineProperty(d, "next", { get: () => drawableOf(objects.get(o.nextSiblingId)) });
+    }
+    return d;
+  };
+  for (const o of objects.values()) drawableOf(o);
   const drawer = new ObjectModuleDrawer(
-    (id) => drawables.get(id) ?? null,
-    () => dynamic,
+    (id) => drawableOf(objects.get(id)),
+    function* () {
+      for (const o of objects.values()) {
+        const d = drawableOf(o);
+        // Out-of-world objects (picked up, or just bought) sit at negative coordinates.
+        if (d?.isDynamic && o.fx >= 0 && o.fy >= 0) yield d;
+      }
+    },
   );
-  return { objects, drawer };
+  return { objects, drawer, module, folder, renderer };
 }

@@ -26,6 +26,7 @@
  * offsets, +0x19c level offset, +0x1a0..+0x1a8. cXPortal: +0x1ac floats.
  */
 
+import { type PersonRecord, readPersonStream } from "./personstream.js";
 import { ObjectFolder, GUID_CAT_PLACEHOLDER, GUID_DOG_PLACEHOLDER, GUID_PERSON_PLACEHOLDER, type MissingObject, type SaveTypeTable } from "./objectfolder.js";
 import { OBJ_TYPE_PERSON, OBJ_TYPE_PORTAL, type ObjSelector } from "./objselector.js";
 import { ReconBuffer } from "./reconbuffer.js";
@@ -183,6 +184,12 @@ export class XObject implements PlacedObject {
   mt1a8 = 0;
   portalValues: number[] = [];
   simFlags = 0xffff;
+  /** TreeStack::ReconStream: the saved interpreter stack (null when not saved). */
+  savedStack: SavedTreeStack | null = null;
+  /** +0xe4 RelMatrix: other object id -> relationship values (RelInt). */
+  readonly relations = new Map<number, number[]>();
+  /** cXPerson record (motives, person data, animator state); null for objects or when it failed to parse. */
+  personRecord: PersonRecord | null = null;
   killQueued = false;
 
   /** cXObject::cXObject (+ cXMTObject / cXPortal / cXPerson constructors). */
@@ -306,8 +313,8 @@ export class XObject implements PlacedObject {
       this.readLocals(buf, 8, 0x48);
     }
     buf.recon16();
-    skipTreeStack(buf, v);
-    if (v > 4) skipRelMatrix(buf, v < 7 ? 0 : v);
+    this.savedStack = skipTreeStack(buf, v);
+    if (v > 4) skipRelMatrix(buf, v < 7 ? 0 : v, this.relations);
     if (v < 0xd) {
       this.objectData[OD.routePreference] = 0;
       this.objectData[OD.routePenalty] = 0;
@@ -385,13 +392,35 @@ export class XObject implements PlacedObject {
   }
 }
 
-/** TreeStack::ReconStream (read, values discarded). */
-function skipTreeStack(buf: ReconBuffer, v: number): void {
-  if (v <= 10) return;
-  const behavior = (): void => {
+/** One saved TreeStack frame (sim/treestack.ts restores it). */
+export interface SavedFrame {
+  treeId: number;
+  node: number;
+  /** StackElem +4 (0 before version 0x1a). */
+  stackObj: number;
+  params: Int16Array;
+  locals: Int16Array;
+  /** StackElem +8 */
+  state: number;
+  /** ObjectFolder::ReconBehavior's saved type index (version >= 0x2f), resolved by ObjectModule::DoStream. */
+  typeIndex: number;
+  /** The selector whose Behavior the frame runs (null: none / not installed). */
+  selector: ObjSelector | null;
+}
+
+/** A saved TreeStack: the frame memory size (bytes) and the frames. */
+export interface SavedTreeStack {
+  memBytes: number;
+  frames: SavedFrame[];
+}
+
+/** TreeStack::ReconStream (read). Versions 0x0b..0x18 are skipped (null). */
+function skipTreeStack(buf: ReconBuffer, v: number): SavedTreeStack | null {
+  if (v <= 10) return null;
+  const behavior = (): number => {
     // ObjectFolder::ReconBehavior: a GUID before 0x2f, then a saved type index.
-    if (v < 0x2f) buf.recon32();
-    else buf.recon16();
+    if (v < 0x2f) return buf.recon32();
+    return buf.recon16();
   };
   if (v < 0x19) {
     const n = buf.recon16();
@@ -404,36 +433,42 @@ function skipTreeStack(buf: ReconBuffer, v: number): void {
       buf.recon16s(4);
       behavior();
     }
-    return;
+    return null;
   }
   const n = buf.recon32();
-  buf.recon32();
+  const memBytes = buf.recon32();
+  const frames: SavedFrame[] = [];
   for (let i = 0; i < n; i++) {
-    if (v > 0x19) buf.recon16();
-    buf.recon16();
-    buf.recon16();
-    const params = buf.recon8() & 0xff;
-    const locals = buf.recon8() & 0xff;
-    buf.recon16s(locals);
-    buf.recon16s(params);
-    buf.recon32();
-    behavior();
+    const stackObj = v > 0x19 ? buf.recon16() : 0;
+    const treeId = buf.recon16() & 0xffff;
+    const node = buf.recon16();
+    // +6 local count, +7 parameter count; the parameters (+0x10) come first.
+    const nLocals = buf.recon8() & 0xff;
+    const nParams = buf.recon8() & 0xff;
+    const params = buf.recon16s(nParams);
+    const locals = buf.recon16s(nLocals);
+    const state = buf.recon32();
+    const typeIndex = behavior();
+    frames.push({ treeId, node, stackObj, params, locals, state, typeIndex, selector: null });
   }
+  return { memBytes, frames };
 }
 
-/** RelMatrix::DoStream (read, values discarded). */
-function skipRelMatrix(buf: ReconBuffer, v: number): void {
-  const relArray = (): void => {
-    if (v > 0) buf.recon32();
+/** RelMatrix::DoStream (read); the arrays go into `out` when given (key = RelArray +0xc, else the index). */
+function skipRelMatrix(buf: ReconBuffer, v: number, out?: Map<number, number[]>): void {
+  const relArray = (index: number): void => {
+    const key = v > 0 ? buf.recon32() : index;
     const n = buf.recon32();
-    for (let i = 0; i < n; i++) buf.recon32();
+    const values: number[] = [];
+    for (let i = 0; i < n; i++) values.push(buf.recon32());
+    out?.set(key, values);
   };
   const count = buf.recon32();
   if (count < 0) {
     const n = buf.recon32();
-    for (let i = 0; i < n; i++) if (buf.recon32() !== 0) relArray();
+    for (let i = 0; i < n; i++) if (buf.recon32() !== 0) relArray(i);
   } else {
-    for (let i = 0; i < count; i++) relArray();
+    for (let i = 0; i < count; i++) relArray(i);
   }
 }
 
@@ -501,6 +536,8 @@ export class ObjectModule {
     for (const obj of this.objects.values()) {
       const placeholder = placeholderSet.has(obj.selector);
       obj.reconStream(buf, v, placeholder);
+      // ObjectFolder::ReconBehavior: saved type index -> the installed selector (none when missing).
+      for (const f of obj.savedStack?.frames ?? []) f.selector = table.selectors.get(f.typeIndex) ?? null;
       if (!obj.isPerson) {
         obj.reconSubclass(buf, v);
         if (v > 0x35) {
@@ -509,7 +546,14 @@ export class ObjectModule {
           if (v < 0x39) obj.simFlags = (obj.simFlags & 0xffff) | 0x10000;
         }
       }
-      // cXPerson::ReconStream continues after the cXObject part; the mark skips it.
+      // cXPerson::ReconStream continues after the cXObject part: read up to the person data, the mark skips the rest.
+      if (obj.isPerson) {
+        try {
+          obj.personRecord = readPersonStream(buf, v);
+        } catch {
+          obj.personRecord = null;
+        }
+      }
       buf.readToNextMark();
       buf.reconMark();
     }
@@ -619,9 +663,14 @@ function userDirOf(path: string): string {
  * (`isPerson`) with their cXObject fields only.
  */
 export async function loadLotObjects(house: ResFile, world?: IntegrityWorld, folder?: ObjectFolder): Promise<Map<number, PlacedObject>> {
+  return (await loadLotModule(house, world, folder)).module.objects;
+}
+
+/** loadLotObjects keeping the ObjectModule and the ObjectFolder (the buy tools create objects in them). */
+export async function loadLotModule(house: ResFile, world?: IntegrityWorld, folder?: ObjectFolder): Promise<{ module: ObjectModule; folder: ObjectFolder }> {
   const f = folder ?? (await ObjectFolder.get(userDirOf(house.name)));
   const module = await ObjectModule.load(house, f);
   if (world) module.checkIntegrity(world);
   module.postLoad();
-  return module.objects;
+  return { module, folder: f };
 }

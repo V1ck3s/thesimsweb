@@ -10,7 +10,8 @@
  */
 
 import type { GameContext } from "../context.js";
-import { Mode, type CPState, type HouseViewerHooks, type WallState } from "../cpstate.js";
+import { DIRTY_SHOP_ITEM, Mode, type CPState, type HouseViewerHooks, type WallState } from "../cpstate.js";
+import { DefaultTTWindow } from "../ui/ttwindow.js";
 import { Gfx, TSWin } from "../ui/tswin.js";
 import { Compositor } from "./compositor.js";
 import { DynamicCutaway } from "./cutaway.js";
@@ -20,10 +21,17 @@ import { HouseViewer, type ObjectDrawer, type TerrainDrawer, type WallDrawer } f
 import { ResFile } from "./iffres.js";
 import { loadLotObjectDrawer, type LotObjects } from "./lotobjects.js";
 import { LotPeople } from "./lotpeople.js";
+import { RoomLighting, timeOfDay } from "./lighting.js";
 import { computeRooms, RoomManager } from "./rooms.js";
 import { Terrain } from "./terrain.js";
 import { WallManager } from "./walls.js";
+import { CursorDrawer, GUID_TILE_CURSOR } from "./tools/cursorobject.js";
+import { MoveTool } from "./tools/movetool.js";
+import { Placement, type ObjectBehaviorHooks } from "./tools/placement.js";
 import { FixedWorld, RotatableWorld } from "./world.js";
+import type { XObject } from "./objects.js";
+import { Simulator } from "../sim/simulator.js";
+import { SimObject } from "../sim/xobject.js";
 
 /** HOUS chunk id 0: HouseViewer::DoStream (saved camera). */
 interface SavedView {
@@ -89,11 +97,26 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
   /** The lot objects when this view loaded them (no `parts.objects`). */
   lotObjects: LotObjects | null = null;
   people: LotPeople | null = null;
+  /** The SimAntics simulator ticking the lot's objects (sim/simulator.ts); people are not ticked yet. */
+  sim: Simulator | null = null;
   /** Rooms and the dynamic cutaway (only with the view's own wall graph). */
   rooms: RoomManager | null = null;
   cutaway: DynamicCutaway | null = null;
+  lighting: RoomLighting | null = null;
+  /** The terrain when this view created it (relit with the time of day). */
+  private terrain: Terrain | null = null;
   /** Last mouse position over the view (the dynamic cutaway reads the cursor). */
   private cursor: { x: number; y: number } | null = null;
+  /** Buy mode: cGameTools' cMoveTool, its placement rules and the tip it shows (cDDDSimsView::SetTip). */
+  buyTool: MoveTool | null = null;
+  placement: Placement | null = null;
+  private tip: { win: DefaultTTWindow; x: number; y: number; text: string } | null = null;
+  private tipWin: DefaultTTWindow | null = null;
+  private buttonDown = false;
+  private shift = false;
+  private readonly onModifiers = (e: KeyboardEvent | PointerEvent): void => {
+    this.shift = e.shiftKey;
+  };
   /** CPState listeners registered by init, removed by shutdown. */
   private readonly listeners: Array<(s: CPState) => void> = [];
   private readonly onKey = (e: KeyboardEvent): void => {
@@ -140,6 +163,7 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
       syncOverlay();
       this.listen(syncOverlay);
       v.terrain = terrain;
+      this.terrain = terrain;
     }
     if (this.parts.walls) {
       v.walls = this.parts.walls;
@@ -161,6 +185,8 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
       v.objects = this.lotObjects.drawer;
       this.people = await LotPeople.load(comp, this.housePath.split("/")[0] ?? "UserData", this.lotObjects.objects.values());
       v.people = this.people;
+      // `?nosim` keeps the lot static (debug comparison).
+      if (!new URLSearchParams(location.search).has("nosim")) await this.initSimulator(house, this.lotObjects);
     }
     const saved = readSavedView(house);
     if (saved) {
@@ -176,6 +202,7 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
     }
     this.viewer = v;
     if (this.wallManager) this.initCutaway(v, this.wallManager);
+    if (this.lotObjects) await this.initBuyTool(v, this.lotObjects);
     this.edge = new EdgeDetectScroller(v, this.ctx.width, this.ctx.height);
     const st = this.ctx.state;
     st.viewer = this;
@@ -206,6 +233,16 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
     });
     this.rooms = rooms;
     this.cutaway = cut;
+    if (this.lotObjects) this.lotObjects.drawer.cutawayView = walls;
+    // Room lighting follows the time of day (cSimulator global 4).
+    const lighting = new RoomLighting(rooms, v.world, () => this.lotObjects?.objects ?? null);
+    const phase0 = timeOfDay(st.getTime().hour);
+    lighting.compute(phase0);
+    // cSimulator::SetCurrentHour -> GlobalDispatch(0xdd): the terrain is relit too.
+    this.terrain?.setLatitudeByTimeOfDay(phase0);
+    this.lighting = lighting;
+    v.lighting = lighting;
+
     v.cutawayCtl = cut;
     let mode = st.getMode();
     let sel = st.selectedIndex();
@@ -218,6 +255,208 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
     cut.doDynamicCutaway(false);
   }
 
+  /**
+   * Buy mode's tool (cGameTools tool 7, cMoveTool): the hand, or the catalog
+   * product being placed (CPState's shop item -> SetParameter).
+   */
+  private async initBuyTool(v: HouseViewer, lot: LotObjects): Promise<void> {
+    const cursorSel = await lot.folder.getSelectorByGUID(GUID_TILE_CURSOR);
+    if (!cursorSel) return;
+    this.tipWin = await DefaultTTWindow.create(this.ctx.fonts);
+    const st = this.ctx.state;
+    const p = new Placement(lot.module, v.world.fixed, this.simHooks(), () => v.level);
+    const drawer = new CursorDrawer(p);
+    const tool = new MoveTool({
+      viewer: v,
+      placement: p,
+      folder: lot.folder,
+      cursorSelector: cursorSel,
+      renderer: (res) => lot.renderer(res),
+      // cSimulator::GetFunds / Spend (expense type 6, "furnishings") when the simulator runs.
+      getFunds: () => this.sim?.getFunds() ?? st.getFunds(),
+      spend: (n) => {
+        if (this.sim) this.sim.spend(6, n);
+        else st.setFunds(st.getFunds() - n);
+      },
+      shopSoldItem: () => st.shopSoldItem(),
+      setTip: (x, y, text) => {
+        if (this.tipWin) this.tip = { win: this.tipWin, x, y, text };
+      },
+      resetTip: () => {
+        this.tip = null;
+      },
+      // UIText STR# 137 "PlacementErrs".
+      placementErrorText: (code) => this.ctx.strings.get("UIText", 137, code - 1),
+      // sound: the tool's events (UI_object_place, UI_buy_moneyback, UI_error, ...) once the audio system plays them.
+      playSound: () => undefined,
+      shiftDown: () => this.shift,
+      invalidate: () => {
+        v.dirty = true;
+        const c = tool.cursor;
+        drawer.cursor = c;
+      },
+    });
+    v.cursor = drawer;
+    this.placement = p;
+    this.buyTool = tool;
+    window.addEventListener("keydown", this.onModifiers);
+    window.addEventListener("keyup", this.onModifiers);
+    window.addEventListener("pointermove", this.onModifiers);
+    let guid: number | null = null;
+    let mode = st.getMode();
+    let pending = 0;
+    this.listen(() => {
+      if (st.getMode() !== mode) {
+        mode = st.getMode();
+        // Leaving buy mode puts a held object back (cGameTools::SetTool -> Cancel).
+        if (mode !== Mode.Buy) tool.setParameter(null);
+      }
+      const product = mode === Mode.Buy ? st.shopGetCatalogItem() : null;
+      const g = product?.guid ?? null;
+      // A click on the catalog sets the shop item again (DIRTY_SHOP_ITEM), even the same product.
+      if (g === guid && !(st.dirty & DIRTY_SHOP_ITEM && g !== null)) return;
+      guid = g;
+      const ticket = ++pending;
+      if (g === null) {
+        if (tool.newPurchase) tool.setParameter(null);
+        return;
+      }
+      void lot.folder.getSelectorByGUID(g).then(async (sel) => {
+        // The new object's behaviors need its semi-global file before its init tree runs.
+        if (sel) await this.sim?.module.res.prepare([sel]);
+        if (ticket !== pending) return;
+        tool.setParameter(sel);
+        // The mouse is already over the lot: OnEnterWorld right away.
+        if (this.cursor) {
+          tool.onEnterWorld();
+          tool.float(this.cursor.x, this.cursor.y);
+        }
+      });
+    });
+  }
+
+  /**
+   * What placement asks of the simulation: the init tree of a new object
+   * (cXObject::Reset; the object joins the simulator's module), the
+   * allow-intersection / place / pickup check trees, and KillObject.
+   */
+  private simHooks(): ObjectBehaviorHooks {
+    const simObject = (obj: XObject): SimObject | null => {
+      const o = this.sim?.module.getObject(obj.objectId) ?? null;
+      return o && o.obj === obj ? o : null;
+    };
+    return {
+      runInitTree: (obj) => {
+        const m = this.sim?.module;
+        if (!m) return false;
+        const id = obj.objectId;
+        const o = new SimObject(obj, m);
+        while (m.objects.length < id) {
+          m.objects.push(null);
+          m.simFlags.push(0xffff);
+        }
+        m.objects[id - 1] = o;
+        m.simFlags[id - 1] = 0xffff;
+        m.list.push(o);
+        try {
+          o.reset(false);
+        } catch (e) {
+          console.warn("[buy] init tree failed", obj.selector.guid.toString(16), e);
+          return false;
+        }
+        // Reset runs Init on lead objects only (masterId 0): multi-tile parts are seeded.
+        return obj.selector.objd.masterId === 0;
+      },
+      runCheckTree: (obj, entry, stackObj) => {
+        const o = simObject(obj);
+        if (!o) return false;
+        const tree = o.fnTable.getTreeID(entry);
+        if (tree === 0) return false;
+        try {
+          return o.runCheckTree(o.behavior, stackObj, tree, null);
+        } catch {
+          return false;
+        }
+      },
+      onKill: (obj) => {
+        const m = this.sim?.module;
+        const o = simObject(obj);
+        if (!m || !o) return;
+        o.killed = true;
+        m.objects[obj.objectId - 1] = null;
+        const i = m.list.indexOf(o);
+        if (i >= 0) m.list.splice(i, 1);
+      },
+    };
+  }
+
+  /** XViewer routes the mouse to the tool in buy mode only. */
+  private activeTool(): MoveTool | null {
+    return this.ctx.state.getMode() === Mode.Buy ? this.buyTool : null;
+  }
+
+  override postChildDraw(g: Gfx): void {
+    const t = this.tip;
+    if (!t) return;
+    t.win.setToolTip(t.text);
+    t.win.moveTo(t.x, t.y);
+    t.win.plot(g.ctx, g.ox, g.oy);
+  }
+
+  override tsOnMouseDownL(x: number, y: number): boolean {
+    const tool = this.activeTool();
+    if (!tool || !this.viewer) return false;
+    this.buttonDown = true;
+    tool.click(x, y);
+    return true;
+  }
+
+  override tsOnMouseUpL(x: number, y: number): boolean {
+    const tool = this.activeTool();
+    if (!tool || !this.viewer) return false;
+    this.buttonDown = false;
+    tool.release(x, y);
+    return true;
+  }
+
+  override tsOnMouseEnter(): void {
+    this.activeTool()?.onEnterWorld();
+  }
+
+  /**
+   * cSimulator over the loaded objects: their saved tree stacks resume (or
+   * their Init trees run); the view redraws when an object's look changes
+   * and hides killed objects (the object module and tile arrays are not
+   * updated yet). A load failure leaves the lot static.
+   */
+  private async initSimulator(house: ResFile, lot: LotObjects): Promise<void> {
+    try {
+      const sim = await Simulator.create(house, lot.objects.values() as Iterable<XObject>);
+      sim.state = this.ctx.state;
+      sim.module.onDirty = (): void => {
+        if (this.viewer) this.viewer.dirty = true;
+      };
+      sim.module.onKill = (o): void => {
+        o.obj.objectData[34] = 1;
+        if (this.viewer) this.viewer.dirty = true;
+      };
+      this.sim = sim;
+    } catch (e) {
+      console.error("[sim] simulator not started", e);
+    }
+  }
+
+  /** cSimulator::SetCurrentHour's time-of-day change (global 4): relight the rooms and the terrain. */
+  private updateTimeOfDay(): void {
+    const l = this.lighting;
+    if (!l || !this.viewer) return;
+    const phase = timeOfDay(this.ctx.state.getTime().hour);
+    if (phase === l.phase) return;
+    l.compute(phase);
+    this.terrain?.setLatitudeByTimeOfDay(phase);
+    this.viewer.dirty = true;
+  }
+
   private listen(fn: (s: CPState) => void): void {
     this.listeners.push(fn);
     this.ctx.state.onChange(fn);
@@ -226,6 +465,10 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
   override shutdown(): void {
     for (const fn of this.listeners) this.ctx.state.offChange(fn);
     window.removeEventListener("keydown", this.onKey);
+    window.removeEventListener("keydown", this.onModifiers);
+    window.removeEventListener("keyup", this.onModifiers);
+    window.removeEventListener("pointermove", this.onModifiers);
+    this.buyTool?.cancel();
     if (this.ctx.state.viewer === this) this.ctx.state.viewer = null;
     super.shutdown();
   }
@@ -272,6 +515,11 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
     this.edge?.pump(nowMs);
     this.viewer?.pump(nowMs);
     this.cutaway?.updateWorld();
+    this.updateTimeOfDay();
+    if (this.sim && this.viewer) {
+      this.sim.syncFromState();
+      this.sim.simulate(nowMs);
+    }
     if (this.viewer && this.people?.people.length) {
       this.people.update(nowMs);
       this.viewer.dirty = true;
@@ -299,6 +547,8 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
   override tsOnKeyDown(key: string): boolean {
     const v = this.viewer;
     if (!v) return false;
+    const tool = this.activeTool();
+    if (tool && (tool.onKeyDown(key) || tool.onChar(key))) return true;
     const tw = 16 << v.scale;
     switch (key) {
       case "ArrowLeft":
@@ -335,12 +585,19 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
     this.edge?.onMouseMove(x, y);
     this.cursor = { x, y };
     this.cutaway?.mouseTrack(x, y);
+    const tool = this.activeTool();
+    if (tool) {
+      if (this.buttonDown) tool.drag(x, y);
+      else tool.float(x, y);
+    }
     return this.viewer !== null;
   }
 
   override tsOnMouseExit(): void {
     this.edge?.stop();
     this.cursor = null;
+    this.buttonDown = false;
+    this.activeTool()?.onExitWorld();
   }
 
   override tsOnMouseDownR(_x: number, _y: number): boolean {

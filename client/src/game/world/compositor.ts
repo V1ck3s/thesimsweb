@@ -62,6 +62,7 @@ uniform int uRowIdx;        // wall: table index of the row term for target row 
 uniform int uColIdx[8];     // wall: per zone, table index of the column term for column 0
 uniform float uZoneOff[8];  // wall: per zone depth offset
 uniform float uLeft;        // wall: target x of the sprite's first column
+uniform float uAmbientL;    // PalWrap dark map level 0..31, < 0 = full light (plain palette)
 out vec4 outColor;
 float tableAt(int i) {
   return texelFetch(uTable, ivec2(i % 4096, i / 4096), 0).r;
@@ -95,6 +96,14 @@ void main() {
       depth = uBase + tableAt(uRowOffset + r);
     }
   }
+  if (uAmbientL >= 0.0 && uMode != 2) {
+    // PrecomputeDarkMap: per 5-bit channel, b + c * (max(b, L) - b) / 31 with
+    // the night color (0, 0, 10) >> 3 as b.
+    vec3 c5 = floor(c.rgb * 255.0 / 8.0 + 0.001);
+    vec3 b = vec3(0.0, 0.0, 1.0);
+    vec3 o = floor(0.5 + b + c5 * (max(b, vec3(uAmbientL)) - b) / 31.0);
+    c.rgb = o * 8.0 / 255.0;
+  }
   gl_FragDepth = clamp((depth - ${DEPTH_MIN.toFixed(1)}) / ${DEPTH_RANGE.toFixed(1)}, 0.0, 1.0);
   outColor = c;
 }`;
@@ -118,6 +127,7 @@ const UNIFORMS = [
   "uColIdx",
   "uZoneOff",
   "uLeft",
+  "uAmbientL",
 ] as const;
 
 export class Compositor {
@@ -131,6 +141,12 @@ export class Compositor {
   private tableUsed = 0;
   private readonly tableSlots = new Map<string, number>();
   private tableDirty = true;
+  /**
+   * Ambient light level the next sprite draws use (RenderParam ambient ->
+   * PalWrap::ChooseBestCLUT): 1 = the plain palette, otherwise colors go
+   * through the dark map at level ((255 * ambient + 0.5) & 0xf8) / 8.
+   */
+  ambient = 1;
   /** Raw layer textures (terrain), reused across frames. */
   private rawColor: WebGLTexture | null = null;
   private rawZ: WebGLTexture | null = null;
@@ -291,6 +307,8 @@ export class Compositor {
     gl.bindTexture(gl.TEXTURE_2D, this.tableTex);
     gl.uniform4f(this.u.uRect!, x, y, tex.width, tex.height);
     gl.uniform1i(this.u.uFlip!, flip ? 1 : 0);
+    const a = this.ambient;
+    gl.uniform1f(this.u.uAmbientL!, Math.abs(a - 1) > 1e-6 ? (Math.trunc(255 * a + 0.5) & 0xf8) / 8 : -1);
     setup();
     // Pass 0: opaque pixels with depth write; pass 1: alpha pixels blended.
     if (tex.hasOpaque) {

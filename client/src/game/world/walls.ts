@@ -684,6 +684,8 @@ export class Wall {
       if (seg === SEG_VERT) offsetRect(r, top.h - 1, top.v - (altMin << (s + 1)) + u + (4 >> (3 - s)));
       else offsetRect(r, top.h, top.v - (altMin << (s + 1)));
       rp.setGridCoords(...centerOfView(world, tile.x, tile.y), this.v0.level, alt[1]);
+      // Room::GetAmbientLight of the room the visible face belongs to (approximated by the segment's tile).
+      viewer.comp.ambient = viewer.ambientAtTile(tile.x, tile.y, this.v0.level);
       let passes = cur.flags & 8 || cur.flags & 6 ? 2 : 1;
       if (isUncuttable(cur.style)) cut = 0;
       if (cut && isTwoPass(cur.style) && buildTool) passes = 0;
@@ -1052,7 +1054,11 @@ export class WallManager implements WallDrawer {
       mgr: this,
     };
     for (const w of this.walls[level - 1] ?? []) w.draw(ctx);
-    for (const v of this.vertices[level - 1] ?? []) v.draw(ctx);
+    for (const v of this.vertices[level - 1] ?? []) {
+      comp.ambient = viewer.ambientAtTile(v.x, v.y, level);
+      v.draw(ctx);
+    }
+    comp.ambient = 1;
   }
 }
 

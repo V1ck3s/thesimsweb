@@ -69,10 +69,14 @@ export class HouseViewer {
   terrain: TerrainDrawer | null = null;
   walls: WallDrawer | null = null;
   objects: ObjectDrawer | null = null;
+  /** Room lighting (lighting.ts): RoomManager::GetRoomAmbientLight; null = full light. */
+  lighting: { getRoomAmbientLight(fx: number, fy: number, level: number): number; clampAmbient(level: number): number } | null = null;
   /** HouseViewer's dynamic cutaway (cutaway.ts), told about scale / rotation / level changes. */
   cutawayCtl: { onScale(): void; onRotation(): void; onLevel(old: number): void } | null = null;
   /** People (3D meshes), drawn after the dynamic objects with the shared depth buffer. */
   people: { draw(viewer: HouseViewer): void } | null = null;
+  /** HouseViewer::RenderCursorObject: the buy / build tool's cursor object, drawn after the dynamic objects. */
+  cursor: { draw(viewer: HouseViewer, comp: Compositor, rp: RenderParam): void } | null = null;
   /** XSmoothScroller state. */
   private scroll: { fromX: number; fromY: number; toX: number; toY: number; start: number; dur: number } | null = null;
   dirty = true;
@@ -127,6 +131,20 @@ export class HouseViewer {
     const h = this.originX + (8 << s) * (x - y);
     const v = this.originY + (4 << s) * (x + y) - (level - 1) * lp - (a << (s + 1));
     return { left: h - (8 << s) - 1, top: v - lp, right: h + (8 << s) - 1, bottom: v + (8 << s) };
+  }
+
+  /**
+   * RoomManager::GetRoomAmbientLight at a fixed-point view position (1/16
+   * tile), through RenderParam::SetAmbientLightLevel's clamp.
+   */
+  ambientAt(fx: number, fy: number, level: number): number {
+    const l = this.lighting;
+    return l ? l.clampAmbient(l.getRoomAmbientLight(fx, fy, level)) : 1;
+  }
+
+  /** Ambient at a view tile's center (FTilePt(x + 1/2, y + 1/2), as RenderStaticRow asks). */
+  ambientAtTile(x: number, y: number, level: number): number {
+    return this.ambientAt((x << 4) | 8, (y << 4) | 8, level);
   }
 
   /** Origin rescaled to another scale (the TileToPoint branch for scale != current). */
@@ -430,6 +448,8 @@ export class HouseViewer {
       this.renderStatic(l, false, rp);
     }
     this.objects?.drawDynamicObjects?.(this, comp, rp);
+    comp.ambient = 1;
+    this.cursor?.draw(this, comp, rp);
     this.people?.draw(this);
     this.dirty = false;
   }
@@ -535,6 +555,7 @@ export class HouseViewer {
       }
       const floor = w.getFloor(x, y, 1);
       if (floor === 0) continue;
+      this.comp.ambient = this.ambientAtTile(x, y, 1);
       if (w.getWallStorage(x, y, 1).segs !== 0 && isDiagonal(w, x, y, 1)) continue; // diagonal floor halves: not ported
       const g = this.floors.getFloorGraphic(floor, s);
       if (g) drawFloor(this.comp, this, g.renderer, { x, y, level: 1 }, g.id, fx, fy);
@@ -551,6 +572,8 @@ export class HouseViewer {
       const y = y0 + step[1] * k;
       const base = this.tileToPoint(x, y, level, s, 0);
       const alt = w.getPackedAlt(x, y);
+      rp.ambient = this.ambientAtTile(x, y, level);
+      this.comp.ambient = rp.ambient;
       if (level >= 2) {
         const floor = w.getFloor(x, y, level);
         if (floor !== 0 && !(w.getWallStorage(x, y, level).segs !== 0 && isDiagonal(w, x, y, level))) {

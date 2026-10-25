@@ -405,6 +405,32 @@ export class ObjectFolder implements SelectorFolder {
     return null;
   }
 
+  /**
+   * ObjectFolder::GetLeadSelector: the same file's definition of the master
+   * with an "mt lead object" (OBJD +0x7e), else its sub-tile (0, 0) on level 0.
+   */
+  getLeadSelector(sel: ObjSelector): ObjSelector | null {
+    const master = sel.objd.masterId;
+    if (master === 0) return null;
+    for (const s of this.byFile.get(sel.fileKey) ?? []) {
+      if (s.objd.masterId === master && s.objd.mtLeadObject !== 0) return s;
+    }
+    return this.getSubTileSelector(sel, 0, 0, 0);
+  }
+
+  /** ObjectFolder::GetNthSubSelector: the n-th part definition (sub index != -1) of the master, in file order. */
+  getNthSubSelector(sel: ObjSelector, n: number): ObjSelector | null {
+    const master = sel.objd.masterId;
+    if (master === 0) return null;
+    let k = n;
+    for (const s of this.byFile.get(sel.fileKey) ?? []) {
+      if (s.objd.masterId !== master || s.objd.subIndex === -1) continue;
+      if (k === 0) return s;
+      k--;
+    }
+    return null;
+  }
+
   /** ObjectFolder::GetSubTileSelector. */
   getSubTileSelector(sel: ObjSelector, x: number, y: number, level: number): ObjSelector | null {
     if (x < 0 || y < 0) return null;

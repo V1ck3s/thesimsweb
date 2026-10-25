@@ -14,13 +14,7 @@ import { loadPerson, SimRenderer, type SAnimator } from "../sims/index.js";
 import type { Compositor } from "./compositor.js";
 import type { HouseViewer } from "./houseviewer.js";
 import type { PlacedObject } from "./objects.js";
-
-/**
- * Ambient light for people. The original takes it from the room lightmaps
- * (HouseViewer::SetAmbientLightLevel), not ported yet; 0.6 matches daytime
- * interiors by eye.
- */
-const PEOPLE_AMBIENT = 0.6;
+import { RotatableWorld } from "./world.js";
 
 export interface LotPerson {
   obj: PlacedObject;
@@ -68,11 +62,14 @@ export class LotPeople {
     };
     for (const { obj, anim } of this.people) {
       if (obj.level > viewer.level) continue;
+      // HouseViewer::Render3DObject: RoomManager::GetRoomAmbientLight at the person's view position.
+      const [vx, vy] = RotatableWorld.rotateCoords(obj.fx, obj.fy, viewer.world.rotation, 0x400);
+      const ambient = viewer.ambientAt(vx, vy, obj.level);
       this.renderer.renderSim(
         anim.vitaboy,
         { x: obj.fx / 16, y: obj.fy / 16, level: obj.level, alt: viewer.world.fixed.getFAlt(obj.fx, obj.fy), direction: obj.dir },
         view,
-        { ambient: PEOPLE_AMBIENT },
+        { ambient },
       );
     }
   }
