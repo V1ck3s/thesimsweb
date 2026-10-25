@@ -17,6 +17,7 @@ import { EdgeDetectScroller } from "./edgescroll.js";
 import { FloorGraphicsMgr } from "./floors.js";
 import { HouseViewer, type ObjectDrawer, type TerrainDrawer, type WallDrawer } from "./houseviewer.js";
 import { ResFile } from "./iffres.js";
+import { loadLotObjectDrawer, type LotObjects } from "./lotobjects.js";
 import { Terrain } from "./terrain.js";
 import { WallManager } from "./walls.js";
 import { FixedWorld, RotatableWorld } from "./world.js";
@@ -82,6 +83,8 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
   private edge: EdgeDetectScroller | null = null;
   /** The wall graph when this view created it (no `parts.walls`). */
   wallManager: WallManager | null = null;
+  /** The lot objects when this view loaded them (no `parts.objects`). */
+  lotObjects: LotObjects | null = null;
   private readonly onKey = (e: KeyboardEvent): void => {
     if (this.tsOnKeyDown(e.key)) e.preventDefault();
   };
@@ -140,7 +143,12 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
       this.wallManager = walls;
       v.walls = walls;
     }
-    v.objects = this.parts.objects ?? null;
+    if (this.parts.objects) {
+      v.objects = this.parts.objects;
+    } else {
+      this.lotObjects = await loadLotObjectDrawer(house, world.fixed);
+      v.objects = this.lotObjects.drawer;
+    }
     const saved = readSavedView(house);
     if (saved) {
       world.setRotation(saved.rotation);
