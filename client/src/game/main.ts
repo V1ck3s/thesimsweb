@@ -18,7 +18,10 @@ import { NeighborhoodStore } from "./data/nbhdstore.js";
 import { loadNeighborhood } from "./data/neighborhood.js";
 import { currentNeighborhoodDir, Neighborhood, storeCurrentNeighborhoodDir } from "./nbhd/nghinterface.js";
 import { getOptionsMgr } from "./optionsmgr.js";
-import { NBHD_END_NOTES, WinNeighborhoodUL } from "./nbhd/winneighborhoodul.js";
+import { NBHD_DOWNTOWN, NBHD_END_NOTES, NBHD_MAGICTOWN, NBHD_STUDIOTOWN, NBHD_VACATION, WinNeighborhoodUL } from "./nbhd/winneighborhoodul.js";
+import { applyLoadGameLocation, arrivalFor, type ChangeLotTrigger, type LotArrival, prepareArrival, Transit } from "./nbhd/transit.js";
+import { currentTaxiDialog } from "./nbhd/winpicturesplashdialog.js";
+import { Town, WinTown } from "./nbhd/wintown.js";
 import { Fonts } from "./res/fonts.js";
 import { Strings } from "./res/strings.js";
 import { UIRes } from "./res/uires.js";
@@ -81,6 +84,8 @@ class Game {
   private soundsPaused: boolean | null = null;
   /** Teardown of audio/lotaudio.ts for the loaded lot. */
   private lotAudioOff: (() => void) | null = null;
+  /** cSimsApp +0x108..+0x10a for the next LoadGame (set by switchLots). */
+  private arrival: LotArrival | null = null;
 
   constructor(
     private readonly ctx: GameContext,
@@ -144,7 +149,24 @@ class Game {
           mgr.main.childDelete(screen);
         });
       },
-      onEndModal: (result) => console.log(`not ported: ${NBHD_END_NOTES[result] ?? `neighborhood screen ended with ${result}`}`),
+      onEndModal: (result) => {
+        // cSimsApp::ShowNbhdDialog -> ShowDowntownDialog / ShowVacationDialog / ShowStudiotownDialog / ShowMagictownDialog.
+        const towns: Readonly<Record<number, Town>> = {
+          [NBHD_DOWNTOWN]: Town.Downtown,
+          [NBHD_VACATION]: Town.Vacation,
+          [NBHD_STUDIOTOWN]: Town.Studiotown,
+          [NBHD_MAGICTOWN]: Town.Magictown,
+        };
+        const town = towns[result];
+        if (town === undefined) {
+          console.log(`not ported: ${NBHD_END_NOTES[result] ?? `neighborhood screen ended with ${result}`}`);
+          return;
+        }
+        void whileFrozen(mgr, false, async () => {
+          mgr.main.childDelete(screen);
+          await this.showTown(town);
+        });
+      },
       onSwitchNeighborhood: (next) => {
         this.nbhdDir = next;
         storeCurrentNeighborhoodDir(next);
@@ -167,6 +189,55 @@ class Game {
     mgr.main.childAdd(screen);
   }
 
+  /** cSimsApp::ShowDowntownDialog (and the other towns): the town screen; -20 goes back to DoNbhdScreen, a house loads it. */
+  async showTown(town: Town): Promise<void> {
+    const { ctx, mgr } = this;
+    const nb = this.nbhd ?? (await Neighborhood.load(this.nbhdDir));
+    this.nbhd = nb;
+    const screen: WinTown = new WinTown(ctx, nb, town, true, {
+      onEnd: (result) => {
+        if (result > 0) {
+          void whileFrozen(mgr, true, async () => {
+            await this.enterLot(result);
+            mgr.main.childDelete(screen);
+          });
+        } else {
+          void whileFrozen(mgr, false, async () => {
+            mgr.main.childDelete(screen);
+            await this.showNeighborhood();
+          });
+        }
+      },
+      onUnported: (what) => console.log(`not ported: ${what}`),
+      onMoveOutHouse: (house, bulldoze, store) => moveOutHouse(ctx, store, house, bulldoze),
+    });
+    screen.setArea(0, 0, ctx.width, ctx.height);
+    if (!(await screen.init())) throw new Error("town screen init failed");
+    mgr.main.childAdd(screen);
+  }
+
+  /**
+   * cSimsApp::SwitchLots (the change-lot trigger of cXPerson::TryChangeLots):
+   * SaveGame, the arrival flags, UnloadHouse, LoadGame(house). The taxi
+   * splash stays up over the next lot until generic sim call 3 removes it.
+   */
+  switchLots(trigger: ChangeLotTrigger): void {
+    const { ctx, mgr } = this;
+    void whileFrozen(mgr, true, async () => {
+      await saveGame(ctx, this.lotView, this.nbhdDir);
+      const nb = this.nbhd ?? (await Neighborhood.load(this.nbhdDir));
+      this.arrival = arrivalFor(trigger, nb.getZoningType(trigger.house));
+      const taxi = currentTaxiDialog();
+      taxi?.parent?.childRemove(taxi);
+      this.leaveLot();
+      await this.enterLot(trigger.house);
+      if (taxi && this.lotView) {
+        this.lotView.childAdd(taxi);
+        taxi.layout(this.lotView);
+      }
+    });
+  }
+
   /** cSimsApp::LoadGame(house, family): Neighborhood::LoadHouse moves the family in first. */
   async moveIn(house: number, family: number, houseValue: number): Promise<void> {
     const store = await NeighborhoodStore.open(this.nbhdDir);
@@ -179,13 +250,27 @@ class Game {
   async enterLot(house: number): Promise<void> {
     const { ctx, mgr } = this;
     const state = ctx.state;
-    await activateFamily(state, await loadNeighborhood(this.nbhdDir), house);
+    const arrival = this.arrival;
+    this.arrival = null;
+    if (!(await prepareArrival(ctx, this.nbhdDir, arrival)) && !(await activateFamily(state, await loadNeighborhood(this.nbhdDir), house))) {
+      // Nobody lives here (Neighborhood::LoadHouse leaves PersonFinder empty).
+      state.family = [];
+      state.familyName = "";
+    }
     this.nbhd ??= await Neighborhood.load(this.nbhdDir);
     const view = new WinLotView(ctx, this.nbhd.getHousePath(house));
     view.setArea(0, 0, ctx.width, ctx.height);
     const t0 = performance.now();
     if (!(await view.init())) throw new Error("lot view init failed");
     console.log(`lot ${house} loaded in ${Math.round(performance.now() - t0)} ms`);
+    if (view.sim) {
+      const nb = this.nbhd;
+      view.sim.module.transitHooks = new Transit(
+        { ctx, nb: () => nb, lotView: () => this.lotView, switchLots: (t) => this.switchLots(t) },
+        view.sim,
+      );
+    }
+    await applyLoadGameLocation(ctx, view, this.nbhd, house, arrival);
     this.lotAudioOff = installLotAudio(view);
     soundPlayer.playBySource(lotAmbience(house), UI_SOURCE);
     this.lotView = view;

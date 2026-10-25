@@ -73,6 +73,8 @@ export interface HouseInfo {
   hasHouse: boolean;
   /** +0x1c: lot value (Neighborhood::GetHouseFileInfo). */
   value: number;
+  /** +0x20: SIMI global 37, the lot type bits the town pickers filter on (1 lodging, 2 food, 4 gardening, 8 shopping, 0x10 pets...). */
+  lotTypeFlags: number;
   /** +0x24: family number, -1 when nobody lives here. */
   familyNumber: number;
   /** +0x28 / +0x2c / +0x30 */
@@ -401,6 +403,7 @@ export async function getHouseInfo(nb: Neighborhood, house: number): Promise<Hou
     isTutorial: g(26) !== 0,
     hasHouse: g(22) !== 0,
     value,
+    lotTypeFlags: g(37),
     familyNumber: family ? family.familyNumber : -1,
     familyName: family?.name ?? "",
     netWorth: family ? nb.getFamilyNetWorth(family) : 0,

@@ -8,7 +8,7 @@
  * (world/housesave.ts; the stats ObjectModule::ComputeStats and
  * cFixedWorld::ComputeArchValue give go into the simulator's globals and
  * the family's +0x138 bits 0 / 1), then Neighborhood::Save. On a community
- * lot (zoning 2) only the visiting family's budget is kept and the
+ * or town lot with sims on it only the visiting family's budget is kept and the
  * neighborhood saved (SaveAllPersistentDataForMatterTransferance: not ported).
  *
  * DoSave asks UIText STR# 0x99 entries 4 / 5 (message, title) with
@@ -82,8 +82,14 @@ export async function saveGame(ctx: GameContext, lv: WinLotView | null, nbhdDir:
     const store = await NeighborhoodStore.open(nbhdDir).catch(() => null);
     const familyId = store?.familyOfHouse(n);
     const zoning = sim?.module.zoning.get(n) ?? 1;
-    if (zoning === 2) {
-      // A community lot: the visiting family's money goes back to it; the lot is not saved.
+    // cSimsApp::SaveGame: with sims on the lot (global 0x20 clear), a town
+    // lot (21..30, 81..89, 93..99), a community lot or a vacation lot no
+    // family lives on is not saved; the visitors' money goes back to them.
+    // Visited without sims (0x20 set, buy mode) it is saved as any lot.
+    const visiting = (sim?.globals[32] ?? 0) !== 0;
+    const townLot = (n >= 0x15 && n <= 0x1e) || (n >= 0x51 && n <= 0x59) || (n >= 0x5d && n <= 0x63);
+    const vacationLot = n >= 0x28 && n <= 0x31;
+    if (!visiting && (townLot || zoning === 2 || (vacationLot && familyId === undefined))) {
       if (store && sim) {
         const visitor = lv.selectedPerson();
         const fam = visitor ? store.family(visitor.pd[PDX.familyNumber] ?? 0) : undefined;

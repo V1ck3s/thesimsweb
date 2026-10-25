@@ -97,6 +97,46 @@ export class WinLotPopup extends TSWin {
     return this.nb.getZoningType(h.houseNumber) === Zone.Residential ? POPUP_EMPTY_RESIDENTIAL : POPUP_COMMUNITY;
   }
 
+  /**
+   * SetHouseInfo's town lots (21..30, 40..48, 81..89, 93..99): the address
+   * line from <neighborhood>/Downtown.iff (Vacation.iff) STR# 128 entry 1
+   * (first three lots) or 2 behind "%s " with the house number, else the
+   * rollover entries 13 / 14 (Vacation 15 / 16, Studio Town 24 / 25, Magic
+   * Town 27); then "%s\n%s" with the lot name and description from
+   * Houses\DTDesc.iff (VIDesc, STDesc, MTDesc) STR# 2000 + house entries
+   * 1 / 2 (defaults rollover 22 / 23). Null for other lots.
+   */
+  private async townText(h: HouseInfo): Promise<string | null> {
+    const n = h.houseNumber;
+    const s = this.strings;
+    let first: { file: string | null; low: number; lowEntry: number; highEntry: number } | null = null;
+    let desc = "";
+    if (n >= 0x15 && n <= 0x1e) {
+      first = { file: "Downtown.iff", low: 0x17, lowEntry: 13, highEntry: 14 };
+      desc = "DTDesc.iff";
+    } else if (n >= 0x28 && n <= 0x30) {
+      first = { file: "Vacation.iff", low: 0x2a, lowEntry: 15, highEntry: 16 };
+      desc = "VIDesc.iff";
+    } else if (n >= 0x51 && n <= 0x59) {
+      first = { file: null, low: 0x53, lowEntry: 24, highEntry: 25 };
+      desc = "STDesc.iff";
+    } else if (n >= 0x5d && n <= 0x63) {
+      first = { file: null, low: 0x63, lowEntry: 27, highEntry: 27 };
+      desc = "MTDesc.iff";
+    }
+    if (!first) return null;
+    const num = String(n);
+    let address = sprintf(s[n <= first.low ? first.lowEntry : first.highEntry]!, num);
+    const custom = first.file ? await loadStrSet(`${this.nb.dir}/${first.file}`, 0x80, LANG_FRENCH) : null;
+    if (custom) address = sprintf(`%s ${custom[n <= first.low ? 0 : 1] ?? ""}`, num);
+    let name = s[22]!;
+    let text = s[23]!;
+    const d = await loadStrSet(`${this.nb.dir}/Houses/${desc}`, 2000 + n, LANG_FRENCH);
+    if (d?.[0]) name = d[0];
+    if (d?.[1]) text = d[1];
+    return `${address}\n\n${name}\n${text}\n `;
+  }
+
   private async address(house: number): Promise<string> {
     const num = String(house);
     const file = `${this.nb.dir}/StreetNames.iff`;
@@ -118,12 +158,14 @@ export class WinLotPopup extends TSWin {
     }
     const font = this.font!;
     const s = this.strings;
-    let text = `${await this.address(h.houseNumber)}\n\n`;
+    const town = await this.townText(h);
+    let text = town ?? `${await this.address(h.houseNumber)}\n\n`;
 
     let name = s[22]!;
     let desc = s[23]!;
     if (this.nb.getZoningType(h.houseNumber) !== Zone.None) {
-      const d = await loadStrSet(`${this.nb.dir}/Houses/NeighborhoodDesc.iff`, 2000 + h.houseNumber, LANG_FRENCH);
+      const descFile = h.houseNumber >= 0x5a && h.houseNumber <= 0x63 ? "MTDesc.iff" : "NeighborhoodDesc.iff";
+      const d = await loadStrSet(`${this.nb.dir}/Houses/${descFile}`, 2000 + h.houseNumber, LANG_FRENCH);
       if (d?.[0]) name = d[0];
       if (d?.[1]) desc = d[1];
     }
@@ -131,7 +173,9 @@ export class WinLotPopup extends TSWin {
 
     const idx = this.getPopupIndex(h);
     const zone = this.nb.getZoningType(h.houseNumber);
-    if (zone === Zone.Community) {
+    if (town !== null) {
+      // Town lots are described by their address and the town's desc file only.
+    } else if (zone === Zone.Community) {
       text += sprintf(s[idx]!, name, desc);
     } else if (zone === Zone.Residential) {
       const lang = LANG_FRENCH;

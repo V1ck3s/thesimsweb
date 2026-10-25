@@ -714,6 +714,14 @@ export class NeighborhoodStore {
     return this.families.find((f) => f.id === id)?.unk13c ?? 0;
   }
 
+  /** Family +0x13c := `house` (cSimsApp::LoadGame on a family trip; 0 back home). */
+  setFamilyVacationLot(id: number, house: number): void {
+    const f = this.familyRaw(id);
+    if (!f) return;
+    f.unk13c = house;
+    f.dirty = true;
+  }
+
   private put(c: IffChunk): void {
     const i = this.chunks.findIndex((x) => x.type === c.type && x.id === c.id);
     if (i >= 0) this.chunks[i] = c;
