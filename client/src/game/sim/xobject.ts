@@ -1,0 +1,1170 @@
+/**
+ * The simulation half of cXObject (ObjectSim.cpp): an XObject loaded by
+ * ObjectModule (world/objects.ts) driven by the TreeSim interpreter.
+ *
+ * cXObject fields used here (byte offsets of the original):
+ *   +0x2c / +0x30 attributes        +0x34 / +0x38 dynamic sprite flags
+ *   +0x3a temps[8] (the default parameters, TreeSim +0x20)
+ *   +0x4a object data[0x48]         +0x60 object data 11 = own id
+ *   +0x7c object data 25: ticks during which the object is kept awake
+ *   +0xdc ObjectModule              +0xf0 object id
+ *   +0x114 flags (0x100 = error pending, 0x40 / 2 ...)
+ *   +0x118 ObjDefinition            +0x11c ObjSelector (+0xc its Behavior)
+ *   +0x128 / +0x12c where InterpValue stores the address of the value it
+ *          read (short / float motive) when asked to (`outRef` / `outFRef`)
+ *   +0x148 SpriteSlots (+0x14c count, +0x150 data)
+ *
+ * TryElement dispatches primitives 0..0x33 through lbl_10601898 (52 entries;
+ * the person-only ones are entries that throw error 5 here and are handled
+ * by cXPerson::TryElement first).
+ */
+
+import { OD as WOD, type XObject } from "../world/objects.js";
+import { OBJ_TYPE_PERSON } from "../world/objselector.js";
+import type { BehaviorTree } from "./behavior.js";
+import { getTreeClass, getBaseID, loadStringSet } from "./behavior.js";
+import { EP, ObjFnTable } from "./objfntable.js";
+import type { SimModule } from "./simmodule.js";
+import { PRIM_CONTINUE, PRIM_FALSE, PRIM_TRUE, PRIM_WAIT, TreeSim, simThrow, treeSimGlobals } from "./treesim.js";
+import type { ParamSource, StackElem } from "./treestack.js";
+
+/** Object data indexes (Behavior.iff STR# 141; index = (offset - 0x4a) / 2). */
+const OD = {
+  ...WOD,
+  /** +0x60: the object's own id (set by Reset). */
+  objectId: 11,
+  /** +0x74 / +0x7a: birth minute / hour. */
+  birthMinute: 21,
+  birthHour: 24,
+  /** +0x7c: ticks during which the object is kept awake (cXObject::Simulate counts it down). */
+  keepAwake: 25,
+  /** +0x84: room impact (-5: no room score). */
+  roomImpact: 29,
+  /** +0xa4 / +0xa6 / +0xa8: birth year / month / day. */
+  birthYear: 45,
+  birthMonth: 46,
+  birthDay: 47,
+  /** +0xbe: the OBJD's +0x62 (type attribute GUID). */
+  typeAttrGuid: 58,
+  /** +0xc0: compared with parameter 0 by Set To Next (search type 6). */
+  category: 59,
+  /** +0xc2: non-zero ticks while paused (sim flag 2). */
+  tickWhenPaused: 60,
+  /** +0xc6: cleared by Cleanup. */
+  cleanupFlags: 62,
+} as const;
+
+/** A writable short InterpValue resolved (+0x128). */
+export interface ShortRef {
+  a: Int16Array;
+  i: number;
+}
+/** A writable float (motives, +0x12c). */
+export interface FloatRef {
+  a: Float32Array;
+  i: number;
+}
+
+/** cXObject error codes (thrown with lbl_105BBB08). */
+export const XERR = {
+  unknownPrimitive: 5,
+  attrRange: 6,
+  objectDataRange: 7,
+  paramRange: 8,
+  badScope: 9,
+  noObject: 0xa,
+  flagRange: 0xd,
+  stackObjIdData: 0xf,
+  cantWrite: 0x13,
+  noStackObject: 0x15,
+  noTestObject: 0x17,
+  motiveRange: 0x1a,
+  slotRange: 0x1b,
+  notPerson: 0x1c,
+  personDataRange: 0x21,
+  definitionRange: 0x23,
+  divideByZero: 0x26,
+  tempRange: 2,
+  randomZero: 4,
+  constants: 0x2e,
+  expenseType: 0x38,
+  neighbor: 0x37,
+  globalRange: 0x3f,
+  typeAttrRange: 0x40,
+  breakpoint: 0x3e,
+  setToNextType: 0x1e,
+  namedTreeMode: 0x2c,
+  sprite: 0x31,
+} as const;
+
+/** Expression operators that write their left operand (lbl_1059A48C). */
+const OP_WRITES = [0, 0, 0, 1, 1, 1, 1, 1, 0, 1, 1, 1, 1, 1, 0, 0, 0, 1, 1, 1, 1] as const;
+
+/** Motive values are clamped to [-100, 100] after a write (lbl_1059A4A8 +0x20 / +0x24). */
+const MOTIVE_MIN = -100;
+const MOTIVE_MAX = 100;
+
+/** What a primitive the port does not implement does instead (documented per primitive). */
+export interface PrimitiveLog {
+  /** opcode -> runs */
+  counts: Map<number, number>;
+}
+
+/** Dynamic-cast helper for cXPerson fields this phase keeps on the object. */
+export interface PersonSimData {
+  /** cXPerson +0x58c: person data[0x100]. */
+  personData: Int16Array;
+  /** cXPerson +0x78c: motives[16]. */
+  motives: Float32Array;
+}
+
+export class SimObject extends TreeSim {
+  /** cXObject +0x114 bit 0x100 (Error sets it, HandleError clears it). */
+  errorPending = false;
+  /** Primitive opcode -> times run (trace). */
+  readonly primCounts = new Map<number, number>();
+  /** Errors caught on this object (code, tree, node). */
+  readonly errors: Array<{ code: number; tree: number; node: number }> = [];
+  /** InterpValue outputs (+0x128 / +0x12c). */
+  outRef: ShortRef | null = null;
+  outFRef: FloatRef | null = null;
+  /** Person data / motives (cXPerson only). */
+  person: PersonSimData | null = null;
+  /** Removed by ObjectModule::KillObject (the kill queue ran). */
+  killed = false;
+  private readonly temps: Int16Array;
+
+  constructor(
+    readonly obj: XObject,
+    readonly module: SimModule,
+  ) {
+    super();
+    // TreeSim::Initialize(stack size, +0x3a): temps are followed by the object data (+0x4a).
+    this.temps = new Int16Array(obj.temps.buffer, obj.temps.byteOffset, 8 + 0x48);
+    if (obj.isPerson) this.person = { personData: new Int16Array(0x100), motives: new Float32Array(16) };
+  }
+
+  get id(): number {
+    return this.obj.objectId;
+  }
+  get isPerson(): boolean {
+    return this.obj.selector.objd.objectType === OBJ_TYPE_PERSON;
+  }
+  get behavior() {
+    return this.module.behaviorOf(this.obj.selector);
+  }
+  get fnTable(): ObjFnTable {
+    return ObjFnTable.forSelector(this.obj.selector);
+  }
+
+  protected defaultParams(): ParamSource {
+    return { src: this.temps, at: 0 };
+  }
+
+  /** cXObject::Error: flags the object; TickAllObjects handles it on the next pass. */
+  error(code: number): void {
+    const e = this.getCurElem();
+    this.errors.push({ code, tree: e?.getTreeID() ?? -1, node: e?.node ?? -1 });
+    this.errorPending = true;
+    this.module.setSimFlag(this.id, 4, true);
+  }
+
+  /** cXObject::Simulate: one tick of the main stack, then the keep-awake counter and sprite slots. */
+  simulate(): boolean {
+    const r = this.simulateTrees();
+    if (r) {
+      const d = this.obj.objectData;
+      if (d[OD.keepAwake]! !== 0) d[OD.keepAwake] = d[OD.keepAwake]! - 1;
+      for (const s of this.obj.spriteSlots) {
+        // SpriteSlot::Tick counts down an active slot; a change dirties the object.
+        if (s.activeTicks > 0) {
+          s.activeTicks--;
+          this.module.dirty(this);
+        }
+      }
+    }
+    return r;
+  }
+
+  /**
+   * cXObject::HandleError (retail: no dialog): ObjectModule::CleanupPeople
+   * (people are not simulated yet) then Cleanup.
+   */
+  handleError(): void {
+    this.errorPending = false;
+    if (this.getError() === 0) return;
+    this.cleanup();
+  }
+
+  /**
+   * cXObject::Cleanup(0): runs the cleanup entry point and restarts Main, or
+   * (no cleanup tree) Pickup + Reset + Place. Pickup / Place keep the object
+   * where it is here (placement is not simulated): only Reset runs.
+   */
+  cleanup(): void {
+    const fns = this.fnTable;
+    const cleanupTree = fns.getTreeID(EP.cleanup);
+    if (cleanupTree === 0) {
+      this.reset(true);
+    } else {
+      this.runCheckTree(this.behavior, 0, cleanupTree, null);
+      this.obj.objectData[OD.cleanupFlags] = 0;
+      this.obj.objectData[OD.flags] = this.obj.objectData[OD.flags]! & 0xffdf;
+      this.resetTree(this.behavior, fns.getTreeID(EP.main));
+    }
+    this.module.setIdleCounter(this.id, 0xffff);
+  }
+
+  /**
+   * cXObject::Reset: clears object data (keeping direction, current value,
+   * the age fields, and a few others), attributes and temps, restarts Main,
+   * then (lead objects only) runs Init and, when asked, one tick.
+   * The slot hierarchy (HierSever / HierSetSite) is left as is.
+   */
+  reset(tick: boolean): void {
+    const d = this.obj.objectData;
+    const keep = new Int16Array(d);
+    d.fill(0);
+    const k = (i: number): void => {
+      d[i] = keep[i]!;
+    };
+    k(OD.roomImpact);
+    let dir = keep[OD.direction]!;
+    while (dir < 0) dir += 8;
+    d[OD.direction] = dir & 7;
+    k(OD.currentValue);
+    k(OD.birthYear);
+    k(OD.birthMonth);
+    k(OD.birthDay);
+    k(OD.birthHour);
+    k(OD.birthMinute);
+    k(OD.slotCount);
+    k(OD.containerId);
+    k(OD.slotNumber);
+    d[OD.objectId] = this.id;
+    d[OD.typeAttrGuid] = this.obj.selector.objd.i16(0x62);
+    this.obj.attributes.fill(0);
+    this.obj.temps.fill(0);
+    this.resetTree(this.behavior, this.fnTable.getTreeID(EP.main));
+    this.module.ageFields(this);
+    this.module.setIdleCounter(this.id, 0xffff);
+    if (this.obj.selector.objd.masterId === 0) {
+      const init = this.fnTable.getTreeID(EP.init);
+      if (init !== 0) this.runCheckTree(this.behavior, 0, init, null);
+      if (tick) this.simulate();
+      this.module.setSimFlag(this.id, 2, d[OD.tickWhenPaused]! !== 0);
+      this.module.setSimFlag(this.id, 8, true);
+    }
+  }
+
+  /** cXObject::GosubObjectTree: pushes a tree of `other` (stack object = other) on this stack. */
+  gosubObjectTree(other: SimObject, params: ParamSource | null, treeId: number): boolean {
+    this.module.clearIdleStatus(this.id);
+    if (!this.gosub(other.behavior, params, treeId)) return false;
+    this.getCurElem()!.stackObj = other.id;
+    return true;
+  }
+
+  // --- InterpValue / Expression --------------------------------------------------
+
+  private obj_(id: number): SimObject | null {
+    return this.module.getObject(id);
+  }
+
+  /** The current frame's stack object (error 0xa / 0x15 when missing). */
+  private stackObject(code: number = XERR.noObject): SimObject {
+    const o = this.obj_(this.getCurElem()!.stackObj);
+    if (!o) simThrow(code);
+    return o;
+  }
+
+  private personOf(o: SimObject): PersonSimData {
+    if (o.obj.selector.objd.objectType !== OBJ_TYPE_PERSON || !o.person) simThrow(XERR.notPerson);
+    return o.person;
+  }
+
+  /** cXPerson::GetMotive read as InterpValue does (rounded half away from zero). */
+  private motiveValue(p: PersonSimData, i: number, want: boolean): number {
+    const f = p.motives[i]!;
+    if (want) this.outFRef = { a: p.motives, i };
+    return f < 0 ? Math.trunc(f - 0.5) : Math.trunc(f + 0.5);
+  }
+
+  private short(a: Int16Array, i: number, want: boolean): number {
+    if (want) this.outRef = { a, i };
+    return a[i]!;
+  }
+
+  /**
+   * cXObject::InterpValue(scope, data, wantAddress): the value of a variable
+   * reference; when `want`, also where it lives (`outRef` / `outFRef`) so the
+   * caller can write it. Scopes are Behavior.iff STR# 202.
+   */
+  interpValue(scope: number, data: number, want: boolean): number {
+    const m = this.module;
+    switch (scope) {
+      case 0: // my attributes
+        if (data < 0 || data >= this.obj.attributes.length) simThrow(XERR.attrRange);
+        return this.short(this.obj.attributes, data, want);
+      case 1: {
+        // stack object's attributes
+        const o = this.stackObject();
+        if (data < 0 || data >= o.obj.attributes.length) simThrow(XERR.attrRange);
+        return this.short(o.obj.attributes, data, want);
+      }
+      case 3: // my object data
+        if (data < 0 || data >= 0x48) simThrow(XERR.objectDataRange);
+        {
+          const v = this.short(this.obj.objectData, data, want);
+          if (data === OD.keepAwake) m.clearIdleStatus(this.id);
+          return v;
+        }
+      case 4: {
+        // stack object's object data
+        if (data < 0 || data >= 0x48) simThrow(XERR.objectDataRange);
+        const o = this.stackObject();
+        const v = this.short(o.obj.objectData, data, want);
+        if (data === OD.keepAwake) m.clearIdleStatus(o.id);
+        return v;
+      }
+      case 6: // global (only 0x22 and 0x24 are writable)
+        if (data < 0 || data >= 0x40) simThrow(XERR.globalRange);
+        if (want && (data === 0x22 || data === 0x24)) this.outRef = { a: m.sim.globals, i: data };
+        return m.sim.globals[data & 0xff]!;
+      case 7: // literal
+        return data;
+      case 8: // temps
+        if (data < 0 || data >= 8) simThrow(XERR.tempRange);
+        return this.short(this.obj.temps, data, want);
+      case 9: {
+        // parameters
+        const e = this.getCurElem()!;
+        if (data < 0 || data >= e.numParams) simThrow(XERR.paramRange);
+        return this.short(e.stack.mem, e.paramsAt() + data, want);
+      }
+      case 10: {
+        // stack object id (data must be 0)
+        if (data !== 0) simThrow(XERR.stackObjIdData);
+        const e = this.getNthElem(this.getStackSize() - 1 - data)!;
+        if (want) this.outRef = { a: e.stack.mem, i: e.at + 2 };
+        return e.stackObj;
+      }
+      case 11: {
+        // temp[temp]
+        if (data < 0 || data >= 8) simThrow(XERR.tempRange);
+        const i = this.obj.temps[data]!;
+        if (i < 0 || i >= 8) simThrow(XERR.tempRange);
+        return this.short(this.obj.temps, i, want);
+      }
+      case 12: // check tree ad range
+      case 28: // check tree ad personality var
+      case 29: {
+        // check tree ad min
+        const ad = m.sim.currentAd;
+        if (!ad || data < 0 || data >= ad.length) simThrow(XERR.motiveRange);
+        const e = ad[data]!;
+        const field = scope === 12 ? 2 : scope === 28 ? 0 : 1;
+        if (want) this.outRef = { a: e, i: field };
+        return e[field]!;
+      }
+      case 13: {
+        // stack object's temps
+        const o = this.stackObject();
+        if (data < 0 || data >= 8) simThrow(XERR.tempRange);
+        return this.short(o.obj.temps, data, want);
+      }
+      case 14: // my motives
+        if (data < 0 || data >= 16) simThrow(XERR.motiveRange);
+        return this.motiveValue(this.personOf(this), data, want);
+      case 15: {
+        // stack object's motives
+        if (data < 0 || data >= 16) simThrow(XERR.motiveRange);
+        return this.motiveValue(this.personOf(this.stackObject(XERR.noStackObject)), data, want);
+      }
+      case 16: {
+        // stack object's slot (contained object id)
+        const o = this.stackObject(XERR.noStackObject);
+        return this.slotValue(o, data);
+      }
+      case 17: {
+        // stack object's motive[temp]
+        if (data < 0 || data >= 8) simThrow(XERR.tempRange);
+        const i = this.obj.temps[data]!;
+        if (i < 0 || i >= 16) simThrow(XERR.motiveRange);
+        return this.motiveValue(this.personOf(this.stackObject(XERR.noStackObject)), i, want);
+      }
+      case 18: // my person data
+        this.personOf(this);
+        if (data < 0 || data >= 0x100) simThrow(XERR.personDataRange);
+        return this.personData(this, data, want);
+      case 19: {
+        // stack object's person data
+        if (data < 0 || data >= 0x100) simThrow(XERR.personDataRange);
+        const o = this.stackObject(XERR.noStackObject);
+        this.personOf(o);
+        return this.personData(o, data, want);
+      }
+      case 20: // my slot
+        return this.slotValue(this, data);
+      case 21: {
+        // stack object's definition
+        if (data < 0 || data >= 0x6c) simThrow(XERR.definitionRange);
+        return this.stackObject().obj.selector.objd.i16(data * 2);
+      }
+      case 22: {
+        // stack object's attribute[param]
+        const e = this.getCurElem()!;
+        if (data < 0 || data >= e.numParams) simThrow(XERR.paramRange);
+        const i = e.getParam(data);
+        const o = this.stackObject();
+        if (i >= o.obj.attributes.length) simThrow(XERR.attrRange);
+        if (i < 0) return 0;
+        return this.short(o.obj.attributes, i, want);
+      }
+      case 23: // room[temp 0]: rooms are not simulated yet.
+        return m.unportedValue("scope 23 room[temp0]", 0);
+      case 24: // neighbor in stack object
+        return m.unportedValue("scope 24 neighbor in stack object", 0);
+      case 25: {
+        // locals
+        const e = this.getCurElem()!;
+        if (data < 0 || data >= e.numLocals) simThrow(XERR.paramRange);
+        return this.short(e.stack.mem, e.localsAt() + data, want);
+      }
+      case 26: {
+        // tuning constant: XObjLang::GetConstantsID
+        const cls = (data >> 13) & 7;
+        if (cls > 2) simThrow(XERR.constants);
+        const base = cls === 1 ? 0x2000 : cls === 0 ? 0x1000 : 0x100;
+        const id = base + ((data >> 7) & 0x3f);
+        const index = data & 0x7f;
+        const k = this.getCurElem()!.behavior?.getConstants(id) ?? null;
+        if (!k) simThrow(XERR.constants);
+        if (index >= (k[0]! & 0x7fff) || index >= k.length - 1) simThrow(XERR.constants);
+        return k[index + 1]!;
+      }
+      case 27: {
+        // stack object's dynamic sprite flag[temp]
+        if (data < 0 || data >= 8) simThrow(XERR.tempRange);
+        const o = this.stackObject();
+        const i = this.obj.temps[data]!;
+        if (i < 0 || i >= o.obj.spriteVisibility.length) simThrow(XERR.sprite);
+        return this.short(o.obj.spriteVisibility, i, want);
+      }
+      case 30: {
+        // my person data[temp]
+        this.personOf(this);
+        if (data < 0 || data >= 8) simThrow(XERR.tempRange);
+        const i = this.obj.temps[data]!;
+        if (i < 0 || i >= 0x100) simThrow(XERR.personDataRange);
+        return this.personData(this, i, want);
+      }
+      case 31: {
+        // stack object's person data[temp]
+        const o = this.stackObject(XERR.noStackObject);
+        this.personOf(o);
+        if (data < 0 || data >= 8) simThrow(XERR.tempRange);
+        const i = this.obj.temps[data]!;
+        if (i < 0 || i >= 0x100) simThrow(XERR.personDataRange);
+        return this.personData(o, i, want);
+      }
+      case 32: // neighbor's person data
+        return m.neighborPersonData(this.getCurElem()!.stackObj, data);
+      case 33: // job data[temp 0, 1]
+        return m.unportedValue("scope 33 job data", 0);
+      case 34: // neighborhood data
+        if (data <= 0 || data >= 0x10) simThrow(0x3c);
+        return m.unportedValue("scope 34 neighborhood data", 0);
+      case 35: {
+        // stack object's function: does it have this entry point?
+        const o = this.stackObject();
+        return o.fnTable.getTreeID(data) !== 0 ? 1 : 0;
+      }
+      case 36: // my type attributes
+        return this.typeAttribute(this, data, want);
+      case 37: {
+        // stack object's type attributes (error 0xa without a stack object)
+        const o = m.getObject(this.getCurElem()!.stackObj);
+        if (!o) simThrow(0xa);
+        return this.typeAttribute(o, data, want);
+      }
+      case 38: // definition of the neighbor in the stack object
+        return m.unportedValue("scope 38 neighbor definition", 0);
+      default:
+        simThrow(XERR.badScope);
+    }
+  }
+
+  /** ObjSelector::GetTypeAttributes()[data]; out of [0, CountTypeAttributes) is error 0x40. */
+  private typeAttribute(o: SimObject, data: number, want: boolean): number {
+    const block = this.module.typeAttributes(o.obj.selector);
+    if (!block || data < 0 || data >= block.length) simThrow(XERR.typeAttrRange);
+    if (want) this.outRef = { a: block, i: data };
+    return block[data]!;
+  }
+
+  /** ObjectSlot +0x10 of slot `data` (slot 0 is the tile link, so data + 1). */
+  private slotValue(o: SimObject, data: number): number {
+    const s = data >= 0 && data < o.obj.objectSlots.length - 1 ? o.obj.objectSlots[data + 1] : undefined;
+    if (!s) simThrow(XERR.slotRange);
+    return s.containedId;
+  }
+
+  /** cXPerson +0x58c[data]; writes mark CPState dirty in the original (person panels). */
+  private personData(o: SimObject, data: number, want: boolean): number {
+    const p = o.person!;
+    if (want) this.outRef = { a: p.personData, i: data };
+    return p.personData[data]!;
+  }
+
+  /** cXObject::TryExpression. */
+  tryExpression(t: BehaviorTree, off: number): number {
+    const v = t.view;
+    const lhsData = v.getInt16(off + 4, true);
+    const rhsData = v.getInt16(off + 6, true);
+    const op = (t.bytes[off + 9]! << 24) >> 24;
+    const lhsScope = (t.bytes[off + 10]! << 24) >> 24;
+    const rhsScope = (t.bytes[off + 11]! << 24) >> 24;
+    const writes = OP_WRITES[op] === 1;
+    // A tree fix-up the original applies: local 3 out of [0, 5000] before "my motives" ops on 5000.
+    if (lhsData === 3 && rhsData === 5000 && op === 0xe) {
+      const e = this.getCurElem()!;
+      const l = e.getLocal(3);
+      if (l < 0 || l > 5000) e.stack.mem[e.localsAt() + 3] = 0;
+    }
+    const rhs = this.interpValue(rhsScope, rhsData, false);
+    this.outRef = null;
+    this.outFRef = null;
+    let lhs = this.interpValue(lhsScope, lhsData, writes);
+    const ref = this.outRef as ShortRef | null;
+    const fref = this.outFRef as FloatRef | null;
+    this.outRef = null;
+    this.outFRef = null;
+    if (op < 0 || op > 0x14) simThrow(1);
+    const noRef: () => never = () => simThrow(XERR.cantWrite);
+    const arith = (fi: (a: number) => number, ff: (a: number) => number): void => {
+      if (ref) ref.a[ref.i] = fi(ref.a[ref.i]!);
+      else if (fref) fref.a[fref.i] = ff(fref.a[fref.i]!);
+      else noRef();
+    };
+    let result: number;
+    switch (op) {
+      case 0:
+        result = lhs > rhs ? 1 : 0;
+        break;
+      case 1:
+        result = lhs < rhs ? 1 : 0;
+        break;
+      case 2:
+        result = lhs === rhs ? 1 : 0;
+        break;
+      case 3:
+        arith((a) => a + rhs, (a) => a + rhs);
+        result = 1;
+        break;
+      case 4:
+        arith((a) => a - rhs, (a) => a - rhs);
+        result = 1;
+        break;
+      case 5:
+        arith(() => rhs, () => rhs);
+        result = 1;
+        break;
+      case 6:
+        arith((a) => Math.imul(a, rhs), (a) => a * rhs);
+        result = 1;
+        break;
+      case 7:
+        if (rhs === 0) simThrow(XERR.divideByZero);
+        arith((a) => Math.trunc(a / rhs), (a) => a / rhs);
+        result = 1;
+        break;
+      case 8:
+        if ((rhs & 0xffff) > 0x10) simThrow(XERR.flagRange);
+        result = lhs & (1 << ((rhs - 1) & 31)) ? 1 : 0;
+        break;
+      case 9:
+        if ((rhs & 0xffff) > 0x10) simThrow(XERR.flagRange);
+        if (!ref) noRef();
+        ref.a[ref.i] = ref.a[ref.i]! | (1 << ((rhs - 1) & 31));
+        result = 1;
+        break;
+      case 10:
+        if ((rhs & 0xffff) > 0x10) simThrow(XERR.flagRange);
+        if (!ref) noRef();
+        ref.a[ref.i] = ref.a[ref.i]! & ~(1 << ((rhs - 1) & 31));
+        result = 1;
+        break;
+      case 11:
+        // ++ and <. With a float motive the original re-reads the short address (null): the rounded motive is used here.
+        if (ref) {
+          ref.a[ref.i] = ref.a[ref.i]! + 1;
+          lhs = ref.a[ref.i]!;
+        } else if (fref) {
+          fref.a[fref.i] = fref.a[fref.i]! + 1;
+          lhs = Math.trunc(fref.a[fref.i]!);
+        } else noRef();
+        result = lhs < rhs ? 1 : 0;
+        break;
+      case 12: {
+        if (!ref) noRef();
+        if (rhs === 0) simThrow(XERR.divideByZero);
+        if (ref.a[ref.i]! < 0) ref.a[ref.i] = -ref.a[ref.i]!;
+        const r = rhs < 0 ? -rhs : rhs;
+        ref.a[ref.i] = ref.a[ref.i]! % ((r << 16) >> 16);
+        result = 1;
+        break;
+      }
+      case 13:
+        if (!ref) noRef();
+        ref.a[ref.i] = ref.a[ref.i]! & rhs;
+        result = 1;
+        break;
+      case 14:
+        result = lhs >= rhs ? 1 : 0;
+        break;
+      case 15:
+        result = lhs <= rhs ? 1 : 0;
+        break;
+      case 16:
+        result = lhs !== rhs ? 1 : 0;
+        break;
+      case 17:
+        if (ref) {
+          ref.a[ref.i] = ref.a[ref.i]! - 1;
+          lhs = ref.a[ref.i]!;
+        } else if (fref) {
+          fref.a[fref.i] = fref.a[fref.i]! - 1;
+          lhs = Math.trunc(fref.a[fref.i]!);
+        } else noRef();
+        result = lhs > rhs ? 1 : 0;
+        break;
+      case 18:
+        if (!ref) noRef();
+        ref.a[ref.i] = ref.a[ref.i]! | rhs;
+        result = 1;
+        break;
+      case 19:
+        if (!ref) noRef();
+        ref.a[ref.i] = ref.a[ref.i]! ^ rhs;
+        result = 1;
+        break;
+      default:
+        // 20: := sqrt(rhs)
+        if (!ref) noRef();
+        ref.a[ref.i] = Math.trunc(Math.fround(Math.sqrt(rhs)));
+        result = 1;
+        break;
+    }
+    if (writes && fref && (lhsScope === 14 || lhsScope === 15 || lhsScope === 17)) {
+      const f = fref.a[fref.i]!;
+      if (f < MOTIVE_MIN) fref.a[fref.i] = MOTIVE_MIN;
+      else if (f > MOTIVE_MAX) fref.a[fref.i] = MOTIVE_MAX;
+    }
+    if (writes && ref && ref.a === this.obj.objectData && ref.i === OD.graphic) this.module.dirty(this);
+    return result;
+  }
+
+  // --- primitives ---------------------------------------------------------------------
+
+  /** cXObject::TryElement (lbl_10601898). */
+  tryElement(elem: StackElem, t: BehaviorTree, off: number): number {
+    const op = t.primitive(off) & 0x7fff;
+    this.primCounts.set(op, (this.primCounts.get(op) ?? 0) + 1);
+    const v = t.view;
+    const p = off + 4;
+    const s16 = (o: number): number => v.getInt16(p + o, true);
+    const u8 = (o: number): number => t.bytes[p + o]!;
+    switch (op) {
+      case 0:
+        return this.tryIdle(elem, s16(0));
+      case 1:
+        return this.tryGenericSimCall(s16(0));
+      case 2:
+        return this.tryExpression(t, off);
+      case 4: // Grab
+      case 5: // Drop
+        return this.module.unportedPrim(op, op === 4 ? "grab" : "drop", PRIM_FALSE);
+      case 7:
+        return this.tryUpdate(elem, s16(0), s16(2));
+      case 8:
+        return this.tryRandom(s16(0), s16(2), s16(4), s16(6));
+      case 9: // Burn
+        return this.module.unportedPrim(op, "burn", PRIM_FALSE);
+      case 10: // Tutorial
+        return this.module.unportedPrim(op, "tutorial", PRIM_TRUE);
+      case 11:
+        return this.tryGetDistanceTo(elem, s16(0), u8(2), u8(3), s16(4));
+      case 12:
+        return this.tryDirectionTo(elem, s16(0), s16(2), u8(4), u8(5), s16(6));
+      case 13: // Push Interaction: needs the person interaction queue.
+        return this.module.unportedPrim(op, "push interaction", PRIM_FALSE);
+      case 14: // Find Best Object For Function
+        return this.module.unportedPrim(op, "find best object for function", PRIM_FALSE);
+      case 15: {
+        // Breakpoint: throws when the value is non-zero.
+        if (this.interpValue(s16(2), s16(0), false) !== 0) simThrow(XERR.breakpoint);
+        return PRIM_TRUE;
+      }
+      case 16: // Find Location For
+        return this.module.unportedPrim(op, "find good location", PRIM_FALSE);
+      case 18:
+        return this.tryKillObject(elem, s16(0), u8(2));
+      case 19: // Make New Character
+        return this.module.unportedPrim(op, "make new character", PRIM_FALSE);
+      case 20:
+        return this.tryCallFunctionalTree(elem, s16(0), s16(2));
+      case 21: // Show String: a string of the private file sent to the UI (GlobalDispatch 0xeb); recorded only.
+        this.module.record(this, "showString", s16(0));
+        return PRIM_TRUE;
+      case 23: // Play Sound Event (TryPlaySound always succeeds): recorded only.
+        this.module.record(this, "playSound", s16(0));
+        return PRIM_TRUE;
+      case 24: // Old Relationship
+        return this.module.unportedPrim(op, "old relationship", PRIM_FALSE);
+      case 26: // Relationship
+        return this.tryRelationship2(elem, u8(0), u8(1), u8(2), u8(3), (u8(4) << 24) >> 24, s16(6));
+      case 25:
+        return this.tryBudget(u8(0), u8(1), s16(2), v.getUint16(p + 4, true), u8(6));
+      case 28:
+        return this.tryCallNamedTree(elem, s16(0), s16(2), u8(4), u8(5));
+      case 31:
+        return this.trySetToNext(elem, t, p);
+      case 32:
+        return this.tryTestObjectType(v.getUint32(p, true), u8(6), s16(4));
+      case 33: // Find 5 Worst Motives
+        return this.module.unportedPrim(op, "find 5 worst motives", PRIM_FALSE);
+      case 34: // UI Effect (tutorial button flashes): recorded only.
+        this.module.record(this, "uiEffect", s16(0));
+        return PRIM_TRUE;
+      case 35: // Special effect (TryUserEvent): recorded only.
+        return this.module.unportedPrim(op, "user event", PRIM_TRUE);
+      case 36: // Dialog: recorded; answered as the first button (true).
+        this.module.record(this, "dialog", u8(5) & 0x7f);
+        return PRIM_TRUE;
+      case 41: // Set Balloon / Headline: recorded only (no sprite slot activation).
+        this.module.record(this, "balloon", s16(2));
+        return PRIM_TRUE;
+      case 42: // Create New Object Instance: placement is not simulated yet.
+        return this.module.unportedPrim(op, "create object", PRIM_FALSE);
+      case 43: // Drop Onto
+        return this.module.unportedPrim(op, "drop onto", PRIM_FALSE);
+      case 46: // Snap
+        return this.module.unportedPrim(op, "snap", PRIM_FALSE);
+      case 48: // Stop All Sounds: recorded only.
+        this.module.record(this, "killSounds", 0);
+        return PRIM_TRUE;
+      case 49:
+        return this.tryNotifyOutOfIdle(elem);
+      case 50: // Add / Change Action String: person interaction queue, recorded only.
+        this.module.record(this, "actionString", s16(0));
+        return PRIM_TRUE;
+      case 51: // Manage Inventory
+        return this.module.unportedPrim(op, "inventory", PRIM_FALSE);
+      default:
+        // 3, 6, 17, 22, 27, 29, 30, 37..40, 44, 45, 47 (person primitives) and >= 0x34: error 5.
+        simThrow(XERR.unknownPrimitive);
+    }
+  }
+
+  /**
+   * cXObject::TryIdle (Sleep): the parameter `paramIndex` of the frame counts
+   * the ticks left. When nothing keeps the object awake the count moves to the
+   * module's per-object idle counter (TickAllObjects skips the object until
+   * it runs out); otherwise it counts down here, one tick per call.
+   */
+  private tryIdle(elem: StackElem, paramIndex: number): number {
+    if (paramIndex < 0 || paramIndex >= elem.numParams) simThrow(XERR.paramRange);
+    const at = elem.paramsAt() + paramIndex;
+    const mem = elem.stack.mem;
+    if (this.module.idleCounter(this.id) === 0) {
+      mem[at] = 0;
+      this.module.setIdleCounter(this.id, 0xffff);
+    }
+    if (mem[at]! < 0) mem[at] = 0;
+    const n = mem[at]!;
+    if (n === 0) return PRIM_TRUE;
+    const slot0 = this.obj.spriteSlots[0];
+    const awake = this.isPerson || (slot0 !== undefined && slot0.activeTicks !== 0) || this.obj.objectData[OD.keepAwake]! !== 0;
+    if (!awake) this.module.setIdleCounter(this.id, (n - 1) & 0xffff);
+    else mem[at] = n - 1;
+    return PRIM_WAIT;
+  }
+
+  /** cXObject::TryUpdate (Refresh): who 0 me / 1 stack object; what 0 graphic, 1 UI, 2 room score. */
+  private tryUpdate(elem: StackElem, who: number, what: number): number {
+    let o: SimObject | null = this;
+    if (who === 1) {
+      o = this.obj_(elem.stackObj);
+      if (!o) simThrow(XERR.noStackObject);
+    } else if (who !== 0) {
+      simThrow(3);
+    }
+    if (what === 0) this.module.dirty(o);
+    else if (what === 1) this.module.record(o, "refreshUI", o.id);
+    else if (what === 2) {
+      if (o.obj.objectData[OD.roomImpact] !== -5) this.module.record(o, "roomScoreChanged", 0);
+    } else simThrow(3);
+    return PRIM_TRUE;
+  }
+
+  /** cXObject::TryRandom: lhs := random % rhs (operands: lhs data, lhs scope, rhs data, rhs scope). */
+  private tryRandom(lhsData: number, lhsScope: number, rhsData: number, rhsScope: number): number {
+    this.outRef = null;
+    this.outFRef = null;
+    this.interpValue(lhsScope, lhsData, true);
+    const ref = this.outRef as ShortRef | null;
+    const fref = this.outFRef as FloatRef | null;
+    this.outRef = null;
+    this.outFRef = null;
+    const n = this.interpValue(rhsScope, rhsData, false);
+    if (n === 0) simThrow(XERR.randomZero);
+    const r = this.module.sim.random();
+    const value = r - Math.trunc(r / (n >>> 0)) * n;
+    if (ref) ref.a[ref.i] = value;
+    else if (fref) fref.a[fref.i] = value >>> 0;
+    else simThrow(XERR.cantWrite);
+    return PRIM_TRUE;
+  }
+
+  /** The Get Distance To case of TryElement: temps[t] := CalcShortDistance(object, stack object). */
+  private tryGetDistanceTo(elem: StackElem, temp: number, flags: number, scope: number, data: number): number {
+    if (temp < 0 || temp >= 8) simThrow(XERR.tempRange);
+    const id = this.interpValue(flags & 1 ? scope : 3, flags & 1 ? data : OD.objectId, false);
+    const a = this.obj_(id);
+    if (!a) simThrow(XERR.noTestObject);
+    const b = this.obj_(elem.stackObj);
+    if (!b) simThrow(XERR.noTestObject);
+    this.obj.temps[temp] = Math.trunc(calcShortDistance(a.obj, b.obj));
+    return PRIM_TRUE;
+  }
+
+  /** cXObject::TryDirectionTo: the 8-way direction from the object to the stack object. */
+  private tryDirectionTo(elem: StackElem, lhsData: number, lhsScope: number, flags: number, scope: number, data: number): number {
+    this.outRef = null;
+    this.interpValue(lhsScope, lhsData, true);
+    const ref = this.outRef as ShortRef | null;
+    this.outRef = null;
+    const id = this.interpValue(flags & 1 ? scope : 3, flags & 1 ? data : OD.objectId, false);
+    const from = this.obj_(id);
+    if (!from) simThrow(XERR.noTestObject);
+    const to = this.obj_(elem.stackObj);
+    if (!to) simThrow(XERR.noStackObject);
+    const dx = to.obj.fx - from.obj.fx;
+    const dy = to.obj.fy - from.obj.fy;
+    const ax = Math.abs(dx);
+    const ay = Math.abs(dy);
+    let d = ax * 2 < ay ? 4 : ay * 2 < ax ? 2 : 3;
+    if (dx < 0) {
+      if (d === 3) d = 5;
+      else if (d === 2) d = 6;
+    }
+    if (dy < 0) {
+      if (d === 4) d = 0;
+      else if (d === 3) d = 1;
+      else if (d === 5) d = 7;
+    }
+    if (!ref) simThrow(XERR.cantWrite);
+    ref.a[ref.i] = (d + 8) & 7;
+    return PRIM_TRUE;
+  }
+
+  /** cXObject::TryKillObject: who 0 me / 1 stack object / 2 nobody. */
+  private tryKillObject(elem: StackElem, who: number, flags: number): number {
+    if (who < 0 || who > 2) simThrow(9);
+    const id = who === 0 ? this.id : who === 1 ? elem.stackObj : 0;
+    const o = this.obj_(id);
+    if (!o) return PRIM_FALSE;
+    this.module.addToKillQueue(id, ((flags >> 1) & 1) ^ 1);
+    if (id === this.id && treeSimGlobals.notInCheckTree && (flags & 1) === 0) return PRIM_WAIT;
+    return PRIM_TRUE;
+  }
+
+  /** cXObject::TryCallFunctionalTree: an entry point of the stack object, run on this stack. */
+  private tryCallFunctionalTree(elem: StackElem, fn: number, flags: number): number {
+    const o = this.obj_(elem.stackObj);
+    if (!o) simThrow(XERR.noStackObject);
+    const EPS = [0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, -1, 0x1b, 0xe, 0x1c, 0x10, 0x11, 0x1d];
+    if (fn < 0 || fn > 14) return PRIM_FALSE;
+    const ep = EPS[fn]!;
+    if (ep === -1) {
+      // Entry point 0x1a is only called for people (a cXPerson +0x60e test): not ported.
+      if (!this.isPerson) return PRIM_FALSE;
+      return this.module.unportedPrim(20, "functional tree 8 (person)", PRIM_FALSE);
+    }
+    const tree = o.fnTable.getTreeID(ep);
+    if (tree === 0) return PRIM_FALSE;
+    // Bit 0 of the flags is GosubObjectTree's last argument (unused by cXObject's).
+    void flags;
+    return this.gosubObjectTree(o, null, tree) ? PRIM_CONTINUE : PRIM_FALSE;
+  }
+
+  /** cXObject::TryBudget. */
+  /**
+   * cXObject::TryGenericSimCall: 44 calls through lbl_105BBAC0, all returning
+   * true; calls >= 0x2c (and 7, 22) are error 0x2a. Ported: 10/11 (buy and
+   * build disabled/enabled: recorded), 28 (lot zoning into temp 0). Others
+   * are logged and return true.
+   */
+  private tryGenericSimCall(call: number): number {
+    const m = this.module;
+    if (call < 0 || call >= 0x2c || call === 7 || call === 22) simThrow(0x2a);
+    switch (call) {
+      case 10:
+      case 11:
+        // ObjectModule::DisableBuyAndBuild / EnableBuyAndBuild(this).
+        m.buyBuildDisabledBy = call === 10 ? this.id : 0;
+        m.record(this, call === 10 ? "disableBuyAndBuild" : "enableBuyAndBuild", this.id);
+        return PRIM_TRUE;
+      case 28: {
+        // Zoning of house temp 0: 90-92 -> 0, 93-98 -> 1, else
+        // Neighborhood::GetZoningType (house 0 -> 1; listed house -> its
+        // type, else 0) mapped 1 -> 0, 2 -> 1, other -> -1. The
+        // neighborhood's zoning list (+0x170) is not loaded, so any other
+        // house reads as unzoned (-1).
+        const h = this.temps[0]!;
+        let r: number;
+        if (h >= 0x5a && h <= 0x5c) r = 0;
+        else if (h >= 0x5d && h <= 0x62) r = 1;
+        else r = h === 0 ? 0 : -1;
+        this.temps[0] = r;
+        return PRIM_TRUE;
+      }
+      default:
+        return m.unportedPrim(1, `generic sim call ${call}`, PRIM_TRUE);
+    }
+  }
+
+  /**
+   * cXObject::TryRelationship2. Operands: variable index, mode (0 me -> stack
+   * object, 1 stack object -> me, 2 local's object -> stack object, 3 stack
+   * object -> local's object), flags (1 fail when the variable is missing, 2
+   * neighbor relationships, 4 set instead of get), local index, value scope
+   * and data. Object relationships live in the source's RelMatrix keyed by
+   * the target's id. Person-to-person and neighbor relationships go through
+   * the neighborhood, which is not wired: they are logged and fail.
+   */
+  private tryRelationship2(elem: StackElem, index: number, mode: number, flags: number, local: number, scope: number, data: number): number {
+    const m = this.module;
+    if (flags & 2) return m.unportedPrim(26, "relationship (neighbors)", PRIM_FALSE);
+    const localObj = (): SimObject | null => {
+      if (local >= elem.numLocals) simThrow(0x33);
+      return m.getObject(elem.getLocal(local));
+    };
+    let from: SimObject | null = null;
+    let to: SimObject | null = null;
+    if (mode === 0) {
+      from = this;
+      to = m.getObject(elem.stackObj);
+    } else if (mode === 1) {
+      from = m.getObject(elem.stackObj);
+      to = this;
+    } else if (mode === 2) {
+      to = localObj();
+      from = m.getObject(elem.stackObj);
+    } else if (mode === 3) {
+      from = localObj();
+      to = m.getObject(elem.stackObj);
+    }
+    if (!from || !to) simThrow(0x15);
+    if (from.obj.isPerson && to.obj.isPerson) return m.unportedPrim(26, "relationship (person to person)", PRIM_FALSE);
+    const rel = from.obj.relations;
+    let arr = rel.get(to.id);
+    if (!arr || arr.length <= index) {
+      if (flags & 1) return PRIM_FALSE;
+      if (!arr) {
+        arr = [];
+        rel.set(to.id, arr);
+      }
+      while (arr.length <= index) arr.push(0);
+    }
+    this.outRef = null;
+    this.outFRef = null;
+    const value = this.interpValue(scope, data, true);
+    const ref = this.outRef as ShortRef | null;
+    this.outRef = null;
+    this.outFRef = null;
+    if (flags & 4) arr[index] = (value << 16) >> 16;
+    else {
+      if (!ref) simThrow(XERR.cantWrite);
+      ref.a[ref.i] = arr[index]!;
+    }
+    return PRIM_TRUE;
+  }
+
+  private tryBudget(kind: number, scope: number, data: number, flags: number, expense: number): number {
+    const s = kind === 2 ? 0x19 : kind === 0 ? 7 : kind === 1 ? 9 : scope;
+    if (expense > 8) simThrow(XERR.expenseType);
+    let amount = this.interpValue(s, data, false);
+    const funds = this.module.sim.getFunds();
+    if (flags & 2) amount = -amount;
+    if (amount < 0 || amount <= funds) {
+      if ((flags & 1) === 0) this.module.sim.spend(expense, amount);
+      return PRIM_TRUE;
+    }
+    return PRIM_FALSE;
+  }
+
+  /**
+   * cXObject::TryCallNamedTree: a tree looked up by name (STR# `strId`
+   * entry `index` of the private / semi-global file, or Global.iff when
+   * flag 1) in the stack object's Behavior; mode 0 runs it now on this
+   * object, 1 on the stack object, 2 pushes it on this stack.
+   */
+  private tryCallNamedTree(elem: StackElem, strId: number, flags: number, index: number, mode: number): number {
+    if (elem.state === 1) return this.lastResult ? PRIM_TRUE : PRIM_FALSE;
+    const beh = elem.behavior!;
+    let file;
+    if (flags & 1) file = beh.glob;
+    else if (getTreeClass(elem.getTreeID()) === 2) file = beh.priv;
+    else file = beh.getResFile(getBaseID(3));
+    const name = file ? loadStringSet(file, strId)?.[index] : undefined;
+    if (!name) return PRIM_FALSE;
+    const stackObj = this.obj_(elem.stackObj);
+    let runner: SimObject | null;
+    let now: boolean;
+    if (mode === 1) {
+      runner = stackObj;
+      now = true;
+    } else if (mode === 0) {
+      runner = this;
+      now = true;
+    } else if (mode < 3) {
+      runner = this;
+      now = false;
+    } else {
+      simThrow(XERR.namedTreeMode);
+    }
+    if (!runner || !stackObj) simThrow(XERR.noStackObject);
+    const treeBeh = stackObj.behavior;
+    const tree = treeBeh.getTreeID(name);
+    if (tree === 0) return PRIM_FALSE;
+    if (now) return runner.runCheckTree(treeBeh, stackObj.id, tree, null) ? PRIM_TRUE : PRIM_FALSE;
+    if (runner !== this || !this.gosubObjectTree(stackObj, null, tree)) return PRIM_FALSE;
+    elem.state = 1;
+    return PRIM_CONTINUE;
+  }
+
+  /** The Test Object Type case of TryElement: the object's GUID (or its master's) is `guid`. */
+  private tryTestObjectType(guid: number, scope: number, data: number): number {
+    const o = this.obj_(this.interpValue(scope, data, false));
+    if (!o) simThrow(XERR.noTestObject);
+    const sel = o.obj.selector;
+    if ((sel.guid | 0) === (guid | 0)) return PRIM_TRUE;
+    return (sel.getMasterSelector().guid | 0) === (guid | 0) ? PRIM_TRUE : PRIM_FALSE;
+  }
+
+  /** The Notify Stack Object Out Of Idle case: wakes a sleeping stack object now. */
+  private tryNotifyOutOfIdle(elem: StackElem): number {
+    const o = this.obj_(elem.stackObj);
+    if (!o) simThrow(XERR.noStackObject);
+    const main = o.getMainSimElem();
+    const ref = main?.behavior?.getNodeRef(main.getTreeID(), main.node) ?? null;
+    if (main && ref) {
+      const prim = ref.tree.primitive(ref.off) & 0x7fff;
+      if (prim === 0) {
+        main.setParam(0, 0);
+        this.module.setIdleCounter(o.id, 0);
+      } else if (prim === 0x11) {
+        main.setParam(0, 0);
+      }
+    }
+    return PRIM_TRUE;
+  }
+
+  /**
+   * cXObject::TrySetToNext. Operands: +0 GUID, +4 search type (bit 7: the
+   * target is the variable +5 / +7, else the stack object id), +6 local.
+   */
+  private trySetToNext(elem: StackElem, t: BehaviorTree, p: number): number {
+    const v = t.view;
+    const kindByte = t.bytes[p + 4]!;
+    const scope = kindByte & 0x80 ? t.bytes[p + 5]! : 10;
+    const data = kindByte & 0x80 ? t.bytes[p + 7]! : 0;
+    this.outRef = null;
+    this.interpValue(scope, data, true);
+    const ref = this.outRef as ShortRef | null;
+    this.outRef = null;
+    if (!ref) simThrow(XERR.cantWrite);
+    const kind = kindByte & 0x7f;
+    const m = this.module;
+    const cur = ref.a[ref.i]!;
+    const nextIn = (list: readonly SimObject[]): number => {
+      if (cur === 0) return list[0]?.id ?? 0;
+      const i = list.findIndex((o) => o.id === cur);
+      return i < 0 ? 0 : (list[i + 1]?.id ?? 0);
+    };
+    let found = 0;
+    switch (kind) {
+      case 1: // person
+        found = nextIn(m.people);
+        ref.a[ref.i] = found;
+        return found !== 0 ? PRIM_TRUE : PRIM_FALSE;
+      case 3: {
+        // the next part of a multi-tile object
+        const o = m.getObject(cur);
+        if (!o || o.obj.selector.objd.masterId === 0) {
+          ref.a[ref.i] = 0;
+          return PRIM_FALSE;
+        }
+        const part = m.nextMultiTilePart(o);
+        ref.a[ref.i] = part ? part.id : 0;
+        return part ? PRIM_TRUE : PRIM_FALSE;
+      }
+      case 4: {
+        // object of type (GUID)
+        found = nextIn(m.getInstances(v.getUint32(p, true)));
+        ref.a[ref.i] = found;
+        return found !== 0 ? PRIM_TRUE : PRIM_FALSE;
+      }
+      case 5: // neighbor
+      case 7: // neighbor of type
+      case 9: // object adjacent to object in local
+      case 10: // career
+      case 11: // neighborhood list
+      case 12: // person in the same family
+        return m.unportedPrim(31, `set to next type ${kind}`, PRIM_FALSE);
+      case 8: {
+        // object on the same tile (ObjectIterator over the tile, wrapping)
+        const o = m.getObject(cur);
+        if (!o || o.obj.tileX < 0) return PRIM_FALSE;
+        const here = m.list.filter((x) => x.obj.tileX === o.obj.tileX && x.obj.tileY === o.obj.tileY && x.obj.level === o.obj.level);
+        const i = here.indexOf(o);
+        const n = here[i + 1] ?? here[0]!;
+        ref.a[ref.i] = n.id;
+        return PRIM_TRUE;
+      }
+      default: {
+        // 0 any object, 2 non-person, 6 object whose data 59 (+0xc0) is parameter 0: the module list.
+        let o: SimObject | null;
+        if (cur === 0) o = m.list[0] ?? null;
+        else {
+          const c = m.getObject(cur);
+          o = c ? m.nextInList(c) : null;
+        }
+        if (o) {
+          if (kind === 2) {
+            while (o && o.isPerson) o = m.nextInList(o);
+          } else if (kind === 6) {
+            const want = elem.getParam(0);
+            while (o && o.obj.objectData[OD.category] !== want) o = m.nextInList(o);
+          } else if (kind !== 0) {
+            simThrow(XERR.setToNextType);
+          }
+        }
+        if (o) ref.a[ref.i] = o.id;
+        return o ? PRIM_TRUE : PRIM_FALSE;
+      }
+    }
+  }
+}
+
+/** cXObject::CalcShortDistance: tiles between two objects (levels count 20 units each, 1/256 scale on the plane). */
+export function calcShortDistance(a: XObject, b: XObject): number {
+  if (b.selector.objd.objectType === 7) return 0;
+  const dx = a.fx - b.fx;
+  const dy = a.fy - b.fy;
+  const dz = Math.fround((b.level - a.level) * 0x14);
+  return Math.fround(Math.sqrt(Math.fround(Math.fround(1 / 256) * (dx * dx + dy * dy)) + dz * dz));
+}
+
