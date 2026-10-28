@@ -18,6 +18,8 @@ reload.
 4. Options → Save, back to the neighborhood, re-enter lot 9 → objects, funds and clock
    persisted.
 5. House01 (`?house=1`) load to check the expansion "Help System" dialogs.
+6. House01 → taxi → lot 25 (downtown) → pay phone "Rentrer" → House01, out through the shop
+   door; ~30 sim hours downtown, ~5 sim hours each on House01, House05, House07 without stuck sims.
 
 ## Bugs found and fixed
 
@@ -50,6 +52,9 @@ reload.
 | 25 | "Visit Generator" error 1101 (tree 4100 node 4) | Too many primitives: the limit (lbl_105BA2EC) used the people on the lot | objects x 15 + 10000 + Neighborhood::GetNumCharacters^2 x 15, characters = neighbors from the Characters folder (selector source & 3 = 1) (`SimModule.updatePrimitiveLimit`, `ObjectFolder.sourceOfGUID`) |
 | 26 | CPState day stayed 0 | Only the time of day was pushed | `Simulator.pushClock` (UpdateCPStateFromWorld) also writes the day (global 28) and is called by setCurrentHour and at lot start. The original control panel shows no date; the field only feeds the status scripts |
 | 27 | Unported generic sim calls 12, 26, 43; prims 10, 35; scope 23 | - | 12: -(x + y) of the stack object's tile through CTilePt::BuildRotationLookup; 26: ObjectModule first person in the house (temp 0 / 1); 43: Family::LoadSpellsForFamily (FAMI v9 spells parsed); prim 10 cXObject::TryTutorial (ObjectModule::SetTutorialObject); prim 35 cXObject::TryUserEvent (3 states, LivePIP option, residential gate, speed 1, caption from STR# 0x131), without a window it centers the view when auto-centering is on; scope 23 Room::GetAmbientLight / IsOutside / GetLevel / GetArea (`sim/xobject.ts`, `sim/simmodule.ts`, `world/lighting.ts`, `world/winlotview.ts`) |
+| 28 | Downtown (lot 25), "Appeler taxi / Rentrer": "goto door and face thru" fails, route failure feedback loops; Jeff, the Prude and the Janitor stuck for days in the shop door, routes fail with result 3 / 13 / 8 / 11 | SAnimator::FollowOneStep did not project the arrival point on the path: with the stale step direction and no clamp the sims drifted into the 7-unit inflated partition margins of the door tiles (e.g. 474,474), from where every route fails (3), and blocked the others (13) | `findNearestPoint` (TileList::FindNearestPoint: idx < 0 all segments, 0 the first, > 0 only segment idx - 1; +0.5 rounding, t clamped to [0, 1]) used by FollowOneStep (idx -1) and the step (`sim/personanim.ts`) |
+| 29 | Route result 8 with the target itself as the blocker (pay phone, fish display case) | A stale route footprint (pd72 = 8, left by an interrupted "route in front of Person B", GenericSimCall 15) extended the sim's rect 8 units forward into the target | cXPerson::SetCurrentAction resets pd73 (rect recomputed), pd72, pd71, and pd38 / pd39 when the action has a target (`sim/person.ts`) |
+| 30 | Blocked-route handling differed from the original | States 6 / 14 replanned / gave up early; MoveOutOfWay re-asked a sim already moving out of the way; finishRoute did not release the sims that asked | XRoute::TryGotoRoutingSlot states 6 (stage 0 wait, 1 AskOthersToMove → 14, 2 retry, 3 fail) and 14 ("route ask to move animation" then "route waiting animation" for 100 ticks); MoveOutOfWay false when already moving out of the way, records +0x80 / +0x90; finishRoute footprint (pd72 → pd73, CanPlace fail → result 1) and release of askers (+0x84 success) then RemoveAction (`sim/person.ts`, `sim/routing.ts`) |
 
 Checked after the fixes (screenshots in the local scratch folder):
 - Newspaper → "Chercher un emploi" → "l'Echo de SimCity" dialog with the expanded offer
@@ -97,9 +102,9 @@ Checked after the fixes (screenshots in the local scratch folder):
 
 | Problem | Suspected cause |
 |---|---|
-| Taxi trip home from downtown fails | Outbound works (phone "Aller en ville - $ 50", taxi dialogs, leave-house confirmation, town picker, lot 25 loaded, Jeff in through the ped marker, Diane joins through Hot Date's "Join Downtown"). Pay phone "Appeler taxi / Rentrer": Go Home → Auto Call Cab → Common entry → portal function → "goto door and face thru" fails → fail portal call → route failure feedback, in a loop. Jeff stands on the door tile (29,30), the Prude NPC on the door's inner tile (29,29) and the Janitor beside her (28,29), all three stuck for days; routes fail with result 8 (blocker: fish display case 187) / 11. Probably the routing's person-blocking / "move out of the way" handling in doorways (`sim/routing.ts`), not investigated |
-| Downtown clock runs about twice as fast as speed 3 at home | Not investigated |
-| Recurring error 4 (random range 0) in DFController tree 4097 node 10 | Data-driven, not investigated |
+| Downtown clock "about twice as fast" | Not reproduced: 2 s of game time per tick on lot 25 and at home, speed 1 = 23.8 ticks/s and speed 3 = 450-480 ticks/s on both, one simulate() per frame after switchLots |
+| Error 4 (random range 0) in DFController tree 4097 node 10 | Faithful: the range is the dance floor count (stack attribute 1) and the original TryRandom also fails on 0; only reached from the patterns when the count is not 0. Not reproduced in ~30 sim hours on lot 25 (0 dance floor tiles) |
+| Error 62 at tree 8330 node 29 ("do new adult idle", holding an object) seen once on 5 townies downtown | Deliberate breakpoint in the BHAV; not reproduced in an A/B run (9000-33000 ticks), cause unknown |
 | Prim 35 with the window flag (cWinPictureInPicture) | The picture-in-picture window is not ported (reported as unported); without the flag the view centers on the object |
 | Repo man takes $1 controllers (music / pet) on a near-empty lot | Their price is 1 (MakeNewOutOfWorldObject); data-driven, probably faithful |
 | A fresh empty lot (fridge only) starves its family: Have A Meal stops at "grab food" without a counter, then social worker and Grim Reaper | Probably faithful (no counter), not compared with the original |

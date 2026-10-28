@@ -1193,29 +1193,29 @@ export class PersonSim extends SimObject {
           // Blocked: replan while moving, then ask people in the way to move, replan once more, give up.
           const dx = me.fx - route.lastFx;
           const dy = me.fy - route.lastFy;
+          route.lastFx = me.fx;
+          route.lastFy = me.fy;
           switch (route.blockedStage) {
             case 0:
+              // Not moved: straight on to the next stage (no replan).
               if (dx * dx + dy * dy > 0x40) state = 1;
               else route.blockedStage = 1;
               break;
             case 1:
               route.blockedStage = 2;
-              if (!route.asked && this.askOthersToMove(route)) {
-                route.asked = true;
-                route.waitTick = m.sim.tickCount;
-                state = 14;
-              } else state = 16;
+              if (!route.askedPerson && this.askOthersToMove(route)) state = 14;
+              else state = 16;
               break;
             case 2:
               route.blockedStage = 3;
               state = 1;
               break;
-            default:
+            case 3:
               state = 16;
+              break;
+            default:
+              state = 7;
           }
-          route.lastFx = me.fx;
-          route.lastFy = me.fy;
-          if (state === 6) state = 1;
           break;
         }
         case 7:
@@ -1247,26 +1247,37 @@ export class PersonSim extends SimObject {
           break;
         }
         case 14: {
-          // Waiting for the person asked to move (100 ticks at most).
-          const asked = route.askedPerson;
-          if (!asked || !(asked instanceof PersonSim) || !asked.hasMoveOutOfWay()) {
-            route.askedPerson = null;
+          // Waiting for the person asked to move: the ask animation once, then the waiting
+          // animation for 100 ticks at most (+0x5c the tick it started), then blocked again.
+          if (this.shouldInterrupt() && this.isInterruptable()) {
+            route.result = ROUTE.interrupted;
+            state = 7;
+            break;
+          }
+          if (!route.askedPerson) {
+            // The asked person was cleaned up (+0x84): the blocked stages start over.
+            route.waitTick = 0;
+            if (route.asked) route.blockedStage = 0;
             state = 1;
             break;
           }
-          if (route.waitTick === m.sim.tickCount) {
+          const now = m.sim.tickCount;
+          if (route.waitTick === 0) {
             const tree = this.behavior.getTreeID("route ask to move animation");
             if (tree !== 0 && this.gosubObjectTree(this, null, tree)) {
               const e = this.getCurElem();
-              if (e) e.stackObj = asked.id;
+              if (e) e.stackObj = route.askedPerson.id;
+              route.waitTick = now;
               return wait(14, PRIM_CONTINUE);
             }
+            state = 6;
+            break;
           }
-          if (m.sim.tickCount - route.waitTick < 100) {
+          if (now - route.waitTick < 100) {
             const tree = this.behavior.getTreeID("route waiting animation");
             if (tree !== 0 && this.gosubObjectTree(this, null, tree)) return wait(14, PRIM_CONTINUE);
-            return wait(14);
           }
+          route.waitTick = 0;
           state = 6;
           break;
         }
@@ -1323,12 +1334,15 @@ export class PersonSim extends SimObject {
     const m = this.module;
     const me = this.obj;
     if (success) {
-      pd[73] = pd[72]!;
       const h = m.worldHooks;
       if (pd[PDX.sitting] === 0 && h && me.parentId === 0) {
+        // The route footprint becomes the footprint extension when the person fits with it
+        // (else it is dropped); not fitting where the walk ended fails the route (result 1).
+        const fp = pd[72]!;
+        if (fp !== 0) pd[73] = fp;
         if (!h.canPlace(me, { fx: me.fx, fy: me.fy }, me.level, null, -1)) {
-          // Someone stands where the walk ended: wait and replan once more.
-          if (route.result === 0) route.result = ROUTE.unknown;
+          if (fp !== 0) pd[73] = 0;
+          route.result = ROUTE.unknown;
           success = false;
         }
       }
@@ -1348,8 +1362,22 @@ export class PersonSim extends SimObject {
     pd[PDX.routeResult] = route.result;
     if (this.routes.length === 1 && pd[38] === 0) pd[PDX.routingComplete] = 1;
     me.objectData[9] = 0;
-    // People waiting on this one go on (their state 14 sees the action gone).
-    if (route.askedPerson instanceof PersonSim) route.askedPerson.cancelMoveOutOfWay();
+    // This person moved out of someone's way: the asker's route (its top one) is released,
+    // +0x84 telling whether the move worked.
+    const cur = this.currentAction;
+    if (cur) {
+      for (const p of m.people) {
+        if (p === this || !(p instanceof PersonSim)) continue;
+        const r = p.route;
+        if (r && r.askedPerson === this && r.askedInteraction === cur) {
+          r.asked = success;
+          r.askedPerson = null;
+          r.askedInteraction = null;
+        }
+      }
+    }
+    // The move-out-of-the-way action pushed on the asked person is removed (RemoveAction).
+    if (route.askedPerson instanceof PersonSim && route.askedInteraction) route.askedPerson.removeAction(route.askedInteraction as Interaction);
     this.routes.pop();
     this.module.dirty(this);
     this.traceRoute(`${success ? "arrived" : "gave up"} at ${me.fx},${me.fy} dir ${me.dir} result ${route.result}`);
@@ -1491,25 +1519,16 @@ export class PersonSim extends SimObject {
     return isMove(this.currentAction) || this.queue.some(isMove);
   }
 
-  /** The asker finished: the queued move-out-of-the-way interaction goes (RemoveAction). */
-  cancelMoveOutOfWay(): void {
-    for (const i of [...this.queue]) {
-      const o = this.module.getObject(i.target);
-      if (o && o.obj.guid === PersonSim.MOVE_HELPER_GUID && i.ttabIndex === 3) this.removeAction(i);
-    }
-  }
-
   /**
-   * cXPerson::MoveOutOfWay(asker's route, path): unless already moving out
-   * of the way or waiting on someone, the helper object 0x7c4 is made at
+   * cXPerson::MoveOutOfWay(asker's route, path): false when already moving
+   * out of the way or waiting on someone; else the helper object 0x7c4 is made at
    * this person's position with a routing slot to either side of the
    * asker's path (1 to 5 tiles, 8 units resolution, any facing, random
    * scores; straight ahead too when the sides are blocked), and its
    * interaction 3 is pushed with the asker's priority (person data 33).
    */
   moveOutOfWay(asker: PersonSim, route: XRoute, path: readonly PathPt[]): boolean {
-    if (this.hasMoveOutOfWay()) return true;
-    if (path.length < 2) return false;
+    if (this.hasMoveOutOfWay() || path.length < 2) return false;
     const top = this.route;
     if (top && top.askedPerson) return false;
     const me = this.obj;
@@ -1585,8 +1604,14 @@ export class PersonSim extends SimObject {
     slotOverrides.set(helper, own);
     const e = this.module.treeTableOf(helper.obj.selector)?.entries.find((x) => x.stringIndex === 3);
     if (!e) return false;
-    if (!this.addAction(this.makeInteraction(helper, e, asker.pd[33]!))) return false;
+    const i = this.makeInteraction(helper, e, asker.pd[33]!);
+    if (!this.addAction(i)) {
+      this.module.killObject(helper);
+      return false;
+    }
     route.askedPerson = this;
+    route.askedInteraction = i;
+    route.asked = false;
     this.module.record(asker, "askToMove", this.id);
     return true;
   }
@@ -1843,14 +1868,28 @@ export class PersonSim extends SimObject {
 
   /**
    * cXPerson::SetCurrentAction: the current action becomes the last one;
-   * person data 33 ("Priority") takes the new priority and the motive
-   * increments are cleared.
+   * person data 33 ("Priority") takes the new priority, the motive
+   * increments are cleared, and so are person data 71..73.
    */
   setCurrentAction(i: Interaction | null): void {
     if (this.currentAction) this.lastAction = this.currentAction;
     this.currentAction = i;
+    // A new action with a target starts with its routing flags (person data 38 / 39) cleared.
+    if (i && i.target !== 0) {
+      this.pd[38] = 0;
+      this.pd[PDX.routingComplete] = 0;
+    }
     this.pd[33] = i ? i.priority : 0;
     this.motiveIncs.length = 0;
+    // The footprint extension (73, the rect recomputed), route footprint mask (72) and
+    // non-interruptible (71) are reset: a social interrupted before "walk away" leaves no
+    // footprint behind.
+    if (this.pd[73] !== 0) {
+      this.pd[73] = 0;
+      if (this.obj.parentId === 0 && this.inWorld(this)) this.setLocation(this.obj.fx, this.obj.fy);
+    }
+    this.pd[72] = 0;
+    this.pd[71] = 0;
     this.module.onQueueChanged?.(this);
   }
 

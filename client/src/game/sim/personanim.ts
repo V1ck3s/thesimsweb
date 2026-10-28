@@ -211,6 +211,40 @@ class Track {
 }
 
 /** What the animator reports to the person (person data writes, sounds). */
+/**
+ * TileList::FindNearestPoint(point, idx): the point moved to the nearest
+ * rounded point of the path's segments (the facing point's segment left
+ * out): idx < 0 every segment, 0 the first, n > 0 the segment ending at
+ * point n. It starts from the segments' first point; out of range, the
+ * point is kept.
+ */
+export function findNearestPoint(path: readonly FollowPt[], px: number, py: number, idx: number): FollowPt {
+  const last = path.length - 3;
+  const lo = idx < 0 ? 0 : idx === 0 ? 0 : idx - 1;
+  const hi = idx < 0 ? last : lo;
+  if (lo < 0 || lo > last || hi < 0 || hi > last) return { fx: px, fy: py };
+  let best: FollowPt = { fx: path[lo]!.fx, fy: path[lo]!.fy };
+  let bd = (best.fx - px) ** 2 + (best.fy - py) ** 2;
+  for (let i = lo; i <= hi; i++) {
+    const a = path[i]!;
+    const b = path[i + 1]!;
+    const vx = a.fx - b.fx;
+    const vy = a.fy - b.fy;
+    const l2 = Math.fround(vx * vx + vy * vy);
+    let t = Math.fround(((px - b.fx) * vx + (py - b.fy) * vy) / l2);
+    // A zero-length segment divides into NaN: t stays 0 (the comparisons fail).
+    t = t >= 0 ? Math.min(t, 1) : 0;
+    const qx = Math.trunc(Math.fround(0.5 + t * vx + b.fx));
+    const qy = Math.trunc(Math.fround(0.5 + t * vy + b.fy));
+    const d = (qx - px) ** 2 + (qy - py) ** 2;
+    if (d < bd) {
+      bd = d;
+      best = { fx: qx, fy: qy };
+    }
+  }
+  return best;
+}
+
 export interface AnimatorHost {
   setPersonData(index: number, value: number): void;
   record(kind: string, value: string | number): void;
@@ -450,18 +484,19 @@ export class PersonAnimator {
 
   /**
    * SAnimator::FollowOneStep: 2 while following; once arrived, the person
-   * goes to the rounded grid position (1 placed, 0 when it does not fit);
-   * 0 when blocked or not following.
+   * goes to the rounded grid position projected on the path
+   * (TileList::FindNearestPoint over every segment; 1 placed, 0 when it
+   * does not fit); 0 when blocked or not following.
    */
   followOneStep(): number {
     const f = this.followState;
     if (f === FOLLOW.engaged || f === FOLLOW.ending) return 2;
     if (f !== FOLLOW.arrived) return 0;
     this.host.setDirection(wrap8i(this.dirF));
-    const fx = Math.trunc(0.5 + this.gridX);
-    const fy = Math.trunc(0.5 + this.gridY);
-    const ok = this.host.canPlace(fx, fy);
-    if (ok) this.host.setLocation(fx, fy);
+    // The rounded grid position brought back onto the path (any segment).
+    const pt = findNearestPoint(this.path, Math.trunc(0.5 + this.gridX), Math.trunc(0.5 + this.gridY), -1);
+    const ok = this.host.canPlace(pt.fx, pt.fy);
+    if (ok) this.host.setLocation(pt.fx, pt.fy);
     return ok ? 1 : 0;
   }
 
@@ -975,7 +1010,7 @@ export class PersonAnimator {
     const nx = this.gridX + sdx;
     const ny = this.gridY + sdy;
     // TileList::FindNearestPoint(path, tp, idx): the placed point stays on the path's segments around idx.
-    const near = this.nearestPathPoint(Math.trunc(0.5 + nx), Math.trunc(0.5 + ny));
+    const near = findNearestPoint(this.path, Math.trunc(0.5 + nx), Math.trunc(0.5 + ny), this.pathIndex);
     const fx = near.fx;
     const fy = near.fy;
     if (!this.host.canPlace(fx, fy)) {
@@ -1001,31 +1036,6 @@ export class PersonAnimator {
       return true;
     }
     return false;
-  }
-
-  /** TileList::FindNearestPoint: the rounded nearest point of the segments ending at idx - 1 .. idx + 1. */
-  private nearestPathPoint(px: number, py: number): FollowPt {
-    const path = this.path;
-    let best: FollowPt = { fx: px, fy: py };
-    let bd = Infinity;
-    const lo = Math.max(1, this.pathIndex - 1);
-    const hi = Math.min(path.length - 2, this.pathIndex + 1);
-    for (let i = lo; i <= hi; i++) {
-      const a = path[i - 1]!;
-      const b = path[i]!;
-      const vx = b.fx - a.fx;
-      const vy = b.fy - a.fy;
-      const l2 = vx * vx + vy * vy;
-      let t = l2 > 0 ? ((px - a.fx) * vx + (py - a.fy) * vy) / l2 : 0;
-      t = Math.min(1, Math.max(0, t));
-      const q = { fx: Math.trunc(0.5 + a.fx + vx * t), fy: Math.trunc(0.5 + a.fy + vy * t) };
-      const d = (q.fx - px) ** 2 + (q.fy - py) ** 2;
-      if (d < bd) {
-        bd = d;
-        best = q;
-      }
-    }
-    return best;
   }
 
   /** ENDWALK (swimming): the walk start skill played backwards as the stop. */

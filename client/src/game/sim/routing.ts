@@ -416,14 +416,14 @@ export class XRoute {
   /** +0x7c: the person not to avoid; +0x8e: avoid nobody (AskOthersToMove). */
   ignorePerson: SimObject | null = null;
   ignoreAll = false;
-  /** +0x80 / +0x84: the person asked to move, asked already. */
+  /** +0x80: the person asked to move; +0x84: set when that person's move ended (true: it worked). */
   askedPerson: SimObject | null = null;
   asked = false;
   /** +0x88 route result, +0x8c the blocking object's id. */
   result = 0;
   blocker = 0;
-  /** +0x90: the interaction pushed on the asked person. */
-  askedInteraction: unknown = null;
+  /** +0x90: the interaction pushed on the asked person (its move out of the way). */
+  askedInteraction: object | null = null;
   /** +0x94: the person's footprint (person data 72). */
   footprint = 0;
   /** +0x98: goals kept at most. */
