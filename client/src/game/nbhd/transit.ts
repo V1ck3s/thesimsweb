@@ -70,6 +70,7 @@ import type { WinLotView } from "../world/winlotview.js";
 import { Zone, type Neighborhood } from "./nghinterface.js";
 import { createTaxiDialog, removeTaxiDialog, TransitScreen } from "./winpicturesplashdialog.js";
 import { Town, WinTown } from "./wintown.js";
+import { WinNeighborhoodUL } from "./winneighborhoodul.js";
 
 /** Simulator global 0x20: the lot is visited without sims (free funds, buy mode only). */
 const G_VISIT = G.freeFunds;
@@ -128,7 +129,7 @@ export interface TransitHost {
 }
 
 /** ObjectModule fields by TryDialog kind. */
-const DIALOG_KINDS = new Set([5, 7, 0xb, 0xd]);
+const DIALOG_KINDS = new Set([5, 7, 8, 0xb, 0xd]);
 
 /** One per loaded lot: the ObjectModule side (+0xee..+0xf6) and the primitives' entry points. */
 export class Transit implements TransitHooks {
@@ -143,9 +144,9 @@ export class Transit implements TransitHooks {
   ) {}
 
   /**
-   * cXObject::TryDialog, kinds 5 / 7 / 0xb / 0xd (operand byte 7 bit 0
-   * clear). Kind 8 (cWinNeighborhoodUL as a picker) is not ported:
-   * undefined lets the primitive go on as before.
+   * cXObject::TryDialog, kinds 5 / 7 / 8 / 0xb / 0xd (operand byte 7 bit 0
+   * clear). (Kind 0xd keeps its field at 0 when cSimsApp +0xc0 is set: not
+   * tracked.)
    */
   tryDialog(o: SimObject, kind: number): number | undefined {
     if (!DIALOG_KINDS.has(kind)) return undefined;
@@ -174,6 +175,10 @@ export class Transit implements TransitHooks {
     const nb = this.host.nb();
     if (!view || !nb) {
       this.picks.set(kind, 0);
+      return;
+    }
+    if (kind === 8) {
+      await this.neighborhoodPicker(view, nb);
       return;
     }
     const town = kind === 5 ? Town.Downtown : kind === 7 ? Town.Vacation : kind === 0xb ? Town.Studiotown : Town.Magictown;
@@ -210,6 +215,32 @@ export class Transit implements TransitHooks {
       screen = TransitScreen.Magictown;
     }
     await createTaxiDialog(this.host.ctx, view, screen);
+  }
+
+  /**
+   * ObjectModule::PostSim, ObjectModule +0xf6 < 0 (TryDialog kind 8): the
+   * neighborhood screen as a picker (cWinNeighborhoodUL(false) in the
+   * Complete Collection, cSimsApp +0x66 bit 0x20) over the lot, after
+   * "bkground_fade" and "kill_all_objectsounds", run by DoSimsModalDialog;
+   * a community lot (zoning 2) is kept with the taxi splash 3, anything
+   * else resets the field.
+   */
+  private async neighborhoodPicker(view: WinLotView, nb: Neighborhood): Promise<void> {
+    soundPlayer.playBySource(MUSIC.fade, UI_SOURCE);
+    soundPlayer.playBySource("kill_all_objectsounds", UI_SOURCE);
+    const release = holdSimulator(this.sim);
+    let house = 0;
+    try {
+      house = await runNeighborhoodPicker(this.host.ctx, nb, view);
+    } finally {
+      release();
+    }
+    if (nb.getZoningType(house) !== Zone.Community) {
+      this.picks.set(8, 0);
+      return;
+    }
+    this.picks.set(8, house);
+    await createTaxiDialog(this.host.ctx, view, TransitScreen.Neighborhood);
   }
 
   /** cXObject::TryGenericSimCall entries 3 (cSimsApp::RemoveTaxiDialog) and 17 (change lots). */
@@ -296,6 +327,26 @@ export function holdSimulator(sim: Simulator): () => void {
     // No catching up on the time the dialog was up.
     sim.setSpeed(sim.globals[G.speed]!);
   };
+}
+
+/** The neighborhood screen as a community lot picker over `view`; resolves with the picked house (0: none). */
+export async function runNeighborhoodPicker(ctx: GameContext, nb: Neighborhood, view: WinLotView): Promise<number> {
+  const screen: WinNeighborhoodUL = new WinNeighborhoodUL(
+    ctx,
+    nb,
+    {
+      onEnterLot: () => undefined,
+      onEndModal: (result) => winMgr.endDialog(screen, result),
+      onSwitchNeighborhood: () => undefined,
+      onUnported: (what) => console.log(`not ported: ${what}`),
+    },
+    true,
+  );
+  screen.setArea(0, 0, view.getW(), view.getH());
+  if (!(await screen.init())) return 0;
+  const r = await winMgr.doModalWin(screen);
+  screen.shutdown();
+  return r;
 }
 
 /** The town screen as a destination picker over `view`; resolves with the picked house. */

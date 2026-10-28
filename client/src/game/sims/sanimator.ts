@@ -23,7 +23,7 @@ const IDLE: Readonly<Record<string, string>> = {
 
 export class SAnimator {
   private constructor(
-    readonly bodyStrings: BodyStrings,
+    public bodyStrings: BodyStrings,
     readonly vitaboy: VitaBoy,
   ) {}
 
@@ -56,6 +56,12 @@ export class SAnimator {
         return suit && suit !== "none" ? this.vitaboy.dress(slot, suit, texture) : Promise.resolve(false);
       }),
     );
+  }
+
+  /** EditPerson::End on a person in the world: new body strings, then UpdateOutfitAndHands. */
+  async setBodyStrings(strings: readonly string[], outfit: number = BS.body): Promise<void> {
+    this.bodyStrings = new BodyStrings(strings);
+    await this.updateOutfitAndHands(outfit);
   }
 
   /** Animator::StartSkill by name. */

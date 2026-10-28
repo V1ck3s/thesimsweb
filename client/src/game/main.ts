@@ -260,6 +260,8 @@ class Game {
     }
     this.nbhd ??= await Neighborhood.load(this.nbhdDir);
     const view = new WinLotView(ctx, this.nbhd.getHousePath(house));
+    // LoadGame: the members arriving (+0x108 / +0x109 / +0x10a) come through PersonFinder::CreateDowntownSim.
+    view.arrivalOutOfWorld = !!(arrival && (arrival.member || arrival.family || arrival.studioMember));
     view.setArea(0, 0, ctx.width, ctx.height);
     const t0 = performance.now();
     if (!(await view.init())) throw new Error("lot view init failed");

@@ -10,7 +10,8 @@
  */
 
 import { loadNeighborhood, neighborByGuid } from "../data/neighborhood.js";
-import { loadPerson, rootTransform, SimRenderer, type SAnimator, type SimView } from "../sims/index.js";
+import { loadPerson, rootTransform, SAnimator, SimRenderer, type SimView } from "../sims/index.js";
+import { loadStringSet } from "../sim/behavior.js";
 import { quatRotate, transformPoint, type Vec3 } from "../sims/math3d.js";
 import type { Skeleton } from "../sims/skeleton.js";
 import type { Compositor } from "./compositor.js";
@@ -32,6 +33,27 @@ function drawPos(p: LotPerson): { fx: number; fy: number } {
   return p.simPos?.() ?? p.obj;
 }
 
+/**
+ * ObjSelector::GetBodyStrings: the STR# (OBJD +0x26) of the person's own
+ * object file, dressed. A neighbor's character file is that file too; the
+ * NPCs (mail carrier, paper carrier, downtown staff...) have no character
+ * file in the neighborhood folder, only their object file.
+ */
+async function animatorFromSelector(obj: PlacedObject): Promise<SAnimator | null> {
+  const sel = obj.selector;
+  const strings = loadStringSet(sel.res, sel.objd.i16(0x26));
+  if (!strings?.length) return null;
+  return SAnimator.fromBodyStrings(strings).catch(() => null);
+}
+
+/** The animator of a person object: its own object file (a neighbor's is its character file), else the character file by name. */
+async function loadLotPerson(nbhdDir: string, nbhd: Awaited<ReturnType<typeof loadNeighborhood>>, obj: PlacedObject): Promise<SAnimator | null> {
+  const anim = await animatorFromSelector(obj);
+  if (anim) return anim;
+  const nb = neighborByGuid(nbhd, obj.guid);
+  return nb ? await loadPerson(nbhdDir, nb.name).catch(() => null) : null;
+}
+
 export class LotPeople {
   private constructor(
     private readonly renderer: SimRenderer,
@@ -47,9 +69,7 @@ export class LotPeople {
       [...objects]
         .filter((o) => o.isPerson && o.hidden === 0 && o.tileX > 0 && o.tileY > 0)
         .map(async (obj) => {
-          const nb = neighborByGuid(nbhd, obj.guid);
-          if (!nb) return;
-          const anim = await loadPerson(nbhdDir, nb.name).catch(() => null);
+          const anim = await loadLotPerson(nbhdDir, nbhd, obj);
           if (!anim || !(await anim.startIdle())) return;
           people.push({ obj, anim });
         }),
@@ -61,9 +81,7 @@ export class LotPeople {
   async addPerson(nbhdDir: string, obj: PlacedObject): Promise<boolean> {
     if (this.people.some((x) => x.obj === obj)) return true;
     const nbhd = await loadNeighborhood(nbhdDir);
-    const nb = neighborByGuid(nbhd, obj.guid);
-    if (!nb) return false;
-    const anim = await loadPerson(nbhdDir, nb.name).catch(() => null);
+    const anim = await loadLotPerson(nbhdDir, nbhd, obj);
     if (!anim || !(await anim.startIdle())) return false;
     this.people.push({ obj, anim });
     return true;
@@ -106,6 +124,12 @@ export class LotPeople {
     const at = drawPos(p);
     const place = { x: at.fx / 16, y: at.fy / 16, level: 1, alt, direction: p.simDir ? p.simDir() : obj.dir };
     return transformPoint(local, rootTransform(place, rotation));
+  }
+
+  /** The person's body strings were edited (GenericSimCall 24, set suit): dress it again. */
+  async redress(obj: PlacedObject, strings: readonly string[]): Promise<void> {
+    const p = this.people.find((x) => x.obj === obj);
+    if (p) await p.anim.setBodyStrings(strings);
   }
 
   update(nowMs: number): void {
@@ -160,7 +184,8 @@ export class LotPeople {
     const view = LotPeople.viewOf(viewer);
     for (const person of this.people) {
       const { obj, anim, simDir } = person;
-      if (obj.level > viewer.level) continue;
+      // Out of the world (in a car, at work, not arrived yet): not drawn.
+      if (obj.level > viewer.level || obj.fx < 0 || obj.fy < 0) continue;
       const at = drawPos(person);
       // HouseViewer::Render3DObject: RoomManager::GetRoomAmbientLight at the person's view position.
       const [vx, vy] = RotatableWorld.rotateCoords(Math.round(at.fx), Math.round(at.fy), viewer.world.rotation, 0x400);

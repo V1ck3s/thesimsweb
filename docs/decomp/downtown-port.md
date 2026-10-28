@@ -101,13 +101,16 @@ like any lot.
 ## Not ported / gaps
 
 - TryDialog kind 8 (cWinNeighborhoodUL as a community lot picker, taxi 3).
-- The SimInventory tokens: motives (type 2), the date (token 3) and the arrival clock (7 / 8).
-  The clock rides along with the trigger. The mode 0 companion (the date) is not taken.
+- The SimInventory tokens are read back on arrival (generic calls 19 / 20 / 21 / 23,
+  `sim/lotcalls.ts`) but not written back to the neighborhood file (Neighborhood::Save after
+  19 / 20). The mode 0 companion (the date) is not taken.
 - Taxi choice:
   - Studio Town's 4 / 5 needs the asking person's star data (ObjectModule +0x110); 4 is used.
   - Magic Town's 6 / 7 needs the picker's +0xdc flag; 6 is used.
-- PersonFinder::CreateDowntownSim makes the sim out of the world. Here `WinLotView.bringInFamily`
-  places it next to the view center. The lot's own behaviors should bring it in.
+- Arrivals: as PersonFinder::CreateDowntownSim, the arriving sims are made out of the world
+  (`WinLotView.arrivalOutOfWorld`); the ped marker ("main - middle ped marker": generic 18, cab,
+  generic 3) brings them in. Generic sim call 12 (distance to the camera, car sounds) and 26
+  (family +0x10c branch) are not ported.
 - ObjectModule::ResetForVacation, CheckNeighborhoodFileLocked, Nessie and the cheats, Import.
 - Magic Town extras:
   - Move In with magic coins (cWinPickFamily), shown as unported.

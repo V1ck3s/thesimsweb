@@ -20,11 +20,22 @@ import { loadUIStringSet } from "./behavior.js";
 import type { StackElem } from "./treestack.js";
 import type { SimObject } from "./xobject.js";
 
-/** The dialog's picture as SetParams picks it (the world side draws it). */
+/**
+ * The dialog's picture as SetParams picks it (the world side draws it):
+ * an object's catalog icon (Product::DrawIcon, 120 x 120), a person's
+ * button picture (PersonFinder::GetPictureBuffer, its first 45 x 45 cell),
+ * a BMP_ of an object file (mode 3, "my n"), a UI graphic ("gz n": the
+ * first quarter of a 4-state button, "gzi n": all of it) or a catalog
+ * button (Product::ComposeBtnImage, "guid n", 45 x 45).
+ */
 export type DialogIcon =
   | { kind: "object"; selector: ObjSelector }
-  | { kind: "neighbor"; neighborId: number }
-  | { kind: "bmp"; selector: ObjSelector; id: number };
+  | { kind: "person"; guid: number }
+  | { kind: "bmp"; selector: ObjSelector; id: number }
+  | { kind: "ui"; id: number; quarter: boolean }
+  | { kind: "product"; selector: ObjSelector }
+  | { kind: "rel"; guid: number }
+  | { kind: "job"; row: number };
 
 /** UIText STR# 0x8e (ObjectDialog::GetString): 1 OK, 2 cancel, 3 yes, 4 no. */
 export const DLG_STRINGS = 0x8e;
@@ -39,6 +50,15 @@ export interface DialogHooks {
    * (a neighbor id) run modally; resolves with GetSelected (< 1: cancelled).
    */
   showPhoneBook?(callerNeighborId: number): Promise<number>;
+  /**
+   * ObjectModule::PostSim's person pickers, run modally: kind 6
+   * cWinClothingChoiceDlg(type, person), 0xe cWinTransformMeDlg(person),
+   * 9 cWinPetSelectDlg(pet); resolves with the result word
+   * ((index << 16) | 0xfffe for OK, | 0xffff for Cancel).
+   */
+  showPersonPicker?(kind: 6 | 9 | 0xe, person: SimObject, type: number): Promise<number>;
+  /** cXObject::TryDialog kinds 0xc / 0xf: CWinMagicBook(person, cookbook) run modally. */
+  showMagicBook?(person: SimObject, cookbook: boolean): Promise<void>;
 }
 
 export class ObjectDialog {
@@ -108,23 +128,74 @@ export class ObjectDialog {
     this.message = o.parseUIString(this.message, elem, null, parsed);
     // The picture: (byte 7 >> 1) & 7.
     const mode = (op[7]! >> 1) & 7;
+    const m = o.module;
+    let pic: ObjSelector | null = null;
     if (mode === 0) {
-      let s = parsed.selector;
-      if (!s) s = o.module.getObject(this.stackObj)?.obj.selector.getMasterSelector() ?? null;
-      if (s) this.icon = s.getIsPerson() ? this.personIcon(s) : { kind: "object", selector: s };
+      pic = parsed.selector ?? m.getObject(this.stackObj)?.obj.selector.getMasterSelector() ?? null;
     } else if (mode === 2) {
-      this.icon = { kind: "neighbor", neighborId: this.stackObj };
+      // Neighborhood::GetNeighborSelector(stack object as a neighbor id)
+      const nb = m.findNeighborByID(this.stackObj);
+      if (nb) this.icon = { kind: "person", guid: nb.guid };
     } else if (mode === 3) {
       // ObjectFolder::GetSelectorByBehavior: the BMP_ 5000 + operand 1 of the frame's object file.
-      const s = o.module.selectorOfBehavior(elem.behavior);
+      const s = m.selectorOfBehavior(elem.behavior);
       if (s) this.icon = { kind: "bmp", selector: s, id: op[1]! + 5000 };
+    } else if (mode === 4) {
+      this.icon = this.namedPicture(o.parseUIString(assign(op[1]!, ""), elem, null));
     }
-    // Mode 4 (a "bmp" / "guid" / "rel" / "job" picture named by a string) is not ported.
+    if (pic) this.icon = pic.getIsPerson() ? { kind: "person", guid: pic.guid } : { kind: "object", selector: pic };
   }
 
-  private personIcon(s: ObjSelector): DialogIcon | null {
-    const nb = this.obj.module.findNeighborByGUID(s.guid);
-    return nb ? { kind: "neighbor", neighborId: nb.id } : null;
+  /**
+   * SetParams' mode 4: a picture named by a string, "<kind> <number>"
+   * (split at the first space): "gz" / "gzi" a UI graphic by resource id,
+   * "my" a BMP_ of the object's file, "guid" the catalog button of an
+   * object definition, "rel" the relationship picture of the selected
+   * person's first related person (PersonFinder::GetRelatedPeople(selected,
+   * 3) then GetRelPictureBuffer; the middle fifth is shown), "job n" row n
+   * of the job popup composite (cWinSubpanelJob::GetJobPopupComposite, 22
+   * rows; -1 is row 0xb). No game string uses the last two.
+   */
+  private namedPicture(text: string): DialogIcon | null {
+    const sp = text.indexOf(" ");
+    const word = (sp < 0 ? text : text.slice(0, sp)).toLowerCase();
+    const n = Number.parseInt(sp < 0 ? "" : text.slice(sp + 1).replace(/ /g, ""), 10) || 0;
+    const m = this.obj.module;
+    if (word === "gz" || word === "gzi") return n !== 0 ? { kind: "ui", id: n, quarter: word === "gz" } : null;
+    if (word === "my") return n !== 0 ? { kind: "bmp", selector: this.obj.obj.selector, id: n } : null;
+    if (word === "guid") {
+      const s = m.worldHooks?.selector(n);
+      return s ? { kind: "product", selector: s } : null;
+    }
+    if (word === "rel") {
+      const guid = this.firstRelatedPerson();
+      return guid !== null ? { kind: "rel", guid } : null;
+    }
+    if (word === "job") {
+      const row = n === -1 ? 0xb : n;
+      return row >= 0 && row <= 0x15 ? { kind: "job", row } : null;
+    }
+    return null;
+  }
+
+  /**
+   * PersonFinder::GetSelected then GetRelatedPeople(selected, list, 3):
+   * everyone the selected person has a relationship entry for, the lot's
+   * family first, then by daily relationship (highest first), then in
+   * neighbor order (PersonFinder::RelCompare). The first one's GUID.
+   */
+  private firstRelatedPerson(): number | null {
+    const m = this.obj.module;
+    const info = m.sim.state?.personGetSelected();
+    const me = info?.guid !== undefined ? m.findNeighborByGUID(info.guid) : null;
+    if (!me || !m.nbhd) return null;
+    const family = new Set((m.sim.state?.family ?? []).map((p) => (p.guid ?? 0) | 0));
+    const related = m.nbhd.neighbors
+      .map((n, i) => ({ n, i, row: n.id !== me.id ? me.relationships.find((r) => r.other === n.id)?.values : undefined }))
+      .filter((e) => e.row !== undefined)
+      .map((e) => ({ ...e, fam: family.has(e.n.guid | 0), value: e.row![0] ?? 0 }))
+      .sort((a, b) => Number(b.fam) - Number(a.fam) || b.value - a.value || a.i - b.i);
+    return related[0]?.n.guid ?? null;
   }
 
   /** ObjectDialog::ResultProcessed */

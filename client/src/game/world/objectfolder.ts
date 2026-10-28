@@ -82,9 +82,14 @@ interface FolderIndex {
   files: Array<[string, number]>;
   /** [guid, file index, OBJD chunk id], in AddSelector order. */
   objds: Array<[number, number, number]>;
+  /**
+   * GUIDs of the "sim objects" ObjectModule::UpdateSimObjects keeps one of on
+   * every lot: OBJD type (+0x12) 7 or 0xc with OBJD +0x54 set, in AddSelector order.
+   */
+  simObjects: number[];
 }
 
-const INDEX_VERSION = 1;
+const INDEX_VERSION = 2;
 const ASSETS_BASE = "/assets/";
 const IFF_HEADER = 64;
 const CHUNK_HEADER = 76;
@@ -334,7 +339,7 @@ export class ObjectFolder implements SelectorFolder {
         console.warn(`ObjectFolder: ${f.key}:`, e);
       }
     });
-    const index: FolderIndex = { stamp, packs, files: [], objds: [] };
+    const index: FolderIndex = { stamp, packs, files: [], objds: [], simObjects: [] };
     for (const f of iffs) {
       const objds = found.get(f.key);
       if (!objds?.length) continue;
@@ -343,6 +348,7 @@ export class ObjectFolder implements SelectorFolder {
         const def = new ObjDefinition(objd);
         if (def.disabled !== 0) continue;
         index.objds.push([def.guid, fi, id]);
+        if ((def.objectType === 7 || def.objectType === 0xc) && def.i16(0x54) !== 0) index.simObjects.push(def.guid);
       }
     }
     void idbPutFarManifest(cacheKey, index);
@@ -384,6 +390,15 @@ export class ObjectFolder implements SelectorFolder {
     if (!entry) return null;
     await this.openFile(entry[0]);
     return this.selectors.get(guid >>> 0) ?? null;
+  }
+
+  /**
+   * The GUIDs ObjectModule::UpdateSimObjects walks (GetNthSelector over the
+   * whole folder, keeping OBJD type 7 / 0xc with +0x54 set), in folder order;
+   * a GUID a later file overrides keeps the overriding definition.
+   */
+  simObjectGUIDs(): number[] {
+    return [...new Set(this.index.simObjects ?? [])].filter((g) => this.byGuid.has(g >>> 0));
   }
 
   /** Synchronous lookup of an already opened selector. */

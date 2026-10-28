@@ -228,6 +228,12 @@ export class WinNeighborhoodUL extends TSWin implements LotBtnOwner {
     private readonly ctx: GameContext,
     private readonly nb: Neighborhood,
     private readonly callbacks: NeighborhoodCallbacks,
+    /**
+     * +0x111 cleared (cWinNeighborhoodUL(false), ObjectModule::PostSim for
+     * TryDialog kind 8): the screen is a destination picker over a lot,
+     * in visit mode; picking a community lot ends it with the house.
+     */
+    private readonly picker = false,
   ) {
     super();
   }
@@ -309,8 +315,13 @@ export class WinNeighborhoodUL extends TSWin implements LotBtnOwner {
 
     // Every button of the screen clicks with the neighborhood sound (restored by shutdown).
     TSWinBtn.overrideDefaultUISound(null, UI.nhoodClick);
-    this.setMode(NbhdMode.Regular);
-    soundPlayer.playBySource(MUSIC.hood, -1);
+    if (this.picker) {
+      // Init with +0x111 cleared: SetMode(4). The pet filter toolbar (kFilterPetBMP, BuildFilterToolbar) is not ported.
+      this.setMode(NbhdMode.Visit);
+    } else {
+      this.setMode(NbhdMode.Regular);
+      soundPlayer.playBySource(MUSIC.hood, -1);
+    }
     // The screen takes the keyboard (Escape leaves the modes).
     winMgr.setFocus(this);
     return true;
@@ -542,9 +553,25 @@ export class WinNeighborhoodUL extends TSWin implements LotBtnOwner {
         return this.evictModeLotHandler(house);
       case NbhdMode.Rezone:
         return this.rezoneModeLotHandler(house);
+      case NbhdMode.Visit:
+        return this.visitModeLotHandler(house);
       default:
         return Promise.resolve();
     }
+  }
+
+  /**
+   * cWinNeighborhoodUL::VisitModeLotHandler: a community lot ends the
+   * picker with its house number (TSWinMsgPost 0x10); a residential lot
+   * shows a message (cSimsApp vtable +0x114 with run-time strings, not
+   * ported: the click is ignored).
+   */
+  private visitModeLotHandler(house: number): Promise<void> {
+    if (!this.lots.has(house)) return Promise.resolve();
+    const zoning = this.nb.getZoningType(house);
+    if (zoning === Zone.Community) winMgr.endDialog(this, house);
+    else if (zoning === Zone.Residential) this.callbacks.onUnported("visit picker: residential lot message");
+    return Promise.resolve();
   }
 
   /** The +0x1a4 member pointer: the button handler of the current mode. */
@@ -975,6 +1002,9 @@ export class WinNeighborhoodUL extends TSWin implements LotBtnOwner {
         void this.regularModeBtnHandler(BTN_MOVE_IN);
       } else if (this.mode === NbhdMode.Evict || this.mode === NbhdMode.Rezone) {
         this.setMode(NbhdMode.Regular);
+      } else if (this.picker) {
+        // Deviation: the picker's own way out (the filter toolbar) is not ported; Escape ends it with 0.
+        winMgr.endDialog(this, 0);
       }
       return true;
     }

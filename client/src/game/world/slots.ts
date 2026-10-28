@@ -168,15 +168,58 @@ function setHeight(s: ObjectSlot, h: number): void {
   }
 }
 
-/** SpriteSlot (0x3c bytes); only the fields set by SlotLoader. */
+/**
+ * SpriteSlot (0x3c bytes): a balloon / headline cXObject::TrySetBalloon
+ * shows over the object (DrawSpriteSlot). The icon is a sprite of the
+ * world renderer (GameData/Sprites.iff SPR#, `spriteId`, `count` frames)
+ * or, with `spriteId` -1, an object / person picture (`selector`).
+ */
 export interface SpriteSlot {
   x: number;
   y: number;
+  /** +8: height of the icon above the registration point (altitude units). */
   z: number;
-  /** +0xc: SLOT record index + 1. */
+  /** +0xc: SLOT record index + 1 (-1 for the person's own slot). */
   descriptor: number;
-  /** +0x10: remaining ticks; DrawIso only draws slots where this is non-zero. */
+  /** +0x10: remaining ticks (-1: forever); DrawIso only draws slots where this is non-zero. */
   activeTicks: number;
+  /** +0x14: SPR# id of the icon, -1 for a picture. */
+  spriteId: number;
+  /** +0x18 with spriteId -1: the master selector whose picture is shown (ObjSelector). */
+  selector: unknown;
+  /** +0x1c: animation frames; +0x20 current frame; +0x24 step (1, or -1 reversed). */
+  count: number;
+  frame: number;
+  step: number;
+  /** +0x28: ticks since the last frame change (the frame advances every 12). */
+  subTick: number;
+  /** +0x2c: balloon SPR# drawn under the icon (0: none); +0x30: overlay SPR# drawn over it (the "not" cross). */
+  balloon: number;
+  overlay: number;
+  /** +0x34: priority of the current icon (2 for group 4, else 1). */
+  priority: number;
+  /** +0x38: drawn even when the person is not selected. */
+  always: boolean;
+}
+
+/** SpriteSlot::SpriteSlot (then the SlotLoader / cXPerson::Initialize fields). */
+export function newSpriteSlot(x: number, y: number, z: number, descriptor: number): SpriteSlot {
+  return { x, y, z, descriptor, activeTicks: 0, spriteId: 0, selector: null, count: 0, frame: 0, step: 0, subTick: 0, balloon: 0, overlay: 0, priority: 0, always: false };
+}
+
+/**
+ * SpriteSlot::Tick: counts an active slot down; every 12 ticks the frame
+ * advances by the step (modulo the count). True when the frame changed.
+ */
+export function tickSpriteSlot(s: SpriteSlot): boolean {
+  if (s.activeTicks > 0) s.activeTicks--;
+  if (s.activeTicks === 0) return false;
+  if (++s.subTick !== 12) return false;
+  s.frame += s.step;
+  while (s.frame < 0) s.frame += s.count;
+  s.frame %= s.count;
+  s.subTick = 0;
+  return true;
 }
 
 /** SlotLoader::Load: object slots (type 0) and sprite slots (type 1); routing slots are skipped. */
@@ -188,7 +231,7 @@ export function loadSlots(descriptors: readonly SlotDescriptor[], objectSlots: O
       s.descriptor = i + 1;
       objectSlots.push(s);
     } else if (d.type === 1) {
-      spriteSlots.push({ x: d.x, y: d.y, z: d.z, descriptor: i + 1, activeTicks: 0 });
+      spriteSlots.push(newSpriteSlot(d.x, d.y, d.z, i + 1));
     }
   });
 }

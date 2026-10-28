@@ -107,7 +107,7 @@ interface PersonEntry {
 }
 
 /** PersonFinder::GetPictureBuffer: the person button image built from the faces (BMP_ 2002). */
-async function loadPicture(bytes: Uint8Array | undefined, template: ImageBitmap): Promise<ImageBitmap> {
+export async function loadPicture(bytes: Uint8Array | undefined, template: ImageBitmap): Promise<ImageBitmap> {
   let face: ImageBitmap | null = null;
   if (bytes) {
     const img = decodeImage(bytes, "face.bmp", { colorKey: true });

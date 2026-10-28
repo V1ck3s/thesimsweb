@@ -70,7 +70,7 @@ no decompiled code is in the repo.
 | 33 | Find 5 worst motives | logged, false |
 | 34/35 | UI effect / user event | recorded |
 | 36 | Dialog | recorded, answered true (first button) |
-| 41 | Set balloon | recorded |
+| 41 | Set balloon | ported (cXObject::TrySetBalloon, `world/balloons.ts`) |
 | 42 | Create object | logged, false (needs placement) |
 | 43/46 | Drop onto / snap | logged, false |
 | 48 | Kill sounds | recorded |
@@ -510,6 +510,77 @@ not caught in TickAllObjects (none in the original either).
 - The person's position is still put in front of the path when the start
   differs from it.
 - Anchors are measured on the skeleton at direction 0.
+
+### Playtest fixes (2026-10-28): kill cleanup, autonomy flag, FindGoodLocation, routes
+
+- **Sim flag 8 (CanChooseAutonomously)**: computed for every object, persons included, by
+  `XObject.canChooseAutonomously()` (cXObject::FinishReset; set again in PostLoad): a TTAB entry
+  with autonomy threshold < 100 and without flag 0x80; a multi-tile part whose OBJD +0x10 group
+  is > 0 defers to the part with the negative group. Find Best Interaction only considers
+  objects with this flag.
+- **ObjectModule::KillObject** (`SimModule.killObject`, used by the kill queue and
+  `removeObject`): whole multi-tile group, CleanupPeople(obj) (persons running the object's
+  trees pop them, which releases object data 62), obj->Cleanup(0), recursive kill of the slot
+  contents, then RemoveObject. Social objects ("Social Talk 1.4"...) rely on data 62 reaching 0.
+- **cXObject::FindGoodLocation** (`world/tools/placement.ts`): spiral of the original (direction
+  -1) or line search along x (directions 0 / 4) or y (2 / 6), alternating sides; same-room
+  test on the room map; limit 0x1000 steps (size * 8 off lot). TryFindGoodLocation: modes 3 / 4
+  same room with the reference object's direction (+2 for mode 4), other modes same room
+  first, then without.
+- **House::EnterLiveMode → ObjectModule::InvalidateAllRoutes** (`portals.invalidateAllRoutes`):
+  when the build / buy freeze ends, persons' routes are invalidated and portal routes dirtied.
+- **ObjectDialog pictures**: SetParams modes 0 (object or person picture), 2 (neighbor), 3 (BMP
+  5000 + n), 4 (strings "gz", "gzi", "my", "guid", "rel", "job").
+- **TryDialog kind 8**: community lot picker (cWinNeighborhoodUL picker mode), module +0xf6,
+  then the taxi dialog. Kinds 6, 9, 0xc, 0xe, 0xf: see below.
+
+### Balloons, outfit / pet / transform / magic book dialogs (2026-10-28)
+
+- **SpriteSlot** (`world/slots.ts`, 0x3c bytes): z (+8), ticks (+0x10), sprite id (+0x14),
+  picture selector (+0x18), frame count / frame / step / sub-tick (+0x1c..+0x28), balloon
+  (+0x2c), overlay (+0x30), priority (+0x34), always shown (+0x38). A person gets one slot at
+  z = 2.0. SpriteSlot::Tick (`tickSpriteSlot`, from cXObject::Simulate) counts the ticks down
+  and steps the frame every 12 ticks.
+- **cXObject::TrySetBalloon** (prim 41, `XObject.trySetBalloon`): operands icon group /
+  index / balloon type / flags; IconGroup::GetSpriteID (lbl_105BB894: group → base SPR#
+  [-, 100, 400, 200, 300, 500, 600, picture, 700, 800, 900], group 0 → lbl_105BB890),
+  GetBalloonSpriteID (0 thought 100, 1 scream 101, 2 conversation 102), "not" overlay 103,
+  group 7 = the stack object's (or neighbor's) master selector, priority test, duration in
+  ticks (0: until cleared), always-shown flag.
+- **cXObject::DrawSpriteSlot** (`world/balloons.ts`, `BalloonPainter`): GameData/Sprites.iff
+  SPR# frame (3 - scale) + frame * 3; nothing at the far zoom; anchor (h - (8 << s) / 2,
+  v - z * (2 << s) + (4 << s)); a person's anchor is SAnimator::PrepReg slot 2 (the head
+  "Top"), so the balloon follows the 3D animation; persons draw it when the slot is
+  "always" or the person is selected. Pictures: Product::GetSpeechImage (BMP_ catalog id +
+  2000 / + 4000) or PersonFinder::GetSpeechIcon (character BMP_ 2005 / 2006), centered at
+  (+0x20, -0x24) (near) / (+0x10, -0x12) (medium). Deviations: painted over the frame (no
+  DepthTweak: walls never hide it); objects without speech images get their catalog icon on
+  the kSpeechMediumBmp / kSpeechLargeBmp template instead of Product::RenderSpeechShot.
+- **TryDialog kinds 6 / 0xe** (`tryOutfitDialog`): ObjectModule +0xf8 / +0xfa / +0xfc /
+  +0x100; the window posts `index << 16 | 0xfffe` (OK) or `| 0xffff` (Cancel); true on -2
+  with temp 0 := the index. **Kind 9** (`tryPetDialog`): +0x104 / +0x108 / +0x10c.
+  **Kinds 0xc / 0xf** (`tryMagicBookDialog`): CWinMagicBook(person, kind == 0xf), true when
+  closed (the original runs it modally inside the primitive; here the primitive waits).
+- **Windows** (`ui/outfitdlg.ts`): cWinClothingChoiceDlg (UIText STR# 0xdc, scale 3.25),
+  cWinPetSelectDlg (0xdd, 5.0), cWinTransformMeDlg (0x111, 3.25, cycles the 8 costumes of
+  LookupCostume: male / female adult tables, child 0x35 / 0x36 / 0x3c), previous / next
+  buttons kClothingDialogPrevious / Next, OK / Cancel, Enter / Escape.
+  **cWinVitaBtnSolo** (`cas/winvitabtnsolo.ts`): the person copied in the outfit,
+  EditPerson on its body strings, NextSuit / PreviousSuit / GetCurrentSuitIndex by outfit
+  (body, swimwear, formal, lingerie, winter, fashion), UpdateTransform (turning people,
+  still pets), camera zoom 2. **CWinMagicBook** (`ui/magicbook.ts`): magic.iff strings,
+  spell / kid charm / recipe lists (4 per page, Back / Next, page label), title and
+  description gated by "Magic - Has Made Spell/Recipe?", mode picture.
+  Deviations: the costume outfits (>= 0x13: job, Magic Town, Studio Town) show the body
+  suit; the previews stand idle (no animation lists); spell items show their title instead
+  of the ingredient pictures.
+- **GenericSimCall 24** (set suit, `trySetSuitCall`): EditPerson on the person's body
+  strings, the suit of list temp 0 := temp 1 (temp 1 := the previous one), EditPerson::End;
+  the edited strings are kept by GUID (`SimModule.bodyStringEdits`) and the lot view dresses
+  the person again (`WorldHooks.bodyStringsChanged` → `LotPeople.redress`).
+- **ObjectDialog pictures "rel" and "job"**: "rel" = the first person the selected sim has a
+  relationship with (family first, then daily value), its character BMP_ 2003 portrait;
+  "job n" = row n of kJobPopupComposite (-1 → 0xb).
 
 ## Open questions / deviations
 

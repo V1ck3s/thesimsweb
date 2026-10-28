@@ -30,7 +30,7 @@ import { type PersonRecord, readPersonStream } from "./personstream.js";
 import { ObjectFolder, GUID_CAT_PLACEHOLDER, GUID_DOG_PLACEHOLDER, GUID_PERSON_PLACEHOLDER, type MissingObject, type SaveTypeTable } from "./objectfolder.js";
 import { OBJ_TYPE_PERSON, OBJ_TYPE_PORTAL, type ObjSelector } from "./objselector.js";
 import { ReconBuffer } from "./reconbuffer.js";
-import { emptyObjectSlot, type ObjectSlot, type SpriteSlot } from "./slots.js";
+import { emptyObjectSlot, newSpriteSlot, type ObjectSlot, type SpriteSlot } from "./slots.js";
 import type { ResFile } from "./iffres.js";
 
 /** Object data indices (STR# 141). */
@@ -262,6 +262,8 @@ export class XObject implements PlacedObject {
       // cXPerson::Initialize: five more object slots (height 6; flag 2; height 1 x3).
       const mk = (height: number, f1c: number): ObjectSlot => ({ ...emptyObjectSlot(), height, f1c });
       this.objectSlots.push(mk(6, 0), mk(0, 2), mk(1, 0), mk(1, 0), mk(1, 0));
+      // ... and the balloon's sprite slot, 2.0 above the head (lbl_105BBB78 + 0x3c).
+      this.spriteSlots.push(newSpriteSlot(0, 0, 2, -1));
     }
     this.objectData[OD.slotHierNumber] = -1;
     this.objectData[OD.slotNumber] = -1;

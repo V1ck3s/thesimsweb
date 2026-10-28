@@ -16,6 +16,7 @@
  * Each tick is two game seconds.
  */
 
+import { invalidateAllRoutes } from "./portals.js";
 import { loadNeighborhood } from "../data/neighborhood.js";
 import { loadSimCareers } from "./careers.js";
 import { VBAnimMgr } from "../sims/vbanimmgr.js";
@@ -31,11 +32,14 @@ import { EP } from "./objfntable.js";
 import { SimModule, SimResources } from "./simmodule.js";
 import { treeSimGlobals } from "./treesim.js";
 import type { SimObject } from "./xobject.js";
+import type { PersonSim } from "./person.js";
 
 /** Global indexes. */
 export const G = {
   hour: 0,
   day: 1,
+  /** cSimulator::DoCommand(0xe4): the selected person's object id (0 for none). */
+  selectedPerson: 3,
   timeOfDay: 4,
   minute: 5,
   second: 6,
@@ -181,13 +185,21 @@ export class Simulator {
     // LoadCareers: one cCareer per CARR chunk of work.iff, in index order (GetCareers).
     sim.module.careers = await loadSimCareers();
     // SAnimator::Initialize: a skeleton per person (the lot view attaches its VitaBoy's instead).
-    const mgr = await VBAnimMgr.get().catch(() => null);
-    for (const p of sim.module.persons) {
-      const sk = await mgr?.findSkeleton(p.isChild ? "child" : "adult").catch(() => null);
-      if (sk && !p.animator.skeleton) p.animator.attach(sk.clone());
-    }
+    for (const p of sim.module.persons) await Simulator.attachSkeleton(p);
+    sim.module.onPersonMade = (p) => void Simulator.attachSkeleton(p);
     sim.postLoad();
     return sim;
+  }
+
+  /**
+   * SAnimator::Initialize's skeleton for a person (adult or child) until the
+   * lot view attaches its VitaBoy's: people made at run time (NPCs, visitors,
+   * arrivals) get one too, or their walks never start.
+   */
+  static async attachSkeleton(p: PersonSim): Promise<void> {
+    const mgr = await VBAnimMgr.get().catch(() => null);
+    const sk = await mgr?.findSkeleton(p.isChild ? "child" : "adult").catch(() => null);
+    if (sk && !p.animator.skeleton) p.animator.attach(sk.clone());
   }
 
   /** cSimulator::DoStream (read; versions > 0x40 keep 0x40 globals). */
@@ -231,36 +243,43 @@ export class Simulator {
       }
     }
     const versions = new Map<ObjSelector, boolean>();
-    for (const o of m.list) {
-      if (o.isPerson && !Simulator.simulatePeople) {
-        m.setSimFlag(o.id, 1, false);
-        continue;
-      }
-      try {
-        const load = o.fnTable.getTreeID(EP.load);
-        if (load !== 0) o.runCheckTree(o.behavior, 0, load, null);
-        // cXObject::PostLoad: changed trees (ObjSelector +0xb4 bit 1, with
-        // lbl_105BA214 set) or the standard placeholder: ObjectModule::CleanupPeople
-        // and Cleanup(0); changed trees then rerun Init. (An object saved
-        // without a stack is also restarted here: it would underflow on its
-        // first tick.)
-        const changed = Simulator.resetChangedTrees && this.treeVersionChanged(o, versions);
-        const empty = o.stack.getStackSize() === 0;
-        if (changed || o.obj.isPlaceholder || empty) {
-          m.cleanupPeople(o);
-          o.cleanup();
-          const init = changed || empty ? o.fnTable.getTreeID(EP.init) : 0;
-          if (init !== 0) o.runCheckTree(o.behavior, 0, init, null);
-        }
-      } catch (e) {
-        const code = (e as { code?: number }).code;
-        if (code === undefined) throw e;
-        this.loadErrors.set(o.id, code);
-        o.errorCode = code;
-        o.error(code);
-      }
-      m.setSimFlag(o.id, 2, o.obj.objectData[60]! !== 0);
+    for (const o of m.list) this.postLoadObject(o, versions);
+  }
+
+  /** cXObject::PostLoad (the tree part) of one object; ObjectModule::PostLoad runs it for every object of the module. */
+  postLoadObject(o: SimObject, versions = new Map<ObjSelector, boolean>()): void {
+    const m = this.module;
+    // cXObject::PostLoad ends with sim flag 8 = CanChooseAutonomously (people too:
+    // without it nobody picks a social interaction on them autonomously).
+    m.setSimFlag(o.id, 8, o.canChooseAutonomously());
+    if (o.isPerson && !Simulator.simulatePeople) {
+      m.setSimFlag(o.id, 1, false);
+      return;
     }
+    try {
+      const load = o.fnTable.getTreeID(EP.load);
+      if (load !== 0) o.runCheckTree(o.behavior, 0, load, null);
+      // cXObject::PostLoad: changed trees (ObjSelector +0xb4 bit 1, with
+      // lbl_105BA214 set) or the standard placeholder: ObjectModule::CleanupPeople
+      // and Cleanup(0); changed trees then rerun Init. (An object saved
+      // without a stack is also restarted here: it would underflow on its
+      // first tick.)
+      const changed = Simulator.resetChangedTrees && this.treeVersionChanged(o, versions);
+      const empty = o.stack.getStackSize() === 0;
+      if (changed || o.obj.isPlaceholder || empty) {
+        m.cleanupPeople(o);
+        o.cleanup();
+        const init = changed || empty ? o.fnTable.getTreeID(EP.init) : 0;
+        if (init !== 0) o.runCheckTree(o.behavior, 0, init, null);
+      }
+    } catch (e) {
+      const code = (e as { code?: number }).code;
+      if (code === undefined) throw e;
+      this.loadErrors.set(o.id, code);
+      o.errorCode = code;
+      o.error(code);
+    }
+    m.setSimFlag(o.id, 2, o.obj.objectData[60]! !== 0);
   }
 
   /**
@@ -371,11 +390,18 @@ export class Simulator {
     const s = this.state;
     if (!s) return;
     const mode = s.getMode();
-    this.globals[G.modeFreeze] = mode === Mode.Live ? 0 : mode === Mode.Build ? 1 : mode === Mode.Buy ? 2 : mode;
+    const freeze = mode === Mode.Live ? 0 : mode === Mode.Build ? 1 : mode === Mode.Buy ? 2 : mode;
+    // House::EnterLiveMode: ObjectModule::InvalidateAllRoutes.
+    if (freeze === 0 && this.globals[G.modeFreeze] !== 0) invalidateAllRoutes(this.module);
+    this.globals[G.modeFreeze] = freeze;
     const speed = Simulator.speedForButton(s.getSpeed());
     if (speed !== this.globals[G.speed]) this.setSpeed(speed);
     if (s.isPaused()) this.pause();
     else this.resume();
+    // ObjectModule::SetSelectedPerson -> GlobalDispatch(0xe4, id) -> cSimulator::DoCommand: global 3.
+    const guid = s.personGetSelected()?.guid;
+    const sel = guid === undefined ? null : this.module.persons.find((p) => !p.killed && (p.obj.selector.guid | 0) === (guid | 0));
+    this.globals[G.selectedPerson] = sel ? sel.id : 0;
   }
 
   /**

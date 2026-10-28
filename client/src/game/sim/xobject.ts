@@ -26,10 +26,14 @@ import type { BehaviorTree } from "./behavior.js";
 import { getTreeClass, getBaseID, loadStringSet, loadUIStringSet } from "./behavior.js";
 import { EP, ObjFnTable } from "./objfntable.js";
 import type { SimModule } from "./simmodule.js";
+import { tryLotChangeCall } from "./lotcalls.js";
 import { PRIM_CONTINUE, PRIM_FALSE, PRIM_TRUE, PRIM_WAIT, TreeSim, simThrow, treeSimGlobals } from "./treesim.js";
 import type { ParamSource, StackElem } from "./treestack.js";
 import { DIR_VEC, rotateOffset } from "./routing.js";
 import { getBehCareerData, offerDialogText, simJobName, type SimCareer } from "./careers.js";
+import { balloonSpriteCount, balloonSpriteID, iconSpriteID } from "../world/balloons.js";
+import { tickSpriteSlot } from "../world/slots.js";
+import { EditPerson } from "../cas/editperson.js";
 import { addToken, findToken, removeAllTokensOfType, removeToken, removeTokenByIndex, setToNextToken } from "./inventory.js";
 
 /** Object data indexes (Behavior.iff STR# 141; index = (offset - 0x4a) / 2). */
@@ -186,13 +190,8 @@ export class SimObject extends TreeSim {
     if (r) {
       const d = this.obj.objectData;
       if (d[OD.keepAwake]! !== 0) d[OD.keepAwake] = d[OD.keepAwake]! - 1;
-      for (const s of this.obj.spriteSlots) {
-        // SpriteSlot::Tick counts down an active slot; a change dirties the object.
-        if (s.activeTicks > 0) {
-          s.activeTicks--;
-          this.module.dirty(this);
-        }
-      }
+      // SpriteSlot::Tick: a frame change dirties the object.
+      for (const s of this.obj.spriteSlots) if (tickSpriteSlot(s)) this.module.dirty(this);
     }
     return r;
   }
@@ -272,7 +271,26 @@ export class SimObject extends TreeSim {
     if (init !== 0) this.runCheckTree(this.behavior, 0, init, null);
     if (tick) this.simulate();
     this.module.setSimFlag(this.id, 2, d[OD.tickWhenPaused]! !== 0);
-    this.module.setSimFlag(this.id, 8, true);
+    this.module.setSimFlag(this.id, 8, this.canChooseAutonomously());
+  }
+
+  /**
+   * cXObject::CanChooseAutonomously (sim flag 8: Find Best Interaction looks
+   * at the object): a multi-tile part with a positive interaction group (OBJD
+   * +0x10) defers to the part of the group whose group is its negative; then
+   * the object needs a tree table entry with an autonomy threshold below 100
+   * that is not a debug entry (flag 0x80).
+   */
+  canChooseAutonomously(): boolean {
+    const objd = this.obj.selector.objd;
+    const group = objd.i16(0x10);
+    if (objd.masterId !== 0 && group > 0) {
+      const lead = this.obj.mtLeadId !== 0 ? this.obj.mtLeadId : this.id;
+      const owner = this.module.list.find((x) => (x.id === lead || x.obj.mtLeadId === lead) && x.obj.selector.objd.i16(0x10) === -group);
+      if (owner && owner !== this) return false;
+    }
+    const tt = this.module.treeTableOf(this.obj.selector);
+    return !!tt && tt.entries.some((e) => e.autonomyThreshold < 100 && !(e.flags & 0x80));
   }
 
   /** cXObject::Reset's data part. */
@@ -805,9 +823,8 @@ export class SimObject extends TreeSim {
         return this.module.unportedPrim(op, "user event", PRIM_TRUE);
       case 36:
         return this.tryDialog(elem, new Uint8Array(v.buffer, v.byteOffset + p, 8));
-      case 41: // Set Balloon / Headline: recorded only (no sprite slot activation).
-        this.module.record(this, "balloon", s16(2));
-        return PRIM_TRUE;
+      case 41:
+        return this.trySetBalloon(elem, v.getUint16(p, true), v.getUint16(p + 2, true), v.getUint16(p + 4, true), v.getUint16(p + 6, true));
       case 42:
         return this.tryCreateObject(elem, v.getUint32(p, true), (u8(4) << 24) >> 24, u8(5), (u8(6) << 24) >> 24);
       case 43:
@@ -828,6 +845,84 @@ export class SimObject extends TreeSim {
         // 3, 6, 17, 22, 27, 29, 30, 37..40, 44, 45, 47 (person primitives) and >= 0x34: error 5.
         simThrow(XERR.unknownPrimitive);
     }
+  }
+
+  /**
+   * cXObject::TrySetBalloon (Set Balloon / Headline): shows an icon in the
+   * first sprite slot of me (or of the stack object, `who` bit 0). `icon`:
+   * low byte the index, high byte the IconGroup (world/balloons.ts); group
+   * 7 shows a picture: 0 the stack object's, 1 the neighbor whose id is the
+   * stack object, 2 the object whose id is in local `who >> 1`. `ticks` 0
+   * hides the slot, 0xffff shows it until replaced. `flags`: low byte the
+   * balloon (0 thought, 1 scream, 2 conversation), 0x100 shown on persons
+   * that are not selected, 0x200 the "not" overlay, 0x400 the animation
+   * runs backwards, 0x800 `ticks` counts loops of the animation, 0x1000
+   * temp 0 is added to the index. An icon of group 4 (relationship) has
+   * priority 2 and is not replaced by the others while it shows.
+   */
+  protected trySetBalloon(elem: StackElem, who: number, icon: number, ticks: number, flags: number): number {
+    const m = this.module;
+    let o: SimObject = this;
+    if (who & 1) {
+      const so = this.obj_(elem.stackObj);
+      if (!so) simThrow(0x15);
+      o = so;
+    }
+    const slot = o.obj.spriteSlots[0];
+    if (!slot) return PRIM_TRUE;
+    const group = (icon >> 8) & 0xff;
+    const priority = group === 4 ? 2 : 1;
+    if (slot.activeTicks !== 0 && slot.priority > priority) return PRIM_TRUE;
+    slot.priority = priority;
+    const index = icon & 0xff;
+    if (ticks === 0) {
+      // SpriteSlot::ActivateForTicks(0)
+      slot.subTick = 0;
+      slot.activeTicks = 0;
+      return PRIM_TRUE;
+    }
+    if (group === 7) {
+      // SpriteSlot::SetSprite(ObjSelector *): a one-frame picture.
+      let sel: ObjSelector | null = null;
+      if (index === 1) {
+        const nb = m.findNeighborByID(elem.stackObj);
+        sel = nb ? (m.worldHooks?.selector(nb.guid) ?? null) : null;
+      } else if (index === 0) {
+        sel = this.obj_(elem.stackObj)?.obj.selector.getMasterSelector() ?? null;
+      } else if (index === 2) {
+        const local = who >> 1;
+        if (local >= elem.numLocals) simThrow(0x33);
+        sel = this.obj_(elem.stack.mem[elem.localsAt() + local]!)?.obj.selector.getMasterSelector() ?? null;
+      }
+      if (!sel) return PRIM_TRUE;
+      slot.spriteId = -1;
+      slot.selector = sel;
+      slot.count = 1;
+      slot.frame = 0;
+      slot.step = 1;
+    } else {
+      const id = iconSpriteID(group, flags & 0x1000 ? index + this.temps[0]! : index);
+      if (id === 0) return PRIM_TRUE;
+      const count = Math.trunc(balloonSpriteCount(id) / 3);
+      if (count === 0) return PRIM_TRUE;
+      // SpriteSlot::SetSprite(renderer, id, count, reversed)
+      slot.spriteId = id;
+      slot.selector = null;
+      slot.count = count;
+      slot.frame = flags & 0x400 ? count - 1 : 0;
+      slot.step = flags & 0x400 ? -1 : 1;
+    }
+    slot.balloon = balloonSpriteID(flags & 0xff);
+    slot.overlay = flags & 0x200 ? iconSpriteID(1, 3) : 0;
+    slot.always = (flags & 0x100) !== 0;
+    slot.subTick = 0;
+    // ActivateForTicks(-1) / ActivateForLoops(n) / ActivateForTicks(n)
+    if (ticks === 0xffff) slot.activeTicks = -1;
+    else if (flags & 0x800) slot.activeTicks = ticks * slot.count * 12;
+    else slot.activeTicks = ticks;
+    m.dirty(o);
+    m.clearIdleStatus(o.id);
+    return PRIM_TRUE;
   }
 
   /**
@@ -968,7 +1063,8 @@ export class SimObject extends TreeSim {
    * true; calls >= 0x2c (and 7, 22) are error 0x2a. Ported: 2 (the stack
    * object becomes the current action's icon), 10/11 (buy and build
    * disabled/enabled: recorded), 14 (global 0x1f := temp 0), 15 (person
-   * data 0x48 := temp 0), 28 (lot zoning into temp 0). Others
+   * data 0x48 := temp 0), 28 (lot zoning into temp 0), 18..23 (the
+   * lot change's arrival, sim/lotcalls.ts), 24 (set suit). Others
    * are logged and return true.
    */
   protected tryGenericSimCall(elem: StackElem, call: number): number {
@@ -1004,6 +1100,8 @@ export class SimObject extends TreeSim {
         m.buyBuildDisabledBy = call === 10 ? this.id : 0;
         m.record(this, call === 10 ? "disableBuyAndBuild" : "enableBuyAndBuild", this.id);
         return PRIM_TRUE;
+      case 24:
+        return this.trySetSuitCall();
       case 28: {
         // Zoning of house temp 0: 90-92 -> 0, 93-98 -> 1, else
         // Neighborhood::GetZoningType (house 0 -> 1; listed house -> its
@@ -1019,6 +1117,13 @@ export class SimObject extends TreeSim {
         this.temps[0] = r;
         return PRIM_TRUE;
       }
+      case 18:
+      case 19:
+      case 20:
+      case 21:
+      case 23:
+        // The lot change's arrival side (sim/lotcalls.ts).
+        return tryLotChangeCall(this, call, this.temps, (id) => this.obj_(id)) ?? PRIM_TRUE;
       case 3:
       case 17:
         // cSimsApp::RemoveTaxiDialog / cXPerson::TryChangeLots (nbhd/transit.ts).
@@ -1297,8 +1402,10 @@ export class SimObject extends TreeSim {
    * cXObject::TryDialog. A dialog of this object still shown (state 1) is
    * aborted, a done one (5) ignored. Operand byte 7 bit 0: the dialog is
    * queued and the primitive goes on (true). Otherwise kinds 5 / 7 / 0xb /
-   * 0xd (town pickers) go to the transit hooks; kinds 6, 8, 9, 0xa (phone
-   * book), 0xc / 0xf (magic book) and 0xe are not ported (recorded, true).
+   * 0xd (town pickers) go to the transit hooks; 0xa (phone book), 6 / 0xe
+   * (outfit, transform), 9 (pet) and 0xc / 0xf (magic book) to the dialog
+   * hooks; kind 8 (and those kinds without hooks) are not ported (recorded,
+   * true).
    * The generic kinds queue an ObjectDialog (EnqueueObjectDialog) and wait;
    * then the state answers: 2 (first button) true, the text of a type 3
    * dialog kept; 3 false (type 2: temp[(byte 7 >> 4) & 7] = 0); 4 false
@@ -1319,6 +1426,9 @@ export class SimObject extends TreeSim {
     const r = m.transitHooks?.tryDialog(this, kind);
     if (r !== undefined) return r;
     if (kind === 0xa && m.dialogHooks?.showPhoneBook) return this.tryPhoneBookDialog();
+    if ((kind === 6 || kind === 0xe) && m.dialogHooks?.showPersonPicker) return this.tryOutfitDialog(kind);
+    if (kind === 9 && m.dialogHooks?.showPersonPicker) return this.tryPetDialog(elem);
+    if ((kind === 0xc || kind === 0xf) && m.dialogHooks?.showMagicBook) return this.tryMagicBookDialog(kind === 0xf);
     if (kind === 6 || kind === 8 || kind === 9 || kind === 0xa || kind === 0xc || kind === 0xf || kind === 0xe) {
       return m.unportedPrim(36, `dialog kind ${kind}`, PRIM_TRUE);
     }
@@ -1348,6 +1458,164 @@ export class SimObject extends TreeSim {
       return PRIM_FALSE;
     }
     return PRIM_TRUE;
+  }
+
+  /**
+   * cXObject::TryGenericSimCall 24 (person only, error 0x1c): an
+   * EditPerson on my body strings sets the suit temp 1 of the list temp 0
+   * (0 body, 1 formal, 2 swimwear, 3 PJs, 4 winter, 5 high fashion) when
+   * temp 1 is in the list, End(true) keeps it (person data 8, the outfit,
+   * is kept), the portraits are dropped (PersonFinder::RemoveBitmaps /
+   * ClearThumbnails, CPState dirty 0x20000000) and temp 1 := the suit worn
+   * before.
+   */
+  private trySetSuitCall(): number {
+    const m = this.module;
+    if (!this.person) simThrow(XERR.notPerson);
+    const sel = this.obj.selector;
+    const guid = sel.guid | 0;
+    const strings = m.bodyStringEdits.get(guid) ?? loadStringSet(sel.res, sel.objd.i16(0x26)) ?? [];
+    const ep = EditPerson.beginLoaded(strings, this.person.personData);
+    if (!ep) return m.unportedPrim(1, "generic sim call 24 (suit catalog not loaded)", PRIM_TRUE);
+    const kind = (["body", "formal", "swimwear", "lingerie", "winter", "fashion"] as const)[this.temps[0]!];
+    const index = this.temps[1]!;
+    let old: number | null = null;
+    if (kind && index >= 0 && index < ep.countAvailable(kind)) {
+      old = ep.getOutfitSuit(kind);
+      ep.setOutfitSuit(kind, index, false);
+    }
+    ep.end(true);
+    const edited = ep.bodyStrings();
+    m.bodyStringEdits.set(guid, edited);
+    m.worldHooks?.bodyStringsChanged?.(this.obj, edited);
+    m.record(this, "portraitsDirty", guid);
+    if (old !== null) this.temps[1] = old;
+    return PRIM_TRUE;
+  }
+
+  /**
+   * ObjectModule::PostSim's picker part, run once a request is posted: the
+   * window is modal there (the simulation does not tick); here the
+   * primitive waits while `pickerPending`. `store` receives the result word.
+   */
+  private openPicker(kind: 6 | 9 | 0xe, person: SimObject, type: number, store: (r: number) => void): void {
+    const m = this.module;
+    const hooks = m.dialogHooks;
+    if (!hooks?.showPersonPicker) return;
+    m.pickerPending = true;
+    void hooks
+      .showPersonPicker(kind, person, type)
+      .catch(() => 0xffff)
+      .then((r) => {
+        store(r);
+        m.pickerPending = false;
+      });
+  }
+
+  /**
+   * cXObject::TryDialog kinds 6 (cWinClothingChoiceDlg) and 0xe
+   * (cWinTransformMeDlg), on a person (error 0x1c). With no request, mine
+   * is posted: kind 6 puts temp 0 (the clothing type) in +0xf8 and me in
+   * +0xfc, kind 0xe temp 0 in +0xfa and me in +0x100; the primitive waits.
+   * When my request was answered, temp 0 := +0xfa (the index) and the
+   * result is true when +0xf8 is -2 (OK), false otherwise. Another
+   * object's request is dropped (false, temp 0 := 0).
+   */
+  private tryOutfitDialog(kind: 6 | 0xe): number {
+    const m = this.module;
+    if (!this.isPerson) simThrow(XERR.notPerson);
+    const pending = kind === 6 ? m.clothingPerson : m.transformPerson;
+    const set = (o: SimObject | null): void => {
+      if (kind === 6) m.clothingPerson = o;
+      else m.transformPerson = o;
+    };
+    if (!pending) {
+      if (kind === 6) m.outfitLo = this.temps[0]!;
+      else m.outfitHi = this.temps[0]!;
+      set(this);
+      // PostSim: +0xfa := 0, then the window's result word: high -> +0xfa, low -> +0xf8.
+      this.openPicker(kind, this, this.temps[0]!, (r) => {
+        m.outfitHi = (r >> 16) << 16 >> 16;
+        m.outfitLo = (r << 16) >> 16;
+      });
+      return PRIM_WAIT;
+    }
+    if (pending === this) {
+      if (m.pickerPending) return PRIM_WAIT;
+      this.temps[0] = m.outfitHi;
+      const ok = m.outfitLo === -2;
+      if (kind === 6) m.outfitLo = 0;
+      else m.outfitHi = 0;
+      set(null);
+      return ok ? PRIM_TRUE : PRIM_FALSE;
+    }
+    if (kind === 6) m.outfitLo = 0;
+    else m.outfitHi = 0;
+    set(null);
+    this.temps[0] = 0;
+    return PRIM_FALSE;
+  }
+
+  /**
+   * cXObject::TryDialog kind 9 (cWinPetSelectDlg): the stack object must
+   * be a person (the pet, error 0x1c). With no request it goes to +0x108
+   * and the primitive waits; once answered temp 0 := +0x104 (the coat
+   * index) and the result is true when +0x10c is -2 (OK); otherwise
+   * +0x104 := -1, false. Another pet's request is dropped.
+   */
+  private tryPetDialog(elem: StackElem): number {
+    const m = this.module;
+    const pet = this.obj_(elem.stackObj);
+    if (!pet?.isPerson) simThrow(XERR.notPerson);
+    if (!m.petPerson) {
+      m.petPerson = pet;
+      // PostSim: the window at speed 0 (restored after); +0x104 / +0x10c := high / low word.
+      this.openPicker(9, pet, 0, (r) => {
+        m.petIndex = (r >> 16) << 16 >> 16;
+        m.petStatus = (r << 16) >> 16;
+      });
+      return PRIM_WAIT;
+    }
+    if (m.petPerson === pet) {
+      if (m.pickerPending) return PRIM_WAIT;
+      this.temps[0] = m.petIndex;
+      m.petPerson = null;
+      if (m.petStatus === -2) return PRIM_TRUE;
+      m.petIndex = -1;
+      return PRIM_FALSE;
+    }
+    this.temps[0] = 0;
+    m.petIndex = -1;
+    m.petPerson = null;
+    return PRIM_FALSE;
+  }
+
+  /**
+   * cXObject::TryDialog kinds 0xc (spell book) / 0xf (cookbook): the
+   * original runs CWinMagicBook(person, kind == 0xf) modally inside the
+   * primitive and answers true; here the primitive waits for the window.
+   */
+  private tryMagicBookDialog(cookbook: boolean): number {
+    const m = this.module;
+    if (!this.isPerson) simThrow(XERR.notPerson);
+    if (m.magicBookDone === this) {
+      m.magicBookDone = null;
+      return PRIM_TRUE;
+    }
+    if (m.magicBookPerson === null && !m.pickerPending) {
+      m.magicBookPerson = this;
+      m.pickerPending = true;
+      void m.dialogHooks!
+        .showMagicBook!(this, cookbook)
+        .catch(() => undefined)
+        .then(() => {
+          m.pickerPending = false;
+          m.magicBookDone = this;
+          m.magicBookPerson = null;
+        });
+      return PRIM_WAIT;
+    }
+    return PRIM_WAIT;
   }
 
   /**
@@ -1638,7 +1906,7 @@ export class SimObject extends TreeSim {
    * 12..14 the stack object's slot 2..4. Flags: 1 fail when an instance
    * of the type is on the target tile, 2 the new object's Main gets my id
    * as parameter 0 and my stack object, 4 the neighbor in the stack object
-   * (not ported), 8 fail when anything is on the target tile, 0x10 my temp
+   * (its person), 8 fail when anything is on the target tile, 0x10 my temp
    * 0 as its parameter 0, 0x20 face the stack object's direction. The new
    * object is made out of the world, then CanPlace / Place (it is killed
    * when it does not fit) and becomes the stack object. The room check of
@@ -1648,8 +1916,13 @@ export class SimObject extends TreeSim {
    */
   protected tryCreateObject(elem: StackElem, guid: number, mode: number, flags: number, local: number): number {
     const hooks = this.module.worldHooks;
-    if (!hooks || flags & 4) return this.module.unportedPrim(42, flags & 4 ? "create neighbor" : "create object (no world)", PRIM_FALSE);
-    const sel = hooks.selector(guid);
+    if (!hooks) return this.module.unportedPrim(42, "create object (no world)", PRIM_FALSE);
+    // Flag 4: Neighborhood::GetNeighborSelector(the stack object as a neighbor id), the neighbor's +8 selector.
+    let sel: ObjSelector | null | undefined = null;
+    if (flags & 4) {
+      const nb = this.module.findNeighborByID(elem.stackObj);
+      if (nb) sel = hooks.selector(nb.guid);
+    } else sel = hooks.selector(guid);
     if (sel === undefined) return PRIM_WAIT;
     if (!sel) return PRIM_FALSE;
     const me = this.obj;
@@ -1744,6 +2017,12 @@ export class SimObject extends TreeSim {
         return PRIM_FALSE;
       }
       hooks.place(x, pos, level, container, slot);
+      // A neighbor's person (flag 4) whose person data 0x20 is set runs its
+      // "init visitor" tree at once (RunOneTickTree, the person as stack object).
+      if (flags & 4 && o.person && o.person.personData[0x20] !== 0) {
+        const tree = o.behavior.getTreeID("init visitor");
+        if (tree !== 0) o.runOneTickTree(o.behavior, o.id, tree, null);
+      }
     }
     const main = o.getStackSize() > 0 ? o.stack.getNthFrame(0) : null;
     if (flags & 2) {
@@ -1838,8 +2117,9 @@ export class SimObject extends TreeSim {
    * object (error 0x3d without one) along its facing (+2 for 4), same room;
    * 5 from a random spot; others from the start (16, 16 by default) or the
    * reference object, same room first. CanPlace / Place on the spot found.
-   * The search is Placement.findGoodLocation's ring search for every mode
-   * (the per-direction searches of the original are not ported).
+   * The search is Placement.findGoodLocation (cXObject::FindGoodLocation):
+   * modes 3 / 4 along the reference's facing in its room; the others in
+   * the start tile's room first, then anywhere.
    */
   protected tryFindGoodLocation(elem: StackElem, mode: number, local: number, flags: number): number {
     const target = this.obj_(elem.stackObj);
@@ -1878,10 +2158,14 @@ export class SimObject extends TreeSim {
     }
     if (mode === 3 || mode === 4) {
       if (!ref) simThrow(0x3d);
-      return placeAt(hooks.findGoodLocation(x, start, level, opts), level);
+      // along the reference object's facing (+2 for mode 4), its room only
+      const direction = mode === 4 ? (ref.obj.dir + 2) & 7 : ref.obj.dir;
+      return placeAt(hooks.findGoodLocation(x, start, level, { ...opts, sameRoom: true, direction }), level);
     }
     if (mode === 5) opts.random = () => this.module.sim.random();
-    return placeAt(hooks.findGoodLocation(x, start, level, opts), level);
+    // the start tile's room first, then anywhere
+    const pos = hooks.findGoodLocation(x, start, level, { ...opts, sameRoom: true }) ?? hooks.findGoodLocation(x, start, level, { ...opts, sameRoom: false });
+    return placeAt(pos, level);
   }
 
   /**

@@ -106,6 +106,17 @@ export function dirtyAllRoutes(module: SimModule): void {
   }
 }
 
+/**
+ * ObjectModule::InvalidateAllRoutes (House::EnterLiveMode): every person's
+ * routes are re-planned on their next step (cXPerson::InvalidateRoutes
+ * clears each route's +0x78) and every portal mark is dirty, so walls and
+ * doors changed in build mode are taken into account.
+ */
+export function invalidateAllRoutes(module: SimModule): void {
+  for (const p of module.persons) for (const r of p.routes) r.loaded = false;
+  dirtyAllRoutes(module);
+}
+
 /** cXPortal::GetDistToPortal(from, to): the portal graph distance (computed once per source). */
 export function getDistToPortal(module: SimModule, from: SimObject, to: SimObject): number {
   let id = from.obj.objectData[6]!;

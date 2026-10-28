@@ -60,7 +60,9 @@ import {
 import { winMgr } from "../ui/winmgr.js";
 import { pointToObjectId, PickMode } from "./tools/picking.js";
 import { ActionIcons } from "./actionicons.js";
+import { BalloonPainter, loadBalloonSprites } from "./balloons.js";
 import { killObject, makeNewOutOfWorldObject } from "./tools/objectfactory.js";
+import { updateSimObjects } from "./simobjects.js";
 
 /** HOUS chunk id 0: HouseViewer::DoStream (saved camera). */
 interface SavedView {
@@ -222,6 +224,7 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
       this.people = await LotPeople.load(comp, this.housePath.split("/")[0] ?? "UserData", this.lotObjects.objects.values());
       v.people = this.people;
       this.lotObjects.drawer.placeHeld = (d, rp) => this.placeHeld(d, rp);
+      await loadBalloonSprites();
       // `?nosim` keeps the lot static (debug comparison).
       if (!new URLSearchParams(location.search).has("nosim")) await this.initSimulator(house, this.lotObjects, world.fixed);
     }
@@ -243,6 +246,8 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
     this.viewer = v;
     if (this.wallManager) this.initCutaway(v, this.wallManager);
     if (this.lotObjects) await this.initBuyTool(v, this.lotObjects);
+    // ObjectModule::Load -> UpdateSimObjects: the controllers / phone plugins every lot holds.
+    if (this.lotObjects && this.sim && this.placement) await updateSimObjects(this.placement, this.lotObjects.folder, this.sim.module);
     if (this.lotObjects && this.sim) await this.bringInFamily(v, this.lotObjects);
     this.edge = new EdgeDetectScroller(v, this.ctx.width, this.ctx.height);
     const st = this.ctx.state;
@@ -549,6 +554,7 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
       },
       onEnterWorld: (obj) => {
         simObject(obj);
+        if (obj.isPerson) void this.drawPerson(obj);
       },
       onKill: (obj) => {
         this.sim?.module.removeObject(obj);
@@ -568,6 +574,12 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
   private createObjectHooks(): WorldHooks {
     const loading = new Map<number, boolean>();
     return {
+      // GenericSimCall 24 (set suit): the edited body strings dress the person again.
+      bodyStringsChanged: (obj, strings) => {
+        void this.people?.redress(obj, strings).then(() => {
+          if (this.viewer) this.viewer.dirty = true;
+        });
+      },
       selector: (guid) => {
         const lot = this.lotObjects;
         if (!lot) return null;
@@ -689,6 +701,12 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
       if (!sel) continue;
       const obj = makeNewOutOfWorldObject(p, lot.folder, sel);
       if (!obj) continue;
+      // cSimsApp::LoadGame's arrivals: PersonFinder::CreateDowntownSim leaves them out of
+      // the world; the lot's own behaviors (ped markers, phone plugins) bring them in.
+      if (this.arrivalOutOfWorld) {
+        present.add(info.guid | 0);
+        continue;
+      }
       const w = v.world;
       const c = v.pointToWholeTile(v.viewW >> 1, v.viewH >> 1, 1);
       const [cx, cy] = RotatableWorld.rotateCoords(c.x, c.y, (4 - w.rotation) & 3, 0x40);
@@ -717,8 +735,40 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
     v.dirty = true;
   }
 
+  /**
+   * A person who entered the world after the lot loaded (an NPC or a visitor
+   * made by Create Object Instance, a sim brought in by its car) gets its
+   * animator, bound to the simulation, once.
+   */
+  private async drawPerson(obj: XObject): Promise<void> {
+    const people = this.people;
+    const ps = this.sim?.module.persons.find((x) => x.obj === obj);
+    if (!people || !ps || this.dressing.has(obj) || people.people.some((x) => x.obj === obj)) return;
+    this.dressing.add(obj);
+    try {
+      if (await people.addPerson(this.housePath.split("/")[0] ?? "UserData", obj)) {
+        people.bindSim(obj, (sk) => ps.animator.attach(sk), () => ps.renderDir ?? ps.obj.dir, () => ps.animator.followPos);
+        if (this.viewer) this.viewer.dirty = true;
+      }
+    } finally {
+      this.dressing.delete(obj);
+    }
+  }
+
+  /** People whose animator drawPerson is loading. */
+  private readonly dressing = new Set<XObject>();
+
+  /**
+   * Set before init for a lot change's arrival (downtown, Studio Town, a
+   * trip): the arriving sims are made out of the world (bringInFamily).
+   */
+  arrivalOutOfWorld = false;
+
   /** The selected sim's action icons (Live mode). */
   private readonly actionIcons = new ActionIcons();
+
+  /** The sprite slots' balloons and headlines (cXObject::DrawSpriteSlot). */
+  private balloons: BalloonPainter | null = null;
 
   /** The Live mode pie menu (cWinPeople's cTSPieMenu), made on first use. */
   private pie: TSPieMenu | null = null;
@@ -1171,6 +1221,11 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
       fc.drawImage(v.comp.canvas, 0, 0);
     }
     if (this.frame) g.ctx.drawImage(this.frame, g.ox, g.oy);
+    if (this.sim && this.people) {
+      const sel = this.selectedPerson()?.obj ?? null;
+      this.balloons ??= new BalloonPainter(this.ctx);
+      this.balloons.paint(g.ctx, g.ox, g.oy, this.getW(), this.getH(), { viewer: v, people: this.people, module: this.sim.module, isSelected: (o) => o === sel });
+    }
     // HouseViewer::UpdateStaticDynamic: the pie's round shadow, then the
     // popup head over the 3D pass (SAnimator::GetPopupHeadLocation / RenderPopupHead).
     const clip = { left: g.ox, top: g.oy, right: g.ox + this.getW(), bottom: g.oy + this.getH() };

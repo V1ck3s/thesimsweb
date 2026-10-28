@@ -114,10 +114,12 @@ export interface WorldHooks {
   /** cXObject::Pickup (out of the world). */
   pickup(obj: XObject): void;
   /** cXObject::FindGoodLocation (Placement.findGoodLocation). */
-  findGoodLocation(obj: XObject, start: FPos, level: number, opts: { emptyTile: boolean; buildable: boolean; random: (() => number) | null }): FPos | null;
+  findGoodLocation(obj: XObject, start: FPos, level: number, opts: { emptyTile: boolean; buildable: boolean; random: (() => number) | null; sameRoom?: boolean; direction?: number }): FPos | null;
   kill(obj: XObject): void;
   /** Placement's last error (lbl_105BA1A8) and the object TestIntersection hit (lbl_105BA248). */
   lastError(): { code: number; obstacle: number };
+  /** The person's body strings changed (TryGenericSimCall 24): redress it (SAnimator::UpdateOutfitAndHands). */
+  bodyStringsChanged?(obj: XObject, strings: readonly string[]): void;
 }
 
 /** See SimModule.transitHooks (nbhd/transit.ts). */
@@ -252,6 +254,32 @@ export class SimModule {
    * neighbor id, or -9999 when cancelled.
    */
   phoneBook = 0;
+  /**
+   * The person pickers of TryDialog kinds 6 (clothing) and 0xe (transform):
+   * +0xf8 the clothing type in, the result's low word out (-2: OK); +0xfa
+   * the transform's temp 0 in, the result's high word out (the index);
+   * +0xfc / +0x100 the person waiting for the clothing / transform window.
+   */
+  outfitLo = 0;
+  outfitHi = 0;
+  clothingPerson: SimObject | null = null;
+  transformPerson: SimObject | null = null;
+  /** Kind 9 (pet pen): +0x104 the result's high word (the index), +0x108 the pet, +0x10c the low word (-2: OK). */
+  petIndex = 0;
+  petPerson: SimObject | null = null;
+  petStatus = 0;
+  /** A picker window PostSim opened and that is still up (the primitive waits). */
+  pickerPending = false;
+  /** Kinds 0xc / 0xf: the person whose magic book is open (the original runs it inside TryDialog). */
+  magicBookPerson: SimObject | null = null;
+  /** The person whose magic book was just closed (its primitive answers true on its next run). */
+  magicBookDone: SimObject | null = null;
+  /**
+   * Edited body strings by person GUID (cXObject::TryGenericSimCall 24
+   * writes the selector's STR# through EditPerson::End): read before the
+   * object file's own.
+   */
+  readonly bodyStringEdits = new Map<number, string[]>();
 
   /** ObjectModule::GetCurrentDialog: the first queued dialog of `o` (done ones are dropped, as PostSim does). */
   getCurrentDialog(o: SimObject): ObjectDialog | null {
@@ -274,6 +302,9 @@ export class SimModule {
       if (d.state === 0) hooks.show(d);
     });
   }
+
+  /** A person joined the module at run time (SAnimator::Initialize: the simulator gives it a skeleton). */
+  onPersonMade: ((p: PersonSim) => void) | null = null;
 
   /** Called when a person's interaction queue or current action changes (the Live panel). */
   onQueueChanged: ((p: PersonSim) => void) | null = null;
@@ -309,19 +340,46 @@ export class SimModule {
     let k = this.list.findIndex((y) => y.id > id);
     if (k < 0) k = this.list.length;
     this.list.splice(k, 0, o);
-    if (x.isPerson) this.people.push(o);
+    if (x.isPerson) {
+      this.people.push(o);
+      if (o instanceof PersonSim) this.onPersonMade?.(o);
+    }
     // A multi-tile part arrives alone (the factory adds them one by one): its own Init runs.
     if (runInit) {
       if (x.selector.objd.masterId === 0) o.reset(false);
       else o.resetPart(false);
     } else o.resetTree(o.behavior, o.fnTable.getTreeID(EP.main));
+    // MakeNewOutOfWorldObject ends with GlobalDispatch(0xe2, id): House::DoCommand
+    // runs Neighborhood::UpdateInstanceVisitorTypes when the new object is a person.
+    if (runInit && x.isPerson) this.updateInstanceVisitorTypes();
     return o;
+  }
+
+  /**
+   * Neighborhood::UpdateInstanceVisitorTypes: every person of the lot gets
+   * its person type (person data 0x20, cXPerson +0x5cc): a member of the
+   * active family is 0 (a resident), anyone else keeps a non-zero type (0
+   * becomes 1, a visitor); on a lot that is not residential (GetZoningType
+   * of the house != 1) a 0 becomes 1 too.
+   */
+  updateInstanceVisitorTypes(): void {
+    const family = this.sim.state?.family ?? [];
+    const residential = this.getZoningType(this.sim.globals[10]!) === 1;
+    for (const p of this.persons) {
+      const pd = p.pd;
+      let t = pd[0x20] || 1;
+      if (family.some((f) => ((f.guid ?? 0) | 0) === (p.obj.selector.guid | 0))) t = 0;
+      if (!residential && t === 0) t = 1;
+      pd[0x20] = t;
+    }
   }
 
   /** ObjectModule::KillObject's module part for an object removed by the world (buy / build tools). */
   removeObject(x: XObject): void {
     const o = this.objects[x.objectId - 1];
-    if (!o || o.obj !== x) return;
+    if (!o || o.obj !== x || o.killed) return;
+    // KillOutOfWorldObject: the people using it let go (cXPerson::Cleanup(obj)).
+    this.cleanupPeople(o);
     o.killed = true;
     // ObjectModule::RemoveObject: the object's dialogs are aborted.
     for (const d of this.dialogs) if (d.obj === o) d.abort();
@@ -568,24 +626,54 @@ export class SimModule {
   }
 
   /**
-   * The kill queue (ObjectModule::KillObject for each entry): the object
-   * leaves the module and the world (picked up out of its tile or its
-   * container's slot, `worldHooks.kill`). Its Cleanup tree is not run.
+   * The kill queue: ObjectModule::KillObject for each entry (whose object
+   * may already be gone with a container or a multi-tile group).
    */
   runKillQueue(): void {
     while (this.killQueue.length) {
       const { id } = this.killQueue.shift()!;
       const o = this.getObject(id);
-      if (!o) continue;
-      o.killed = true;
-      for (const d of this.dialogs) if (d.obj === o) d.abort();
-      this.objects[id - 1] = null;
-      this.list.splice(this.list.indexOf(o), 1);
-      const pi = this.people.indexOf(o);
-      if (pi >= 0) this.people.splice(pi, 1);
-      this.worldHooks?.kill(o.obj);
-      this.onKill?.(o);
+      if (o) this.killObject(o);
     }
+  }
+
+  /**
+   * ObjectModule::KillObject + KillOutOfWorldObject, module part. A
+   * multi-tile object dies as a whole (every part of the lead's chain). For
+   * each object: every other person forgets what it did with it
+   * (cXPerson::Cleanup(obj): its frames running the object's trees are
+   * popped, which gives back the object data 62 counts, e.g. of a social
+   * interaction object), then the object's own Cleanup(0) (a person lets go
+   * of its records the same way); the objects in its slots (1..n) are killed
+   * with it; it leaves the module (RemoveObject: its dialogs are aborted).
+   * The world part (pick up out of the tile or the container's slot, the
+   * drawing) is `worldHooks.kill`, once for the whole object.
+   */
+  killObject(o: SimObject): void {
+    if (o.killed) return;
+    const lead = o.obj.selector.objd.masterId !== 0 ? (o.obj.mtLeadId !== 0 ? o.obj.mtLeadId : o.id) : 0;
+    const group = lead !== 0 ? this.list.filter((x) => x.id === lead || x.obj.mtLeadId === lead) : [o];
+    if (!group.includes(o)) group.push(o);
+    // KillOutOfWorldObject flags every part (+0x114 0x40) before the first one goes.
+    for (const x of group) x.killed = true;
+    for (const x of group) {
+      this.cleanupPeople(x);
+      x.cleanup();
+      for (const s of x.obj.objectSlots.slice(1)) {
+        const c = s.containedId !== 0 ? this.getObject(s.containedId) : null;
+        if (c && !c.killed) this.killObject(c);
+      }
+    }
+    for (const x of group) {
+      for (const d of this.dialogs) if (d.obj === x) d.abort();
+      if (this.objects[x.id - 1] === x) this.objects[x.id - 1] = null;
+      const li = this.list.indexOf(x);
+      if (li >= 0) this.list.splice(li, 1);
+      const pi = this.people.indexOf(x);
+      if (pi >= 0) this.people.splice(pi, 1);
+    }
+    this.worldHooks?.kill(o.obj);
+    for (const x of group) this.onKill?.(x);
   }
 
   /** cXObject::Dirty: the renderer must redraw the object. */
@@ -713,7 +801,7 @@ export class SimModule {
       case 0:
         return this.people.find((p) => (p.obj.selector.guid | 0) === (nb.guid | 0))?.id ?? 0;
       case 1:
-        return this.sim.state?.family.some((f) => (f.guid ?? 0) === (nb.guid | 0)) ? 1 : 0;
+        return this.sim.state?.family.some((f) => ((f.guid ?? 0) | 0) === (nb.guid | 0)) ? 1 : 0;
       case 2: // Neighbor +0xe8: the stored person data 0x3a (age)
         return nb.personData?.[0x3a] ?? 0;
       case 3:
@@ -729,9 +817,56 @@ export class SimModule {
       }
       case 6:
         return this.nbhd?.families.find((f) => f.memberGuids.some((g) => (g | 0) === (nb.guid | 0)))?.houseNumber ?? 0;
+      case 5: // Neighborhood::GetFriendCount(neighbor)
+        return this.neighborFriendCount(nb);
+      case 9: { // Family::GetFriendCount -> Neighborhood::GetFamilyFriendsCount of the neighbor's family
+        const fn = nb.personData?.[0x3d] ?? 0;
+        const fam = fn === 0 ? undefined : this.nbhd?.families.find((f) => f.chunkId === fn);
+        return fam ? this.familyFriendCount(fam.memberGuids) : 0;
+      }
       default:
         return this.unportedValue(`scope 24 neighbor data ${data}`, 0);
     }
+  }
+
+  /** The daily relationship (RelMatrix value 0) of `from` toward neighbor id `to`, null without an entry. */
+  private static dailyRel(from: Neighbor, to: number): number | null {
+    const r = from.relationships.find((x) => x.other === to);
+    return r && r.values.length > 0 ? r.values[0]! : null;
+  }
+
+  /** Both ways at least lbl_105BA1F4 (25). */
+  private static areFriends(a: Neighbor, b: Neighbor): boolean {
+    const ab = SimModule.dailyRel(a, b.id);
+    const ba = SimModule.dailyRel(b, a.id);
+    return ab !== null && ba !== null && ab >= 25 && ba >= 25;
+  }
+
+  /**
+   * Neighborhood::GetFriendCount(Neighbor *): the other characters belonging
+   * to a family (Neighbor +0xee, person data 0x3d) sharing a daily
+   * relationship of at least 25 both ways. The original caches it at
+   * Neighbor +0x20 and recomputes when +0x24 is set; it is recomputed here.
+   */
+  private neighborFriendCount(nb: Neighbor): number {
+    let n = 0;
+    for (const o of this.nbhd?.neighbors ?? []) {
+      if (o === nb || !o.personData || o.personData[0x3d] === 0) continue;
+      if (SimModule.areFriends(nb, o)) n++;
+    }
+    return n;
+  }
+
+  /** Neighborhood::UpdateFamilyFriendsCount for one family (see NghInterface.getFamilyFriendsCount). */
+  private familyFriendCount(memberGuids: number[]): number {
+    const all = this.nbhd?.neighbors ?? [];
+    const members = all.filter((n) => memberGuids.some((g) => (g | 0) === (n.guid | 0)));
+    let count = 0;
+    for (const n of all) {
+      if (members.includes(n) || !n.personData || n.personData[0x3d] === 0) continue;
+      if (members.some((m) => SimModule.areFriends(n, m)) && (n.personData[65] ?? 0) < 2) count++;
+    }
+    return count;
   }
 
 }

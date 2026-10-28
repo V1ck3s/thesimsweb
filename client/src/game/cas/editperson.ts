@@ -220,7 +220,9 @@ function suitTexEq(a: SuitTex, b: SuitTex): boolean {
   return a.suit.toLowerCase() === b.suit.toLowerCase() && a.tex.toLowerCase() === b.tex.toLowerCase();
 }
 
-type ListKind = "body" | "head" | "formal" | "swimwear" | "lingerie" | "winter" | "fashion";
+export type ListKind = "body" | "head" | "formal" | "swimwear" | "lingerie" | "winter" | "fashion";
+/** The outfit lists of Get / Set / CountAvailable / SetToNextValid*ForBodyType. */
+export type OutfitKind = Exclude<ListKind, "head">;
 
 /** First letter of the outfit suits (GetAvailable*Suits). */
 const OUTFIT_PREFIX: Record<Exclude<ListKind, "body" | "head">, string> = {
@@ -240,6 +242,9 @@ interface Catalog {
 
 let catalog: Promise<Catalog> | null = null;
 
+/** The catalog once loaded (EditPerson.beginLoaded). */
+let loadedCatalog: Catalog | null = null;
+
 function loadCatalog(mgr?: VBAnimMgr): Promise<Catalog> {
   catalog ??= (async () => {
     const m = mgr ?? (await VBAnimMgr.get());
@@ -248,9 +253,15 @@ function loadCatalog(mgr?: VBAnimMgr): Promise<Catalog> {
       .suitNames()
       .filter((s) => s.length < 5 || !s.startsWith(S.suitExcluded))
       .sort();
-    return { suits, textures: m.textureNames().sort(), lists: new Map() };
+    loadedCatalog = { suits, textures: m.textureNames().sort(), lists: new Map() };
+    return loadedCatalog;
   })();
   return catalog;
+}
+
+/** Loads the suit catalog EditPerson.beginLoaded needs. */
+export function preloadEditPersonCatalog(): Promise<void> {
+  return loadCatalog().then(() => undefined);
 }
 
 export class EditPerson {
@@ -270,6 +281,15 @@ export class EditPerson {
   /** EditPerson::Begin (+ PersonFinder::BeginDesignAPerson): fills the outfits a person lacks. */
   static async begin(bodyStrings: readonly string[], personData: Int16Array, mgr?: VBAnimMgr): Promise<EditPerson> {
     const ep = new EditPerson(await loadCatalog(mgr), bodyStrings, personData);
+    ep.beginFill();
+    ep.original.splice(0, ep.original.length, ...ep.strings);
+    return ep;
+  }
+
+  /** EditPerson::Begin without waiting: null until preloadEditPersonCatalog has finished. */
+  static beginLoaded(bodyStrings: readonly string[], personData: Int16Array): EditPerson | null {
+    if (!loadedCatalog) return null;
+    const ep = new EditPerson(loadedCatalog, bodyStrings, personData);
     ep.beginFill();
     ep.original.splice(0, ep.original.length, ...ep.strings);
     return ep;
@@ -504,6 +524,51 @@ export class EditPerson {
     }
     this.set(entry, value);
     if (update) this.updateSuits();
+  }
+
+  /** The body string entry of an outfit list. */
+  private static outfitEntry(kind: OutfitKind): number {
+    return kind === "body" ? E.body : E[kind];
+  }
+
+  /** CountAvailable{Body,Formal,Swimwear,Lingerie,Winter,Fashion}Suits */
+  countAvailable(kind: OutfitKind): number {
+    return this.list(kind).length;
+  }
+
+  /** Get{Body,Formal,Swimwear,Lingerie,Winter,Fashion}Suit: the entry's index in its list, -1 when absent. */
+  getOutfitSuit(kind: OutfitKind): number {
+    return this.indexIn(kind, EditPerson.outfitEntry(kind));
+  }
+
+  /** Set{Body,Formal,Swimwear,Lingerie,Winter,Fashion}Suit */
+  setOutfitSuit(kind: OutfitKind, i: number, update = true): void {
+    this.setSuit(kind, EditPerson.outfitEntry(kind), i, update);
+  }
+
+  /**
+   * SetToNextValid*SuitForBodyType / SetToPreviousValid*SuitForBodyType:
+   * from the entry's index in its list, steps (wrapping) to the next suit
+   * whose body type (suit name characters 6..8) is the current one's; a
+   * pet's body takes the next suit of the list. Nothing changes when the
+   * walk comes back to the start.
+   */
+  setToNextValidSuitForBodyType(kind: OutfitKind, forward: boolean, update = true): void {
+    const list = this.list(kind);
+    const n = list.length;
+    const cur = this.indexIn(kind, EditPerson.outfitEntry(kind));
+    const type = (list[cur]?.suit ?? this.suitTex(EditPerson.outfitEntry(kind)).suit).slice(6, 9).toLowerCase();
+    const pet = kind === "body" && this.getGender() !== PERSON_GENDER_MALE && this.getGender() !== PERSON_GENDER_FEMALE;
+    let i = cur;
+    for (;;) {
+      i += forward ? 1 : -1;
+      if (i === cur) return;
+      if (forward && i >= n) i = 0;
+      if (!forward && i < 0) i = n - 1;
+      if (n === 0 || i === cur) return;
+      if (pet || list[i]!.suit.slice(6, 9).toLowerCase() === type) break;
+    }
+    this.setSuit(kind, EditPerson.outfitEntry(kind), i, update);
   }
 
   // --- UpdateSuits ---------------------------------------------------------------

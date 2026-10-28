@@ -321,6 +321,10 @@ export class PersonAnimator {
 
   stop(slot: "main" | "carry" | "background"): void {
     this[slot] = null;
+    // The standard animation index names the main practice (StopCurAnim):
+    // without this a walk stopped by a Reset keeps curAnim = walk loop with no
+    // practice, never restarts it and the person stays frozen on its path.
+    if (slot === "main") this.curAnim = -1;
   }
 
   /** Animator::Tick: advance the practices one tick and handle the crossed time props. */
@@ -516,10 +520,11 @@ export class PersonAnimator {
       return false;
     }
     const t = this.start("main", sk, false, looping);
-    if (t) {
-      t.interruptible = true;
-      t.rate = this.scale;
-    }
+    // No skeleton yet (a person made at run time gets its own asynchronously):
+    // as while the skill loads, nothing plays and the next tick asks again.
+    if (!t) return false;
+    t.interruptible = true;
+    t.rate = this.scale;
     this.curAnim = idx;
     this.fade = null;
     return true;
