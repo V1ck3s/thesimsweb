@@ -36,7 +36,10 @@ function safeJoin(root: string, rel: string): string | null {
   return full.startsWith(root + sep) ? full : null;
 }
 
-export async function registerUserDataRoute(app: FastifyInstance, { overlayDir }: { overlayDir: string }): Promise<void> {
+export async function registerUserDataRoute(
+  app: FastifyInstance,
+  { overlayDir, onChange }: { overlayDir: string; /** After every write or delete (the manifest's overlay listing). */ onChange?: () => void },
+): Promise<void> {
   await mkdir(overlayDir, { recursive: true });
   await app.register(fastifyStatic, {
     root: overlayDir,
@@ -62,6 +65,7 @@ export async function registerUserDataRoute(app: FastifyInstance, { overlayDir }
     if (!Buffer.isBuffer(req.body)) return reply.code(400).send({ error: "expected application/octet-stream" });
     await mkdir(dirname(full), { recursive: true });
     await writeFile(full, req.body);
+    onChange?.();
     return { ok: true, path, size: req.body.length };
   });
 
@@ -71,6 +75,7 @@ export async function registerUserDataRoute(app: FastifyInstance, { overlayDir }
     const full = target(path);
     if (!full) return reply.code(403).send({ error: "only Sims/UserData*/ is writable" });
     await rm(full, { force: true });
+    onChange?.();
     return { ok: true, path };
   });
 }

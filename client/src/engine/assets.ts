@@ -182,3 +182,119 @@ export async function readStandaloneIff(
   const chunks = wasm.parseIffChunks(data) as IffChunkInfo[];
   return { data, chunks };
 }
+
+/** Most ranges per POST /api/ranges (the server accepts 4096). */
+const BATCH_MAX_RANGES = 1024;
+/** Most requested bytes per POST /api/ranges (the server accepts 64 MiB). */
+const BATCH_MAX_BYTES = 16 * 1024 * 1024;
+const RANGE_UNREADABLE = 0xffffffff;
+
+interface PendingRange {
+  path: string;
+  start: number;
+  end: number;
+  resolve: (b: Uint8Array) => void;
+  reject: (e: unknown) => void;
+}
+
+/**
+ * Byte ranges of asset files read in batches: the reads asked for in one
+ * task go to the server together (POST /api/ranges, server/src/routes/ranges.ts),
+ * so thousands of small reads cost a few round trips. Each read resolves with
+ * the same bytes as a `Range: bytes=start-(end-1)` request (cut at the end of
+ * the file) and fails where that request would. Without the endpoint (an
+ * older server), reads fall back to one uncached Range request each.
+ */
+export class RangeBatcher {
+  private queue: PendingRange[] = [];
+  private scheduled = false;
+  private static endpoint: boolean | null = null;
+
+  /** Bytes [start, end) of `path` (relative to /assets/). */
+  read(path: string, start: number, end: number): Promise<Uint8Array> {
+    return new Promise((resolve, reject) => {
+      this.queue.push({ path, start, end, resolve, reject });
+      if (!this.scheduled) {
+        this.scheduled = true;
+        setTimeout(() => this.flush(), 0);
+      }
+    });
+  }
+
+  private flush(): void {
+    this.scheduled = false;
+    const all = this.queue;
+    this.queue = [];
+    let batch: PendingRange[] = [];
+    let bytes = 0;
+    for (const r of all) {
+      if (batch.length && (batch.length >= BATCH_MAX_RANGES || bytes + (r.end - r.start) > BATCH_MAX_BYTES)) {
+        void this.send(batch);
+        batch = [];
+        bytes = 0;
+      }
+      batch.push(r);
+      bytes += r.end - r.start;
+    }
+    if (batch.length) void this.send(batch);
+  }
+
+  private async send(batch: PendingRange[]): Promise<void> {
+    if (RangeBatcher.endpoint !== false) {
+      try {
+        const res = await fetch("/api/ranges", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ ranges: batch.map((r) => [r.path, r.start, r.end]) }),
+        });
+        if (res.status === 404) {
+          RangeBatcher.endpoint = false;
+        } else if (res.ok) {
+          RangeBatcher.endpoint = true;
+          const body = new Uint8Array(await res.arrayBuffer());
+          const head = new DataView(body.buffer, body.byteOffset, 4 * batch.length);
+          let at = 4 * batch.length;
+          batch.forEach((r, i) => {
+            const len = head.getUint32(4 * i, true);
+            if (len === RANGE_UNREADABLE) {
+              r.reject(new Error(`${r.path} ${r.start}-${r.end}: unreadable`));
+              return;
+            }
+            r.resolve(body.subarray(at, at + len));
+            at += len;
+          });
+          return;
+        }
+      } catch {
+        // fall through to single requests
+      }
+    }
+    await RangeBatcher.single(batch);
+  }
+
+  /** Requests in flight on the fallback path (browsers fail requests beyond a few hundred). */
+  private static singleSlots = 12;
+  private static readonly singleWaiters: Array<() => void> = [];
+
+  private static async single(batch: PendingRange[]): Promise<void> {
+    await Promise.all(
+      batch.map(async (r) => {
+        if (RangeBatcher.singleSlots > 0) RangeBatcher.singleSlots--;
+        else await new Promise<void>((go) => RangeBatcher.singleWaiters.push(go));
+        try {
+          const res = await fetch(`${ASSETS_BASE}${r.path}`, { headers: { Range: `bytes=${r.start}-${r.end - 1}` }, cache: "no-store" });
+          if (res.status !== 206 && res.status !== 200) throw new Error(`${r.path} ${r.start}-${r.end}: ${res.status}`);
+          const b = new Uint8Array(await res.arrayBuffer());
+          // A server ignoring Range answers 200 with the whole file.
+          r.resolve(res.status === 200 ? b.subarray(r.start, r.end) : b);
+        } catch (e) {
+          r.reject(e);
+        } finally {
+          const go = RangeBatcher.singleWaiters.shift();
+          if (go) go();
+          else RangeBatcher.singleSlots++;
+        }
+      }),
+    );
+  }
+}

@@ -191,6 +191,10 @@ export class Compositor {
   /** Raw layer textures (terrain), reused across frames. */
   private rawColor: WebGLTexture | null = null;
   private rawZ: WebGLTexture | null = null;
+  private rawZBytes: Uint16Array | null = null;
+  /** drawWallSprite's uniform arrays (rewritten every call). */
+  private readonly wallColIdx = new Int32Array(8);
+  private readonly wallZoneOff = new Float32Array(8);
 
   constructor(
     readonly width: number,
@@ -436,8 +440,8 @@ export class Compositor {
   drawWallSprite(tex: SpriteTex, x: number, y: number, base: number, rowIdx: number, colIdx: ArrayLike<number>, zoneOff: ArrayLike<number>): void {
     this.draw(tex, x, y, false, () => {
       const gl = this.gl;
-      const ci = new Int32Array(8);
-      const zo = new Float32Array(8);
+      const ci = this.wallColIdx;
+      const zo = this.wallZoneOff;
       for (let k = 0; k < 8; k++) {
         ci[k] = colIdx[k] ?? colIdx[0] ?? 0;
         zo[k] = zoneOff[k] ?? 0;
@@ -452,23 +456,28 @@ export class Compositor {
     });
   }
 
-  /** Full-target layer with its own 16-bit depth (terrain swatch output). */
-  drawRaw(color: Uint32Array, depth: Uint16Array): void {
+  /**
+   * Full-target layer with its own 16-bit depth (terrain swatch output).
+   * `changed` false redraws the layer uploaded by the previous call.
+   */
+  drawRaw(color: Uint32Array, depth: Uint16Array, changed = true): void {
     const gl = this.gl;
     const w = this.width;
     const h = this.height;
-    this.rawColor ??= this.texture();
-    gl.bindTexture(gl.TEXTURE_2D, this.rawColor);
-    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, w, h, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array(color.buffer, color.byteOffset, w * h * 4));
-    const zm = new Uint8Array(w * h * 2);
-    for (let i = 0; i < w * h; i++) {
-      const d = depth[i]!;
-      zm[i * 2] = d >> 8;
-      zm[i * 2 + 1] = d & 0xff;
+    if (changed || !this.rawColor || !this.rawZ) {
+      this.rawColor ??= this.texture();
+      gl.bindTexture(gl.TEXTURE_2D, this.rawColor);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, w, h, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array(color.buffer, color.byteOffset, w * h * 4));
+      // RG8 big-endian depth: one u16 store per pixel (the platform is little-endian).
+      const zm = (this.rawZBytes ??= new Uint16Array(w * h));
+      for (let i = 0; i < w * h; i++) {
+        const d = depth[i]!;
+        zm[i] = (d >> 8) | ((d & 0xff) << 8);
+      }
+      this.rawZ ??= this.texture();
+      gl.bindTexture(gl.TEXTURE_2D, this.rawZ);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RG8, w, h, 0, gl.RG, gl.UNSIGNED_BYTE, new Uint8Array(zm.buffer));
     }
-    this.rawZ ??= this.texture();
-    gl.bindTexture(gl.TEXTURE_2D, this.rawZ);
-    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RG8, w, h, 0, gl.RG, gl.UNSIGNED_BYTE, zm);
     const tex: SpriteTex = { width: w, height: h, color: this.rawColor, zmode: this.rawZ, hasOpaque: true, hasAlpha: false };
     this.draw(tex, 0, 0, false, () => {
       gl.uniform1i(this.u.uMode!, 2);

@@ -137,6 +137,9 @@ export class Terrain {
 
   private world: RotatableWorld | null = null;
   private rotation = -1;
+  /** PreCompute count and terrainZ changes seen by cacheKey (perf: HouseViewer's terrain raster cache). */
+  private generation = 0;
+  private keyedZ: Terrain["terrainZ"] = null;
 
   /** cTerrain::cTerrain: grass swatch at the default (high) quality, normal lot colors. */
   static create(): Terrain {
@@ -194,7 +197,22 @@ export class Terrain {
       this.swatch.preCompute(world);
       this.overlay.preCompute(world);
       this.dirty = false;
+      this.generation++;
     }
+  }
+
+  /**
+   * Not part of the original. Identifies everything of this terrain a frame
+   * drawn with it depends on, besides the world and the view: null while a
+   * PreCompute is pending or the dirt tool highlights tiles (no reuse).
+   */
+  cacheKey(): string | null {
+    if (this.dirty || this.swatch.stale || this.swatch.highlightAt) return null;
+    if (this.terrainZ !== this.keyedZ) {
+      this.keyedZ = this.terrainZ;
+      this.generation++;
+    }
+    return `${this.generation}|${+this.overlayVisible}|${+this.interiorOnly}|${+this.flatOnly}|${this.getQuality()}`;
   }
 
   /**

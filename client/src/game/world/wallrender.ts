@@ -98,15 +98,23 @@ export class WallBlitter {
     return t;
   }
 
+  /** tables() per scale (table1D slots never move once registered). */
+  private readonly tableIdx = new Map<number, { vert: number; ortho: number; zero: number }>();
+
   /** Table indexes of the vertical, ortho wall and zero lookups for a scale. */
   private tables(viewer: HouseViewer, s: number): { vert: number; ortho: number; zero: number } {
-    const zb = viewer.zbuf;
-    return {
-      vert: this.comp.table1D(`vert${s}`, zb.vertical.get(s)!),
-      ortho: this.comp.table1D(`orthowall${s}`, zb.orthoWall.get(s)!),
-      // ZBufferLookup+0x38: 0x200 bytes of zeros (diagonal walls).
-      zero: this.comp.table1D("wallzero", new Float32Array(256)),
-    };
+    let t = this.tableIdx.get(s);
+    if (!t) {
+      const zb = viewer.zbuf;
+      t = {
+        vert: this.comp.table1D(`vert${s}`, zb.vertical.get(s)!),
+        ortho: this.comp.table1D(`orthowall${s}`, zb.orthoWall.get(s)!),
+        // ZBufferLookup+0x38: 0x200 bytes of zeros (diagonal walls).
+        zero: this.comp.table1D("wallzero", new Float32Array(256)),
+      };
+      this.tableIdx.set(s, t);
+    }
+    return t;
   }
 
   private withClip(clip: ClipRect, draw: () => void): void {

@@ -21,8 +21,17 @@ const ORIGIN_Y = 0x20;
 const STEP = 0x32;
 const SIZE = 40;
 
+/** The icon box fill. */
+const BOX = "rgb(0, 40, 140)";
+
 export class ActionIcons {
   private readonly icons = new Map<ObjSelector, ObjectIcon | null>();
+  /**
+   * Not part of the original (perf): an icon drawn over the opaque box,
+   * kept so that painting does not read the screen canvas back (DrawIconic
+   * composites over the pixels below it) every frame.
+   */
+  private readonly boxed = new Map<ObjectIcon, HTMLCanvasElement>();
   private readonly pending = new Set<ObjSelector>();
   /** Asks for a repaint once an icon picture is ready. */
   onReady: (() => void) | null = null;
@@ -53,11 +62,14 @@ export class ActionIcons {
       const y = g.oy + ORIGIN_Y;
       ctx.save();
       if (a.flags & 0x100) ctx.globalAlpha = 0.4;
-      ctx.fillStyle = "rgb(0, 40, 140)";
+      ctx.fillStyle = BOX;
       ctx.fillRect(x, y, SIZE, SIZE);
       const o = p.module.getObject(a.icon) ?? p.module.getObject(a.target);
       const ic = o && !o.isPerson ? this.icon(o.obj.selector) : null;
-      if (ic) {
+      if (ic && !(a.flags & 0x100)) {
+        // Over the opaque box the picture is always the same pixels.
+        ctx.drawImage(this.boxedIcon(ic), x + 2, y + 2);
+      } else if (ic) {
         ctx.beginPath();
         ctx.rect(x + 2, y + 2, SIZE - 4, SIZE - 4);
         ctx.clip();
@@ -68,6 +80,21 @@ export class ActionIcons {
       ctx.lineWidth = 1;
       ctx.strokeRect(x + 0.5, y + 0.5, SIZE - 1, SIZE - 1);
     });
+  }
+
+  private boxedIcon(ic: ObjectIcon): HTMLCanvasElement {
+    let c = this.boxed.get(ic);
+    if (!c) {
+      c = document.createElement("canvas");
+      c.width = SIZE - 4;
+      c.height = SIZE - 4;
+      const cx = c.getContext("2d", { alpha: false, willReadFrequently: true })!;
+      cx.fillStyle = BOX;
+      cx.fillRect(0, 0, c.width, c.height);
+      ic.draw(cx, 0, 0, c.width, c.height);
+      this.boxed.set(ic, c);
+    }
+    return c;
   }
 
   /** The action under (x, y) (lot view coordinates), or null. */

@@ -37,6 +37,75 @@ export interface TerrainTarget {
 /** cTerrain::Draw. */
 export interface TerrainDrawer {
   draw(target: TerrainTarget, world: RotatableWorld, x: number, y: number, sx: number, sy: number, alt: readonly number[], scale: number): void;
+  /** Identity of the drawer's own state for TerrainCache (null: do not reuse a frame). */
+  cacheKey?(): string | null;
+}
+
+/**
+ * Not part of the original (perf): the software terrain pass of the last
+ * frame, reused while nothing it reads changed. Its inputs are the view
+ * (origin, scale, rotation, bounds), the drawer's own state (cacheKey) and
+ * the fixed world arrays RenderTerrainRow and the swatches read, compared
+ * byte for byte with a copy taken when the frame was drawn.
+ */
+class TerrainCache {
+  private key: string | null = null;
+  private snap: Uint8Array[] = [];
+  /** RenderParam fields left by the last RenderTerrainRow (later draws read the level). */
+  private rp: Partial<RenderParam> = {};
+
+  private static arrays(w: RotatableWorld): Uint8Array[] {
+    const f = w.fixed;
+    return [f.alt.data, f.ground.data, f.grass.data, f.targetGrass.data, f.pool.data, f.water.data, ...f.floors.map((a) => a.data), ...f.walls.map((a) => a.data), ...f.flags.map((a) => a.data)];
+  }
+
+  private static keyOf(v: HouseViewer): string | null {
+    const t = v.terrain?.cacheKey?.() ?? null;
+    if (t === null || v.thumbnailClearColor !== null) return null;
+    const w = v.world;
+    return `${t}|${v.originX},${v.originY},${v.scale},${w.rotation},${w.size},${w.minX},${w.maxX},${w.minY},${w.maxY}`;
+  }
+
+  /** Whether the target still holds the terrain pass for the viewer's current state. */
+  valid(v: HouseViewer): boolean {
+    const key = TerrainCache.keyOf(v);
+    if (key === null || key !== this.key) return false;
+    const now = TerrainCache.arrays(v.world);
+    if (now.length !== this.snap.length) return false;
+    for (let i = 0; i < now.length; i++) if (!sameBytes(now[i]!, this.snap[i]!)) return false;
+    return true;
+  }
+
+  /** Record the state the target was just drawn for. */
+  store(v: HouseViewer, rp: RenderParam): void {
+    this.key = TerrainCache.keyOf(v);
+    this.snap = this.key === null ? [] : TerrainCache.arrays(v.world).map((a, i) => {
+      const old = this.snap[i];
+      if (old && old.length === a.length) {
+        old.set(a);
+        return old;
+      }
+      return a.slice();
+    });
+    const { x, y, z, level, sx, sy, depthRow, depth, ambient } = rp;
+    this.rp = { x, y, z, level, sx, sy, depthRow, depth, ambient };
+  }
+
+  restore(rp: RenderParam): void {
+    Object.assign(rp, this.rp);
+  }
+}
+
+function sameBytes(a: Uint8Array, b: Uint8Array): boolean {
+  if (a.length !== b.length) return false;
+  if ((a.byteOffset & 3) === 0 && (b.byteOffset & 3) === 0 && (a.length & 3) === 0) {
+    const a32 = new Int32Array(a.buffer, a.byteOffset, a.length >> 2);
+    const b32 = new Int32Array(b.buffer, b.byteOffset, b.length >> 2);
+    for (let i = 0; i < a32.length; i++) if (a32[i] !== b32[i]) return false;
+    return true;
+  }
+  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+  return true;
 }
 
 /** WallManager::DrawWalls for one level. */
@@ -74,6 +143,7 @@ export class HouseViewer {
   /** Water sprites with their transparent color keyed out, by (id << 2) | frame. */
   private readonly waterTex = new Map<number, SpriteTex | null>();
   private target: TerrainTarget;
+  private readonly terrainCache = new TerrainCache();
   terrain: TerrainDrawer | null = null;
   walls: WallDrawer | null = null;
   objects: ObjectDrawer | null = null;
@@ -506,8 +576,6 @@ export class HouseViewer {
     comp.clear((c >> 16) & 0xff, (c >> 8) & 0xff, c & 0xff);
     const rp = new RenderParam(this, this.zLookupIndex);
     // Terrain + ground floors (RenderStatic(level 1, terrain pass)).
-    this.target.color.fill(0xff000000 | ((c & 0xff) << 16) | (c & 0xff00) | ((c >> 16) & 0xff));
-    this.target.depth.fill(0xffff);
     this.renderStatic(1, true, rp);
     for (let l = 1; l <= this.level; l++) {
       this.walls?.drawWalls(this, comp, l, rp);
@@ -534,12 +602,21 @@ export class HouseViewer {
     const tileH = 8 << s;
     const margin = this.levelPx() * 2 + (0x40 << (s + 1));
     if (terrainPass) {
-      for (const r of rows) {
-        const top = this.tileToPoint(r.x, r.y, level, s, 0).v;
-        if (top - margin > this.viewH || top + tileH < 0) continue;
-        this.renderTerrainRow(r.x, r.y, r.count, step, level, rp);
+      const reuse = this.terrainCache.valid(this);
+      if (reuse) {
+        this.terrainCache.restore(rp);
+      } else {
+        const c = this.thumbnailClearColor ?? CLEAR_COLOR;
+        this.target.color.fill(0xff000000 | ((c & 0xff) << 16) | (c & 0xff00) | ((c >> 16) & 0xff));
+        this.target.depth.fill(0xffff);
+        for (const r of rows) {
+          const top = this.tileToPoint(r.x, r.y, level, s, 0).v;
+          if (top - margin > this.viewH || top + tileH < 0) continue;
+          this.renderTerrainRow(r.x, r.y, r.count, step, level, rp);
+        }
+        this.terrainCache.store(this, rp);
       }
-      this.comp.drawRaw(this.target.color, this.target.depth);
+      this.comp.drawRaw(this.target.color, this.target.depth, !reuse);
       for (const r of rows) {
         const top = this.tileToPoint(r.x, r.y, level, s, 0).v;
         if (top - margin > this.viewH || top + tileH < 0) continue;

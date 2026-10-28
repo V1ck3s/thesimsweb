@@ -422,6 +422,9 @@ export class WinMgr {
           return;
         }
       }
+      // Firefox opens its Quick Find bar on "/" and "'" (which then takes
+      // every key); the game page has no text to search.
+      if ((e.key === "/" || e.key === "'") && !e.ctrlKey && !e.altKey && !e.metaKey) e.preventDefault();
     });
     c.addEventListener("mouseleave", () => {
       this.hover?.tsOnMouseExit();

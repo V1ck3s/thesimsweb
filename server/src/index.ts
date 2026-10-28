@@ -4,6 +4,7 @@ import Fastify from "fastify";
 import fastifyCors from "@fastify/cors";
 import fastifyStatic from "@fastify/static";
 import { registerManifestRoute } from "./routes/manifest.js";
+import { registerRangesRoute } from "./routes/ranges.js";
 import { registerSavesRoute } from "./routes/saves.js";
 import { registerTemplatesRoute } from "./routes/templates.js";
 import { overlayDirOf, overlayRewrite, registerUserDataRoute } from "./routes/userdata.js";
@@ -40,8 +41,11 @@ await app.register(fastifyStatic, {
 
 app.get("/api/health", async () => ({ ok: true }));
 
-await registerUserDataRoute(app, { overlayDir });
-await registerManifestRoute(app, { assetsDir, overlayDir });
+// The manifest caches its overlay listing; saves invalidate it.
+let invalidateOverlay = (): void => {};
+await registerUserDataRoute(app, { overlayDir, onChange: () => invalidateOverlay() });
+({ invalidateOverlay } = await registerManifestRoute(app, { assetsDir, overlayDir }));
+await registerRangesRoute(app, { assetsDir, overlayDir });
 await registerSavesRoute(app, { repoRoot });
 await registerTemplatesRoute(app, { assetsDir });
 

@@ -59,16 +59,22 @@ async function walk(dir: string, base = dir): Promise<ManifestEntry[]> {
 export async function registerManifestRoute(
   app: FastifyInstance,
   { assetsDir, overlayDir }: Options,
-): Promise<void> {
+): Promise<{ invalidateOverlay: () => void }> {
   // Walking the install over the WSL2 /mnt/c mount takes tens of seconds, and
   // the game folder is read-only: walk once at startup and serve the result.
   let files: Promise<ManifestEntry[]> = walk(assetsDir);
+  // The overlay changes as the game saves, through routes/userdata.ts, which
+  // calls invalidateOverlay; walked again on the next request after a change
+  // (a walk over /mnt/c costs seconds once the saves pile up).
+  let overlay: Promise<ManifestEntry[]> | null = null;
   app.get("/api/manifest", async (req) => {
-    if ((req.query as { refresh?: string }).refresh !== undefined) files = walk(assetsDir);
+    if ((req.query as { refresh?: string }).refresh !== undefined) {
+      files = walk(assetsDir);
+      overlay = null;
+    }
     let list = await files;
     if (overlayDir) {
-      // The overlay is small and changes as the game saves: walk it every time.
-      const over = await walk(overlayDir);
+      const over = await (overlay ??= walk(overlayDir));
       if (over.length) {
         const byPath = new Map(list.map((f) => [f.path, f]));
         for (const f of over) byPath.set(f.path, f);
@@ -81,4 +87,9 @@ export async function registerManifestRoute(
       files: list,
     };
   });
+  return {
+    invalidateOverlay: () => {
+      overlay = null;
+    },
+  };
 }

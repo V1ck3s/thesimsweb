@@ -28,7 +28,7 @@
  * based lookups (master / sub-tile selectors) need.
  */
 
-import { fetchManifest, readFarManifest, type FarEntryInfo } from "../../engine/assets.js";
+import { fetchManifest, RangeBatcher, readFarManifest, type FarEntryInfo } from "../../engine/assets.js";
 import { idbGetFarManifest, idbPutFarManifest } from "../../engine/idb.js";
 import { engine } from "../../engine/wasm.js";
 import { ResFile } from "./iffres.js";
@@ -90,19 +90,17 @@ interface FolderIndex {
 }
 
 const INDEX_VERSION = 2;
-const ASSETS_BASE = "/assets/";
 const IFF_HEADER = 64;
 const CHUNK_HEADER = 76;
 const OBJD_SIZE = 0xd8;
-const SCAN_CONCURRENCY = 12;
+/**
+ * Object files read at once. Their reads are batched (one request carries
+ * the next read of every file in flight), so all of them run together.
+ */
+const SCAN_CONCURRENCY = 4096;
 
-async function fetchRange(path: string, start: number, end: number): Promise<Uint8Array> {
-  const res = await fetch(`${ASSETS_BASE}${path}`, { headers: { Range: `bytes=${start}-${end - 1}` } });
-  if (res.status !== 206 && res.status !== 200) throw new Error(`${path} ${start}-${end}: ${res.status}`);
-  const b = new Uint8Array(await res.arrayBuffer());
-  // A server ignoring Range answers 200 with the whole file.
-  return res.status === 200 ? b.subarray(start, end) : b;
-}
+/** Reads bytes [start, end) of an asset file (the scan batches them, see RangeBatcher). */
+type ReadRange = (path: string, start: number, end: number) => Promise<Uint8Array>;
 
 async function pool<T>(items: readonly T[], n: number, fn: (item: T) => Promise<void>): Promise<void> {
   let next = 0;
@@ -124,17 +122,17 @@ function stampOf(s: string): string {
  * per type a reversed four-character code, a count, then offset u32, id u16,
  * flags u16 and an even-padded C-string label per chunk).
  */
-async function readObjdChunks(path: string, base: number, size: number): Promise<Array<{ id: number; objd: Uint8Array }>> {
+async function readObjdChunks(fetchRange: ReadRange, path: string, base: number, size: number): Promise<Array<{ id: number; objd: Uint8Array }>> {
   const head = await fetchRange(path, base, base + IFF_HEADER);
   const hv = new DataView(head.buffer, head.byteOffset, head.byteLength);
   const rsmp = hv.getUint32(60, false);
-  if (rsmp === 0 || rsmp + CHUNK_HEADER > size) return readObjdChunksByWalk(path, base, size);
+  if (rsmp === 0 || rsmp + CHUNK_HEADER > size) return readObjdChunksByWalk(fetchRange, path, base, size);
   const rh = await fetchRange(path, base + rsmp, base + rsmp + CHUNK_HEADER);
-  if (String.fromCharCode(...rh.subarray(0, 4)) !== "rsmp") return readObjdChunksByWalk(path, base, size);
+  if (String.fromCharCode(...rh.subarray(0, 4)) !== "rsmp") return readObjdChunksByWalk(fetchRange, path, base, size);
   const rsize = new DataView(rh.buffer, rh.byteOffset, rh.byteLength).getUint32(4, false);
   const map = await fetchRange(path, base + rsmp + CHUNK_HEADER, base + rsmp + rsize);
   const mv = new DataView(map.buffer, map.byteOffset, map.byteLength);
-  if (mv.getUint32(4, true) !== 0) return readObjdChunksByWalk(path, base, size);
+  if (mv.getUint32(4, true) !== 0) return readObjdChunksByWalk(fetchRange, path, base, size);
   const offsets: number[] = [];
   let p = 20;
   const nTypes = mv.getUint32(16, true);
@@ -165,7 +163,7 @@ async function readObjdChunks(path: string, base: number, size: number): Promise
 }
 
 /** Fallback for IFFs without a resource map: read the whole file and walk its chunks. */
-async function readObjdChunksByWalk(path: string, base: number, size: number): Promise<Array<{ id: number; objd: Uint8Array }>> {
+async function readObjdChunksByWalk(fetchRange: ReadRange, path: string, base: number, size: number): Promise<Array<{ id: number; objd: Uint8Array }>> {
   const data = await fetchRange(path, base, base + size);
   const wasm = await engine();
   const res = new ResFile(path, data, wasm.parseIffChunks(data) as ResFile["chunks"]);
@@ -315,26 +313,28 @@ export class ObjectFolder implements SelectorFolder {
 
     // Every IFF (loose or inside a FAR) in scan order, then their OBJDs in parallel.
     const iffs: Array<{ key: string; path: string; base: number; size: number; flag: number }> = [];
-    for (const f of scanned) {
+    // The FAR entry tables are fetched together; the list keeps the scan order.
+    const farEntries = await Promise.all(
+      scanned.map((f) => (f.lower.endsWith(".iff") ? null : readFarManifest(`Sims/${f.rel}`).catch(() => null))),
+    );
+    for (const [k, f] of scanned.entries()) {
       if (f.lower.endsWith(".iff")) {
         iffs.push({ key: f.rel, path: `Sims/${f.rel}`, base: 0, size: f.size, flag: f.flag });
         continue;
       }
-      let entries: FarEntryInfo[];
-      try {
-        entries = await readFarManifest(`Sims/${f.rel}`);
-      } catch {
-        continue;
-      }
+      const entries: FarEntryInfo[] | null = farEntries[k] ?? null;
+      if (!entries) continue;
       for (const e of entries) {
         if (!e.filename.toLowerCase().endsWith(".iff")) continue;
         iffs.push({ key: `${f.rel}|${e.filename}`, path: `Sims/${f.rel}`, base: e.offset, size: e.sizeCompressed, flag: f.flag });
       }
     }
     const found = new Map<string, Array<{ id: number; objd: Uint8Array }>>();
+    const ranges = new RangeBatcher();
+    const read: ReadRange = (path, start, end) => ranges.read(path, start, end);
     await pool(iffs, SCAN_CONCURRENCY, async (f) => {
       try {
-        found.set(f.key, await readObjdChunks(f.path, f.base, f.size));
+        found.set(f.key, await readObjdChunks(read, f.path, f.base, f.size));
       } catch (e) {
         console.warn(`ObjectFolder: ${f.key}:`, e);
       }
@@ -382,6 +382,13 @@ export class ObjectFolder implements SelectorFolder {
       this.opened.set(fi, p);
     }
     return p;
+  }
+
+  /** The source folder flag & 3 of a GUID's definition (ObjSelector +0xb4 bits 2-3), without opening its file; null when unknown. */
+  sourceOfGUID(guid: number): number | null {
+    const entry = this.byGuid.get(guid >>> 0);
+    const file = entry ? this.index.files[entry[0]] : undefined;
+    return file ? file[1] & 3 : null;
   }
 
   /** ObjectFolder::GetSelectorByGUID (opens the object's file on first use). */
