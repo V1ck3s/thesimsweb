@@ -10,7 +10,8 @@
  */
 
 import type { GameContext } from "../context.js";
-import { soundPlayer } from "../audio/index.js";
+import { soundPlayer, UI_SOURCE } from "../audio/index.js";
+import { getOptionsMgr } from "../optionsmgr.js";
 import { DIRTY_ARCH_SUBTOOL, DIRTY_ARCH_TOOL, DIRTY_ARCH_UNDO, DIRTY_SHOP_ITEM, Mode, type CPState, type HouseViewerHooks, type WallState } from "../cpstate.js";
 import { DefaultTTWindow } from "../ui/ttwindow.js";
 import { Gfx, TSWin } from "../ui/tswin.js";
@@ -122,6 +123,8 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
   viewer: HouseViewer | null = null;
   house: ResFile | null = null;
   private frame: OffscreenCanvas | null = null;
+  /** `frame` is older than the last render. */
+  private frameStale = false;
   private edge: EdgeDetectScroller | null = null;
   /** The wall graph when this view created it (no `parts.walls`). */
   wallManager: WallManager | null = null;
@@ -1100,6 +1103,8 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
       // The simulation works on the viewer's fixed world (the router reads its rooms, walls and tile objects).
       if (fixed) sim.world = fixed;
       sim.state = this.ctx.state;
+      // LoadGame dirties the whole CPState: the clock comes from the loaded globals.
+      sim.pushClock();
       sim.module.onDirty = (): void => {
         if (this.viewer) this.viewer.dirty = true;
       };
@@ -1109,6 +1114,24 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
       };
       this.sim = sim;
       sim.module.worldHooks = this.createObjectHooks();
+      // Neighborhood::GetNumCharacters for ObjectModule::AddObject's primitive limit.
+      sim.module.numCharacters = (sim.module.nbhd?.neighbors ?? []).filter((n) => lot.folder.sourceOfGUID(n.guid) === 1).length;
+      sim.module.updatePrimitiveLimit();
+      sim.module.roomHooks = { room: (id) => this.lighting?.roomInfo(id) ?? null };
+      sim.module.userEventHooks = {
+        livePIP: () => getOptionsMgr().getLivePIP(),
+        pictureInPicture: (o, a) => {
+          if (a.window) {
+            // cWinPictureInPicture::Open / Close (the event's camera window) is not ported.
+            sim.module.unportedPrim(35, "user event window (cWinPictureInPicture)", 0);
+            return;
+          }
+          // cDDDSimsView::DoPictureInPicture without a window: CenterHouseViewOnMe with the
+          // auto-centering option, else the "UI_error" sound; the auto snapshot is not ported.
+          if (getOptionsMgr().getAutoCentering()) this.centerOnObject(o.obj);
+          else soundPlayer.playBySource("UI_error", UI_SOURCE);
+        },
+      };
       animSoundEnv.floorSound = (pattern) => this.viewer?.floors.getFloorSound(pattern) ?? 2;
       // objects the behaviors create (the original folder has them all)
       await Promise.all([...sim.module.createdObjectGUIDs()].map((g) => lot.folder.getSelectorByGUID(g >>> 0).catch(() => null)));
@@ -1158,6 +1181,14 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
    * centers the view on the selected sim when the lot opens. The head-height
    * adjustment of the person branch (ScrollToCenter) is not ported.
    */
+  /** cXObject::CenterHouseViewOnMe (not smooth) for any object in the world. */
+  centerOnObject(o: XObject): void {
+    const v = this.viewer;
+    if (!v || o.tileX < 0) return;
+    const [fx, fy] = RotatableWorld.rotateCoords(o.fx, o.fy, v.world.rotation, 0x400);
+    v.scrollToTile(fx, fy, o.level, false);
+  }
+
   centerOnPerson(guid: number | undefined): void {
     const v = this.viewer;
     const objs = this.lotObjects?.objects;
@@ -1215,12 +1246,18 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
     }
     if (v.dirty) {
       v.render();
-      // One readback per rendered frame; painting reuses the copy.
-      this.frame ??= new OffscreenCanvas(v.comp.width, v.comp.height);
-      const fc = this.frame.getContext("2d")!;
-      fc.drawImage(v.comp.canvas, 0, 0);
+      // A frame rendered for this paint is read back once, straight to the screen.
+      g.ctx.drawImage(v.comp.canvas, g.ox, g.oy);
+      this.frameStale = true;
+    } else {
+      // Frames repainted without a render reuse one copy (one readback per rendered frame).
+      if (this.frameStale || !this.frame) {
+        this.frame ??= new OffscreenCanvas(v.comp.width, v.comp.height);
+        this.frame.getContext("2d")!.drawImage(v.comp.canvas, 0, 0);
+        this.frameStale = false;
+      }
+      g.ctx.drawImage(this.frame, g.ox, g.oy);
     }
-    if (this.frame) g.ctx.drawImage(this.frame, g.ox, g.oy);
     if (this.sim && this.people) {
       const sel = this.selectedPerson()?.obj ?? null;
       this.balloons ??= new BalloonPainter(this.ctx);

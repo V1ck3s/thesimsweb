@@ -489,8 +489,21 @@ export class SimObject extends TreeSim {
         if (i < 0) return 0;
         return this.short(o.obj.attributes, i, want);
       }
-      case 23: // room[temp 0]: rooms are not simulated yet.
-        return m.unportedValue("scope 23 room[temp0]", 0);
+      case 23: {
+        // room[temp 0] (jump table lbl_105BBAE4 entry 23): data 0 ambient light x 100
+        // (truncated), 1 outside, 2 level, 3 area (RoomManager::GetRoom, error 0x28
+        // when missing); the degenerate room 0xfffb reads 0 (outside: 1); other data
+        // is error 0x29.
+        const id = this.obj.temps[0]! & 0xffff;
+        if (data < 0 || data > 3) simThrow(0x29);
+        if (id === 0xfffb) return data === 1 ? 1 : 0;
+        const r = m.roomHooks?.room(id);
+        if (r === undefined) return m.unportedValue("scope 23 room[temp0] (no rooms)", 0);
+        if (!r) simThrow(0x28);
+        if (data === 0) return Math.trunc(r.ambient * 100);
+        if (data === 1) return r.outside ? 1 : 0;
+        return data === 2 ? r.level : r.area;
+      }
       case 24: // neighbor in stack object: Neighborhood::GetNeighborData(stack object, data)
         return m.neighborData(this.getCurElem()!.stackObj, data);
       case 25: {
@@ -769,8 +782,8 @@ export class SimObject extends TreeSim {
         return this.tryRandom(s16(0), s16(2), s16(4), s16(6));
       case 9: // Burn
         return this.module.unportedPrim(op, "burn", PRIM_FALSE);
-      case 10: // Tutorial
-        return this.module.unportedPrim(op, "tutorial", PRIM_TRUE);
+      case 10:
+        return this.tryTutorial(u8(0));
       case 11:
         return this.tryGetDistanceTo(elem, s16(0), u8(2), u8(3), s16(4));
       case 12:
@@ -819,8 +832,8 @@ export class SimObject extends TreeSim {
       case 34: // UI Effect (tutorial button flashes): recorded only.
         this.module.record(this, "uiEffect", s16(0));
         return PRIM_TRUE;
-      case 35: // Special effect (TryUserEvent): recorded only.
-        return this.module.unportedPrim(op, "user event", PRIM_TRUE);
+      case 35:
+        return this.tryUserEvent(elem, new Uint8Array(v.buffer, v.byteOffset + p, 8));
       case 36:
         return this.tryDialog(elem, new Uint8Array(v.buffer, v.byteOffset + p, 8));
       case 41:
@@ -1038,6 +1051,65 @@ export class SimObject extends TreeSim {
     return PRIM_TRUE;
   }
 
+  /**
+   * cXObject::TryUserEvent (the "picture in picture" of an event). StackElem
+   * +8 is the state: 0 stops the tick burst (global 0xb) and waits; 1 shows
+   * the event and waits once more; 2 is true. Operands: +0 duration in
+   * seconds (a literal, or the local it names with flag 0x20), +2 / +3 the
+   * window's arguments, +4 flags (1 open, 4, 8 center the lot view instead of
+   * a window, 0x10 auto snapshot, 0x40 keep the speed), +5 caption (STR#
+   * 0x131 of the tree's file, ParseUIString). The stack object must exist
+   * (error 0x17). Without the Live PIP option only flag 8 events show. Off a
+   * residential lot, a window is only for a person of family global 9 (or a
+   * person data 77 one when it is 0). Unless flag 0x40, GlobalDispatch(0x10c)
+   * puts the game back to speed 1.
+   */
+  protected tryUserEvent(elem: StackElem, op: Uint8Array): number {
+    const m = this.module;
+    if (elem.state === 0) {
+      m.sim.globals[0xb] = 1;
+      elem.state = 1;
+      return PRIM_WAIT;
+    }
+    if (elem.state !== 1) return PRIM_TRUE;
+    elem.state = 2;
+    const target = this.obj_(elem.stackObj);
+    if (!target) simThrow(0x17);
+    const flags = op[4]!;
+    const seconds = this.interpValue(flags & 0x20 ? 25 : 7, (op[0]! | (op[1]! << 8)) << 16 >> 16, false);
+    const hooks = m.userEventHooks;
+    if (!(hooks?.livePIP() ?? true) && (flags & 8) === 0) return PRIM_TRUE;
+    if (m.getZoningType(m.sim.globals[10]!) !== 1 && (flags & 8) === 0) {
+      if (!this.person) return PRIM_TRUE;
+      const family = m.sim.globals[9]!;
+      if (this.person.personData[61] !== family && (family !== 0 || this.person.personData[77] === 0)) return PRIM_TRUE;
+    }
+    if ((flags & 0x40) === 0) m.sim.state?.setSpeed(1);
+    let caption = "";
+    if (op[5]! !== 0) {
+      const file = elem.behavior?.getResFile(elem.getTreeID()) ?? null;
+      caption = (file ? loadUIStringSet(file, 0x131)?.[op[5]! - 1] : undefined) ?? "";
+    }
+    if (caption) caption = this.parseUIString(caption, elem, null);
+    const args = { open: (flags & 1) !== 0, window: (flags & 8) === 0, ms: seconds * 1000, arg3: op[3]!, arg2: op[2]!, flag4: (flags & 4) === 0, snapshot: (flags & 0x10) !== 0, caption };
+    if (hooks) hooks.pictureInPicture(target, args);
+    else m.record(this, "userEvent", target.id);
+    return PRIM_WAIT;
+  }
+
+  /**
+   * cXObject::TryTutorial. Operand byte 0: 0 takes the tutorial
+   * (ObjectModule::SetTutorialObject(this)), 1 gives it back (only by the
+   * object holding it); true when done, false otherwise; other values are
+   * error 0x35.
+   */
+  protected tryTutorial(mode: number): number {
+    const m = this.module;
+    if (mode === 1) return m.tutorialObject === this && m.setTutorialObject(null) ? PRIM_TRUE : PRIM_FALSE;
+    if (mode === 0) return m.setTutorialObject(this) ? PRIM_TRUE : PRIM_FALSE;
+    simThrow(0x35);
+  }
+
   /** cXObject::TryCallFunctionalTree: an entry point of the stack object, run on this stack. */
   protected tryCallFunctionalTree(elem: StackElem, fn: number, flags: number): number {
     const o = this.obj_(elem.stackObj);
@@ -1062,10 +1134,12 @@ export class SimObject extends TreeSim {
    * cXObject::TryGenericSimCall: 44 calls through lbl_105BBAC0, all returning
    * true; calls >= 0x2c (and 7, 22) are error 0x2a. Ported: 2 (the stack
    * object becomes the current action's icon), 10/11 (buy and build
-   * disabled/enabled: recorded), 14 (global 0x1f := temp 0), 15 (person
-   * data 0x48 := temp 0), 28 (lot zoning into temp 0), 18..23 (the
-   * lot change's arrival, sim/lotcalls.ts), 24 (set suit). Others
-   * are logged and return true.
+   * disabled/enabled: recorded), 12 (the stack object's depth towards the
+   * camera), 14 (global 0x1f := temp 0), 15 (person data 0x48 := temp 0),
+   * 26 (the current family or the house's first person), 28 (lot zoning
+   * into temp 0), 18..23 (the lot change's arrival, sim/lotcalls.ts), 24
+   * (set suit), 43 (Family::LoadSpellsForFamily). Others are logged and
+   * return true.
    */
   protected tryGenericSimCall(elem: StackElem, call: number): number {
     const m = this.module;
@@ -1099,6 +1173,31 @@ export class SimObject extends TreeSim {
         // ObjectModule::DisableBuyAndBuild / EnableBuyAndBuild(this).
         m.buyBuildDisabledBy = call === 10 ? this.id : 0;
         m.record(this, call === 10 ? "disableBuyAndBuild" : "enableBuyAndBuild", this.id);
+        return PRIM_TRUE;
+      case 12: {
+        // The stack object's tile seen through the view rotation (cRotatableWorld +0x84,
+        // CTilePt::BuildRotationLookup's table): temp 0 = -(x + y), its depth towards the
+        // camera (the car sounds' volume). Error 0xa without a stack object.
+        const o = this.obj_(elem.stackObj);
+        if (!o) simThrow(XERR.noObject);
+        const [x, y] = rotateTile(o.obj.tileX, o.obj.tileY, m.sim.state?.getRotation() ?? 0);
+        this.temps[0] = -(x + y);
+        return PRIM_TRUE;
+      }
+      case 26: {
+        // With a person of the house (PersonFinder::GetPersonInHouseIndex(0) != -1): the
+        // current family's id (Family +0x10c, global 9) in temp 0 and temp 1 = 1, or when
+        // it is 0 the first person of the house's object id and temp 1 = 0.
+        const first = m.firstPersonInHouse();
+        if (!first) return PRIM_TRUE;
+        const family = m.sim.globals[9]!;
+        this.temps[0] = family !== 0 ? family : first.id;
+        this.temps[1] = family !== 0 ? 1 : 0;
+        return PRIM_TRUE;
+      }
+      case 43:
+        // Family::LoadSpellsForFamily on the current family.
+        m.loadSpellsForFamily();
         return PRIM_TRUE;
       case 24:
         return this.trySetSuitCall();
@@ -2550,6 +2649,20 @@ export class SimObject extends TreeSim {
       }
     }
   }
+}
+
+/**
+ * CTilePt::Rotate through CTilePt::BuildRotationLookup's table (64 x 64 lot
+ * tiles): rotation 1 (x, y) -> (63 - y, x), 2 -> (63 - x, 63 - y), 3 -> (y, 63 - x).
+ * Tiles off the table (out of the world: -1) read -1, -1.
+ */
+export function rotateTile(x: number, y: number, rotation: number): [number, number] {
+  const r = rotation & 3;
+  if (r === 0) return [x, y];
+  if (x < 0 || y < 0 || x >= 0x40 || y >= 0x40) return [-1, -1];
+  if (r === 1) return [0x3f - y, x];
+  if (r === 2) return [0x3f - x, 0x3f - y];
+  return [y, 0x3f - x];
 }
 
 /** cXObject::CalcShortDistance: tiles between two objects (levels count 20 units each, 1/256 scale on the plane). */

@@ -78,6 +78,8 @@ export interface Family {
   netWorth: number;
   flags: number;
   memberGuids: number[];
+  /** Family +0x14e: the six spell levels, when the stream had them (Family +0x14c). */
+  spells?: number[];
 }
 
 export interface Character {
@@ -218,10 +220,17 @@ export function parseFami(bytes: Uint8Array, chunkId: number, name: string): Fam
   } else {
     flags = r.i32();
   }
+  // The member list is only streamed for families other than 0 (Family +0x10c, the chunk id).
   const memberGuids: number[] = [];
-  const n = r.i32();
-  for (let i = 0; i < n; i++) memberGuids.push(r.u32());
-  return { chunkId, name, houseNumber, familyNumber, budget, netWorth, flags, memberGuids };
+  if (chunkId !== 0) {
+    const n = r.i32();
+    for (let i = 0; i < n; i++) memberGuids.push(r.u32());
+  }
+  const f: Family = { chunkId, name, houseNumber, familyNumber, budget, netWorth, flags, memberGuids };
+  if (v > 7) r.i32();
+  // +0x14e: the spells (version > 8); +0x14c is set when they were read.
+  if (v > 8) f.spells = Array.from(r.i16s(6));
+  return f;
 }
 
 async function strEntries(bytes: Uint8Array): Promise<Array<{ langCode?: number; data: Uint8Array }>> {

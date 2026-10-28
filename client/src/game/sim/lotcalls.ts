@@ -69,8 +69,7 @@ export function tryLotChangeCall(o: SimObject, call: number, temps: Int16Array, 
   const m = o.module;
   switch (call) {
     case 18: {
-      const guid = m.sim.state?.family[0]?.guid;
-      const p = guid === undefined ? null : instanceOf(o, guid);
+      const p = m.firstPersonInHouse();
       temps[0] = p ? p.id : -1;
       return PRIM_TRUE;
     }

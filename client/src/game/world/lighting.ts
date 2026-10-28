@@ -184,6 +184,17 @@ export class RoomLighting {
     return Math.min(Math.max(level, MIN_AMBIENT), max);
   }
 
+  /**
+   * RoomManager::GetRoom(id) as cXObject::InterpValue's scope 23 reads it:
+   * Room::GetAmbientLight, IsOutside, GetLevel and GetArea (+0x38 / 2).
+   * Null when the room does not exist.
+   */
+  roomInfo(id: number): { ambient: number; outside: boolean; level: number; area: number } | null {
+    const r = this.rooms.getRoom(id);
+    if (!r) return null;
+    return { ambient: this.roomAmbient(id), outside: r.isOutside(), level: r.level, area: Math.trunc((this.lights.get(id)?.area ?? 0) / 2) };
+  }
+
   /** Room::GetAmbientLight. */
   roomAmbient(id: number): number {
     const l = this.lights.get(id);

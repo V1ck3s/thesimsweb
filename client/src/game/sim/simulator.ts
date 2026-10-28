@@ -30,7 +30,6 @@ import { getNextRandomNumber, getSRandSeed, setSRandSeed } from "../world/random
 import { ReconBuffer } from "../world/reconbuffer.js";
 import { EP } from "./objfntable.js";
 import { SimModule, SimResources } from "./simmodule.js";
-import { treeSimGlobals } from "./treesim.js";
 import type { SimObject } from "./xobject.js";
 import type { PersonSim } from "./person.js";
 
@@ -230,9 +229,7 @@ export class Simulator {
   /** ObjectModule::PostLoad -> cXObject::PostLoad for every object (the tree part). */
   private postLoad(): void {
     const m = this.module;
-    const n = m.people.length;
-    // ObjectModule::AddObject: objects * 15 + 10000 + characters^2 * 15 (characters: the people on the lot here).
-    treeSimGlobals.maxPrimitives = m.count * 0xf + 10000 + n * n * 0xf;
+    m.updatePrimitiveLimit();
     for (const o of m.list) {
       const saved = o.obj.savedStack;
       if (saved && saved.frames.length) {
@@ -342,6 +339,7 @@ export class Simulator {
     this.globals[G.hour] = hour;
     this.globals[G.minute] = minute;
     this.updateTimeOfDay();
+    this.pushClock();
   }
 
   private updateTimeOfDay(): void {
@@ -485,10 +483,15 @@ export class Simulator {
     }
   }
 
-  /** The clock as CPState shows it (UpdateCPStateFromWorld). */
-  private pushClock(): void {
+  /**
+   * The clock as CPState shows it (UpdateCPStateFromWorld, dirty 0x2000:
+   * CPState +0x18 is the time string made from globals 0 / 5; the control
+   * panel shows no date). The day index is the simulator's days running
+   * (global 28), which the original keeps only in the simulator.
+   */
+  pushClock(): void {
     const g = this.globals;
-    this.state?.setTime(this.state.getTime().day, g[G.hour]! * 60 + g[G.minute]!);
+    this.state?.setTime(g[G.daysRunning]!, g[G.hour]! * 60 + g[G.minute]!);
   }
 
   /**

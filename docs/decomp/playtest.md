@@ -45,6 +45,11 @@ reload.
 | 20 | Visitors behaved as residents (autonomy on the controllers' "Jouer" / "Ecraser !", never "begin visiting") | Person type (person data 0x20) of the new persons stayed 0 | Neighborhood::UpdateInstanceVisitorTypes, run by MakeNewOutOfWorldObject's GlobalDispatch(0xe2) (`SimModule.updateInstanceVisitorTypes`); Create Object flag 4 (neighbor in the stack object: Neighborhood::GetNeighborSelector) and its "init visitor" tree (`sim/xobject.ts`) |
 | 21 | Neighbor data 1 (TestMember) false for 3 of 4 family members | GUIDs above 0x7fffffff compared unsigned against signed | Both sides `\| 0` (`sim/simmodule.ts`) |
 | 22 | Unported "scope 24 neighbor data 5 / 9" | Neighborhood::GetFriendCount / Family::GetFriendCount | Characters of a family with a daily relationship >= 25 both ways (`SimModule.neighborData`) |
+| 23 | Mail carrier and repo man never came; "Visit Generator" code 21 (tree 4106 node 5) | Global 9 (current family) and 10 (house number) were never set: the Scheduler's final check kills every visit unless a person with person data 61 = global 9 is on the lot | `applyLoadGameLocation` sets them like Neighborhood::LoadHouse (`nbhd/transit.ts`); the neighborhood is reloaded on each lot entry so a family that just moved in is seen (`main.ts`) |
+| 24 | Persons stuck with error 62 (tree 0x208a node 29) after an object they held was killed | KillObject did not sever the hierarchy nor clear relationships | ObjectModule::KillOutOfWorldObject's HierSever on every holder and RelMatrix::RemoveArray; the tutorial object is cleared (`SimModule.killObject`) |
+| 25 | "Visit Generator" error 1101 (tree 4100 node 4) | Too many primitives: the limit (lbl_105BA2EC) used the people on the lot | objects x 15 + 10000 + Neighborhood::GetNumCharacters^2 x 15, characters = neighbors from the Characters folder (selector source & 3 = 1) (`SimModule.updatePrimitiveLimit`, `ObjectFolder.sourceOfGUID`) |
+| 26 | CPState day stayed 0 | Only the time of day was pushed | `Simulator.pushClock` (UpdateCPStateFromWorld) also writes the day (global 28) and is called by setCurrentHour and at lot start. The original control panel shows no date; the field only feeds the status scripts |
+| 27 | Unported generic sim calls 12, 26, 43; prims 10, 35; scope 23 | - | 12: -(x + y) of the stack object's tile through CTilePt::BuildRotationLookup; 26: ObjectModule first person in the house (temp 0 / 1); 43: Family::LoadSpellsForFamily (FAMI v9 spells parsed); prim 10 cXObject::TryTutorial (ObjectModule::SetTutorialObject); prim 35 cXObject::TryUserEvent (3 states, LivePIP option, residential gate, speed 1, caption from STR# 0x131), without a window it centers the view when auto-centering is on; scope 23 Room::GetAmbientLight / IsOutside / GetLevel / GetArea (`sim/xobject.ts`, `sim/simmodule.ts`, `world/lighting.ts`, `world/winlotview.ts`) |
 
 Checked after the fixes (screenshots in the local scratch folder):
 - Newspaper → "Chercher un emploi" → "l'Echo de SimCity" dialog with the expanded offer
@@ -82,17 +87,22 @@ Checked after the fixes (screenshots in the local scratch folder):
   charms, 3 pages; adult: 21 spells, 6 pages, "Sort mystère" while not made), "Livre de cuisine
   Fez" (nectars, pictures). Transform and pet windows opened through the hook (no charm / pet on
   the test lots).
+- Fixes 23 to 27: lot 9 with a few bought objects: mail carrier delivers, "Récupérer le courrier"
+  drops the bill, "Payer les factures" pays it; left unpaid, the repo man comes, shows his dialog
+  and takes a floor lamp. A copy of UserData House01 (Fez), 4.7 sim hours of direct ticks: no
+  tree error (1101 gone), the only unported entry is the PIP window of prim 35, CPState day = 14
+  = global 28.
 
 ## Remaining problems
 
 | Problem | Suspected cause |
 |---|---|
-| Mail carrier never seen; bills stay in the mailbox (out of the world) and are not fetched / paid autonomously | Fresh lot 9 with cheats on the motives, 7 sim days: MailBox "process" makes the Bills every few days (mailbox attr 1 counts them; one with amount 0 is killed at once, as in the original) and "create mail man" calls Schedule for the neighbor GUID 0xb2ebbf92, but no mail carrier was ever added. Not investigated further (Scheduler / PedPortal path for that neighbor) |
-| Taxi round trip after fixes 18 to 20 not replayed | Before them: phone "Appeler taxi... / Aller en ville - $ 50", cab came, Jeff got in, town picker, lot 26 loaded. Arrival through the ped marker and the trip home are untested since |
-| Visit Generator error 1101 (tree 4100 "is neighbor known?" node 4, nbrInStack[6]) | Not investigated |
+| Taxi trip home from downtown fails | Outbound works (phone "Aller en ville - $ 50", taxi dialogs, leave-house confirmation, town picker, lot 25 loaded, Jeff in through the ped marker, Diane joins through Hot Date's "Join Downtown"). Pay phone "Appeler taxi / Rentrer": Go Home → Auto Call Cab → Common entry → portal function → "goto door and face thru" fails → fail portal call → route failure feedback, in a loop. Jeff stands on the door tile (29,30), the Prude NPC on the door's inner tile (29,29) and the Janitor beside her (28,29), all three stuck for days; routes fail with result 8 (blocker: fish display case 187) / 11. Probably the routing's person-blocking / "move out of the way" handling in doorways (`sim/routing.ts`), not investigated |
+| Downtown clock runs about twice as fast as speed 3 at home | Not investigated |
+| Recurring error 4 (random range 0) in DFController tree 4097 node 10 | Data-driven, not investigated |
+| Prim 35 with the window flag (cWinPictureInPicture) | The picture-in-picture window is not ported (reported as unported); without the flag the view centers on the object |
+| Repo man takes $1 controllers (music / pet) on a near-empty lot | Their price is 1 (MakeNewOutOfWorldObject); data-driven, probably faithful |
 | A fresh empty lot (fridge only) starves its family: Have A Meal stops at "grab food" without a counter, then social worker and Grim Reaper | Probably faithful (no counter), not compared with the original |
-| CPState day stays 0 (the status scripts); the sim's days (globals 1 / 28) advance | `Simulator.syncFromState` only writes the time of day |
-| Unported: generic sim call 12 (distance to the camera, car sounds), 26, 43; prim 35 user event; prim 10 tutorial; scope 23 room[temp0] | - |
 | Catalog "?" for some doors / chairs | Missing catalog icons (BMP_ lookup), not investigated |
 | Wall price $75 per segment looks high | Not checked against the original |
 | Transform window shows the sim in its own clothes; outfits >= 0x13 (job, Magic Town, Studio Town costumes) are worn as the body suit | SAnimator::UpdateOutfitAndHands' costume branches (cXPerson / string tables) not ported (`cas/winvitabtnsolo.ts`) |

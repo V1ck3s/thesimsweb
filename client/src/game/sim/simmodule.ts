@@ -22,7 +22,7 @@ import type { ObjSelector } from "../world/objselector.js";
 import { Behavior } from "./behavior.js";
 import type { Simulator } from "./simulator.js";
 import { SimObject } from "./xobject.js";
-import { simThrow } from "./treesim.js";
+import { simThrow, treeSimGlobals } from "./treesim.js";
 import { EP } from "./objfntable.js";
 import { PersonSim, SCORE_CURVE_MOTIVES, type Interaction, type MenuItem } from "./person.js";
 import { curvesFromStrings, HAPPY_CURVE_MOTIVES, type MotiveCurve } from "./motives.js";
@@ -138,6 +138,9 @@ export interface SimEvent {
   value: string | number;
 }
 
+/** Family::LoadSpellsForFamily's spell book (ObjectModule::GetObjectByGUID). */
+const GUID_SPELL_BOOK = 0xb6c90029;
+
 export class SimModule {
   /** +0x20: objects by id - 1. */
   readonly objects: Array<SimObject | null> = [];
@@ -190,6 +193,27 @@ export class SimModule {
   readonly zoning = new Map<number, number>();
   /** ObjectModule::DisableBuyAndBuild: the object that disabled buy and build modes (0 = enabled). */
   buyBuildDisabledBy = 0;
+  /**
+   * cXObject::TryUserEvent's outside world: cOptionsMgr::GetLivePIP and
+   * GViewer::DoPictureInPicture (`window` false: cDDDSimsView centers the lot
+   * view on the object; true: cWinPictureInPicture opens / closes).
+   */
+  userEventHooks: {
+    livePIP(): boolean;
+    pictureInPicture(o: SimObject, a: { open: boolean; window: boolean; ms: number; arg3: number; arg2: number; flag4: boolean; snapshot: boolean; caption: string }): void;
+  } | null = null;
+  /** RoomManager::GetRoom for cXObject::InterpValue's scope 23 (the lot view's rooms and lighting). */
+  roomHooks: { room(id: number): { ambient: number; outside: boolean; level: number; area: number } | null } | null = null;
+  /**
+   * Neighborhood::GetNumCharacters: the neighbors whose definition comes from
+   * the neighborhood's Characters folder (Neighbor::IsCharacter). Set by the
+   * lot view (it knows the object folder); the people on the lot until then.
+   */
+  numCharacters: number | null = null;
+  /** ObjectModule +0xac: the object holding the tutorial (cXObject::TryTutorial). */
+  tutorialObject: SimObject | null = null;
+  /** GlobalDispatch(0x107) -> cSimsApp: cTutorialIcon::ObjectChanged (the tutorial icon is not ported). */
+  onTutorialObjectChanged: ((o: SimObject | null) => void) | null = null;
 
   constructor(
     readonly sim: Simulator,
@@ -349,6 +373,7 @@ export class SimModule {
       if (x.selector.objd.masterId === 0) o.reset(false);
       else o.resetPart(false);
     } else o.resetTree(o.behavior, o.fnTable.getTreeID(EP.main));
+    this.updatePrimitiveLimit();
     // MakeNewOutOfWorldObject ends with GlobalDispatch(0xe2, id): House::DoCommand
     // runs Neighborhood::UpdateInstanceVisitorTypes when the new object is a person.
     if (runInit && x.isPerson) this.updateInstanceVisitorTypes();
@@ -423,6 +448,34 @@ export class SimModule {
   getZoningType(house: number): number {
     if (house === 0) return 1;
     return this.zoning.get(house) ?? 0;
+  }
+
+  /**
+   * PersonFinder::GetPersonInHouseIndex(0) then GetInstance: the person of the
+   * current family's first member (CPState's family), or null when it is not here.
+   */
+  firstPersonInHouse(): SimObject | null {
+    const guid = this.sim.state?.family[0]?.guid;
+    if (guid === undefined) return null;
+    return this.people.find((p) => !p.killed && (p.obj.selector.guid | 0) === (guid | 0)) ?? null;
+  }
+
+  /**
+   * Family::LoadSpellsForFamily on the current family (the one of global 9):
+   * when its spells were streamed (+0x14c), its id is not 0, the lot (global
+   * 10) is residential and the spell book (GUID 0xb6c90029) is here, each of
+   * the book's attributes 0..5 rises to the family's spell (+0x14e..+0x158).
+   */
+  loadSpellsForFamily(): void {
+    const id = this.sim.globals[9]!;
+    const fam = id !== 0 ? this.nbhd?.families.find((f) => f.chunkId === id) : undefined;
+    if (!fam?.spells || this.getZoningType(this.sim.globals[10]!) !== 1) return;
+    const book = this.getInstances(GUID_SPELL_BOOK)[0];
+    if (!book) return;
+    const a = book.obj.attributes;
+    fam.spells.forEach((v, i) => {
+      if (i < a.length && a[i]! < v) a[i] = v;
+    });
   }
 
   /** The zoning file's lines "house, residential|community" (other words count as residential). */
@@ -620,6 +673,27 @@ export class SimModule {
     return parts[(i + 1) % parts.length] ?? null;
   }
 
+  /**
+   * ObjectModule::SetTutorialObject: taken when free (or released with null);
+   * the dialogs of the object that held it are aborted. False when another
+   * object holds it.
+   */
+  setTutorialObject(o: SimObject | null): boolean {
+    const cur = this.tutorialObject;
+    if (cur && o) return false;
+    if (cur === o) return true;
+    if (cur) for (const d of this.dialogs) if (d.obj === cur) d.abort();
+    this.tutorialObject = o;
+    this.onTutorialObjectChanged?.(o);
+    return true;
+  }
+
+  /** ObjectModule::AddObject's primitive limit (lbl_105BA2EC): objects x 15 + 10000 + characters^2 x 15. */
+  updatePrimitiveLimit(): void {
+    const n = this.numCharacters ?? this.people.length;
+    treeSimGlobals.maxPrimitives = this.count * 0xf + 10000 + n * n * 0xf;
+  }
+
   /** ObjectModule::AddToKillQueue. */
   addToKillQueue(id: number, flag: number): void {
     if (!this.killQueue.some((k) => k.id === id)) this.killQueue.push({ id, flag });
@@ -673,6 +747,16 @@ export class SimModule {
       if (pi >= 0) this.people.splice(pi, 1);
     }
     this.worldHooks?.kill(o.obj);
+    for (const x of group) {
+      // KillOutOfWorldObject: cXObject::HierSever (out of its container's slot even
+      // when it was not in the world, e.g. a controller held by a person brought in
+      // by a ped marker), then RelMatrix::RemoveArray on every object.
+      for (const y of this.list) {
+        for (const s of y.obj.objectSlots) if (s.containedId === x.id) s.containedId = 0;
+        y.obj.relations.delete(x.id);
+      }
+      if (this.tutorialObject === x) this.setTutorialObject(null);
+    }
     for (const x of group) this.onKill?.(x);
   }
 

@@ -426,6 +426,12 @@ export async function applyLoadGameLocation(ctx: GameContext, view: WinLotView, 
   };
   // Global 9 as Neighborhood::LoadHouse leaves it: the family living in the house (0 for none).
   const familyNumber = house > 0 ? (nb.getFamilyInHouse(house)?.chunkId ?? 0) : 0;
+  // Neighborhood::LoadHouse: SetGlobal(9, the family's id, Family +0x10c) and SetGlobal(10, house).
+  // The Scheduler's "final check" kills its NPC visit unless a person of family global 9 is on the lot.
+  if (sim) {
+    sim.globals[G_FAMILY] = familyNumber;
+    sim.globals[G.houseNumber] = house;
+  }
   if (familyNumber === 0) {
     if (zoning === Zone.None || (arrival && (arrival.member || arrival.family || arrival.studioMember))) {
       if (house >= 0x15 && house <= 0x1e) {

@@ -258,7 +258,8 @@ class Game {
       state.family = [];
       state.familyName = "";
     }
-    this.nbhd ??= await Neighborhood.load(this.nbhdDir);
+    // Neighborhood::LoadHouse reads the neighborhood as it is now (a family may just have moved in).
+    this.nbhd = await Neighborhood.load(this.nbhdDir);
     const view = new WinLotView(ctx, this.nbhd.getHousePath(house));
     // LoadGame: the members arriving (+0x108 / +0x109 / +0x10a) come through PersonFinder::CreateDowntownSim.
     view.arrivalOutOfWorld = !!(arrival && (arrival.member || arrival.family || arrival.studioMember));
