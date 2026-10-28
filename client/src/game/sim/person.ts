@@ -23,6 +23,7 @@ import type { ParamSource, StackElem } from "./treestack.js";
 import { SimObject, XERR } from "./xobject.js";
 import { loadStringSet } from "./behavior.js";
 import { PersonAnimator, requestSkill } from "./personanim.js";
+import { handleAnimSound } from "./animsound.js";
 import type { Skill } from "../sims/skill.js";
 import { PRIM_CONTINUE } from "./treesim.js";
 import { allowDirection, DIR_VEC, dirOf, FACE_ANY, FACE_AWAY, FACE_TOWARDS, newRoutingSlot, ROUTE, RSF, setTileDistances, updateRoomIDs, XRoute, type PathPt, type RoutingSlot } from "./routing.js";
@@ -85,6 +86,18 @@ export interface Interaction {
   name: string;
 }
 
+/**
+ * An entry of the user pie menu (cObjPickerTool's Interaction list): a tree
+ * table entry, or one made by its check tree through
+ * ObjTestSim::MakeNewMenuItem with its own name and stack vars
+ * (Interaction +0x14..+0x1a, the action tree's parameters).
+ */
+export interface MenuItem {
+  entry: TreeTableEntry;
+  name: string;
+  args: Int16Array | null;
+}
+
 /** lbl_1059A1E0: TTAB motive personality index -> (person data, inverted). */
 const PERSONALITY_ADS: ReadonlyArray<readonly [number, number] | null> = [
   null,
@@ -143,6 +156,9 @@ export const SCORE_CURVE_MOTIVES = [5, 6, 7, 8, 9, 3, 13, 14, 15] as const;
 
 /** SkillLookup's string tables (Global.iff STR# 150..160), loaded once. */
 const stdTables = new Map<number, string[] | null>();
+
+/** lbl_105BA328: 1 / (2 sqrt 6) (doubles of lbl_105BBB74), computed once by TryGetReachInfo. */
+const REACH_HEIGHT_SCALE = Math.fround(1 / (2 * Math.sqrt(6)));
 
 /** Routing slots replaced at run time (MoveOutOfWay writes the helper object's slot 0). */
 const slotOverrides = new WeakMap<SimObject, RoutingSlot[]>();
@@ -218,6 +234,7 @@ export class PersonSim extends SimObject {
         return false;
       },
       setLocation: (fx, fy) => this.setLocation(fx, fy),
+      animSound: (key, value, forward) => handleAnimSound(this, key, value, forward),
     });
   }
 
@@ -329,6 +346,132 @@ export class PersonSim extends SimObject {
     if (this.objectRecords.length === 0) this.setCurrentAction(null);
   }
 
+  /** cXPerson +0x114 bit 0x800: Cleanup is running (it does not reenter). */
+  private inCleanup = false;
+
+  /** cXPerson::Cleanup(0) (vtable +0x40 with no object): see cleanupFor. */
+  override cleanup(): void {
+    this.cleanupFor(null);
+  }
+
+  /**
+   * cXPerson::Cleanup(obj), from ObjectModule::CleanupPeople (an object's
+   * error, PostLoad) or with null for the person's own cleanup.
+   * When `obj` is null, is one of the ObjectRecords or the action object
+   * (+0xa14), the person lets go of everything: each record's frames are
+   * popped (StackJustPopped) and its object is cleaned up too
+   * (CleanupPeople + Cleanup(0)), the animations stop, the routes go, the
+   * sprite slots go off, a person out of the lot is put back near its
+   * center (FindGoodLocation), Main restarts, the Cleanup entry point runs,
+   * person data 0, 40 and 59 and object data 9 (route preference) and 34
+   * (hidden) are cleared and the current action is emptied.
+   * Then the queue: all of it (null), or the interactions with `obj`, go
+   * (each one's object runs its entry point 4, "queue skipped", with the
+   * person as parameter); the last and current actions with `obj` are
+   * forgotten; when `obj` is a person, the routes asking it to move forget
+   * it (marked as asked).
+   * The 0x1000 flags of +0x114, the interactions' +0xc object and the
+   * container part of PlacementSpec (the person in a slot) are not kept.
+   */
+  override cleanupFor(obj: SimObject | null): void {
+    if (this.inCleanup) return;
+    this.inCleanup = true;
+    try {
+      const m = this.module;
+      const all = obj === null || this.objectRecords.some((r) => r.id === obj.id);
+      if (all) {
+        while (this.objectRecords.length) {
+          const r = this.objectRecords[this.objectRecords.length - 1]!;
+          while (this.getStackSize() > r.depth - 1) {
+            this.stack.pop();
+            this.stackJustPopped();
+          }
+          // StackJustPopped may keep the record when the stack was already shorter
+          if (this.objectRecords[this.objectRecords.length - 1] === r) {
+            const o = m.getObject(r.id);
+            if (o) o.obj.objectData[62] = o.obj.objectData[62]! - 1;
+            this.objectRecords.pop();
+          }
+          const o = m.getObject(r.id);
+          if (o && o !== this) {
+            m.cleanupPeople(o);
+            o.cleanup();
+          }
+        }
+        // SAnimator::SetPixelated(0) and the animator's vtable +0x14 / +0x1c
+        this.animator.stop("main");
+        this.animator.stop("carry");
+        this.animator.stop("background");
+        this.routes.length = 0;
+        for (const sl of this.obj.spriteSlots) sl.activeTicks = 0;
+        this.putBackInWorld();
+        this.resetTree(this.behavior, this.fnTable.getTreeID(EP.main));
+        const tree = this.fnTable.getTreeID(EP.cleanup);
+        if (tree !== 0) this.runCheckTree(this.behavior, 0, tree, null);
+        this.pd[0] = 0;
+        this.pd[40] = 0;
+        this.pd[59] = 0;
+        this.obj.objectData[34] = 0;
+        this.obj.objectData[9] = 0;
+        this.setCurrentAction(null);
+      }
+      const skipped = (i: Interaction): void => {
+        const o = m.getObject(i.target);
+        const tree = o ? o.fnTable.getTreeID(EP.queueSkipped) : 0;
+        if (o && tree !== 0) o.runCheckTree(o.behavior, this.id, tree, null);
+      };
+      if (obj === null) {
+        for (const i of this.queue.splice(0)) skipped(i);
+      } else {
+        const keep: Interaction[] = [];
+        for (const i of this.queue.splice(0)) {
+          if (i.target === obj.id) skipped(i);
+          else keep.push(i);
+        }
+        this.queue.push(...keep.slice(0, 8));
+        if (this.lastAction?.target === obj.id) this.lastAction = null;
+        if (this.currentAction?.target === obj.id) this.setCurrentAction(null);
+        if (obj.isPerson) {
+          for (const r of this.routes) {
+            if (r.askedPerson === obj) {
+              r.asked = true;
+              r.askedPerson = null;
+              r.askedInteraction = null;
+            }
+          }
+        }
+      }
+      m.onQueueChanged?.(this);
+    } finally {
+      this.inCleanup = false;
+    }
+  }
+
+  /**
+   * The placement part of cXPerson::Cleanup: a person (object flag 0x40
+   * clear) not on a tile of the lot is placed at the lot's center tile or
+   * the good location nearest it (an empty tile first, then any).
+   */
+  private putBackInWorld(): void {
+    const hooks = this.module.worldHooks;
+    const fixed = this.module.sim.world;
+    if (!hooks || !fixed || this.obj.objFlags & 0x40) return;
+    const x = this.obj.fx >> 4;
+    const y = this.obj.fy >> 4;
+    if (x >= 1 && y >= 1 && x < fixed.size - 1 && y < fixed.size - 1) return;
+    const c = ((fixed.size >> 1) << 4) | 8;
+    let pos: { fx: number; fy: number } | null = { fx: c, fy: c };
+    const level = this.obj.level || 1;
+    if (!hooks.canPlace(this.obj, pos, level, null, 0)) {
+      pos =
+        hooks.findGoodLocation(this.obj, pos, level, { emptyTile: true, buildable: false, random: null }) ??
+        hooks.findGoodLocation(this.obj, pos, level, { emptyTile: false, buildable: false, random: null });
+    }
+    this.module.record(this, "cleanupPlace", pos ? `${pos.fx},${pos.fy}` : "none");
+    if (pos) hooks.place(this.obj, pos, level, null, 0);
+    this.module.dirty(this);
+  }
+
   /** cXPerson::TryTestInteractingWith: is the stack object one of the ObjectRecords of me (mode 0, 2) or of the person in (scope, data) (mode 1, error 0x1c)? */
   protected tryTestInteractingWith(elem: StackElem, mode: number, scope: number, data: number): number {
     let who: PersonSim = this;
@@ -421,6 +564,8 @@ export class PersonSim extends SimObject {
         return this.tryGotoRoutingSlot(elem, s16(0), s16(2), u8(4));
       case 44:
         return this.tryAnimate(elem, s16(0), u8(2), (u8(4) << 24) >> 24, u8(5), (u8(6) << 24) >> 24);
+      case 47:
+        return this.tryReach(elem, s16(0), s16(2), s16(4));
       default:
         return this.module.unportedPrim(op, `person primitive ${op}`, PRIM_FALSE);
     }
@@ -564,6 +709,158 @@ export class PersonSim extends SimObject {
     if (s === 2) return 2;
     if (s === 0) return 3;
     return this.animator.state;
+  }
+
+  /**
+   * cXPerson::TryReach (Reach / Put). Operands: mode (0 take the stack
+   * object into my hand, 1 put what I hold into a slot of the stack object,
+   * 2 reach for nothing), `transfer` (0: only animate), the parameter
+   * holding the slot (mode 1). StackElem +8 is the state: 0 start the reach
+   * animation, 1 wait for its contact event (xevt 0) or its end, then move
+   * the object (CanPlace / Place, then the object's "CT - Grab" / "CT - Put"
+   * tree run on me), 2 / 3 wait for the end, true / false.
+   */
+  protected tryReach(elem: StackElem, mode: number, transfer: number, slotParam: number): number {
+    const a = this.animator;
+    const state = elem.state;
+    if (state === 0) {
+      const info = this.getReachInfo(elem, mode, slotParam);
+      if (!info) return transfer === 0 ? PRIM_TRUE : PRIM_FALSE;
+      const started = this.startReachAnimation(info.height);
+      if (started === undefined) return PRIM_WAIT;
+      if (!started) return transfer === 0 ? PRIM_TRUE : PRIM_FALSE;
+      elem.state = 1;
+      return PRIM_WAIT;
+    }
+    if (state === 1) {
+      // The animation's events (vtable +0x88, DequeueAnimEvent): event 0 is the contact.
+      let contact = false;
+      for (let e = a.dequeueEvent(); e !== undefined; e = a.dequeueEvent()) if (e === 0) contact = true;
+      if (a.isMainDone()) contact = true;
+      if (!contact) return PRIM_WAIT;
+      const info = this.getReachInfo(elem, mode, slotParam);
+      if (!info) return transfer === 0 ? PRIM_TRUE : PRIM_FALSE;
+      const hooks = this.module.worldHooks;
+      if (transfer === 0) elem.state = 2;
+      else if (mode === 0) {
+        const o = info.obj!;
+        const me = this.obj;
+        const at = { fx: me.fx, fy: me.fy };
+        if (!hooks || !hooks.canPlace(o.obj, at, me.level, me, 0)) elem.state = 3;
+        else {
+          hooks.place(o.obj, at, me.level, me, 0);
+          this.module.dirty(o);
+          this.runObjectTreeByName(o, "CT - Grab");
+          elem.state = 2;
+        }
+      } else if (mode === 1) {
+        const o = info.obj;
+        const c = info.container!;
+        const at = { fx: c.obj.fx, fy: c.obj.fy };
+        if (!o || !hooks || !hooks.canPlace(o.obj, at, c.obj.level, c.obj, info.slot)) elem.state = 3;
+        else {
+          hooks.place(o.obj, at, c.obj.level, c.obj, info.slot);
+          this.module.dirty(o);
+          this.runObjectTreeByName(o, "CT - Put");
+          elem.state = 2;
+        }
+      }
+      return PRIM_WAIT;
+    }
+    if (state === 2 || state === 3) {
+      if (!a.isMainDone()) return PRIM_WAIT;
+      this.stopReachAnimation();
+      return state === 2 ? PRIM_TRUE : PRIM_FALSE;
+    }
+    return -1;
+  }
+
+  /** cXObject::RunTree: the object's tree `name` run now on my stack, the object as stack object. */
+  private runObjectTreeByName(o: SimObject, name: string): void {
+    const tree = o.behavior.getTreeID(name);
+    if (tree !== 0) this.runCheckTree(o.behavior, o.id, tree, null);
+  }
+
+  /**
+   * cXPerson::TryGetReachInfo: the object reached for, its container and
+   * slot, and the reach height (mode 2: -1; no container: 0; else the
+   * container slot's height, cXObject::GetSlotHeight, times 3 / (2 sqrt 6),
+   * lbl_105BA328). Null when something is missing; error 8 for a bad slot
+   * parameter.
+   */
+  private getReachInfo(elem: StackElem, mode: number, slotParam: number): { obj: SimObject | null; container: SimObject | null; slot: number; height: number } | null {
+    const m = this.module;
+    if (mode === 2) return { obj: null, container: null, slot: 0, height: -1 };
+    let obj: SimObject | null;
+    let container: SimObject | null;
+    let slot: number;
+    if (mode === 0) {
+      obj = m.getObject(elem.stackObj);
+      if (!obj) return null;
+      container = m.getObject(obj.obj.containerId);
+      slot = obj.obj.slotNumber;
+    } else if (mode === 1) {
+      container = m.getObject(elem.stackObj);
+      if (!container) return null;
+      obj = m.getObject(this.obj.objectSlots[1]?.containedId ?? 0);
+      if (slotParam < 0 || slotParam >= elem.numParams) simThrow(XERR.paramRange);
+      slot = elem.getParam(slotParam);
+    } else return null;
+    if (!container) return { obj, container, slot, height: 0 };
+    if (slot < 0 || slot >= container.obj.objectSlots.length - 1) return null;
+    // cXObject::GetSlotHeight: the slot heights summed up the container chain.
+    let h = 0;
+    let c: SimObject | null = container;
+    let s = slot;
+    while (c) {
+      const os = s >= 0 && s < c.obj.objectSlots.length - 1 ? c.obj.objectSlots[s + 1] : undefined;
+      if (os) h = Math.fround(h + os.z);
+      s = c.obj.slotNumber;
+      c = m.getObject(c.obj.containerId);
+    }
+    return { obj, container, slot, height: Math.fround(3 * Math.fround(h * REACH_HEIGHT_SCALE)) };
+  }
+
+  /**
+   * SAnimator::StartReachAnimation: FindReachAnimationIndex (heights
+   * lbl_105BC8A8 +0x28..+0x38: below 0 -> 9, 0.75 -> 1, 2 -> 3, 8/3 -> 5,
+   * 4 -> 7, higher: none; +1 when sitting, person data 0 = 1), the skill
+   * GetReachSkill (Global.iff STR# 0x9a adult / 0x9b child, index + 1)
+   * started on the main practice, events cleared, animation state 0.
+   * Undefined while the skill loads.
+   */
+  private startReachAnimation(height: number): boolean | undefined {
+    let idx: number;
+    if (height < 0) idx = 9;
+    else if (height < 0.75) idx = 1;
+    else if (height < 2) idx = 3;
+    else if (height < Math.fround(8 / 3)) idx = 5;
+    else if (height < 4) idx = 7;
+    else return false;
+    if (this.pd[PDX.sitting] === 1) idx++;
+    const g = this.module.res.glob;
+    const table = g ? loadStringSet(g, this.isChild ? 0x9b : 0x9a) : null;
+    const name = table?.[idx]?.toLowerCase();
+    if (!name) return false;
+    const skill = requestSkill(name);
+    if (skill === undefined) return undefined;
+    if (!skill) {
+      this.module.unportedValue(`missing skill ${name}`, 0);
+      return false;
+    }
+    const a = this.animator;
+    a.events.length = 0;
+    if (!a.start("main", skill, false)) return false;
+    a.state = 0;
+    return true;
+  }
+
+  /** SAnimator::StopReachAnimation: StopCurAnim, events cleared, the rest state. */
+  private stopReachAnimation(): void {
+    const a = this.animator;
+    a.stop("main");
+    a.events.length = 0;
+    a.state = this.restState();
   }
 
   /** Resolves and requests the skill: undefined while it loads, null when missing (logged). */
@@ -1529,17 +1826,18 @@ export class PersonSim extends SimObject {
   }
 
   /** Interaction::Interaction(person, object, entry, priority). */
-  makeInteraction(o: SimObject, e: TreeTableEntry, priority: number): Interaction {
+  makeInteraction(o: SimObject, e: TreeTableEntry, priority: number, item: MenuItem | null = null): Interaction {
     return {
       target: o.id,
       actionTree: e.actionTree,
       checkTree: e.checkTree,
       ttabIndex: e.stringIndex,
       icon: o.id,
-      args: new Int16Array(4),
+      // Interaction::SetStackVars of a MakeNewMenuItem entry
+      args: item?.args ? new Int16Array(item.args) : new Int16Array(4),
       flags: e.flags & 0x100 ? 1 : 0,
       priority,
-      name: e.name,
+      name: item?.name ?? e.name,
     };
   }
 
@@ -1625,6 +1923,35 @@ export class PersonSim extends SimObject {
    * table the person may be asked to do (the user pie menu): each one is
    * tested as an interaction of priority 50, not autonomous; debug entries
    * (TTAB flag 0x80) are left out. Pets only get menus from GUID 0x7c4.
+   * While a check tree runs the menu is "in progress": its Add / Change
+   * Action String primitives add items (MakeNewMenuItem, e.g. the phone's
+   * "$Family/Call $Neighbor" for each friend) and then the entry itself
+   * is not added.
+   */
+  menuItemsFor(target: SimObject): MenuItem[] {
+    const g = this.pd[PDX.gender]!;
+    if (g & 6 && (target.obj.selector.guid >>> 0) !== 0x7c4) return [];
+    const tt = this.module.treeTableOf(target.obj.selector);
+    if (!tt) return [];
+    const items: MenuItem[] = [];
+    const m = this.module;
+    try {
+      for (const e of tt.entries) {
+        if (e.flags & 0x80) continue;
+        m.menuInProgress = { items, entry: e };
+        const n = items.length;
+        // an entry whose check tree made items of its own is not added itself
+        if (this.testInteraction(target, e, false) && items.length === n) items.push({ entry: e, name: e.name, args: null });
+      }
+    } finally {
+      m.menuInProgress = null;
+    }
+    return items;
+  }
+
+  /**
+   * The tree table entries of menuItemsFor (check trees run with no menu in
+   * progress, so they make no items of their own).
    */
   menuFor(target: SimObject): TreeTableEntry[] {
     const g = this.pd[PDX.gender]!;

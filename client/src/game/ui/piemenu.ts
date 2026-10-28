@@ -393,6 +393,24 @@ export class TSPieMenu extends TSWin {
   }
 
   /**
+   * cTSPieMenu::SetBackground + SetTitle (vtable 0x230 / 0x228) and the
+   * relayout that follows (0x1c0; the whole tree is repainted every frame)
+   * while popped up: the window is laid out
+   * again around the same center (cObjPickerTool::MenuItemChanged swaps a
+   * sub pie's backdrop for a neighbor's picture).
+   */
+  setBackgroundAndTitle(bg: ImageBitmap | null, title: string): void {
+    if (bg === this.background && title === this.title) return;
+    this.background = bg;
+    this.title = title;
+    this.layout();
+    if (!this.poppedUp) return;
+    const left = this.popupX - this.centerX;
+    const top = this.popupY - this.centerY;
+    this.setArea(left, top, left + this.winW, top + this.winH);
+  }
+
+  /**
    * cTSPieMenu::PopupBegin + BeginPopupWindow. `clickMode`: the button is
    * already up, so the menu stays open until a click; `endMode`: see the
    * header.

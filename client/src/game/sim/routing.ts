@@ -1,6 +1,6 @@
 /**
  * Person routing: RoutingSlot, XRoute (XRoute.cpp / XRouting.cpp) and the
- * room helpers it uses (ResolveRoomID, GetWallBlockFlagsAtTile, SectWall).
+ * room helpers it uses (ResolveRoomID, GetWallBlockFlagsAtTile).
  *
  * XRoute (0x9c bytes) holds the goals (vector<RouteGoal>), a copy of the
  * routing slot (+0xc), the target (+0x48) and the person (+0x4c), the
@@ -14,15 +14,9 @@
  * maximum goal count (+0x98).
  *
  * ConstructGoals, EvalTileForGoal, ChooseStartingPoint, BuildGoalList,
- * ShouldIgnore, IsPersonSittingOnChairGoal and TransformToWorldCoords are
- * ported from the decompiled code. XRoute::FindPath is not: the original
- * builds a SpacePartition of penalty rectangles (BuildRoomPartition, the
- * objects' footprints with ShouldIgnore, the goals as rectangles weighted
- * (best score - score) * 16) and searches it with Path; the port searches
- * the same constraints (the person's room, walls through SectWall, the
- * footprints inflated by the person's half width, weight 0x7fffffff or 10
- * for objects with a route penalty, goal weights) on a 4-unit lattice with
- * A*, then shortens the polyline where the line of sight is clear.
+ * ShouldIgnore, IsPersonSittingOnChairGoal, TransformToWorldCoords and
+ * FindPath are ported from the decompiled code; FindPath's search
+ * (SpacePartition, Path, BuildRoomPartition) is in spacepartition.ts.
  */
 
 import type { FixedWorld } from "../world/world.js";
@@ -32,6 +26,7 @@ import type { XObject } from "../world/objects.js";
 import type { SimModule } from "./simmodule.js";
 import type { SimObject } from "./xobject.js";
 import { EP } from "./objfntable.js";
+import { BLOCKED, buildRoomPartition, findIntersectingRect, inflateRect, Path, penaltyRect, roomIsOutside, roomLevel, roomStats, type PenaltyRect, type RoutingParams } from "./spacepartition.js";
 
 /** Direction n (0..7, cXObject +0x4c / DirectionTo) as a world tile step. */
 export const DIR_VEC: ReadonlyArray<readonly [number, number]> = [
@@ -283,45 +278,6 @@ export function wallBlockFlagsAtTile(module: SimModule, x: number, y: number, le
   return f;
 }
 
-/** SectWall(FTileRect [maxY, maxX, minY, minX], level): does a wall cross the rectangle (door / arch styles let through)? */
-export function sectWall(fixed: FixedWorld, r: readonly [number, number, number, number], level: number): boolean {
-  for (let y = r[2] >> 4; y <= (r[0] - 1) >> 4; y++) {
-    for (let x = r[3] >> 4; x <= (r[1] - 1) >> 4; x++) {
-      if (x < 0 || y < 0 || x >= fixed.size || y >= fixed.size) continue;
-      const walls = getWall(fixed, x, y, level);
-      for (let seg = 1; seg <= 0x20; seg <<= 1) {
-        if (!(walls.segs & seg)) continue;
-        const style = walls.styles[segIndex(seg)]!;
-        if (style === 3 || style === 5 || style === 6 || style === 0xf || style === 0x17) continue;
-        let wall: number;
-        let lo: number;
-        let hi: number;
-        if (seg === 0x10) {
-          wall = (y + x + 1) * 16;
-          lo = r[0] + r[1];
-          hi = r[2] + r[3];
-        } else if (seg === 2) {
-          wall = y << 4;
-          lo = r[2];
-          hi = r[0];
-        } else if (seg === 1) {
-          wall = x << 4;
-          lo = r[3];
-          hi = r[1];
-        } else if (seg === 0x20) {
-          wall = (y - x) * 16;
-          lo = r[2] - r[1];
-          hi = r[0] - r[3];
-        } else {
-          continue;
-        }
-        if ((lo < wall && wall < hi) || (wall < lo && hi < wall)) return true;
-      }
-    }
-  }
-  return false;
-}
-
 /** Round half away from zero (TransformToWorldCoords' floor(v + 0.5) / ceil(v - 0.5)). */
 function roundAway(v: number): number {
   return v >= 0 ? Math.floor(v + 0.5) : Math.ceil(v - 0.5);
@@ -403,6 +359,17 @@ export function obstacleAtLocation(module: SimModule, fx: number, fy: number, le
   const y = ((fy >> 4) << 24) >> 24;
   for (const o of tileObjects(module, x, y, level)) if (!passable(o.obj.flags)) return o;
   return null;
+}
+
+/** cXObject::GetPlacementSpec's container: the parent of the top of the tile stack (slot hierarchy 0 links stacked objects). */
+export function placementContainer(module: SimModule, o: SimObject): SimObject | null {
+  let top = o;
+  for (let guard = 0; guard < 256 && top.obj.slotHierNumber === 0; guard++) {
+    const p = module.getObject(top.obj.parentId);
+    if (!p) break;
+    top = p;
+  }
+  return module.getObject(top.obj.parentId);
 }
 
 /** GetAverageLocation: the mean position of a multi-tile object's parts. */
@@ -782,14 +749,15 @@ export class XRoute {
   }
 
   /**
-   * XRoute::ShouldIgnore(obj): contained objects; objects people may walk
+   * XRoute::ShouldIgnore(obj): objects in a container (GetPlacementSpec:
+   * stacked objects, slot hierarchy 0, are on the tile); objects people may walk
    * through with no route penalty (object data 10); people out of the
    * route's concern (the ignored person, farther than 3 tiles); objects
    * whose allow-intersection tree accepts the person.
    */
   shouldIgnore(o: SimObject): boolean {
     const x = o.obj;
-    if (x.parentId !== 0 || x.containerId !== 0) return true;
+    if (placementContainer(this.module, o) !== null) return true;
     if (passable(x.flags) && x.objectData[10] === 0) return true;
     if (x.selector.objd.objectType === 2) {
       if (o.isPerson) {
@@ -812,238 +780,216 @@ export class XRoute {
     return false;
   }
 
+  /** Drop the current goal (its score set to 0; +0x50 / +0x54 = -1). */
+  private dropCurrentGoal(): void {
+    if (this.goalIndex !== -1) {
+      const g = this.goals[this.goalIndex];
+      if (g) g.score = 0;
+      this.goalIndex = -1;
+      this.maxScore = -1;
+    }
+  }
+
   /**
-   * XRoute::FindPath (see the file comment): fills `path` from the starting
-   * point to the best reachable goal (cost: length + (best score - score)
-   * * 16) and sets the current goal. False when no goal is reachable.
+   * XRoute::FindPath(TileList&): the path from the starting point to the
+   * best reachable goal (see spacepartition.ts). Ghosts (person data 84 /
+   * 68 bit 0) route through everything; others need the target in their
+   * room, and avoid the room partition (cached per room; built without the
+   * outdoor paths when running outside) and the obstacles: the room's other
+   * objects (ShouldIgnore aside) that do not overlap the person, their
+   * footprints weighted blocked or 10 (route penalty) and inflated by half
+   * a person's width (3); a door's wall block flags turn it into a strip
+   * along each blocking side, weighted 10000. Goals of positive score are
+   * 1x1 rectangles weighted (best - score) * 16. Big (> 256) uncluttered
+   * rooms are searched once with unlimited rectangles (unreachable: no
+   * path), then with rectangles of at most 8 tiles. The search and the
+   * smoothing share a budget of goals * area + 50 (at most 1000) steps.
    */
   findPath(): boolean {
     this.path = [];
-    const fixed = this.fixed;
+    const m = this.module;
     const me = this.person.obj;
-    const level = me.level;
-    if (!this.goals.length || level < 1 || level > 2) return false;
     const pd = this.person.person?.personData ?? null;
-    const ghost = pd ? (pd[68]! & 1) === 1 : false;
+    const ghost = pd !== null && ((pd[84]! & 1) === 1 || (pd[68]! & 1) === 1);
+    const running = me.objectData[17] !== 0;
+    if (this.goals.length === 0) {
+      if (this.result === ROUTE.unknown) this.result = ROUTE.noValidGoals;
+      return false;
+    }
     const room = me.objectData[29]! & 0xffff;
-    // The person's footprint (ComputeRect with the OBJD footprint mask), its largest half extent.
-    const half = Math.max(1, me.fx - me.rect[3], me.rect[1] - me.fx, me.fy - me.rect[2], me.rect[0] - me.fy);
-    // Penalty rectangles: [minX, minY, maxX, maxY, weight], footprints inflated by the person's half width.
-    const rects: Array<[number, number, number, number, number]> = [];
-    const chairs = new Set(this.goals.map((g) => g.chair).filter((c) => c !== 0));
-    for (const o of this.module.list) {
-      const x = o.obj;
-      if (o === this.person || x.level !== level || chairs.has(o.id)) continue;
-      if (tileOutOfBounds(fixed, x.tileX, x.tileY)) continue;
-      if (x.kind === "portal") continue;
-      if (this.shouldIgnore(o)) continue;
-      const r = x.rect;
-      // Impassable footprints are tested exactly by CanPlace below (direction-dependent footprints);
-      // objects with a route penalty (object data 10) only cost.
-      if (x.objectData[10] !== 0) rects.push([r[3] - half, r[2] - half, r[1] + half, r[0] + half, 10]);
+    const targetRoom = this.target ? this.target.obj.objectData[29]! & 0xffff : room;
+    if (!ghost && room !== targetRoom) {
+      this.dropCurrentGoal();
+      return false;
     }
-    const hooks = this.module.worldHooks;
-    const validCache = new Map<number, number>();
-    const myDir = me.objectData[1]!;
-    const valid = (fx: number, fy: number, dir: number): number => {
-      const k = (fy * 0x10000 + fx) * 8 + dir;
-      let v = validCache.get(k);
-      if (v === undefined) {
-        v = validAt(fx, fy, dir);
-        validCache.set(k, v);
-      }
-      return v;
-    };
-    // The footprint depends on the direction (OBJD +0x9a mask): tested facing the way the person walks.
-    const validAt = (fx: number, fy: number, dir: number): number => {
-      const tx = fx >> 4;
-      const ty = fy >> 4;
-      if (tileOutOfBounds(fixed, tx, ty)) return -1;
-      if (!ghost && !(this.slot.flags & RSF.ignoreRooms) && resolveRoomID(fixed, fx, fy, level) !== room) return -1;
-      if (sectWall(fixed, [fy + half, fx + half, fy - half, fx - half], level)) return -1;
-      let cost = 0;
-      for (const r of rects) {
-        if (fx > r[0] && fx < r[2] && fy > r[1] && fy < r[3]) {
-          if (r[4] === 0x7fffffff) return -1;
-          cost += r[4];
+    const level = roomLevel(room);
+    if (room >= ROOM_DEGENERATE || level < 1 || level > 2 || me.level !== level) {
+      this.dropCurrentGoal();
+      return false;
+    }
+    const stats = roomStats(m, room);
+    if (stats.tiles === 0) {
+      this.dropCurrentGoal();
+      return false;
+    }
+    const outside = level === 1 && roomIsOutside(m, room);
+    const half = PERSON_WIDTH >> 1;
+    const obstacles: PenaltyRect[] = [];
+    if (!ghost) {
+      const mr = routeRect(me, pd);
+      const myRect = penaltyRect(mr[3], mr[2], mr[1], mr[0], 0);
+      for (const o of m.list) {
+        const x = o.obj;
+        if (o === this.person || (x.objectData[29]! & 0xffff) !== room || this.shouldIgnore(o)) continue;
+        let w = x.objectData[10] !== 0 ? 10 : BLOCKED;
+        const r = routeRect(x, o.person?.personData ?? null);
+        let rect = penaltyRect(r[3], r[2], r[1], r[0], w);
+        if (x.selector.objd.objectType === 8) {
+          const f = wallBlockFlags(x);
+          if (f & 1) {
+            w = 10000;
+            rect = penaltyRect(r[3], r[2], r[1], r[2] + 1, w);
+            inflateRect(rect, half, half);
+          }
+          if (f & 4) {
+            w = 10000;
+            rect = penaltyRect(r[1] - 1, r[2], r[1], r[0], w);
+            inflateRect(rect, half, half);
+          }
+          if (f & 0x10) {
+            w = 10000;
+            rect = penaltyRect(r[3], r[0] - 1, r[1], r[0], w);
+            inflateRect(rect, half, half);
+          }
+          if (f & 0x40) {
+            w = 10000;
+            rect = penaltyRect(r[3], r[2], r[3] + 1, r[0], w);
+            inflateRect(rect, half, half);
+          }
         }
+        // Objects the person already overlaps are left out.
+        if (findIntersectingRect(myRect, [rect]) !== -1) continue;
+        if (x.selector.objd.objectType === 2 || w === BLOCKED || w > 7) inflateRect(rect, half, half);
+        obstacles.push(rect);
       }
-      // The person's own footprint must fit there too (cXObject::CanPlace, as FollowOneStep tests each step),
-      // unless only people block it (they move; the rectangles above decide for them).
-      me.objectData[1] = dir;
-      const fits = !hooks || hooks.canPlace(me, { fx, fy }, level, null, -1);
-      me.objectData[1] = myDir;
-      if (!fits && hooks) {
-        const e = hooks.lastError();
-        const o = e.code === 0xb && e.obstacle !== 0 ? this.module.getObject(e.obstacle) : null;
-        // People the route ignores (far away, the one asked to move) and the goal chairs do not block.
-        if (!(o && ((o.isPerson && this.shouldIgnore(o)) || chairs.has(o.id) || (o.obj.objectData[10] !== 0 && !o.isPerson)))) return -1;
-      }
-      return cost;
-    };
-    const lineClear = (ax: number, ay: number, bx: number, by: number): boolean => {
-      const d = Math.hypot(bx - ax, by - ay);
-      const n = Math.max(1, Math.ceil(d));
-      const dir = dirOf(bx - ax, by - ay);
-      for (let i = 1; i <= n; i++) {
-        const fx = Math.round(ax + ((bx - ax) * i) / n);
-        const fy = Math.round(ay + ((by - ay) * i) / n);
-        if (valid(fx, fy, dir) !== 0) return false;
-      }
-      return true;
-    };
-    const STEP = 4;
-    const n = fixed.size * 4;
-    const key = (gx: number, gy: number): number => gy * n + gx;
-    const nodeCost = (gx: number, gy: number, dir: number): number => valid(gx * STEP, gy * STEP, dir);
-    const sx = this.startFx;
-    const sy = this.startFy;
-    // Goals reachable from lattice nodes (a straight clear segment within one step).
-    const goalCost = this.goals.map((g) => (this.maxScore - g.score) * 16);
-    const goalNear = new Map<number, number[]>();
+    }
+    let partition: PenaltyRect[] | null = null;
+    if (!ghost) partition = running && outside ? buildRoomPartition(m, room, false) : roomPartition(m, room);
+    const goals: PenaltyRect[] = [];
+    const goalMap: number[] = [];
     this.goals.forEach((g, i) => {
-      const gx0 = Math.floor(g.fx / STEP);
-      const gy0 = Math.floor(g.fy / STEP);
-      for (let dy = 0; dy <= 1; dy++) {
-        for (let dx = 0; dx <= 1; dx++) {
-          const k = key(gx0 + dx, gy0 + dy);
-          const l = goalNear.get(k) ?? [];
-          l.push(i);
-          goalNear.set(k, l);
-        }
-      }
+      if (g.score <= 0) return;
+      goals.push(penaltyRect(g.fx, g.fy, g.fx + 1, g.fy + 1, (this.maxScore - g.score) * 16));
+      goalMap.push(i);
     });
-    // Direct segment start -> goal.
-    let best: { cost: number; goal: number; node: number } | null = null;
-    this.goals.forEach((g, i) => {
-      if (Math.hypot(g.fx - sx, g.fy - sy) < 0.5 || lineClear(sx, sy, g.fx, g.fy)) {
-        const c = Math.hypot(g.fx - sx, g.fy - sy) + goalCost[i]!;
-        if (!best || c < best.cost) best = { cost: c, goal: i, node: -1 };
-      }
-    });
-    const gScore = new Map<number, number>();
-    const came = new Map<number, number>();
-    // Binary heap over [f, key].
-    const heap: Array<[number, number]> = [];
-    const push = (f: number, k: number): void => {
-      heap.push([f, k]);
-      let i = heap.length - 1;
-      while (i > 0) {
-        const p = (i - 1) >> 1;
-        if (heap[p]![0] <= heap[i]![0]) break;
-        [heap[p], heap[i]] = [heap[i]!, heap[p]!];
-        i = p;
-      }
+    const params: RoutingParams = {
+      goals,
+      obstacles,
+      partition,
+      x: this.startFx,
+      y: this.startFy,
+      noGoalPoint: false,
+      limitSize: false,
+      maxSize: 0x40,
+      defaultWeight: !running && outside ? 3 : 0,
+      smooth: true,
     };
-    const pop = (): [number, number] | undefined => {
-      const top = heap[0];
-      const last = heap.pop();
-      if (heap.length && last) {
-        heap[0] = last;
-        let i = 0;
-        for (;;) {
-          const l = i * 2 + 1;
-          const r = l + 1;
-          let m = i;
-          if (l < heap.length && heap[l]![0] < heap[m]![0]) m = l;
-          if (r < heap.length && heap[r]![0] < heap[m]![0]) m = r;
-          if (m === i) break;
-          [heap[m], heap[i]] = [heap[i]!, heap[m]!];
-          i = m;
-        }
-      }
-      return top;
-    };
-    const h = (gx: number, gy: number): number => {
-      let m = Infinity;
-      this.goals.forEach((g, i) => {
-        m = Math.min(m, Math.hypot(g.fx - gx * STEP, g.fy - gy * STEP) + goalCost[i]!);
-      });
-      return m;
-    };
-    // Seed: lattice nodes around the start.
-    const sgx = Math.floor(sx / STEP);
-    const sgy = Math.floor(sy / STEP);
-    for (let dy = -1; dy <= 2; dy++) {
-      for (let dx = -1; dx <= 2; dx++) {
-        const gx = sgx + dx;
-        const gy = sgy + dy;
-        const sd = dirOf(gx * STEP - sx, gy * STEP - sy);
-        if (nodeCost(gx, gy, sd) < 0) continue;
-        if (!lineClear(sx, sy, gx * STEP, gy * STEP)) continue;
-        const k = key(gx, gy);
-        const g = Math.hypot(gx * STEP - sx, gy * STEP - sy) + nodeCost(gx, gy, sd);
-        if (g < (gScore.get(k) ?? Infinity)) {
-          gScore.set(k, g);
-          came.set(k, -1);
-          push(g + h(gx, gy), k);
-        }
+    if (ghost || (stats.objects / (stats.area * 2) <= 0.2 && stats.area > 99)) {
+      params.limitSize = true;
+      params.maxSize = 0x80;
+    }
+    const budget = Math.min(1000, goals.length * stats.area + 50);
+    const path = new Path();
+    if (stats.area > 0x100 && params.limitSize) {
+      // Reachability first, with unlimited rectangles.
+      params.limitSize = false;
+      path.initPath(params);
+      path.run(budget);
+      const unreachable = path.points.length === 0;
+      params.limitSize = true;
+      if (unreachable) {
+        this.result = ROUTE.noPath;
+        return false;
       }
     }
-    const closed = new Set<number>();
-    let expanded = 0;
-    while (heap.length && expanded < 40000) {
-      const [f, k] = pop()!;
-      if (closed.has(k)) continue;
-      const bestNow = best as { cost: number } | null;
-      if (bestNow && f >= bestNow.cost) break;
-      closed.add(k);
-      expanded++;
-      const gx = k % n;
-      const gy = (k - gx) / n;
-      const g0 = gScore.get(k)!;
-      for (const i of goalNear.get(k) ?? []) {
-        const goal = this.goals[i]!;
-        const px = gx * STEP;
-        const py = gy * STEP;
-        if (!(goal.fx === px && goal.fy === py) && !lineClear(px, py, goal.fx, goal.fy)) continue;
-        const c = g0 + Math.hypot(goal.fx - px, goal.fy - py) + goalCost[i]!;
-        if (!best || c < (best as { cost: number }).cost) best = { cost: c, goal: i, node: k };
-      }
-      for (let d = 0; d < 8; d++) {
-        const [vx, vy] = DIR_VEC[d]!;
-        const nx = gx + vx;
-        const ny = gy + vy;
-        const nk = key(nx, ny);
-        if (closed.has(nk)) continue;
-        const c = nodeCost(nx, ny, d);
-        if (c < 0) continue;
-        if (vx !== 0 && vy !== 0 && (nodeCost(gx + vx, gy, d) < 0 || nodeCost(gx, gy + vy, d) < 0)) continue;
-        const ng = g0 + (vx !== 0 && vy !== 0 ? STEP * Math.SQRT2 : STEP) + c;
-        if (ng < (gScore.get(nk) ?? Infinity)) {
-          gScore.set(nk, ng);
-          came.set(nk, k);
-          push(ng + h(nx, ny), nk);
-        }
-      }
+    path.initPath(params);
+    path.run(budget);
+    if (path.goalIndex === -1) this.dropCurrentGoal();
+    else this.goalIndex = goalMap[path.goalIndex]!;
+    if (path.points.length === 0) {
+      this.result = ROUTE.noPath;
+      return false;
     }
-    const found = best as { cost: number; goal: number; node: number } | null;
-    if (!found) return false;
-    const pts: PathPt[] = [{ fx: sx, fy: sy }];
-    const mid: PathPt[] = [];
-    for (let k = found.node; k !== -1 && k !== undefined; k = came.get(k)!) {
-      const gx = k % n;
-      mid.push({ fx: gx * STEP, fy: ((k - gx) / n) * STEP });
-    }
-    mid.reverse();
-    pts.push(...mid);
-    const goal = this.goals[found.goal]!;
-    pts.push({ fx: goal.fx, fy: goal.fy });
-    // Line-of-sight shortening.
-    const out: PathPt[] = [pts[0]!];
-    let i = 0;
-    while (i < pts.length - 1) {
-      let j = pts.length - 1;
-      while (j > i + 1 && !lineClear(pts[i]!.fx, pts[i]!.fy, pts[j]!.fx, pts[j]!.fy)) j--;
-      out.push(pts[j]!);
-      i = j;
-    }
-    // The person's own start point is first even when routing from a chair's side.
+    const out: PathPt[] = path.points.map((p) => ({ fx: p.x, fy: p.y }));
+    // The walk engine starts from the person: when routing from a chair's side, the person's position comes first.
     if (this.startFx !== me.fx || this.startFy !== me.fy) out.unshift({ fx: me.fx, fy: me.fy });
     this.path = out;
-    this.goalIndex = found.goal;
     return true;
   }
+}
+
+/** The person width (lbl_105BA224, 1/16 tile) ComputeRect gives people. */
+const PERSON_WIDTH = 6;
+
+/**
+ * cXObject::ComputeRect for the router: people are PERSON_WIDTH wide (0
+ * for ghosts, person data 84 / 68 bit 0), their OBJD footprint mask
+ * (+0x9a) minus the route footprint (person data 73, facing an even
+ * direction); other objects keep their footprint (+0x100..+0x10c).
+ * [maxY, maxX, minY, minX].
+ */
+function routeRect(x: XObject, pd: Int16Array | null): [number, number, number, number] {
+  if (x.selector.objd.objectType !== 2) return x.rect;
+  const ghost = pd !== null && ((pd[84]! & 1) === 1 || (pd[68]! & 1) === 1);
+  const h = ghost ? 0 : PERSON_WIDTH >> 1;
+  const r: [number, number, number, number] = [x.fy + h, x.fx + h, x.fy - h, x.fx - h];
+  const mask = x.selector.objd.i16(0x9a);
+  const fp = pd !== null && (x.objectData[1]! & 1) === 0 ? pd[73]! : 0;
+  if (mask !== 0 || fp !== 0) {
+    const n = [(mask & 0xf) - (fp & 0xf), ((mask >> 4) & 0xf) - ((fp >> 4) & 0xf), ((mask >> 8) & 0xf) - ((fp >> 8) & 0xf), ((mask >> 12) & 0xf) - ((fp >> 12) & 0xf)];
+    const k = Math.trunc((8 - x.objectData[1]!) / 2);
+    r[2] += n[k & 3]!;
+    r[1] -= n[(k + 1) & 3]!;
+    r[0] -= n[(k + 2) & 3]!;
+    r[3] += n[(k + 3) & 3]!;
+  }
+  return r;
+}
+
+/** cXObject::GetWallBlockFlags: object data 53 rotated with the object. */
+function wallBlockFlags(x: XObject): number {
+  const b = x.objectData[53]!;
+  if (b === 0) return 0;
+  const v = b << (x.objectData[1]! & 0x3f);
+  return (v | (v >> 8)) & 0xff;
+}
+
+/**
+ * Room::GetPartition: BuildRoomPartition cached per room until the house
+ * changes (RoomManager::ClearRoomPartitions on EnterLiveMode, Room::Clear
+ * when the rooms are recomputed). The port keys the cache on the level's
+ * room, wall and floor arrays.
+ */
+const partitions = new WeakMap<FixedWorld, Map<number, { key: number; rects: PenaltyRect[] }>>();
+
+function roomPartition(m: SimModule, room: number): PenaltyRect[] {
+  const fixed = m.sim.world!;
+  const level = roomLevel(room);
+  let h = 0x811c9dc5;
+  for (const a of [fixed.rooms[level - 1]!, fixed.walls[level - 1]!, fixed.floors[level - 1]!]) {
+    const d = a.data;
+    for (let i = 0; i < d.length; i++) h = Math.imul(h ^ d[i]!, 0x01000193);
+  }
+  let cache = partitions.get(fixed);
+  if (!cache) {
+    cache = new Map();
+    partitions.set(fixed, cache);
+  }
+  const c = cache.get(room);
+  if (c && c.key === h) return c.rects;
+  const rects = buildRoomPartition(m, room, true);
+  cache.set(room, { key: h, rects });
+  return rects;
 }
 
 /**

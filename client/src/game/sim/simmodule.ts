@@ -24,12 +24,14 @@ import type { Simulator } from "./simulator.js";
 import { SimObject } from "./xobject.js";
 import { simThrow } from "./treesim.js";
 import { EP } from "./objfntable.js";
-import { PersonSim, SCORE_CURVE_MOTIVES, type Interaction } from "./person.js";
+import { PersonSim, SCORE_CURVE_MOTIVES, type Interaction, type MenuItem } from "./person.js";
 import { curvesFromStrings, HAPPY_CURVE_MOTIVES, type MotiveCurve } from "./motives.js";
 import { loadStringSet, loadTree } from "./behavior.js";
 import type { Neighbor, NeighborhoodData, SimInventory } from "../data/neighborhood.js";
 import type { SimCareer } from "./careers.js";
-import { TreeTable } from "./treetable.js";
+import { ObjectDialog, type DialogHooks } from "./objectdialog.js";
+import type { StackElem } from "./treestack.js";
+import { TreeTable, type TreeTableEntry } from "./treetable.js";
 import { loadFloatConstants } from "./floatconstants.js";
 import { setMotiveConstants } from "./motives.js";
 import { autonomyConstants, type AutonomyConstants } from "./person.js";
@@ -145,6 +147,12 @@ export class SimModule {
   readonly people: SimObject[] = [];
   /** The neighborhood (person persistent data, relationships); null when it failed to load. */
   nbhd: NeighborhoodData | null = null;
+  /**
+   * ObjTestSim's menu globals (lbl_105BA35C / 358 / 354) while
+   * AppendInteractionsForMenu runs a check tree: the menu being made and the
+   * entry tested (ObjTestSim::IsMenuInProgress, MakeNewMenuItem).
+   */
+  menuInProgress: { items: MenuItem[]; entry: TreeTableEntry } | null = null;
   /** Inventories made while no neighborhood is loaded (GetInventoryByNeighbourID). */
   private readonly sessionInventories: SimInventory[] = [];
   /** GetCareers: the careers in LoadCareers' order (sim/careers.ts); set by the Simulator. */
@@ -232,6 +240,41 @@ export class SimModule {
   /** Lot changes (town pickers, taxi splash, TryChangeLots), set by the game. */
   transitHooks: TransitHooks | null = null;
 
+  /** +0x64: the queued object dialogs (EnqueueObjectDialog). */
+  readonly dialogs: ObjectDialog[] = [];
+  /** Shows the generic object dialogs (cWinPictureDialog), set by the game; none: dialogs stay queued. */
+  dialogHooks: DialogHooks | null = null;
+  /** lbl_105BA210: the text of the last text entry dialog (type 3). */
+  dialogText = "";
+  /**
+   * +0xec: the phone book request (TryDialog kind 0xa): minus the caller's
+   * neighbor id while PostSim has to show CWinPhoneBook, then the picked
+   * neighbor id, or -9999 when cancelled.
+   */
+  phoneBook = 0;
+
+  /** ObjectModule::GetCurrentDialog: the first queued dialog of `o` (done ones are dropped, as PostSim does). */
+  getCurrentDialog(o: SimObject): ObjectDialog | null {
+    for (let i = this.dialogs.length - 1; i >= 0; i--) if (this.dialogs[i]!.state === 5) this.dialogs.splice(i, 1);
+    return this.dialogs.find((d) => d.obj === o) ?? null;
+  }
+
+  /**
+   * ObjectModule::EnqueueObjectDialog (the generic kinds): a new
+   * ObjectDialog with SetParams, shown by PostSim once the tick is over.
+   */
+  enqueueObjectDialog(o: SimObject, elem: StackElem, op: Uint8Array): void {
+    const d = new ObjectDialog(o);
+    d.setParams(elem, op, this.dialogHooks);
+    this.dialogs.push(d);
+    this.record(o, "dialog", d.message);
+    const hooks = this.dialogHooks;
+    if (hooks) queueMicrotask(() => {
+      // ObjectModule::PostSim: Show every dialog still at state 0.
+      if (d.state === 0) hooks.show(d);
+    });
+  }
+
   /** Called when a person's interaction queue or current action changes (the Live panel). */
   onQueueChanged: ((p: PersonSim) => void) | null = null;
 
@@ -257,7 +300,11 @@ export class SimModule {
       if (i >= 0) this.list.splice(i, 1);
     }
     this.objects[id - 1] = o;
-    this.simFlags[id - 1] = x.isPerson ? 0x1ffff : 0xffff;
+    // AddObject stores 0xffff; MakeNewOutOfWorldObject then sets sim flag 1
+    // (0x10000: TickAllObjects runs it) on the object and on every part.
+    // Without it a bought object's Main never runs and its lockout count
+    // (object data 25) never counts down: autonomy skips it for good.
+    this.simFlags[id - 1] = 0x1ffff;
     // The list stays in object id order (TickAllObjects, Set To Next).
     let k = this.list.findIndex((y) => y.id > id);
     if (k < 0) k = this.list.length;
@@ -276,6 +323,8 @@ export class SimModule {
     const o = this.objects[x.objectId - 1];
     if (!o || o.obj !== x) return;
     o.killed = true;
+    // ObjectModule::RemoveObject: the object's dialogs are aborted.
+    for (const d of this.dialogs) if (d.obj === o) d.abort();
     this.objects[x.objectId - 1] = null;
     const i = this.list.indexOf(o);
     if (i >= 0) this.list.splice(i, 1);
@@ -529,6 +578,7 @@ export class SimModule {
       const o = this.getObject(id);
       if (!o) continue;
       o.killed = true;
+      for (const d of this.dialogs) if (d.obj === o) d.abort();
       this.objects[id - 1] = null;
       this.list.splice(this.list.indexOf(o), 1);
       const pi = this.people.indexOf(o);
@@ -664,9 +714,19 @@ export class SimModule {
         return this.people.find((p) => (p.obj.selector.guid | 0) === (nb.guid | 0))?.id ?? 0;
       case 1:
         return this.sim.state?.family.some((f) => (f.guid ?? 0) === (nb.guid | 0)) ? 1 : 0;
+      case 2: // Neighbor +0xe8: the stored person data 0x3a (age)
+        return nb.personData?.[0x3a] ?? 0;
       case 3:
       case 4:
         return 0;
+      case 7: // the family (Neighbor +0xee = Family +0x10c) living in a house: Family +0x138 bit 0
+      case 8: { // ... bit 1
+        const fn = nb.personData?.[0x3d] ?? 0;
+        if (fn === 0) return 0;
+        const fam = this.nbhd?.families.find((f) => f.chunkId === fn);
+        if (!fam || fam.houseNumber === 0) return 0;
+        return data === 7 ? fam.flags & 1 : (fam.flags >> 1) & 1;
+      }
       case 6:
         return this.nbhd?.families.find((f) => f.memberGuids.some((g) => (g | 0) === (nb.guid | 0)))?.houseNumber ?? 0;
       default:

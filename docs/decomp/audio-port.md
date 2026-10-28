@@ -165,8 +165,9 @@ reg 0x13 = a2, 0x14 = a3, and UpdateAmbienceLoop passes (0, 0, 0) — same as or
   (GetObjectData 13) = `room.tiles.length`.
 - `?house=N` has no ambience: GameModeManager ignores modes until the hood was
   shown (faithful); use the full flow.
-- SAnimator sound/footstep events (`sim/personanim.ts`, VM agent) only record
-  "animSound"; they should call `soundPlayer.playBySource(name, personId)`.
+- SAnimator sound/footstep events: ported (`sim/animsound.ts`,
+  HandleVitaBoyAnimEvent + GetFootSound → `soundPlayer.playBySource`).
+  `footstep_terrain_noshoe` has no .hot mapping (silent, as in the original).
 - Fresh cell state 1 loads samples asynchronously; FreshSnd.fadeVolume stops the
   sample at volume 0 (documented deviation). TurnOffTv is a no-op.
 - A stopping (fading) track no longer executes commands; the original keeps

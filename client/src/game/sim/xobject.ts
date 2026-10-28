@@ -20,15 +20,16 @@
  */
 
 import { OD as WOD, type XObject } from "../world/objects.js";
-import { OBJ_TYPE_PERSON } from "../world/objselector.js";
+import { OBJ_TYPE_PERSON, type ObjSelector } from "../world/objselector.js";
+import type { Neighbor } from "../data/neighborhood.js";
 import type { BehaviorTree } from "./behavior.js";
-import { getTreeClass, getBaseID, loadStringSet } from "./behavior.js";
+import { getTreeClass, getBaseID, loadStringSet, loadUIStringSet } from "./behavior.js";
 import { EP, ObjFnTable } from "./objfntable.js";
 import type { SimModule } from "./simmodule.js";
 import { PRIM_CONTINUE, PRIM_FALSE, PRIM_TRUE, PRIM_WAIT, TreeSim, simThrow, treeSimGlobals } from "./treesim.js";
 import type { ParamSource, StackElem } from "./treestack.js";
 import { DIR_VEC, rotateOffset } from "./routing.js";
-import { getBehCareerData } from "./careers.js";
+import { getBehCareerData, offerDialogText, simJobName, type SimCareer } from "./careers.js";
 import { addToken, findToken, removeAllTokensOfType, removeToken, removeTokenByIndex, setToNextToken } from "./inventory.js";
 
 /** Object data indexes (Behavior.iff STR# 141; index = (offset - 0x4a) / 2). */
@@ -112,6 +113,13 @@ export interface PrimitiveLog {
   /** opcode -> runs */
   counts: Map<number, number>;
 }
+
+/** Person data read by ParseUIString (cXPerson +0x5fc / +0x5fe / +0x60e): job type, job level, gender. */
+const PD_JOB_TYPE = 0x38;
+const PD_JOB_LEVEL = 0x39;
+const PD_GENDER = 0x41;
+/** cXPerson +0x5ca: neighbor id. */
+const PD_NEIGHBOR_ID = 0x1f;
 
 /** Dynamic-cast helper for cXPerson fields this phase keeps on the object. */
 export interface PersonSimData {
@@ -795,14 +803,8 @@ export class SimObject extends TreeSim {
         return PRIM_TRUE;
       case 35: // Special effect (TryUserEvent): recorded only.
         return this.module.unportedPrim(op, "user event", PRIM_TRUE);
-      case 36: { // Dialog: the town pickers go to the transit hooks; others recorded, answered as the first button (true).
-        if ((u8(7) & 1) === 0) {
-          const r = this.module.transitHooks?.tryDialog(this, u8(5) & 0x7f);
-          if (r !== undefined) return r;
-        }
-        this.module.record(this, "dialog", u8(5) & 0x7f);
-        return PRIM_TRUE;
-      }
+      case 36:
+        return this.tryDialog(elem, new Uint8Array(v.buffer, v.byteOffset + p, 8));
       case 41: // Set Balloon / Headline: recorded only (no sprite slot activation).
         this.module.record(this, "balloon", s16(2));
         return PRIM_TRUE;
@@ -818,9 +820,8 @@ export class SimObject extends TreeSim {
         return PRIM_TRUE;
       case 49:
         return this.tryNotifyOutOfIdle(elem);
-      case 50: // Add / Change Action String: person interaction queue, recorded only.
-        this.module.record(this, "actionString", s16(0));
-        return PRIM_TRUE;
+      case 50:
+        return this.tryMakeActionString(elem, s16(0), u8(4));
       case 51:
         return this.tryInventoryAction(elem, u8(0), u8(1), v.getUint16(p + 2, true), v.getUint32(p + 4, true));
       default:
@@ -1290,6 +1291,272 @@ export class SimObject extends TreeSim {
       return PRIM_TRUE;
     }
     return PRIM_FALSE;
+  }
+
+  /**
+   * cXObject::TryDialog. A dialog of this object still shown (state 1) is
+   * aborted, a done one (5) ignored. Operand byte 7 bit 0: the dialog is
+   * queued and the primitive goes on (true). Otherwise kinds 5 / 7 / 0xb /
+   * 0xd (town pickers) go to the transit hooks; kinds 6, 8, 9, 0xa (phone
+   * book), 0xc / 0xf (magic book) and 0xe are not ported (recorded, true).
+   * The generic kinds queue an ObjectDialog (EnqueueObjectDialog) and wait;
+   * then the state answers: 2 (first button) true, the text of a type 3
+   * dialog kept; 3 false (type 2: temp[(byte 7 >> 4) & 7] = 0); 4 false
+   * (type 2: that temp = 1).
+   */
+  protected tryDialog(elem: StackElem, op: Uint8Array): number {
+    const m = this.module;
+    let cur = m.getCurrentDialog(this);
+    if (cur?.state === 1) {
+      cur.abort();
+      cur = null;
+    } else if (cur?.state === 5) cur = null;
+    if (op[7]! & 1) {
+      m.enqueueObjectDialog(this, elem, op);
+      return PRIM_TRUE;
+    }
+    const kind = op[5]! & 0x7f;
+    const r = m.transitHooks?.tryDialog(this, kind);
+    if (r !== undefined) return r;
+    if (kind === 0xa && m.dialogHooks?.showPhoneBook) return this.tryPhoneBookDialog();
+    if (kind === 6 || kind === 8 || kind === 9 || kind === 0xa || kind === 0xc || kind === 0xf || kind === 0xe) {
+      return m.unportedPrim(36, `dialog kind ${kind}`, PRIM_TRUE);
+    }
+    if (!cur) {
+      // Without a way to show it, the dialog would wait forever: answered as its first button.
+      if (!m.dialogHooks) {
+        m.record(this, "dialog", kind);
+        return PRIM_TRUE;
+      }
+      m.enqueueObjectDialog(this, elem, op);
+      return PRIM_WAIT;
+    }
+    const st = cur.state;
+    cur.resultProcessed();
+    const t = (op[7]! >> 4) & 7;
+    if (st === 2) {
+      if (kind === 3) m.dialogText = cur.edited;
+      return PRIM_TRUE;
+    }
+    if (st < 2) return PRIM_WAIT;
+    if (st === 4) {
+      if (kind === 2) this.temps[t] = 1;
+      return PRIM_FALSE;
+    }
+    if (st === 3) {
+      if (kind === 2) this.temps[t] = 0;
+      return PRIM_FALSE;
+    }
+    return PRIM_TRUE;
+  }
+
+  /**
+   * cXObject::TryDialog kind 0xa (the phone book), on a person: the module's
+   * +0xec at 0 becomes minus my neighbor id and the primitive waits while
+   * PostSim runs CWinPhoneBook; a picked neighbor id goes to temp 0 (true),
+   * a cancel (-9999) answers false.
+   */
+  private tryPhoneBookDialog(): number {
+    const m = this.module;
+    if (!this.person) simThrow(XERR.notPerson);
+    const v = m.phoneBook;
+    if (v === 0) {
+      const caller = this.person.personData[PD_NEIGHBOR_ID]!;
+      m.phoneBook = -caller;
+      const hooks = m.dialogHooks;
+      queueMicrotask(() => {
+        if (m.phoneBook >= 0 || m.phoneBook === -9999 || !hooks?.showPhoneBook) return;
+        void hooks.showPhoneBook(caller).then((sel) => {
+          m.phoneBook = sel < 1 ? -9999 : sel;
+        });
+      });
+      return PRIM_WAIT;
+    }
+    if (v < 1) {
+      if (v === -9999) {
+        m.phoneBook = 0;
+        return PRIM_FALSE;
+      }
+      return PRIM_WAIT; // the phone book is still up
+    }
+    this.temps[0] = v;
+    m.phoneBook = 0;
+    return PRIM_TRUE;
+  }
+
+  /**
+   * cXObject::TryMakeActionString (Add / Change Action String): entry
+   * `index` (1-based) of the private STR# `strId`, its tokens replaced
+   * (ParseUIString). While a pie menu is made (ObjTestSim::IsMenuInProgress)
+   * it becomes a new menu item (MakeNewMenuItem) whose stack vars are those
+   * ParseUIString set, the first one defaulting to the stack object.
+   * Otherwise it would rename the person's current interaction when
+   * lbl_105BA314 is set (not ported: recorded only).
+   */
+  protected tryMakeActionString(elem: StackElem, strId: number, index: number): number {
+    const m = this.module;
+    const menu = m.menuInProgress;
+    if (!menu) {
+      m.record(this, "actionString", strId);
+      return PRIM_TRUE;
+    }
+    const file = elem.behavior?.priv;
+    const text = (file && index >= 1 ? loadUIStringSet(file, strId)?.[index - 1] : undefined) ?? "";
+    const vars = new Int16Array(4);
+    const name = this.parseUIString(text, elem, vars);
+    if (vars[0] === 0) vars[0] = elem.stackObj;
+    menu.items.push({ entry: menu.entry, name, args: vars });
+    return PRIM_TRUE;
+  }
+
+  /**
+   * cXObject::ParseUIString: the "$Token" / "$Token:n" / "$Token:a:b"
+   * (ParseOneString) placeholders of a UI string, in the original order:
+   * $FamilyAssets:n (net worth of the family whose id is local n), $Family
+   * (family of the neighbor whose id is the stack object; `vars[1]` becomes
+   * its id), $Me / $Object (catalog names of this / the stack object, whose
+   * selector goes to `out`), $Local:n, $Attrib:n (stack object attribute),
+   * $NameAttrib:n / $NameLocal:n (catalog name of the object whose id is
+   * there), $NeighborLocal:n (that neighbor's full name), $Neighbor (the
+   * neighbor whose id is the stack object; `vars[0]` becomes it),
+   * $CatalogLocal:n (catalog description), $TimeLocal:n (an hour), then
+   * $JobOffer / $JobDesc / $Job (career and level from locals a / b, from
+   * this person's job person data otherwise). $TokenNameLocal,
+   * $FameTitleLocal and $Grade are not ported (left as they are).
+   */
+  parseUIString(text: string, elem: StackElem | null, vars: Int16Array | null, out?: { selector: ObjSelector | null }): string {
+    const m = this.module;
+    let s = text;
+    if (!s.includes("$")) return s;
+    const id = elem?.stackObj ?? 0;
+    const nLocals = elem?.numLocals ?? 0;
+    const local = (n: number): number | null => (elem && n >= 0 && n < nLocals ? elem.getLocal(n) : null);
+    /** ParseOneString over every occurrence; `fn` returns the replacement or null to keep it. */
+    const each = (token: string, fn: (a: number, b: number) => string | null): void => {
+      let from = 0;
+      for (;;) {
+        const at = s.indexOf(token, from);
+        if (at < 0) return;
+        let end = at + token.length;
+        let a = -1;
+        let b = -1;
+        const num = (): number | null => {
+          let q = end + 1;
+          while (q < s.length && s.charCodeAt(q) >= 0x30 && s.charCodeAt(q) <= 0x39) q++;
+          const v = q > end + 1 ? Number(s.slice(end + 1, q)) : null;
+          end = q;
+          return v;
+        };
+        if (s[end] === ":") {
+          a = num() ?? -1;
+          if (s[end] === ":") b = num() ?? -1;
+        }
+        const r = fn(a, b);
+        if (r !== null) s = s.slice(0, at) + r + s.slice(end);
+        from = at + 1;
+      }
+    };
+    const famOfNeighbor = (nb: Neighbor) => m.nbhd?.families.find((f) => f.memberGuids.some((g) => (g | 0) === (nb.guid | 0))) ?? null;
+    const objName = (oid: number): string | null => this.obj_(oid)?.obj.selector.getCatalogName() ?? null;
+    each("$FamilyAssets", (a) => {
+      const v = local(a);
+      const fam = v === null ? null : m.nbhd?.families.find((f) => f.chunkId === v);
+      return fam ? String(fam.budget + fam.netWorth) : null;
+    });
+    each("$Family", () => {
+      const nb = m.findNeighborByID(id);
+      const fam = nb ? famOfNeighbor(nb) : null;
+      if (!fam) return null;
+      if (vars) vars[1] = fam.chunkId;
+      return fam.name;
+    });
+    each("$Me", () => this.obj.selector.getCatalogName());
+    each("$Object", () => {
+      const o = this.obj_(id);
+      if (!o) return null;
+      if (out) out.selector = o.obj.selector;
+      return o.obj.selector.getCatalogName();
+    });
+    each("$Local", (a) => {
+      const v = local(a);
+      return v === null ? null : String(v);
+    });
+    each("$Attrib", (a) => {
+      const o = this.obj_(id);
+      return o && a >= 0 && a < o.obj.attributes.length ? String(o.obj.attributes[a]) : null;
+    });
+    each("$NameAttrib", (a) => {
+      const o = this.obj_(id);
+      return o && a >= 0 && a < o.obj.attributes.length ? objName(o.obj.attributes[a]!) : null;
+    });
+    each("$NameLocal", (a) => {
+      const v = local(a);
+      return v === null ? null : objName(v);
+    });
+    each("$NeighborLocal", (a) => {
+      const v = local(a);
+      return v === null ? null : this.neighborFullName(v);
+    });
+    each("$Neighbor", () => {
+      const nb = m.findNeighborByID(id);
+      if (!nb) return null;
+      if (vars) vars[0] = id;
+      const st = m.sim.state;
+      const info = st ? [...st.family, ...st.neighbors].find((q) => q.neighborId === id) : undefined;
+      return info?.firstName ?? nb.name;
+    });
+    each("$CatalogLocal", (a) => {
+      const v = local(a);
+      const o = v === null ? null : this.obj_(v);
+      return o ? o.obj.selector.getCatalogDescription() : null;
+    });
+    each("$TimeLocal", (a) => {
+      const v = local(a);
+      return v !== null && v >= 0 && v < 24 ? `${v}:00` : null;
+    });
+    // lbl_105BBA80: $JobOffer (cCareer::GetOfferDialogText), $JobDesc (cJob +0x3b4), $Job (cJob::GetName).
+    const pd = this.person?.personData ?? null;
+    const female = pd ? (pd[PD_GENDER]! & 1) !== 0 : false;
+    const job = (a: number, b: number): { career: SimCareer; level: number } | null => {
+      let careerId = 0;
+      let level = 0;
+      if (a === -1 || b === -1) {
+        if (pd) {
+          careerId = pd[PD_JOB_TYPE]!;
+          level = pd[PD_JOB_LEVEL]!;
+        }
+      } else {
+        const va = local(a);
+        const vb = local(b);
+        if (va === null || vb === null) return null;
+        careerId = va;
+        level = vb;
+      }
+      const career = m.careers.find((c) => c.id === careerId);
+      return career && level >= 0 && level < career.jobs.length ? { career, level } : null;
+    };
+    each("$JobOffer", (a, b) => {
+      const j = job(a, b);
+      return j ? offerDialogText(j.career, female) : null;
+    });
+    each("$JobDesc", (a, b) => {
+      const j = job(a, b);
+      return j ? j.career.jobs[j.level]!.description : null;
+    });
+    each("$Job", (a, b) => {
+      const j = job(a, b);
+      return j ? simJobName(j.career.jobs[j.level]!, female) : null;
+    });
+    return s;
+  }
+
+  /** PersonFinder::GetFullName of the neighbor `neighborId` (null when unknown). */
+  private neighborFullName(neighborId: number): string | null {
+    const nb = this.module.findNeighborByID(neighborId);
+    if (!nb) return null;
+    const st = this.module.sim.state;
+    const info = st ? [...st.family, ...st.neighbors].find((q) => q.neighborId === neighborId) : undefined;
+    return info ? [info.firstName, info.lastName].filter(Boolean).join(" ") || nb.name : nb.name;
   }
 
   /**

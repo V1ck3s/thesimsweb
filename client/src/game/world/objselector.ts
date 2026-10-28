@@ -22,6 +22,9 @@
 import { DrawGroup } from "./drawgroup.js";
 import type { ResFile } from "./iffres.js";
 import { loadSlots, readSlotChunk, type ObjectSlot, type SpriteSlot } from "./slots.js";
+import { loadUIStringSet } from "../sim/behavior.js";
+
+const cp1252 = new TextDecoder("windows-1252");
 
 /** OBJD object types (+0x12, Behavior.iff STR# 246). */
 export const OBJ_TYPE_PERSON = 2;
@@ -174,6 +177,7 @@ export interface SelectorFolder {
 export class ObjSelector {
   private master: ObjSelector | null = null;
   private drawGroups: DrawGroup[] | null = null;
+  private catalogName: string | null = null;
 
   constructor(
     /** +0x80 */
@@ -195,6 +199,41 @@ export class ObjSelector {
     /** [1]: GLOB chunk string (semi-global file name), or "" when the object has none. */
     readonly semiGlobalName: string,
   ) {}
+
+  /**
+   * ObjSelector::GetCatalogName (cached at +0xb8): CatalogResource::Load of
+   * the OBJD's catalog strings id (+0x52), a CATS chunk ("description\0name")
+   * or entry 1 of the CTSS set; "*" + the OBJD label when it is empty.
+   */
+  getCatalogName(): string {
+    if (this.catalogName === null) {
+      const id = this.objd.i16(0x52);
+      let name = "";
+      const cats = this.res.get("CATS", id);
+      if (cats) {
+        const z = cats.indexOf(0);
+        if (z >= 0) {
+          const z2 = cats.indexOf(0, z + 1);
+          name = cp1252.decode(cats.subarray(z + 1, z2 < 0 ? cats.length : z2));
+        }
+      } else {
+        name = loadUIStringSet(this.res, id, "CTSS")?.[0] ?? "";
+      }
+      this.catalogName = name || `*${this.name}`;
+    }
+    return this.catalogName;
+  }
+
+  /** ObjSelector::GetCatalogDescription: the other catalog string (CATS first part, CTSS entry 2). */
+  getCatalogDescription(): string {
+    const id = this.objd.i16(0x52);
+    const cats = this.res.get("CATS", id);
+    if (cats) {
+      const z = cats.indexOf(0);
+      return cp1252.decode(cats.subarray(0, z < 0 ? cats.length : z));
+    }
+    return loadUIStringSet(this.res, id, "CTSS")?.[1] ?? "";
+  }
 
   /** ObjSelector::GetGUID */
   get guid(): number {

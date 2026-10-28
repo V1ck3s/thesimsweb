@@ -158,8 +158,33 @@ export function loadStringSet(res: ResFile, id: number, type = "STR#"): string[]
   return s;
 }
 
-/** The STR# layout (also used by TTAs). */
-export function parseStringSet(b: Uint8Array): string[] {
+/** Language code of the UI (StringSetBase +0x59: cTSLanguageManager's current language). */
+const UI_LANGUAGE = 3; // French (res/uires.ts LANG_FRENCH)
+
+/**
+ * StringSetBase::GetString with the default language (+0x59): the entries
+ * of the UI language in a format -3 set, those of the first language when
+ * the set has none. Text shown to the player (dialogs, catalog names) goes
+ * through this; tree and animation names keep loadStringSet.
+ */
+export function loadUIStringSet(res: ResFile, id: number, type = "STR#"): string[] | null {
+  let m = strCache.get(res);
+  if (!m) {
+    m = new Map();
+    strCache.set(res, m);
+  }
+  const key = `ui:${type}:${id}`;
+  let s = m.get(key);
+  if (s === undefined) {
+    const b = res.get(type, id);
+    s = b ? parseStringSet(b, UI_LANGUAGE) : null;
+    m.set(key, s);
+  }
+  return s;
+}
+
+/** The STR# layout (also used by TTAs); `language` picks a language of a format -3 set (default: the first one). */
+export function parseStringSet(b: Uint8Array, language = -1): string[] {
   if (b.length < 4) return [];
   const v = new DataView(b.buffer, b.byteOffset, b.byteLength);
   const format = v.getInt16(0, true);
@@ -174,6 +199,21 @@ export function parseStringSet(b: Uint8Array): string[] {
   };
   const out: string[] = [];
   let lang = -1;
+  if (format === -3 && language !== -1) {
+    // Keep the wanted language when the set has it.
+    let q = p;
+    for (let i = 0; i < n && q < b.length; i++) {
+      if (b[q] === language) {
+        lang = language;
+        break;
+      }
+      q++;
+      for (let k = 0; k < 2; k++) {
+        const end = b.indexOf(0, q);
+        q = end < 0 ? b.length : end + 1;
+      }
+    }
+  }
   for (let i = 0; i < n && p < b.length; i++) {
     if (format === 0) {
       const len = b[p]!;

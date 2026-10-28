@@ -51,6 +51,68 @@ function wrapPm4(t: number): number {
   return v;
 }
 
+/**
+ * SAnimator::FindTagTime(skill, key, value, &bone): the time of the first
+ * time prop (motions in order, each one's props from the last) where
+ * `key` = `value`, and the motion's bone; -1 when none.
+ */
+function findTagTime(skill: Skill, key: string, value: string): { time: number; bone: string } {
+  for (const m of skill.motions) {
+    if (!m.timeProps) continue;
+    const entries = [...m.timeProps.entries()];
+    for (let i = entries.length - 1; i >= 0; i--) {
+      const [time, props] = entries[i]!;
+      if (props.get(key) === value) return { time, bone: m.boneName };
+    }
+  }
+  return { time: -1, bone: "" };
+}
+
+/** StartVitaBoy's walk loop measures (SAnimator +0x168..+0x174). */
+interface WalkMeasures {
+  phase1: number;
+  phase2: number;
+  stop1: number;
+  stop2: number;
+}
+
+const walkLoopMeasures = new Map<string, WalkMeasures>();
+
+/**
+ * SAnimator::StartVitaBoy's walk loop measures: the phases of the
+ * "anchor" = 1 / 2 tags (the feet), then the loop posed at each phase
+ * (weight 1, on a copy of the skeleton): the stop distance there is
+ * 16/3 x (the anchored foot's z - the other foot's z).
+ */
+function measureWalkLoop(skill: Skill, skeleton: Skeleton): WalkMeasures {
+  const key = `${skill.name}|${skeleton.name}`;
+  let m = walkLoopMeasures.get(key);
+  if (m) return m;
+  const t1 = findTagTime(skill, "anchor", "1");
+  const t2 = findTagTime(skill, "anchor", "2");
+  const phase1 = t1.time / skill.duration;
+  const phase2 = t2.time / skill.duration;
+  const sk = skeleton.clone();
+  const b1 = sk.findBone(t1.bone);
+  const b2 = sk.findBone(t2.bone);
+  const practice = new Practice(skill, sk, LoopMode.Loop);
+  practice.weight = 1;
+  const pose = (phase: number): [number, number] => {
+    practice.position = phase;
+    practice.apply(0);
+    sk.updateBoneTransforms();
+    return [b1?.worldPos[2] ?? 0, b2?.worldPos[2] ?? 0];
+  };
+  const k = 16 / 3;
+  const [z1b, z2b] = pose(phase2);
+  const stop2 = k * z2b - k * z1b;
+  const [z1a, z2a] = pose(phase1);
+  const stop1 = k * z1a - k * z2a;
+  m = { phase1, phase2, stop1, stop2 };
+  walkLoopMeasures.set(key, m);
+  return m;
+}
+
 /** Skill name -> loaded skill (null: missing), shared by every person. */
 const skills = new Map<string, Skill | null>();
 const pending = new Map<string, Promise<void>>();
@@ -162,6 +224,8 @@ export interface AnimatorHost {
   canPlace(fx: number, fy: number): boolean;
   /** cXObject::SetLocation (vtable +0x90). */
   setLocation(fx: number, fy: number): void;
+  /** HandleVitaBoyAnimEvent's sound props (sim/animsound.ts); `forward`: the practice plays forward. */
+  animSound(key: string, value: string, forward: boolean): void;
 }
 
 /** SAnimator +0x188 animation states. */
@@ -300,7 +364,10 @@ export class PersonAnimator {
           if (this.carry) this.carry = null;
           break;
         case "sound":
-          this.host.record("animSound", value);
+        case "selectedsound":
+        case "deselectedsound":
+        case "footstep":
+          this.host.animSound(key.toLowerCase(), value, t.practice.speed >= 0);
           break;
         default:
           break;
@@ -481,6 +548,17 @@ export class PersonAnimator {
     return f >= 0 ? f * 0.2 + 1.2 : f * 0.4 + 1.2;
   }
 
+  /** SAnimator::StdAnimOffset(i): the ROOT translation at the last frame of a standard skill (zeros when it is not there). */
+  private stdAnimOffset(i: number): [number, number, number] {
+    const n = this.host.stdSkillName(i);
+    const sk = n ? requestSkill(n) : null;
+    const m = sk?.motions.find((x) => x.boneName === "ROOT");
+    const tr = sk?.translations;
+    if (!m || !tr || m.frameCount === 0) return [0, 0, 0];
+    const o = (m.translationOffset + m.frameCount - 1) * 3;
+    return [tr[o]!, tr[o + 1]!, tr[o + 2]!];
+  }
+
   /** StdAnimDist(i) x 16/3: a standard skill's distance in 1/16 tile (0 while it loads). */
   private stdDist(i: number): number {
     const n = this.host.stdSkillName(i);
@@ -589,11 +667,14 @@ export class PersonAnimator {
         return true;
       }
       if (dist < adjMax) {
-        // StandingAdjust: a step in one of 8 directions (the anim's own offset is not subtracted here).
+        // StandingAdjust: a step in one of 8 directions. The target is moved back by the
+        // anim's own offset (StdAnimOffset: its ROOT translation x and y, as both builds
+        // take them), and the anim plays at a weight from the distance (0.5 .. 1 and over).
         const a = Math.atan2(dy, dx);
         const f = a / (2 * Math.PI) + 0.0625;
         const oct = Math.trunc(Math.floor(8 * (f - Math.floor(f))));
         const idx = [15, 13, 11, 12, 14, 16, 18, 17][oct] ?? 15;
+        const [ox, oy] = this.stdAnimOffset(idx);
         this.setDirection(this.tdir);
         this.svx = this.tx;
         this.svy = this.ty;
@@ -601,7 +682,17 @@ export class PersonAnimator {
         this.sx = this.gridX;
         this.sy = this.gridY;
         this.sdir = this.dirF;
+        const c = Math.fround(Math.cos(a));
+        const sn = Math.fround(Math.sin(a));
+        this.tx -= ox * c + oy * sn;
+        this.ty -= ox * sn + oy * c;
+        let w = dist < 0.1 ? 0.5 : dist >= 1 ? 1 : dist / Math.hypot(ox, oy);
+        if (w < 0.5) w = 0.5;
         this.setCurAnim(idx, false);
+        if (this.main) {
+          this.main.rate = this.scale;
+          this.main.practice.weight = w;
+        }
         this.state = AS.standingAdjust;
         return false;
       }
@@ -969,16 +1060,27 @@ export class PersonAnimator {
   /**
    * The walk loop's foot phases (+0x168 / +0x16c: the "anchor" 1 / 2 tags
    * over the duration) and the stop distances at each (+0x170 / +0x174:
-   * the feet's separation). The tags and bones are not read here: the
-   * phases are taken as 0 / 0.5 and both distances as a quarter loop.
+   * how far the anchored foot is ahead of the other one), measured as
+   * SAnimator::StartVitaBoy does once the walk loop and the skeleton are
+   * there (until then: phases 0 / 0.5, a quarter loop each).
    */
-  private readonly anchor1 = 0;
-  private readonly anchor2 = 0.5;
+  private get anchor1(): number {
+    return this.walkMeasures()?.phase1 ?? 0;
+  }
+  private get anchor2(): number {
+    return this.walkMeasures()?.phase2 ?? 0.5;
+  }
   private get stopDistA(): number {
-    return this.halfWalk * 0.5;
+    return this.walkMeasures()?.stop1 ?? this.halfWalk * 0.5;
   }
   private get stopDistB(): number {
-    return this.halfWalk * 0.5;
+    return this.walkMeasures()?.stop2 ?? this.halfWalk * 0.5;
+  }
+
+  private walkMeasures(): WalkMeasures | null {
+    const n = this.host.stdSkillName(STD.walkLoop);
+    const sk = n ? requestSkill(n) : null;
+    return sk && this.skeleton ? measureWalkLoop(sk, this.skeleton) : null;
   }
 
   /** SAnimator::DequeueAnimEvent. */

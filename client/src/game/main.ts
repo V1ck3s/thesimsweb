@@ -20,6 +20,7 @@ import { currentNeighborhoodDir, Neighborhood, storeCurrentNeighborhoodDir } fro
 import { getOptionsMgr } from "./optionsmgr.js";
 import { NBHD_DOWNTOWN, NBHD_END_NOTES, NBHD_MAGICTOWN, NBHD_STUDIOTOWN, NBHD_VACATION, WinNeighborhoodUL } from "./nbhd/winneighborhoodul.js";
 import { applyLoadGameLocation, arrivalFor, type ChangeLotTrigger, type LotArrival, prepareArrival, Transit } from "./nbhd/transit.js";
+import { objectDialogHooks } from "./world/objectdialogshow.js";
 import { currentTaxiDialog } from "./nbhd/winpicturesplashdialog.js";
 import { Town, WinTown } from "./nbhd/wintown.js";
 import { Fonts } from "./res/fonts.js";
@@ -269,6 +270,7 @@ class Game {
         { ctx, nb: () => nb, lotView: () => this.lotView, switchLots: (t) => this.switchLots(t) },
         view.sim,
       );
+      view.sim.module.dialogHooks = objectDialogHooks(ctx, view.sim);
     }
     await applyLoadGameLocation(ctx, view, this.nbhd, house, arrival);
     this.lotAudioOff = installLotAudio(view);

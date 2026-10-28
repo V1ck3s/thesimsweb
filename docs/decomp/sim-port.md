@@ -1,4 +1,4 @@
-# SimAntics VM port (phases 1–4) — handoff
+# SimAntics VM port (phases 1–5) — handoff
 
 Port of the object simulation from the decompiled Mac build (cSimulator,
 TreeSim, TreeStack, StackElem, Behavior, TreeTable, cXObject::Try*,
@@ -395,6 +395,122 @@ vector nothing fills in the Mac build (always false); inventories are not
 written back to the NGBH; an error thrown by HandleError → Cleanup → Init is
 not caught in TickAllObjects (none in the original either).
 
+## Phase 5 — FindPath, walk anchors, footsteps, pie menu, Cleanup
+
+### Routing (`sim/spacepartition.ts`, `sim/routing.ts`)
+
+- `XRoute::FindPath` is ported with its helpers: `RoutingParams`
+  (goals, obstacles, room partition, start, no-goal point, limit / max size
+  0x40 / 0x80, default weight 3 outdoors when not running, smoothing),
+  `PenaltyRect` {l, t, r, b, w} (`BLOCKED` = 0x7fffffff), `SpacePartition`
+  (Init, GetNode, GetIntersectingPartitionRect, ExpandRect,
+  BuildSpatialSuccessorList, Count / GetNthSuccessor, MeasureDistance
+  `(1 + dist) * ((w1 + w2 + 2) >> 1)`, EstimateDistanceToGoal,
+  FindInterfaceRect / Point) and `Path` (InitPath, InitAST with node 0 start,
+  node 1 goal, an A / B node pair per goal; FindSmallestOpenNode, OpenANode,
+  DoOneSmooth with step `max(1, 100 / (pass + 1)^2)`, Run(budget) with
+  budget `min(1000, goals * area + 50)`; big uncluttered rooms — area > 256,
+  or density <= 0.2 and area > 99, or a ghost — are searched unlimited, then
+  limited to 128).
+- `BuildRoomPartition`: the room frame, walls between room tiles (styles 3,
+  5, 6, 0xf, 0x17 passable), diagonal wall points, non-room tiles merged,
+  inflated by 7; the residential outdoor "path" pass (floors weight 0, the
+  off-lot flag 0x20 weight 10).
+- Obstacles include the door wall-block strips (weight 10000); obstacles
+  overlapping the person's own rect are skipped as in the original.
+- The old 4-unit-grid A* is gone.
+- Person width (lbl_105BA224) = 6: `placement.ts` ComputeRect now gives a
+  person a 6-wide rect (0 for a ghost, pd[84] / pd[68] bit 0; mask minus
+  pd[73] on even directions) instead of the OBJD 16. This was the cause of
+  sims stuck in doors (error 7). TestIntersection: a person with pd[68] bit 0
+  intersects nothing.
+- `shouldIgnore` uses `placementContainer` (GetPlacementSpec: walk up while
+  slotHierNumber == 0), so objects stacked on a tile (plant on a stand) are
+  not taken as contained (fixed error 11 "blocked by plant").
+- Results (2–3 min each, House01 / 05 / 07): FindPath ~0.3–0.4 ms average,
+  ~6 ms max; no error 7 / 11, no tree errors. Remaining failures are game
+  results: r13 (person in the way at an easel / bookshelf), and on House01
+  ConstructGoals r8 (a computer goal blocked by a dining chair).
+
+### Walk animation (`sim/personanim.ts`)
+
+- `FindTagTime("anchor", "1" / "2")`: the walk loop's foot phases (t / dur)
+  and stop distances `16/3 * (anchored foot z − other foot z)`, measured by
+  practicing a clone skeleton at both phases (cached per skill + skeleton).
+  Adult: phases 0.79 / 0.289, stops 10.63 / 10.77; child 0.778 / 0.222,
+  5.90 / 6.77. They feed anchor1/2 (+0x168 / +0x16c) and stopDistA/B
+  (+0x170 / +0x174).
+- `StdAnimOffset` (ROOT translation of the last frame) for the standing
+  adjust: `tx -= x cos a + y sin a; ty -= x sin a + y cos a` — both builds
+  use x and y (y ≈ 3.02, the height): kept as is. Weight 0.5 below 0.1, 1 at
+  ≥ 1, `d / |off.xy|` between, at least 0.5.
+
+### Animation sounds (`sim/animsound.ts`)
+
+- `SAnimator::HandleVitaBoyAnimEvent`: "sound" (on the person; out of the
+  world pets only, as a UI sound), "selectedsound" / "deselectedsound",
+  "footstep" n (1, 2 forward; −1, −2 backward) → `soundPlayer.playBySource`
+  with the person's id.
+- `GetFootSound`: plants / trash / ashes / roaches / puddles by GUID, pool
+  deck, pool, floor 0xff, the floor pattern's sound (FloorGraphicsMgr::
+  GetFloorSound through `animSoundEnv.floorSound`, set by the lot view);
+  barefoot outfits 1, 2, 5, 6, 14; snow on houses 40..42, soft on 99; no step
+  through a portal (pd 84 / 68 bit 0) or with pd[74] bit 3.
+
+### Pie menu and selection (`world/winlotview.ts`, `ui/piemenu.ts`)
+
+- Space in a pie (cWinPeople::TSOnCommand 0x20):
+  `ObjectModule::AdvanceSelectedPerson` (next family member present on the
+  lot, wrapping; CPState::SetSelectedPerson stands for the hilite bit,
+  OnSelectionChange and GlobalDispatch 0xe4), then the popped pie (sub pie
+  first) ends with −2; DoMenu returns true and liveClick makes the menu again
+  for the new person on the same object (cObjPickerTool::TryClick's loop).
+- Outside a pie (cObjPickerTool::OnChar, Live mode): Space advances and
+  centers the view on the selected person (CenterHouseViewOnMe; here a jump,
+  not smooth), N advances only.
+- Dynamic menu items: `ObjTestSim::AppendInteractionsForMenu` /
+  `IsMenuInProgress` / `MakeNewMenuItem` through `SimModule.menuInProgress`
+  and `PersonSim.menuItemsFor` (returns `MenuItem` {entry, name, args}).
+  Primitive 50 (`cXObject::TryMakeActionString`) in menu mode adds an item
+  named by the private STR# entry after `ParseUIString` ("$Family",
+  "$Neighbor", "$Local:n"; others left as is); its stack vars become the
+  interaction's args (`makeInteraction(…, item)`). An entry whose check tree
+  made items is not added itself. The phone's plugins now show as
+  "Call Cab.../Go Downtown - $50" etc. instead of "Call Plugin". Outside a
+  menu, primitive 50 is still recorded only (renaming the current action
+  depends on lbl_105BA314, unknown).
+- `cObjPickerTool::MenuItemChanged`: in a sub pie, an item with stack var
+  1 set shows the neighbor (stack var 0)'s picture untitled
+  (PersonFinder::GetPictureBuffer → `cActionIcon::MakeActionBitmap`:
+  cell (0, 1) of BuildPersonBtn under kIconFrame's first half, 45 × 45);
+  the last picture stays when a neighbor has none; no item brings back the
+  backdrop and the title. `TSPieMenu.setBackgroundAndTitle` relays the
+  window around the same center. Only the family and the people it knows
+  have faces loaded.
+
+### cXPerson::Cleanup (`sim/person.ts`)
+
+- `PersonSim.cleanupFor(obj)` / `cleanup()` (Cleanup(0)): reentrancy guard
+  (+0x114 0x800); when `obj` is null, an ObjectRecord or the action object,
+  every record's frames are popped (StackJustPopped) and its object cleaned
+  up (CleanupPeople + Cleanup(0)); the animations stop, routes cleared,
+  sprite slots off, an out-of-lot person placed at the lot center or a good
+  location near it, Main reset, entry point 3 run, pd 0 / 40 / 59 and object
+  data 9 / 34 cleared, current action emptied. Then the queue (all, or the
+  interactions with `obj`) is dropped, each running its object's entry
+  point 4; last / current actions with `obj` forgotten; routes asking `obj`
+  to move forget it.
+- Not kept: the 0x1000 flags of +0x114, the interactions' +0xc object
+  (+0xa14), the container branch of PlacementSpec.
+
+### Deviations
+
+- The room partition is cached by an FNV hash of the rooms / walls / floors
+  arrays; object density is computed live.
+- The person's position is still put in front of the path when the start
+  differs from it.
+- Anchors are measured on the skeleton at direction 0.
+
 ## Open questions / deviations
 
 - `Reset` keeps containerId/slotNumber instead of recomputing placement.
@@ -406,9 +522,8 @@ not caught in TickAllObjects (none in the original either).
 
 ## Next steps
 
-1. XRoute::FindPath as the original (SpacePartition / Path) for exact paths;
-   the walk loop's foot phases and stop distances (StartVitaBoy anchors),
-   StdAnimOffset for StandingAdjust.
-2. cXPerson::Cleanup(obj); arrival by car on move-in.
-3. Pie menu: Space (AdvanceSelectedPerson), neighbor pictures in sub pies.
+1. ParseUIString's other tokens ($FamilyAssets, $Object, $NameLocal,
+   $TimeLocal, ...) and the non-menu primitive 50 (rename the current action).
+2. ConstructGoals r8 on House01 (chair-direction goal blocked by a chair).
+3. Arrival by car on move-in; smooth CenterHouseViewOnMe.
 4. Tutorial (10), Set To Next 11 on Windows, inventories saved to NGBH.

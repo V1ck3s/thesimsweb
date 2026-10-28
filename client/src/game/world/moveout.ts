@@ -130,7 +130,7 @@ async function loadHouseHeadless(path: string): Promise<HeadlessLot> {
   const { module, folder } = await loadLotModule(house, fixed);
   let sim: Simulator | null = null;
   const placement = new Placement(module, fixed, { onKill: (obj) => sim?.module.removeObject(obj) });
-  sim = await Simulator.create(house, module.objects.values());
+  sim = await Simulator.create(house, module.objects.values(), folder.packs);
   const lot = { house, fixed, floors, walls, module, folder, placement };
   sim.module.worldHooks = headlessWorldHooks(lot);
   return { ...lot, sim };

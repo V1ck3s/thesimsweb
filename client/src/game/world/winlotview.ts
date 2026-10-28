@@ -40,9 +40,11 @@ import { FixedWorld, RotatableWorld } from "./world.js";
 import type { XObject } from "./objects.js";
 import type { ObjSelector } from "./objselector.js";
 import { Simulator } from "../sim/simulator.js";
+import { animSoundEnv } from "../sim/animsound.js";
 import type { WorldHooks } from "../sim/simmodule.js";
 import { SimObject } from "../sim/xobject.js";
-import type { PersonSim } from "../sim/person.js";
+import type { MenuItem, PersonSim } from "../sim/person.js";
+import { buildPersonBtn } from "../cpanel/live/peoplebuttons.js";
 import { CMD_PIE_CANCEL, CMD_PIE_CHAR, CMD_PIE_HILITE, CMD_PIE_PICK, TSPieMenu } from "../ui/piemenu.js";
 import {
   getPopupHeadLocation,
@@ -56,7 +58,6 @@ import {
   stopPopupHeadSubmenu,
 } from "../sims/popuphead.js";
 import { winMgr } from "../ui/winmgr.js";
-import type { TreeTableEntry } from "../sim/treetable.js";
 import { pointToObjectId, PickMode } from "./tools/picking.js";
 import { ActionIcons } from "./actionicons.js";
 import { killObject, makeNewOutOfWorldObject } from "./tools/objectfactory.js";
@@ -552,6 +553,7 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
       onKill: (obj) => {
         this.sim?.module.removeObject(obj);
       },
+      personData: (obj) => this.sim?.module.persons.find((p) => p.obj === obj)?.pd ?? null,
     };
   }
 
@@ -746,13 +748,67 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
     const id = pointToObjectId(v, p, (r) => lot.renderer(r), x, y, v.level || 1, PickMode.Any, people ? (o) => people.screenRect(o, v) : null);
     const target = id ? sim.module.getObject(id) : null;
     if (!target) return;
-    const entries = person.menuFor(target);
-    if (!entries.length) return;
-    await this.doMenu(person, entries, this.area.left + x, this.area.top + y, (e) => person.addAction(person.makeInteraction(target, e, 50)));
+    // DoMenu ends with -2 when Space advanced the selection: the menu is
+    // made again for the newly selected person on the same object.
+    for (let who: PersonSim | null = person; who; who = this.selectedPerson()) {
+      const p = who;
+      const entries = p.menuItemsFor(target);
+      if (!entries.length) return;
+      if (!(await this.doMenu(p, entries, this.area.left + x, this.area.top + y, (e) => p.addAction(p.makeInteraction(target, e.entry, 50, e))))) return;
+    }
+  }
+
+  /**
+   * ObjectModule::AdvanceSelectedPerson: select the family member after the
+   * selected one (wrapping) who is on the lot (CPState::SetSelectedPerson
+   * stands for the hilite bit, OnSelectionChange and GlobalDispatch 0xe4).
+   */
+  advanceSelectedPerson(): boolean {
+    const st = this.ctx.state;
+    const sim = this.sim;
+    if (!sim) return false;
+    const n = st.family.length;
+    const cur = st.selectedIndex();
+    for (let i = 1; i <= n; i++) {
+      const k = (cur + i) % n;
+      const g = st.family[k]?.guid;
+      if (g === undefined) continue;
+      if (!sim.module.persons.some((q) => (q.obj.selector.guid | 0) === (g | 0))) continue;
+      if (k === cur) return false;
+      st.setSelectedPerson(k);
+      return true;
+    }
+    return false;
   }
 
   /** The Live mode sub pie (cWinPeople::GetPeopleSubPie), made on first use. */
   private subPie: TSPieMenu | null = null;
+  /** The sub pie's own backdrop (cWinPeople::GetPieBackBuffer). */
+  private subPieBkg: ImageBitmap | null = null;
+  /** cObjPickerTool +0xa0: the last neighbor picture made for the sub pie. */
+  private neighborPic: ImageBitmap | null = null;
+  /** kPeopleTemplate and kIconFrame, for the neighbor pictures. */
+  private picParts: { template: ImageBitmap; frame: ImageBitmap } | null = null;
+
+  /**
+   * PersonFinder::GetPictureBuffer of the neighbor `neighborId` (its
+   * BuildPersonBtn image) through cActionIcon::MakeActionBitmap(buf, true):
+   * a 45 x 45 picture, cell (0, 1) of the 4 x 3 button image (the happy
+   * face) under the first half of kIconFrame. Null when the neighbor's face
+   * is not known (only the family and the people it knows are loaded).
+   */
+  private neighborPicture(neighborId: number): ImageBitmap | null {
+    const st = this.ctx.state;
+    const info = [...st.family, ...st.neighbors].find((q) => q.neighborId === neighborId);
+    const parts = this.picParts;
+    if (!info || !parts) return null;
+    const btn = buildPersonBtn(info.face, parts.template);
+    const c = new OffscreenCanvas(45, 45);
+    const g = c.getContext("2d")!;
+    g.drawImage(btn, 0, 45, 45, 45, 0, 0, 45, 45);
+    g.drawImage(parts.frame, 0, 0, 45, 45, 0, 0, 45, 45);
+    return c.transferToImageBitmap();
+  }
 
   /**
    * cObjPickerTool::DoMenu. Names "a/b" go in a sub menu "a" (made at the
@@ -769,10 +825,13 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
    * (StartPopupHeadSubmenu). Letting go of the sub pie within its inactive
    * radius comes back to the people pie at the click, elsewhere cancels.
    * Interactions are queued as they are picked (MenuItemSelected through
-   * `onSelected`), so Shift keeps the sub pie up for more.
+   * `onSelected`), so Shift keeps the sub pie up for more. Space
+   * (cWinPeople::TSOnCommand 0x20) advances the selected person and ends
+   * the popped pie with -2: DoMenu then returns true so that the caller
+   * makes the menu again for the new person.
    */
-  private async doMenu(person: PersonSim, entries: TreeTableEntry[], x: number, y: number, onSelected: (e: TreeTableEntry) => boolean): Promise<void> {
-    type MenuEntry = { text: string; entry: TreeTableEntry | null; sub: MenuEntry[] };
+  private async doMenu(person: PersonSim, entries: MenuItem[], x: number, y: number, onSelected: (e: MenuItem) => boolean): Promise<boolean> {
+    type MenuEntry = { text: string; entry: MenuItem | null; sub: MenuEntry[] };
     const top: MenuEntry[] = [];
     for (const e of entries) {
       const slash = e.name.indexOf("/");
@@ -790,6 +849,11 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
     }
     const pie = (this.pie ??= await TSPieMenu.forLiveMode(this.ctx));
     const sub = (this.subPie ??= await TSPieMenu.forLiveMode(this.ctx));
+    this.subPieBkg ??= sub.background;
+    if (!this.picParts) {
+      const [template, frame] = await Promise.all([this.ctx.res.image("kPeopleTemplate"), this.ctx.res.image("kIconFrame")]);
+      this.picParts = { template, frame };
+    }
     const downX = x;
     const downY = y;
     /** +0x5c / +0x60: in the sub menu `subIndex` of `top`; +0x64: first entry shown. */
@@ -799,6 +863,8 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
     let list = top;
     /** +0x90: the people pie went up (it stays in the main window). */
     let keepPie = false;
+    /** Space advanced the selected person (the -2 end). */
+    let advanced = false;
     const shown = (): MenuEntry[] => (inSub ? top[subIndex]!.sub : top);
     // cWinPeople::TSOnCommand for both pies: picks (MenuItemSelected),
     // highlights (MenuItemChanged) and the Tab / Escape characters.
@@ -823,7 +889,22 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
         return false;
       }
       if (cmd === CMD_PIE_HILITE) {
-        // cObjPickerTool::MenuItemChanged: the attitude (score unused by SetAttitude)
+        // cObjPickerTool::MenuItemChanged: in a sub menu, an item made for
+        // a neighbor (stack var 1 set, stack var 0 its id) shows the
+        // neighbor's picture untitled (the last one made stays when this
+        // neighbor has none); no item brings back the backdrop and the
+        // sub menu's title. Then the attitude (score unused by SetAttitude).
+        const it = m.getSelection() >= 0 ? list[m.getSelection() + page] : undefined;
+        if (it?.entry) {
+          const a = it.entry.args;
+          if (inSub && a && a[1] !== 0) {
+            const pic = this.sim?.module.findNeighborByID(a[0]!) ? this.neighborPicture(a[0]!) : null;
+            if (pic) this.neighborPic = pic;
+            if (this.neighborPic) m.setBackgroundAndTitle(this.neighborPic, "");
+          }
+        } else if (inSub) {
+          m.setBackgroundAndTitle(this.subPieBkg, top[subIndex]?.text ?? "");
+        }
         setPopupHeadAttitude(0, winMgr.isKeyDown("Shift"), winMgr.isKeyDown("Control"));
         return true;
       }
@@ -834,7 +915,10 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
       if (cmd === CMD_PIE_CHAR) {
         if (arg === 9) m.endPopup(-3);
         else if (arg === 0x1b) m.endPopup(-1);
-        else return false;
+        else if (arg === 0x20) {
+          advanced = this.advanceSelectedPerson();
+          (sub.getPoppedUp() ? sub : pie).endPopup(-2);
+        } else return false;
         return true;
       }
       return false;
@@ -880,7 +964,7 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
       if (sel === -2) {
         if (inSub) stopPopupHeadSubmenu();
         cleanup();
-        return;
+        return advanced;
       }
       if (sel === -1) {
         // the sub pie let go near its center: back to the people pie
@@ -892,16 +976,17 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
           continue;
         }
         cleanup();
-        return;
+        return false;
       }
       const it = list[sel + page];
       if (!it || it.entry) {
         if (it && inSub) stopPopupHeadSubmenu();
         cleanup();
-        return;
+        return false;
       }
       subIndex = sel + page;
       inSub = true;
+      sub.background = this.subPieBkg;
       if (m.getSelection() >= 0) sub.title = m.getItemText(m.getSelection());
       startPopupHeadSubmenu(sub);
       for (let i = 0; i < pie.getItemCount(); i++) pie.enableItem(i, false);
@@ -961,7 +1046,7 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
    */
   private async initSimulator(house: ResFile, lot: LotObjects, fixed?: FixedWorld): Promise<void> {
     try {
-      const sim = await Simulator.create(house, lot.objects.values() as Iterable<XObject>);
+      const sim = await Simulator.create(house, lot.objects.values() as Iterable<XObject>, lot.folder.packs);
       // The simulation works on the viewer's fixed world (the router reads its rooms, walls and tile objects).
       if (fixed) sim.world = fixed;
       sim.state = this.ctx.state;
@@ -974,6 +1059,7 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
       };
       this.sim = sim;
       sim.module.worldHooks = this.createObjectHooks();
+      animSoundEnv.floorSound = (pattern) => this.viewer?.floors.getFloorSound(pattern) ?? 2;
       // objects the behaviors create (the original folder has them all)
       await Promise.all([...sim.module.createdObjectGUIDs()].map((g) => lot.folder.getSelectorByGUID(g >>> 0).catch(() => null)));
       // The people's VitaBoys follow the simulation's animators.
@@ -1098,6 +1184,14 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
     const v = this.viewer;
     if (!v) return false;
     if (this.activeTools()?.keyDown(key)) return true;
+    // cObjPickerTool::OnChar (Live mode): Space advances the selected person
+    // and centers the view on them (CenterHouseViewOnMe), N only advances.
+    if (this.sim && this.ctx.state.getMode() === Mode.Live && (key === " " || key === "n" || key === "N")) {
+      this.advanceSelectedPerson();
+      // (CenterHouseViewOnMe(person, 1) scrolls smoothly; this one jumps)
+      if (key === " " && this.selectedPerson()) this.centerOnPerson(this.ctx.state.personGetSelected()?.guid);
+      return true;
+    }
     const tw = 16 << v.scale;
     switch (key) {
       case "ArrowLeft":

@@ -14,7 +14,7 @@
 
 import { ReconBuffer } from "../world/reconbuffer.js";
 import type { ResFile } from "../world/iffres.js";
-import { loadStringSet } from "./behavior.js";
+import { loadUIStringSet } from "./behavior.js";
 
 export interface TreeTableMotive {
   /** +0 */
@@ -85,7 +85,8 @@ export class TreeTable {
       t.entries.push(e);
     }
     if (t.version >= 8) {
-      const names = loadStringSet(res, id, "TTAs") ?? [];
+      // The menu strings are shown: the UI language (StringSetBase default language).
+      const names = loadUIStringSet(res, id, "TTAs") ?? [];
       for (const e of t.entries) e.name = names[e.stringIndex] ?? "";
     }
     return t;

@@ -269,12 +269,30 @@ export class Transit implements TransitHooks {
   }
 }
 
-/** DoSimsModalDialog: the simulation does not run while a modal dialog is up. */
-function holdSimulator(sim: Simulator): () => void {
-  const simulate = sim.simulate;
-  sim.simulate = (): number => 0;
+/** Modal dialogs holding each simulator, and its own simulate method. */
+const holds = new WeakMap<Simulator, { count: number; simulate: Simulator["simulate"] }>();
+
+/**
+ * DoSimsModalDialog: the simulation does not run while a modal dialog is up.
+ * Holds nest (several dialogs queued in one tick): the simulation resumes
+ * when the last one is released.
+ */
+export function holdSimulator(sim: Simulator): () => void {
+  let h = holds.get(sim);
+  if (!h) {
+    h = { count: 0, simulate: sim.simulate };
+    holds.set(sim, h);
+    sim.simulate = (): number => 0;
+  }
+  h.count++;
+  let released = false;
   return () => {
-    sim.simulate = simulate;
+    if (released) return;
+    released = true;
+    const cur = holds.get(sim);
+    if (!cur || --cur.count > 0) return;
+    holds.delete(sim);
+    sim.simulate = cur.simulate;
     // No catching up on the time the dialog was up.
     sim.setSpeed(sim.globals[G.speed]!);
   };

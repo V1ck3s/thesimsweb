@@ -18,7 +18,8 @@
  *    letter selects the first row starting with it or the closest before
  *    (TSOnCharacter);
  *  - selecting notifies the parent with command 0x15 (the row index is
- *    `getSelection()`).
+ *    `getSelection()`); a double click on a row (the row button's command
+ *    0x1a) sends command 9 (TSOnCommand).
  * The list draws into a private buffer in the original: rows are clipped to it.
  */
 
@@ -34,6 +35,10 @@ import { Gfx, TSWin } from "./tswin.js";
 
 /** Command sent to the parent when the selection changes. */
 export const CMD_LIST_SELECT = 0x15;
+/** Command sent to the parent when a row is double-clicked. */
+export const CMD_LIST_DOUBLE_CLICK = 9;
+/** GetDoubleClickTime's default. */
+const DOUBLE_CLICK_MS = 500;
 
 /** cTSWinTextList::ScrollTo constants (lbl_105BD110). */
 const SPEED_SPAN = 56;
@@ -81,6 +86,8 @@ export class TSWinTextList extends TSWin {
   private rampTo = 0;
   private rampStart = 0;
   private rampEnd = 0;
+  /** Last row press (index, time) for the double click. */
+  private lastPress = { index: -1, time: 0 };
 
   constructor(private readonly ctx: GameContext) {
     super();
@@ -284,6 +291,10 @@ export class TSWinTextList extends TSWin {
         this.items[i]!.setState(1);
       }
       this.notifySelect();
+      const now = performance.now();
+      const double = this.lastPress.index === i && now - this.lastPress.time < DOUBLE_CLICK_MS;
+      this.lastPress = { index: double ? -1 : i, time: now };
+      if (double) this.parent?.tsOnCommand(CMD_LIST_DOUBLE_CLICK, this);
       return true;
     }
     return super.tsOnCommand(cmd, source);

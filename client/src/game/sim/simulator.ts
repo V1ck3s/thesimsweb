@@ -54,7 +54,15 @@ export const G = {
   daysRunning: 28,
   daysInMonth: 29,
   freeFunds: 32,
+  machineLevel: 33,
 } as const;
+
+/**
+ * Globs::Globs's machine level (app +0x6a): 0 below 129 MB of RAM or
+ * 600 MHz, 1 below 193 MB or 1000 MHz, else 2. Any machine running the
+ * browser game is above both.
+ */
+const MACHINE_LEVEL = 2;
 
 /** SetSpeed constants (lbl_1059A758): period = 172 - speed / 1000 * 171 ms, rounded. */
 const PERIOD_SLOWEST = 172;
@@ -141,11 +149,19 @@ export class Simulator {
 
   /**
    * Builds the simulator of a loaded lot: cSimulator::DoStream of the house's
-   * SIMI chunk, then ObjectModule::PostLoad's tree part.
+   * SIMI chunk, then ObjectModule::PostLoad's tree part. `gameEdition` is
+   * the installed-pack mask (app +0x66, ObjectFolder.packs).
    */
-  static async create(house: ResFile, objects: Iterable<XObject>): Promise<Simulator> {
+  static async create(house: ResFile, objects: Iterable<XObject>, gameEdition = 0): Promise<Simulator> {
     const sim = new Simulator();
     sim.readSimi(house);
+    // House::LoadFile: the game edition (global 0x14, set by cSimulator::Init
+    // from app +0x66) is kept across the SIMI load, then global 0x21 := the
+    // machine level (app +0x6a) and 0x20 := 0. Expansion objects' Load trees
+    // kill the object when the game edition is 0.
+    sim.globals[G.packs] = gameEdition;
+    sim.globals[G.machineLevel] = MACHINE_LEVEL;
+    sim.globals[G.freeFunds] = 0;
     const placed = [...objects];
     const res = await SimResources.load();
     await res.prepare(placed.map((o) => o.selector));

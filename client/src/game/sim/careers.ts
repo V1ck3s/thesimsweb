@@ -15,6 +15,7 @@
 
 import { ResFile } from "../world/iffres.js";
 import { ReconBuffer } from "../world/reconbuffer.js";
+import { loadUIStringSet } from "./behavior.js";
 
 /** cJob (0x3b8 bytes in the original). */
 export interface CareerJob {
@@ -32,12 +33,19 @@ export interface CareerJob {
   carType: number;
   /** +0x54, +0x284, +0x2d0, +0x31c, +0x368 */
   strings: string[];
+  /** LoadCareers' localized strings: +0x54 / +0xe0 long names (male, female), +0x3b4 description. */
+  name: string;
+  femaleName: string;
+  description: string;
 }
 
 /** cCareer: +0 id, +4 jobs. */
 export interface SimCareer {
   id: number;
   jobs: CareerJob[];
+  /** +0x5c / +0x60: the job offer dialog text (male, female): STR# <id> entries 2 and 3. */
+  offerText: string;
+  femaleOfferText: string;
 }
 
 function readCareer(id: number, payload: Uint8Array): SimCareer {
@@ -54,9 +62,40 @@ function readCareer(id: number, payload: Uint8Array): SimCareer {
     const endHour = buf.recon32();
     const carType = buf.recon32();
     const strings = Array.from({ length: 5 }, () => buf.reconString());
-    jobs.push({ minimumReq, motiveDeltas, salary, startHour, endHour, carType, strings });
+    jobs.push({ minimumReq, motiveDeltas, salary, startHour, endHour, carType, strings, name: strings[0] ?? "", femaleName: "", description: "" });
   }
-  return { id, jobs };
+  return { id, jobs, offerText: "", femaleOfferText: "" };
+}
+
+/**
+ * LoadCareers' string part: STR# <id> of work.iff gives the offer texts
+ * (2, 3) and per job (j < 10) the description (5 + 2j); the long names come
+ * from STR# <id + 1000> entries 4 + 2j / 0x18 + j when that set exists,
+ * from entries 1004 + 2j / 0x400 + j of STR# <id> otherwise.
+ */
+function localize(work: ResFile, career: SimCareer): void {
+  const base = loadUIStringSet(work, career.id);
+  if (!base) return;
+  const long = loadUIStringSet(work, career.id + 1000);
+  const str = (set: string[] | null, n: number): string => (n >= 1 ? set?.[n - 1] : undefined) ?? "";
+  career.offerText = str(base, 2);
+  career.femaleOfferText = str(base, 3);
+  career.jobs.forEach((job, j) => {
+    if (j >= 10) return;
+    job.name = long ? str(long, 4 + 2 * j) : str(base, 1004 + 2 * j);
+    job.femaleName = long ? str(long, 0x18 + j) : str(base, 0x400 + j);
+    job.description = str(base, 5 + 2 * j);
+  });
+}
+
+/** cJob::GetName(female): +0xe0 for a woman when set, +0x54 otherwise. */
+export function simJobName(job: CareerJob, female: boolean): string {
+  return female && job.femaleName ? job.femaleName : job.name;
+}
+
+/** cCareer::GetOfferDialogText(female). */
+export function offerDialogText(career: SimCareer, female: boolean): string {
+  return female && career.femaleOfferText ? career.femaleOfferText : career.offerText;
 }
 
 /** LoadCareers (the CARR part): the careers in index order; none when work.iff is missing. */
@@ -68,9 +107,10 @@ export async function loadSimCareers(): Promise<SimCareer[]> {
     try {
       out.push(readCareer((c.id << 16) >> 16, work.payload(c)));
     } catch {
-      out.push({ id: (c.id << 16) >> 16, jobs: [] });
+      out.push({ id: (c.id << 16) >> 16, jobs: [], offerText: "", femaleOfferText: "" });
     }
   }
+  for (const career of out) localize(work, career);
   return out;
 }
 

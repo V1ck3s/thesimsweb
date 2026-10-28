@@ -68,6 +68,8 @@ const MV_PLAYERS_CAN_MOVE = 0x2;
 const MV_PLAYERS_CAN_DELETE = 0x8;
 /** OBJD +0x12 object type 2 (person). */
 const TYPE_PERSON = 2;
+/** lbl_105BA224: a person's width (1/16 tile) in cXObject::ComputeRect. */
+const PERSON_WIDTH = 6;
 
 /** ObjFnTable entries the placement code runs trees for. */
 export const FN = {
@@ -90,6 +92,8 @@ export interface ObjectBehaviorHooks {
   onExitWorld?(obj: XObject): void;
   /** ObjectModule::KillObject: the object left the module (the simulation drops it too). */
   onKill?(obj: XObject): void;
+  /** The person data (cXPerson +0x58c) of a person object, null for others. */
+  personData?(obj: XObject): Int16Array | null;
 }
 
 /** FTilePt (fixed point, world space). */
@@ -300,15 +304,23 @@ export class Placement {
 
   // --- location ---------------------------------------------------------------------
 
-  /** cXObject::ComputeRect: footprint [maxY, maxX, minY, minX] (+0x100..+0x10c) at `p`. */
+  /**
+   * cXObject::ComputeRect: footprint [maxY, maxX, minY, minX] (+0x100..+0x10c) at `p`.
+   * People are lbl_105BA224 (6) wide, 0 when person data 84 or 68 has bit 0
+   * (routing through a portal); facing an even direction, their route
+   * footprint (person data 73) is taken off the OBJD footprint mask.
+   */
   computeRect(obj: XObject, p: FPt): [number, number, number, number] {
     const objd = obj.selector.objd;
-    const w = objd.i16(0x86) || 0x10;
+    const pd = objd.objectType === TYPE_PERSON ? (this.hooks.personData?.(obj) ?? null) : null;
+    let w = objd.i16(0x86) || 0x10;
+    if (objd.objectType === TYPE_PERSON) w = pd && ((pd[84]! & 1) === 1 || (pd[68]! & 1) === 1) ? 0 : PERSON_WIDTH;
     const half = Math.trunc(w / 2);
     const r: [number, number, number, number] = [p.fy + half, p.fx + half, p.fy - half, p.fx - half];
     const mask = objd.i16(0x9a) & 0xffff;
-    if (mask !== 0) {
-      const n = [mask & 0xf, (mask >> 4) & 0xf, (mask >> 8) & 0xf, (mask >> 12) & 0xf];
+    const fp = pd && (obj.dir & 1) === 0 ? pd[73]! & 0xffff : 0;
+    if (mask !== 0 || fp !== 0) {
+      const n = [(mask & 0xf) - (fp & 0xf), ((mask >> 4) & 0xf) - ((fp >> 4) & 0xf), ((mask >> 8) & 0xf) - ((fp >> 8) & 0xf), ((mask >> 12) & 0xf) - ((fp >> 12) & 0xf)];
       const k = Math.trunc((8 - obj.dir) / 2);
       r[2] += n[k & 3]!;
       r[1] -= n[(k + 1) & 3]!;
@@ -528,10 +540,13 @@ export class Placement {
 
   /** cXObject::TestIntersection: other objects on the 3x3 tiles around, then the walls. */
   private testIntersection(obj: XObject, p: FPt, level: number): boolean {
+    const isPerson = obj.selector.objd.objectType === TYPE_PERSON;
+    // A person whose person data 68 has bit 0 (walking through a portal) intersects nothing.
+    // (The person data 84 case, tested against the running tree's stack object, is not ported.)
+    if (isPerson && ((this.hooks.personData?.(obj)?.[68] ?? 0) & 1) === 1) return true;
     const rect = this.computeRect(obj, p);
     const myFlags = Placement.uod(obj, OD.flags);
     const zero = (myFlags & FL_ZERO_EXTENT) !== 0;
-    const isPerson = obj.selector.objd.objectType === TYPE_PERSON;
     const x0 = tileOf(p.fx);
     const y0 = tileOf(p.fy);
     for (let i = 0; i < 9; i++) {
@@ -545,8 +560,7 @@ export class Placement {
         if (isPerson) {
           rectTest = personMayCollide(otherFlags);
         } else if (other.isPerson) {
-          // cXPerson +0x614 bit 0 (a routing state) is not ported: taken as clear.
-          rectTest = !personMayCollide(myFlags);
+          rectTest = ((this.hooks.personData?.(other)?.[68] ?? 0) & 1) !== 1 && !personMayCollide(myFlags);
         } else {
           const otherZero = (otherFlags & FL_ZERO_EXTENT) !== 0;
           if (!zero && !otherZero) {
