@@ -245,6 +245,12 @@ export interface SaveTypeTable {
   selectors: Map<number, ObjSelector>;
   /** Saved types whose GUID is not installed. */
   missing: Map<number, MissingObject>;
+  /**
+   * Saved type index -> the init / main cumulative tree versions saved with
+   * the type (ObjectSaveTypeTable::DoStream, stream version > 0; null for
+   * version 0 tables, which saved none).
+   */
+  treeVersions: Map<number, { init: number; main: number } | null>;
 }
 
 export class ObjectFolder implements SelectorFolder {
@@ -451,10 +457,11 @@ export class ObjectFolder implements SelectorFolder {
    * objects by running their trees; that needs the SimAntics VM.)
    */
   async prepareForModuleLoad(house: ResFile): Promise<SaveTypeTable> {
-    const table: SaveTypeTable = { selectors: new Map(), missing: new Map() };
+    const table: SaveTypeTable = { selectors: new Map(), missing: new Map(), treeVersions: new Map() };
     const objt = house.get("objt", 0);
     if (!objt) return table;
     const types = readObjectSaveTypeTable(objt, GUIDTranslation.load(house));
+    const versioned = ReconBuffer.fromChunk(objt).version > 0;
     const sels = await Promise.all(types.map((t) => this.getSelectorByGUID(t.guid)));
     types.forEach((t, i) => {
       const sel = sels[i] ?? null;
@@ -463,6 +470,7 @@ export class ObjectFolder implements SelectorFolder {
         return;
       }
       table.selectors.set(t.index, sel);
+      table.treeVersions.set(t.index, versioned ? { init: t.initTreeVersion, main: t.mainTreeVersion } : null);
     });
     return table;
   }

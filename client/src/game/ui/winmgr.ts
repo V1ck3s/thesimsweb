@@ -38,6 +38,8 @@ export class WinMgr {
   private mouseX = -1;
   private mouseY = -1;
   private buttons = 0;
+  /** Keys held (GetKeyState). */
+  private readonly keysDown = new Set<string>();
   private focus: TSWin | null = null;
   private readonly modal = new Map<TSWin, (result: number) => void>();
   // Tooltips (cTSWinMgrW95+0x194..0x1c1).
@@ -88,6 +90,11 @@ export class WinMgr {
   /** GetKeyState(VK_LBUTTON / VK_RBUTTON) < 0 */
   isMouseButtonDown(): boolean {
     return this.buttons !== 0;
+  }
+
+  /** GetKeyState(key) < 0, by KeyboardEvent.key ("Shift", "Control", ...). */
+  isKeyDown(key: string): boolean {
+    return this.keysDown.has(key);
   }
 
   setFocus(w: TSWin | null): void {
@@ -403,6 +410,9 @@ export class WinMgr {
       },
       { passive: false },
     );
+    window.addEventListener("keydown", (e) => this.keysDown.add(e.key));
+    window.addEventListener("keyup", (e) => this.keysDown.delete(e.key));
+    window.addEventListener("blur", () => this.keysDown.clear());
     window.addEventListener("keydown", (e) => {
       // Keys go to the capture, else the front-most modal window, else the focus.
       const modal = this.main.children.find((w) => w.isVisible() && w.getFlag(WF_MODAL));

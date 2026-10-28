@@ -25,8 +25,10 @@ import { loadStringSet } from "./behavior.js";
 import { PersonAnimator, requestSkill } from "./personanim.js";
 import type { Skill } from "../sims/skill.js";
 import { PRIM_CONTINUE } from "./treesim.js";
-import { buildGoals, dirOf, findPath, Route, type RouteWorld, type RoutingSlot, FACE_ANY, FACE_TOWARDS } from "./routing.js";
-import { getWall } from "../world/tilewalls.js";
+import { allowDirection, DIR_VEC, dirOf, FACE_ANY, FACE_AWAY, FACE_TOWARDS, newRoutingSlot, ROUTE, RSF, setTileDistances, updateRoomIDs, XRoute, type PathPt, type RoutingSlot } from "./routing.js";
+import { beginningPortalTree, failedPortalTree, findBestPortal, initPortalRoute, isPortalInUse } from "./portals.js";
+import { EP } from "./objfntable.js";
+import { RotatableWorld } from "../world/world.js";
 import type { TreeTableEntry } from "./treetable.js";
 import { fc, type FloatConstants } from "./floatconstants.js";
 
@@ -139,6 +141,12 @@ function attenuation(e: TreeTableEntry, k: AutonomyConstants, visitor: boolean):
 /** MotiveEffects' motives (lbl_105FE558), in curve order. */
 export const SCORE_CURVE_MOTIVES = [5, 6, 7, 8, 9, 3, 13, 14, 15] as const;
 
+/** SkillLookup's string tables (Global.iff STR# 150..160), loaded once. */
+const stdTables = new Map<number, string[] | null>();
+
+/** Routing slots replaced at run time (MoveOutOfWay writes the helper object's slot 0). */
+const slotOverrides = new WeakMap<SimObject, RoutingSlot[]>();
+
 export class PersonSim extends SimObject {
   /** cXPerson +0xa80 */
   readonly motiveIncs: MotiveInc[] = [];
@@ -152,10 +160,15 @@ export class PersonSim extends SimObject {
   lastAction: Interaction | null = null;
   /** cXPerson +0xa8c */
   readonly animator: PersonAnimator;
-  /** The route being walked (cXPerson +0xaa0, the top route). */
-  route: Route | null = null;
   /** Continuous facing for the renderer (45 degree units), null: object data direction. */
-  renderDir: number | null = null;
+  private turnDir: number | null = null;
+  /** Continuous facing for the renderer (45 degree units): the walk engine's direction while following. */
+  get renderDir(): number | null {
+    return this.animator.followDir ?? this.turnDir;
+  }
+  set renderDir(d: number | null) {
+    this.turnDir = d;
+  }
   /** cXPerson +0x814 scored interactions of the last Find Best Interaction (trace). */
   lastScores: Array<{ object: number; name: string; score: number }> = [];
   /**
@@ -192,6 +205,19 @@ export class PersonSim extends SimObject {
         this.pd[i] = v;
       },
       record: (kind, value) => this.module.record(this, kind, value),
+      stdSkillName: (idx) => this.stdSkillName(idx),
+      personData: (i) => this.pd[i]!,
+      objectData: (i) => this.obj.objectData[i]!,
+      setDirection: (d) => {
+        this.obj.objectData[1] = d & 7;
+      },
+      canPlace: (fx, fy) => {
+        const h = this.module.worldHooks;
+        if (!h || h.canPlace(this.obj, { fx, fy }, this.obj.level, null, -1)) return true;
+        this.lastBlock = h.lastError();
+        return false;
+      },
+      setLocation: (fx, fy) => this.setLocation(fx, fy),
     });
   }
 
@@ -266,7 +292,7 @@ export class PersonSim extends SimObject {
     this.queue.length = 0;
     this.currentAction = null;
     this.objectRecords.length = 0;
-    this.route = null;
+    this.routes.length = 0;
     this.module.initPerson(this);
     super.reset(tick);
     if (pd[25] === 0x7ae) pd[25] = 0;
@@ -552,200 +578,770 @@ export class PersonSim extends SimObject {
     return s;
   }
 
-  // --- routing ---------------------------------------------------------------------
-
-  /** What blocks this person on the lot (objects other than `ignore`, walls; doors let through). */
-  private routeWorld(ignore: SimObject | null): RouteWorld | null {
-    const fixed = this.module.sim.world;
-    if (!fixed) return null;
-    const blocked = new Set<number>();
-    const doors = new Set<number>();
-    const n = fixed.size;
-    const ignoreLead = ignore ? (ignore.obj.mtLeadId || ignore.id) : -1;
-    for (const o of this.module.list) {
-      const x = o.obj;
-      if (o === this || x.isPerson || x.hidden !== 0 || x.containerId !== 0) continue;
-      if ((x.mtLeadId || o.id) === ignoreLead) continue;
-      const k = (x.level * n + x.tileY) * n + x.tileX;
-      if (x.kind === "portal") {
-        doors.add(k);
-        continue;
-      }
-      if (x.wallPlacementFlags !== 0) continue;
-      const f = x.flags;
-      if (f & (0x4 | 0x8 | 0x10)) continue;
-      blocked.add(k);
-    }
-    const key = (tx: number, ty: number, level: number): number => (level * n + ty) * n + tx;
-    return {
-      size: n,
-      blocked: (tx, ty, level) => {
-        if (tx < 1 || ty < 1 || tx >= n - 1 || ty >= n - 1) return true;
-        if (blocked.has(key(tx, ty, level))) return true;
-        const segs = fixed.wallStorage(tx, ty, level).segs;
-        return (segs & 0x30) !== 0;
-      },
-      wallBetween: (ax, ay, bx, by, level) => {
-        if (doors.has(key(ax, ay, level)) || doors.has(key(bx, by, level))) return false;
-        if (bx === ax - 1) return (getWall(fixed, ax, ay, level).segs & 0x01) !== 0 || (getWall(fixed, bx, by, level).segs & 0x04) !== 0;
-        if (bx === ax + 1) return (getWall(fixed, bx, by, level).segs & 0x01) !== 0 || (getWall(fixed, ax, ay, level).segs & 0x04) !== 0;
-        if (by === ay - 1) return (getWall(fixed, ax, ay, level).segs & 0x02) !== 0 || (getWall(fixed, bx, by, level).segs & 0x08) !== 0;
-        if (by === ay + 1) return (getWall(fixed, bx, by, level).segs & 0x02) !== 0 || (getWall(fixed, ax, ay, level).segs & 0x08) !== 0;
-        return false;
-      },
+  /**
+   * GetStdSkill(cXPerson, StdAnimIdx)'s name lookup (SkillLookup tables,
+   * Global.iff STR# 150..160, entry idx + 1): swimming people (person data
+   * 64) use the pool tables (158 / 159 by gender for adults, 160 for
+   * children); others the child (151) or male / female (152 / 153) table,
+   * then the adult one (150). (The OBJD custom walk table is not ported.)
+   */
+  stdSkillName(idx: number): string | null {
+    const g = this.module.res.glob;
+    if (!g) return null;
+    const pd = this.pd;
+    const get = (id: number): string | null => {
+      const t = stdTables.get(id) ?? loadStringSet(g, id);
+      stdTables.set(id, t);
+      const v = t?.[idx];
+      return v ? v.toLowerCase() : null;
     };
-  }
-
-  /** XRoute + cXPerson::InitRoute (simplified, see routing.ts): null when no goal is reachable. */
-  protected startRoute(target: SimObject, slot: RoutingSlot): Route | null {
-    const world = this.routeWorld(target);
-    if (!world) return null;
-    const t = target.obj;
-    const goals = buildGoals(slot, t.fx, t.fy, t.dir);
-    const me = this.obj;
-    const found = findPath(world, me.tileX, me.tileY, me.level, goals);
-    if (this.traceOn) {
-      this.autonomyLog.push(`  route t${this.module.sim.tickCount} from ${me.tileX},${me.tileY} (${me.fx.toFixed(0)},${me.fy.toFixed(0)}) to ${target.obj.selector.name} ${t.tileX},${t.tileY}: ${goals.length} goals, ${found ? `path ${found.path.length} -> ${found.goal.tx},${found.goal.ty}` : "none"} speed ${this.walkSpeed().toFixed(2)}`);
+    const age = pd[PDX.personAge]!;
+    const gender = pd[PDX.gender]! & 1;
+    let name: string | null = null;
+    if (pd[64] !== 0) name = get(age >= 0x12 ? 158 + gender : 160);
+    if (!name) {
+      name = age < 0x12 ? get(151) : get(152 + gender);
+      if (!name) name = get(150);
     }
-    if (!found) return null;
-    return new Route(found.goal, [me.fx, me.fy], found.path);
+    return name;
   }
 
   /**
    * cXObject::SetLocation for a walking person: what it carries follows,
-   * and (world hooks) its tile link moves with it.
+   * its tile link moves with it and its room (object data 29) is resolved.
    */
-  private setLocation(fx: number, fy: number): void {
+  setLocation(fx: number, fy: number): void {
     const h = this.module.worldHooks;
     if (h) h.moveTo(this.obj, { fx, fy }, this.obj.level);
     else {
       this.obj.fx = fx;
       this.obj.fy = fy;
     }
-  }
-
-  /** The walking speed in 1/16 tile per tick: the walking loop's distance over its duration (3 units per tile). */
-  private walkSpeed(): number {
-    const name = this.isChild ? "c2o-walking-loop" : "a2o-walking-loop";
-    const s = requestSkill(name);
-    if (s && s.duration > 0 && s.distance > 0) return (s.distance / 3 / s.duration) * 16 * 42;
-    return 1.6;
-  }
-
-  /**
-   * One tick on the route: walks (the walking loop playing), and on arrival
-   * faces the goal's direction and goes back to standing. True when arrived.
-   */
-  protected followRoute(): boolean {
-    const r = this.route;
-    if (!r) return true;
-    const a = this.animator;
-    const walk = this.isChild ? "c2o-walking-loop" : "a2o-walking-loop";
-    if (a.mainName !== walk) {
-      const s = requestSkill(walk);
-      if (s) a.start("main", s, false, true);
-    }
-    const { pos, dir } = r.step([this.obj.fx, this.obj.fy], this.walkSpeed());
-    this.setLocation(pos[0], pos[1]);
-    if (dir !== null) {
-      this.renderDir = dir;
-      this.obj.objectData[1] = Math.round(dir) & 7;
-    }
     this.module.dirty(this);
-    if (!r.done) return false;
-    this.setLocation(r.goal.fx, r.goal.fy);
-    if (r.goal.facing >= 0) {
-      this.obj.objectData[1] = r.goal.facing;
-      this.renderDir = r.goal.facing;
-    }
-    const stand = requestSkill(this.isChild ? "c2o-standing-loop" : "a2o-standing-loop");
-    if (stand) a.start("main", stand, false, true);
-    a.mainName = "";
-    this.route = null;
-    if (this.traceOn) {
-      this.autonomyLog.push(`  arrived t${this.module.sim.tickCount} at ${this.obj.tileX},${this.obj.tileY} (${this.obj.fx.toFixed(0)},${this.obj.fy.toFixed(0)})`);
-      this.watch = Math.max(this.watch, 120);
-      this.watchFull = 120;
-    }
-    return true;
+  }
+
+  // --- routing ---------------------------------------------------------------------
+
+  /** The placement error of the last step that did not fit (trace). */
+  private lastBlock: { code: number; obstacle: number } | null = null;
+
+  /** cXPerson +0xaa0: the routes stack (portal trees push nested routes). */
+  readonly routes: XRoute[] = [];
+
+  /** cXPerson::GetCurrentRoute. */
+  get route(): XRoute | null {
+    return this.routes[this.routes.length - 1] ?? null;
+  }
+
+  /** On a lot tile (cXObject::IsInWorld's PlacementSpec test). */
+  private inWorld(o: SimObject): boolean {
+    const fixed = this.module.sim.world;
+    const x = o.obj.tileX;
+    const y = o.obj.tileY;
+    return !!fixed && x >= 1 && y >= 1 && x < fixed.size - 1 && y < fixed.size - 1;
+  }
+
+  /** SAnimator::IsInterruptable. */
+  private isInterruptable(): boolean {
+    return this.animator.isInterruptable();
+  }
+
+  private traceRoute(text: string): void {
+    if (this.traceOn) this.autonomyLog.push(`  route t${this.module.sim.tickCount} ${text}`);
   }
 
   /**
-   * cXPerson::TryGotoRoutingSlot: operands slot (parameter index when the
-   * type is 0, else the slot number), type (0 parameter, 1 literal, 2 global
-   * slot: not ported), flags (bit 0 clear: allow failure trees). Waits while
-   * walking; true on arrival, false when no route (error 0x34 without a
-   * stack object, 0x25 bad slot).
+   * cXPerson::TryGotoRoutingSlot(StackElem, XPrimParam): operands slot
+   * (parameter index when the type is 0, else the slot number), type (0
+   * parameter, 1 literal, 2 the global routing slots), flags (bit 0 clear:
+   * failure trees allowed, slot flag 0x4000). Error 0x34 without a stack
+   * object, 0x25 for a bad slot, 8 for a bad parameter. Already running
+   * (state != 0): the state machine goes on with the route on top.
    */
   protected tryGotoRoutingSlot(elem: StackElem, slotArg: number, type: number, flags: number): number {
-    if (elem.state !== 0 && this.route) return this.followRoute() ? PRIM_TRUE : PRIM_WAIT;
+    if (elem.state !== 0) return this.gotoRoutingSlot(elem, null);
     const target = this.module.getObject(elem.stackObj);
     if (!target) simThrow(0x34);
-    if (target.obj.hidden !== 0) return PRIM_FALSE;
+    if (!this.inWorld(target)) return PRIM_FALSE;
+    let slots: RoutingSlot[];
     let index = slotArg;
     if (type === 0) {
       if (slotArg < 0 || slotArg >= elem.numParams) simThrow(XERR.paramRange);
       index = elem.getParam(slotArg);
-    } else if (type !== 1 && type !== 2) {
-      simThrow(0x25);
+      slots = this.routingSlotsOfObject(target);
+    } else if (type === 1) {
+      slots = this.routingSlotsOfObject(target);
+    } else {
+      if (type !== 2) simThrow(0x25);
+      slots = this.module.globalRoutingSlots();
     }
-    // Type 2: the global routing slots (ObjectModule +0xa0, Global.iff SLOT 100).
-    const slots = type === 2 ? this.module.globalRoutingSlots() : this.module.routingSlotsOf(target.obj.selector);
     const slot = slots[index];
     if (!slot) simThrow(0x25);
-    void flags;
-    this.route = this.startRoute(target, slot);
-    if (!this.route) return PRIM_FALSE;
-    elem.state = 1;
-    return this.followRoute() ? PRIM_TRUE : PRIM_WAIT;
+    slot.flags &= ~RSF.failureTrees;
+    if (!(flags & 1)) slot.flags |= RSF.failureTrees;
+    return this.gotoRoutingSlot(elem, slot);
+  }
+
+  /** cXObject +0x140: the object's routing slots (MoveOutOfWay overrides the helper's). */
+  private routingSlotsOfObject(o: SimObject): RoutingSlot[] {
+    return slotOverrides.get(o) ?? this.module.routingSlotsOf(o.obj.selector);
   }
 
   /**
-   * cXPerson::TryGotoRelative: a routing slot made on the fly, 1 tile from
-   * the stack object. Location (byte 2): 0..7 a direction relative to the
-   * object, others the four sides; direction (byte 3): -1 any facing, -2
-   * towards the object, 0..7 a direction.
+   * cXPerson::TryGotoRelative: a routing slot made on the fly (standing
+   * weight 1, 1 tile away): location (byte 2) -2 on the object, -1 or
+   * others the four sides 1 to 2 tiles away, 0..7 that direction (odd ones:
+   * the two neighbouring even ones); direction (byte 3) -1 any facing, -2
+   * towards the object, 0..7 that direction (others: error); flags (byte 6)
+   * bit 1 clear allows failure trees, bit 2 ignores altitudes.
    */
   protected tryGotoRelative(elem: StackElem, location: number, direction: number, flags: number): number {
-    if (elem.state !== 0 && this.route) return this.followRoute() ? PRIM_TRUE : PRIM_WAIT;
-    const target = this.module.getObject(elem.stackObj);
-    if (!target) simThrow(XERR.noStackObject);
-    const dirs = location >= 0 && location < 8 ? 1 << location : 0x55;
-    const facing = direction === -1 ? FACE_ANY : direction === -2 ? FACE_TOWARDS : direction >= 0 && direction < 8 ? direction : FACE_TOWARDS;
-    void flags;
-    const slot: RoutingSlot = { x: 0, y: 0, minProximity: 16, maxProximity: 16, optimalProximity: 16, flags: dirs, facing, snapTarget: -1 };
-    this.route = this.startRoute(target, slot);
-    if (!this.route) return PRIM_FALSE;
-    elem.state = 1;
-    return this.followRoute() ? PRIM_TRUE : PRIM_WAIT;
+    if (elem.state !== 0) return this.gotoRoutingSlot(elem, null);
+    const s = newRoutingSlot();
+    s.multipliers[0] = 1;
+    setTileDistances(s, 1, 1, 1);
+    s.flags &= ~RSF.failureTrees;
+    if (((flags >> 1) & 1) !== 1) s.flags |= RSF.failureTrees;
+    s.flags &= ~RSF.ignoreAltitude;
+    if ((flags >> 2) & 1) s.flags |= RSF.ignoreAltitude;
+    const sides = (): void => {
+      for (const d of [0, 2, 4, 6]) allowDirection(s, d);
+      setTileDistances(s, 1, 2, 1);
+    };
+    switch (location) {
+      case -2:
+        s.flags &= ~0xff;
+        break;
+      case -1:
+        sides();
+        break;
+      case 0:
+      case 2:
+      case 4:
+      case 6:
+        allowDirection(s, location);
+        break;
+      case 1:
+      case 3:
+      case 5:
+      case 7:
+        allowDirection(s, (location - 1) & 7);
+        allowDirection(s, (location + 1) & 7);
+        break;
+      default:
+        sides();
+    }
+    if (direction === -1) s.facing = FACE_ANY;
+    else if (direction === -2) s.facing = FACE_TOWARDS;
+    else if (direction >= 0 && direction < 8) s.facing = direction;
+    else return PRIM_FALSE;
+    return this.gotoRoutingSlot(elem, s);
   }
 
   /**
-   * cXPerson::TryLookTowards: 0 turns the head (true); 1 turns around; 2 / 3
-   * face towards / away from the stack object. The turning walk
-   * (BeginFollow) is replaced by an immediate turn. Error 0x27 otherwise.
+   * cXPerson::TryGotoRoutingSlot(StackElem, RoutingSlot): the route state
+   * machine (elem state = the state, sub_1010683C / jump table
+   * lbl_105BBB3C). States: 1 plan, 2 through a portal, 3 walking, 4 after
+   * the chair's sit tree, 5 after the stand tree, 6 blocked, 7 failed, 8
+   * arrived, 9 / 10 / 11 stop walking then 8 / 6 / 7, 12 start walking, 13
+   * waiting animation, 14 waiting for the person asked to move, 15 stop
+   * walking then replan, 16 failure (failure tree), 17 after it, 18 the
+   * path (InitRoute), 19 / 20 the target left the world.
+   */
+  protected gotoRoutingSlot(elem: StackElem, slot: RoutingSlot | null): number {
+    const target = this.module.getObject(elem.stackObj);
+    const gone = !target || !this.inWorld(target);
+    let state = elem.state;
+    if (state === 0) {
+      if (gone || !slot) return PRIM_FALSE;
+      const r = new XRoute(this.module, this, target, slot);
+      if ((this.pd[68]! & 1) === 1) r.slot.flags |= RSF.ignoreRooms;
+      const top = this.route;
+      if (top && !(top.slot.flags & RSF.failureTrees)) r.slot.flags &= ~RSF.failureTrees;
+      this.routes.push(r);
+      state = 1;
+    }
+    const route = this.route;
+    if (!route) return PRIM_FALSE;
+    if (!route.target) {
+      elem.state = 0;
+      this.routes.pop();
+      return PRIM_WAIT;
+    }
+    if (gone) state = state === 3 ? 20 : 19;
+    if (!route.loaded) {
+      // A route saved mid-walk: portal choices are forgotten, a walk restarts.
+      if (state === 2) route.portal = null;
+      else if (state === 3) state = 15;
+      route.loaded = true;
+    }
+    const r = this.routeStateMachine(elem, route, state);
+    return r;
+  }
+
+  private routeStateMachine(elem: StackElem, route: XRoute, start: number): number {
+    const pd = this.pd;
+    const m = this.module;
+    const me = this.obj;
+    let state = start;
+    const wait = (s: number, r: number = PRIM_WAIT): number => {
+      elem.state = s;
+      return r;
+    };
+    for (let guard = 0; guard < 64; guard++) {
+      switch (state) {
+        case 1: {
+          // Plan: walk through portals to the target's room, or build the goals here.
+          updateRoomIDs(m, 0);
+          if (!(me.objectData[8]! & 8)) {
+            state = 7;
+            break;
+          }
+          const t = route.target!;
+          if ((t.obj.objectData[29]! & 0xffff) !== (me.objectData[29]! & 0xffff) && !(route.slot.flags & RSF.ignoreRooms)) {
+            // A portal some route of the stack walks through (its own tree routing to it from the other side): fail quietly.
+            state = (t.obj.selector.objd.objectType === 8 || t.obj.kind === "portal") && isPortalInUse(this.routes, t) ? 7 : 2;
+            break;
+          }
+          if (this.shouldInterrupt() && this.isInterruptable()) {
+            route.result = ROUTE.interrupted;
+            state = 7;
+            break;
+          }
+          route.buildGoalList();
+          this.traceRoute(`plan ${me.selector.name} at ${me.fx},${me.fy} -> ${t.obj.selector.name} ${t.obj.fx},${t.obj.fy}: ${route.goals.length} goals, result ${route.result}`);
+          state = 18;
+          if (pd[PDX.sitting] === 1) {
+            if (route.isPersonSittingOnChairGoal(this)) {
+              state = 8;
+              break;
+            }
+            // Stand up first: the chair's stand tree (entry point 27) with the starting point's direction.
+            const chair = me.parentId !== 0 ? m.getObject(me.parentId) : null;
+            const tree = chair ? chair.fnTable.getTreeID(EP.stand) : 0;
+            if (chair && tree !== 0 && this.gosubObjectTree(chair, { src: [route.startDirs, 0, 0, 0], at: 0 }, tree)) {
+              pd[72] = 0;
+              return wait(5, PRIM_CONTINUE);
+            }
+            route.result = ROUTE.couldNotStand;
+            state = 16;
+          }
+          break;
+        }
+        case 2: {
+          // Through a portal (cXPortal::FindBestPortal, the portal tree).
+          if (this.shouldInterrupt() && this.isInterruptable()) {
+            route.result = ROUTE.interrupted;
+            state = 7;
+            break;
+          }
+          const t = route.target!;
+          if ((t.obj.objectData[29]! & 0xffff) === (me.objectData[29]! & 0xffff)) {
+            pd[72] = route.footprint;
+            state = 1;
+            break;
+          }
+          if (route.portal && !this.lastResult) failedPortalTree(m, this, route.portal);
+          if (!route.portal) initPortalRoute(m, this);
+          const p = findBestPortal(m, this, t);
+          const tree = p ? p.fnTable.getTreeID(EP.portal) : 0;
+          if (p && tree !== 0 && this.gosubObjectTree(p, null, tree)) {
+            this.traceRoute(`portal ${p.obj.selector.name} (${p.id}) room ${p.obj.objectData[29]} for room ${t.obj.objectData[29]}`);
+            beginningPortalTree(m, this, p);
+            route.portal = p;
+            pd[72] = 0;
+            return wait(2, PRIM_CONTINUE);
+          }
+          route.result = ROUTE.roomUnreachable;
+          state = 16;
+          break;
+        }
+        case 3: {
+          if (this.shouldInterrupt() && this.isInterruptable()) {
+            route.result = ROUTE.interrupted;
+            state = 11;
+            break;
+          }
+          if (route.path.length === 0) {
+            state = 11;
+            break;
+          }
+          const r = this.animator.followOneStep();
+          if (r === 1) state = 9;
+          else if (r === 0) {
+            const b = this.animator.blockedAt;
+            const e = this.lastBlock;
+            this.traceRoute(`blocked at ${me.fx},${me.fy} follow ${this.animator.followState} anim ${this.animator.state} step ${b ? `${b.fx},${b.fy}` : "-"} error ${e?.code} obstacle ${e?.obstacle}`);
+            state = 10;
+          }
+          else return wait(3);
+          break;
+        }
+        case 4:
+          if (this.lastResult) state = 8;
+          else {
+            route.result = pd[PDX.routeResult] || ROUTE.couldNotSit;
+            state = 16;
+          }
+          break;
+        case 5:
+          pd[72] = route.footprint;
+          if (this.lastResult && pd[PDX.sitting] === 0) state = 1;
+          else {
+            route.result = ROUTE.couldNotStand;
+            state = 16;
+          }
+          break;
+        case 6: {
+          // Blocked: replan while moving, then ask people in the way to move, replan once more, give up.
+          const dx = me.fx - route.lastFx;
+          const dy = me.fy - route.lastFy;
+          switch (route.blockedStage) {
+            case 0:
+              if (dx * dx + dy * dy > 0x40) state = 1;
+              else route.blockedStage = 1;
+              break;
+            case 1:
+              route.blockedStage = 2;
+              if (!route.asked && this.askOthersToMove(route)) {
+                route.asked = true;
+                route.waitTick = m.sim.tickCount;
+                state = 14;
+              } else state = 16;
+              break;
+            case 2:
+              route.blockedStage = 3;
+              state = 1;
+              break;
+            default:
+              state = 16;
+          }
+          route.lastFx = me.fx;
+          route.lastFy = me.fy;
+          if (state === 6) state = 1;
+          break;
+        }
+        case 7:
+        case 8:
+          return this.finishRoute(elem, route, state === 8);
+        case 9:
+        case 10:
+        case 11:
+        case 15:
+        case 20:
+          if (!this.animator.isFollowing() || this.animator.endFollow()) {
+            if (state === 9) m.record(this, "sound", "end_route");
+            state = state === 9 ? 8 : state === 10 ? 6 : state === 11 ? 7 : state === 15 ? 1 : 19;
+            break;
+          }
+          return wait(state);
+        case 12:
+          m.record(this, "sound", "begin_route");
+          this.animator.beginFollow(route.path, me);
+          return wait(3);
+        case 13: {
+          // Waiting animation for up to 15 ticks, then replan.
+          if (m.sim.tickCount - route.waitTick < 15) {
+            const tree = this.behavior.getTreeID("route waiting animation");
+            if (tree !== 0 && this.gosubObjectTree(this, null, tree)) return wait(13, PRIM_CONTINUE);
+            return wait(13);
+          }
+          state = 1;
+          break;
+        }
+        case 14: {
+          // Waiting for the person asked to move (100 ticks at most).
+          const asked = route.askedPerson;
+          if (!asked || !(asked instanceof PersonSim) || !asked.hasMoveOutOfWay()) {
+            route.askedPerson = null;
+            state = 1;
+            break;
+          }
+          if (route.waitTick === m.sim.tickCount) {
+            const tree = this.behavior.getTreeID("route ask to move animation");
+            if (tree !== 0 && this.gosubObjectTree(this, null, tree)) {
+              const e = this.getCurElem();
+              if (e) e.stackObj = asked.id;
+              return wait(14, PRIM_CONTINUE);
+            }
+          }
+          if (m.sim.tickCount - route.waitTick < 100) {
+            const tree = this.behavior.getTreeID("route waiting animation");
+            if (tree !== 0 && this.gosubObjectTree(this, null, tree)) return wait(14, PRIM_CONTINUE);
+            return wait(14);
+          }
+          state = 6;
+          break;
+        }
+        case 16: {
+          // Failure: the target's "Route failure feedback" tree (the thought balloon) when allowed.
+          if (route.result === 0) route.result = ROUTE.unknown;
+          pd[PDX.routeResult] = route.result;
+          this.traceRoute(`failed: result ${route.result} blocker ${route.blocker}`);
+          const t = route.target;
+          if (route.slot.flags & RSF.failureTrees && t) {
+            const tree = t.behavior.getTreeID("Route failure feedback");
+            if (tree !== 0 && this.gosubObjectTree(t, { src: [route.result, route.blocker, 0, 0], at: 0 }, tree)) return wait(17, PRIM_CONTINUE);
+          }
+          state = 7;
+          break;
+        }
+        case 17:
+          pd[PDX.routeResult] = route.result;
+          state = 7;
+          break;
+        case 18: {
+          const r = this.initRoute(route);
+          this.traceRoute(`path ${route.path.map((p) => `${p.fx},${p.fy}`).join(" ")} -> ${r}`);
+          if (r === 2) state = 12;
+          else if (r === 0) state = 6;
+          else if (r === 1) state = 8;
+          else {
+            pd[72] = 0;
+            return wait(4, PRIM_CONTINUE);
+          }
+          break;
+        }
+        case 19:
+          state = 7;
+          break;
+        default:
+          state = 7;
+      }
+    }
+    return wait(state);
+  }
+
+  /**
+   * States 7 / 8 of the route state machine: on success the person takes
+   * its route footprint back (person data 72 -> 73) and must fit where it
+   * stands (else the route fails with result 1), faces the facing point
+   * and snaps to the grid; then the route result (person data 62), routing
+   * complete (data 39) for a top-level route, object data 9 cleared, the
+   * people waiting for this one released, the move-out-of-the-way action
+   * pushed on the asked person removed, and the route popped.
+   */
+  private finishRoute(elem: StackElem, route: XRoute, success: boolean): number {
+    const pd = this.pd;
+    const m = this.module;
+    const me = this.obj;
+    if (success) {
+      pd[73] = pd[72]!;
+      const h = m.worldHooks;
+      if (pd[PDX.sitting] === 0 && h && me.parentId === 0) {
+        if (!h.canPlace(me, { fx: me.fx, fy: me.fy }, me.level, null, -1)) {
+          // Someone stands where the walk ended: wait and replan once more.
+          if (route.result === 0) route.result = ROUTE.unknown;
+          success = false;
+        }
+      }
+      if (success) {
+        const n = route.path.length;
+        if (n >= 2 && !me.objectData[9]) {
+          const a = route.path[n - 2]!;
+          const b = route.path[n - 1]!;
+          if (a.fx !== b.fx || a.fy !== b.fy) me.objectData[1] = dirOf(b.fx - a.fx, b.fy - a.fy);
+        }
+        this.animator.forceLocation(me);
+        this.renderDir = null;
+        route.result = 0;
+      }
+    }
+    if (this.animator.isFollowing()) this.animator.endFollow();
+    pd[PDX.routeResult] = route.result;
+    if (this.routes.length === 1 && pd[38] === 0) pd[PDX.routingComplete] = 1;
+    me.objectData[9] = 0;
+    // People waiting on this one go on (their state 14 sees the action gone).
+    if (route.askedPerson instanceof PersonSim) route.askedPerson.cancelMoveOutOfWay();
+    this.routes.pop();
+    this.module.dirty(this);
+    this.traceRoute(`${success ? "arrived" : "gave up"} at ${me.fx},${me.fy} dir ${me.dir} result ${route.result}`);
+    void elem;
+    return success ? PRIM_TRUE : PRIM_FALSE;
+  }
+
+  /**
+   * cXPerson::InitRoute: the path (XRoute::FindPath from the starting
+   * point; chairs not wanted by pets), person data 37 = the goal's
+   * direction flags; a chair goal runs the chair's sit tree (1: already in
+   * it, 3: tree pushed, 0: result 5); a walk ends with the facing point
+   * (1 tile from the last point: along the last segment for "any facing",
+   * towards / away from the object, or the object's direction + n).
+   * Returns 0 (no path), 1, 2 (walk) or 3.
+   */
+  private initRoute(route: XRoute): number {
+    const me = this.obj;
+    const slot = route.slot;
+    const target = route.target!;
+    if (slot.multipliers[1] !== 0 && this.pd[0x41]! >= 2) slot.multipliers[1] = 0;
+    const ok = route.findPath();
+    let r = 0;
+    if (ok) {
+      r = 2;
+      const goal = route.currentGoal()!;
+      this.pd[PDX.routeEntryFlags] = goal.dirFlags;
+      if (goal.chair !== 0) {
+        r = 0;
+        const c = this.module.getObject(goal.chair);
+        const tree = c ? c.fnTable.getTreeID(EP.sit) : 0;
+        if (c && tree !== 0) {
+          if (me.parentId === c.id) r = 1;
+          else if (this.pd[0x41]! < 2 && this.gosubObjectTree(c, null, tree)) r = 3;
+        }
+        if (r === 0) route.result = ROUTE.couldNotSit;
+      }
+    }
+    if (r === 2 && route.path.length < 2) r = 0;
+    if (r !== 2) {
+      if (r === 0) route.resetGoals();
+      return r;
+    }
+    const path = route.path;
+    const end = path[path.length - 1]!;
+    const t = target.obj;
+    let fx = t.fx;
+    let fy = t.fy;
+    let dir = -1;
+    if (slot.facing === FACE_ANY) {
+      const prev = path[path.length - 2]!;
+      if (prev.fx === end.fx && prev.fy === end.fy) dir = me.dir & 7;
+      else {
+        fx = end.fx + (end.fx - prev.fx);
+        fy = end.fy + (end.fy - prev.fy);
+      }
+    } else if (slot.facing === FACE_AWAY || slot.facing === FACE_TOWARDS) {
+      if ((slot.flags & 0xff) === 0) {
+        dir = t.fx === end.fx && t.fy === end.fy ? t.dir : dirOf(t.fx - end.fx, t.fy - end.fy);
+        if (slot.facing === FACE_AWAY) dir = (dir + 4) & 7;
+      } else if (!(slot.flags & RSF.anyRotation)) {
+        dir = dirOf(t.fx - end.fx, t.fy - end.fy);
+        if (slot.facing === FACE_AWAY) dir = (dir + 4) & 7;
+      }
+    } else {
+      dir = (t.dir + slot.facing) & 7;
+    }
+    if (dir >= 0) {
+      const [vx, vy] = DIR_VEC[dir]!;
+      fx = end.fx + vx * 16;
+      fy = end.fy + vy * 16;
+    }
+    if (fx === end.fx && fy === end.fy) {
+      route.resetGoals();
+      return 0;
+    }
+    path.push({ fx, fy });
+    return 2;
+  }
+
+  /**
+   * cXPerson::AskOthersToMove: the people near the route (not ignored by
+   * it, not already asked by someone) are tried one by one: when ignoring
+   * one of them gives a path, that one is asked to move (MoveOutOfWay).
+   * Otherwise, with everybody ignored, the first person whose footprint
+   * the path crosses is asked. Never while sitting.
+   */
+  private askOthersToMove(route: XRoute): boolean {
+    const m = this.module;
+    if (this.pd[PDX.sitting] !== 0) return false;
+    const candidates: PersonSim[] = [];
+    for (const p of m.people) {
+      if (p === this || !(p instanceof PersonSim) || route.shouldIgnore(p)) continue;
+      const asked = m.people.some((q) => q instanceof PersonSim && q.routes.some((r) => r.askedPerson === p));
+      if (!asked) candidates.push(p);
+    }
+    if (!candidates.length) return false;
+    const dir = this.obj.objectData[1]!;
+    const trial = new XRoute(m, this, route.target, route.slot);
+    for (const p of candidates) {
+      trial.ignorePerson = p;
+      trial.buildGoalList();
+      if (trial.findPath() && p.moveOutOfWay(this, route, trial.path)) {
+        this.obj.objectData[1] = dir;
+        return true;
+      }
+    }
+    this.obj.objectData[1] = dir;
+    // Everybody ignored: who stands on the path?
+    const all = new XRoute(m, this, route.target, route.slot);
+    all.ignoreAll = true;
+    all.buildGoalList();
+    this.obj.objectData[1] = dir;
+    if (!all.findPath() || all.path.length < 2) return false;
+    for (let i = 0; i + 1 < all.path.length; i++) {
+      const a = all.path[i]!;
+      const b = all.path[i + 1]!;
+      const steps = Math.max(Math.abs(b.fx - a.fx), Math.abs(b.fy - a.fy)) + 1;
+      for (let s = 0; s < steps; s++) {
+        const fx = Math.trunc(0.5 + a.fx + ((b.fx - a.fx) * s) / steps);
+        const fy = Math.trunc(0.5 + a.fy + ((b.fy - a.fy) * s) / steps);
+        const hit = candidates.find((c) => fx < c.obj.rect[1] && c.obj.rect[3] <= fx && fy < c.obj.rect[0] && c.obj.rect[2] <= fy);
+        if (hit) return hit.moveOutOfWay(this, route, all.path);
+      }
+    }
+    return false;
+  }
+
+  /** The "Destination - For Go Here & Shoo" helper object (MoveOutOfWay's target). */
+  private static readonly MOVE_HELPER_GUID = 0x7c4;
+
+  /** Is a move-out-of-the-way interaction (helper 0x7c4, TTAB 3) current or queued? */
+  hasMoveOutOfWay(): boolean {
+    const isMove = (i: Interaction | null): boolean => {
+      if (!i) return false;
+      const o = this.module.getObject(i.target);
+      return !!o && o.obj.guid === PersonSim.MOVE_HELPER_GUID && i.ttabIndex === 3;
+    };
+    return isMove(this.currentAction) || this.queue.some(isMove);
+  }
+
+  /** The asker finished: the queued move-out-of-the-way interaction goes (RemoveAction). */
+  cancelMoveOutOfWay(): void {
+    for (const i of [...this.queue]) {
+      const o = this.module.getObject(i.target);
+      if (o && o.obj.guid === PersonSim.MOVE_HELPER_GUID && i.ttabIndex === 3) this.removeAction(i);
+    }
+  }
+
+  /**
+   * cXPerson::MoveOutOfWay(asker's route, path): unless already moving out
+   * of the way or waiting on someone, the helper object 0x7c4 is made at
+   * this person's position with a routing slot to either side of the
+   * asker's path (1 to 5 tiles, 8 units resolution, any facing, random
+   * scores; straight ahead too when the sides are blocked), and its
+   * interaction 3 is pushed with the asker's priority (person data 33).
+   */
+  moveOutOfWay(asker: PersonSim, route: XRoute, path: readonly PathPt[]): boolean {
+    if (this.hasMoveOutOfWay()) return true;
+    if (path.length < 2) return false;
+    const top = this.route;
+    if (top && top.askedPerson) return false;
+    const me = this.obj;
+    // Where the path enters and leaves this person's footprint.
+    let stage = 0;
+    let ex = 0;
+    let ey = 0;
+    let lx = 0;
+    let ly = 0;
+    for (let i = 0; i + 1 < path.length && stage < 2; i++) {
+      const a = path[i]!;
+      const b = path[i + 1]!;
+      const steps = Math.max(Math.abs(b.fx - a.fx), Math.abs(b.fy - a.fy)) + 1;
+      for (let s = 0; s < steps; s++) {
+        const fx = Math.trunc(0.5 + a.fx + ((b.fx - a.fx) * s) / steps);
+        const fy = Math.trunc(0.5 + a.fy + ((b.fy - a.fy) * s) / steps);
+        const inside = fx < me.rect[1] && me.rect[3] <= fx && fy < me.rect[0] && me.rect[2] <= fy;
+        if (inside) {
+          if (stage === 0) {
+            stage = 1;
+            ex = fx;
+            ey = fy;
+          }
+        } else if (stage === 1) {
+          stage = 2;
+          lx = fx;
+          ly = fy;
+          break;
+        }
+      }
+    }
+    if (stage === 0) {
+      ex = path[0]!.fx;
+      ey = path[0]!.fy;
+      lx = me.fx;
+      ly = me.fy;
+    } else if (stage === 1) {
+      lx = path[path.length - 1]!.fx;
+      ly = path[path.length - 1]!.fy;
+    }
+    const h = this.module.worldHooks;
+    const sel = h?.selector(PersonSim.MOVE_HELPER_GUID);
+    if (!h || !sel) return false;
+    const helperObj = h.make(sel);
+    if (!helperObj) return false;
+    const helper = this.module.getObject(helperObj.objectId);
+    if (!helper) return false;
+    h.place(helperObj, { fx: me.fx, fy: me.fy }, me.level, null, -1);
+    const s = newRoutingSlot();
+    const dx = lx - ex;
+    const dy = ly - ey;
+    const d = dx === 0 && dy === 0 ? 0 : dirOf(dx, dy);
+    allowDirection(s, (d + 2) & 7);
+    allowDirection(s, (d + 6) & 7);
+    s.flags |= RSF.anyRotation;
+    s.minProximity = 0x10;
+    s.maxProximity = 0x50;
+    s.optimalProximity = 0x10;
+    s.resolution = 8;
+    s.facing = FACE_ANY;
+    s.multipliers[0] = 1;
+    s.flags |= RSF.randomScore;
+    const test = new XRoute(this.module, this, helper, s);
+    const dir = me.objectData[1]!;
+    test.buildGoalList();
+    if (!test.findPath()) {
+      allowDirection(s, d);
+      s.optimalProximity = 0x50;
+    }
+    me.objectData[1] = dir;
+    const own = [...this.routingSlotsOfObject(helper)];
+    own[0] = s;
+    slotOverrides.set(helper, own);
+    const e = this.module.treeTableOf(helper.obj.selector)?.entries.find((x) => x.stringIndex === 3);
+    if (!e) return false;
+    if (!this.addAction(this.makeInteraction(helper, e, asker.pd[33]!))) return false;
+    route.askedPerson = this;
+    this.module.record(asker, "askToMove", this.id);
+    return true;
+  }
+
+  /**
+   * cXPerson::TryLookTowards: 0 turns the head (SAnimator::LookTowards, not
+   * drawn here; true); 1 faces the camera; 2 / 3 face towards / away from
+   * the stack object (error 0x15 without one). 1..3 walk a path [me, me,
+   * facing point] with the walk engine (a StandingTurn), false when
+   * sitting; others error 0x27.
    */
   protected tryLookTowards(elem: StackElem, mode: number): number {
     if (mode === 0) return PRIM_TRUE;
-    if (mode === 1) {
-      const d = (this.obj.dir + 4) & 7;
-      this.obj.objectData[1] = d;
-      this.renderDir = d;
-      this.module.dirty(this);
-      return PRIM_TRUE;
-    }
-    if (mode === 2 || mode === 3) {
+    if (mode < 0 || mode > 3) simThrow(0x27);
+    const a = this.animator;
+    if (elem.state === 0) {
       if (this.pd[PDX.sitting] !== 0) return PRIM_FALSE;
-      const o = this.module.getObject(elem.stackObj);
-      if (!o) simThrow(XERR.noStackObject);
-      let d = dirOf(o.obj.fx - this.obj.fx, o.obj.fy - this.obj.fy);
-      if (mode === 3) d = (d + 4) & 7;
-      this.obj.objectData[1] = d;
-      this.renderDir = d;
-      this.module.dirty(this);
-      return PRIM_TRUE;
+      const me = this.obj;
+      let fx: number;
+      let fy: number;
+      if (mode === 1) {
+        // A point one tile towards the viewer: (+16, +16) in view coordinates, rotated back.
+        const rot = this.module.sim.state?.getRotation() ?? 0;
+        const [vx, vy] = RotatableWorld.rotateCoords(me.fx, me.fy, rot, 0x400);
+        [fx, fy] = RotatableWorld.rotateCoords(vx + 16, vy + 16, (4 - rot) & 3, 0x400);
+        me.objectData[9] = 0;
+      } else {
+        const o = this.module.getObject(elem.stackObj);
+        if (!o) simThrow(0x15);
+        fx = o.obj.fx;
+        fy = o.obj.fy;
+        if (mode === 3) {
+          fx = me.fx * 2 - fx;
+          fy = me.fy * 2 - fy;
+        }
+      }
+      a.beginFollow(
+        [
+          { fx: me.fx, fy: me.fy },
+          { fx: me.fx, fy: me.fy },
+          { fx, fy },
+        ],
+        me,
+      );
+      elem.state = 1;
     }
-    simThrow(0x27);
+    let r = a.followOneStep();
+    if (r === 0) r = 1;
+    if (r === 2) return PRIM_WAIT;
+    if (!a.endFollow()) return PRIM_WAIT;
+    this.module.dirty(this);
+    return PRIM_TRUE;
   }
 
   /** cXPerson::TryChangeSuit: recorded (the outfit change is not applied to the 3D model yet). */

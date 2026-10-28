@@ -25,8 +25,16 @@
  *    TSOnMouseDownL); Escape cancels (TSOnKeyDown);
  *  - SetSelection(i, true) notifies the owner (0xf pick / 0x10 cancel) and,
  *    when the popup ends on selection, ends the modal loop with i.
- * The 3D head (PopupHead) is rendered by the lot view in the original; this
- * port exposes `onPaintCenter` for it.
+ *  - a popup ends on selection when its end mode (+0x170) is not 0, and
+ *    takes its window down (EndPopupWindow) at PopupEnd only when it is not
+ *    negative: cObjPickerTool::DoMenu pops the people pie with -1 (it stays
+ *    up, re-added to the main window, while a sub pie runs) and the sub pie
+ *    with 0 (MenuItemSelected ends it);
+ *  - notifications go to the owner (+0x50, `onCommand`): 0xd move, 0xe
+ *    highlight, 0xf pick, 0x10 cancel, 0x11 character (TSOnCharacter).
+ * The 3D head (PopupHead) and the round shadow under the pie are drawn by
+ * the lot view (sims/popuphead.ts); the Live mode background kPieFaceBkg is
+ * fully transparent.
  */
 
 import { soundPlayer, UI } from "../audio/index.js";
@@ -43,6 +51,7 @@ export const CMD_PIE_MOVE = 0xd;
 export const CMD_PIE_HILITE = 0xe;
 export const CMD_PIE_PICK = 0xf;
 export const CMD_PIE_CANCEL = 0x10;
+export const CMD_PIE_CHAR = 0x11;
 
 /** lbl_105BD0E4 */
 const MIN_DISTANCE = 1;
@@ -79,8 +88,8 @@ export class TSPieMenu extends TSWin {
   title = "";
   /** +0xe4: drawn centered (the head backdrop). */
   background: ImageBitmap | null = null;
-  /** Draws over the background at the pie center (PopupHead). */
-  onPaintCenter: ((g: Gfx, cx: number, cy: number) => void) | null = null;
+  /** +0x50: the window notified (cmd, pie, argument); the parent when null. */
+  onCommand: ((cmd: number, pie: TSPieMenu, arg: number) => boolean) | null = null;
   /** +0x14c */
   firstDirection = 0;
   /** +0x150: no spoke is picked closer than this to the center. */
@@ -122,7 +131,12 @@ export class TSPieMenu extends TSWin {
   private tracking = false;
   private clickMode = false;
   private clamped = false;
-  private endOnSelect = true;
+  /** +0x170 (see the header). */
+  private endMode = 1;
+  /** +0x13c (GetPoppedUp) */
+  private poppedUp = false;
+  /** SetSubMenu / GetSubMenu */
+  private subMenu: TSPieMenu | null = null;
   private inEventLoop = false;
 
   constructor(private readonly ctx: GameContext) {
@@ -171,6 +185,65 @@ export class TSPieMenu extends TSWin {
     return this.direction;
   }
 
+  getInactiveRadius(): number {
+    return this.inactiveRadius;
+  }
+
+  getPoppedUp(): boolean {
+    return this.poppedUp;
+  }
+
+  /** +0x12c / +0x130: the window's top-left corner. */
+  getPopupX(): number {
+    return this.area.left;
+  }
+
+  getPopupY(): number {
+    return this.area.top;
+  }
+
+  /** +0x11c / +0x120: where it was asked to pop up. */
+  getPopupDownX(): number {
+    return this.popupX;
+  }
+
+  getPopupDownY(): number {
+    return this.popupY;
+  }
+
+  /** +0x124 / +0x128: the center, in window coordinates. */
+  getPopupCenterX(): number {
+    return this.centerX;
+  }
+
+  getPopupCenterY(): number {
+    return this.centerY;
+  }
+
+  /** cTSPieMenu::GetCurItemCenterX: the highlighted label's center (window coordinates), 0 for none. */
+  getCurItemCenterX(): number {
+    const it = this.current >= 0 ? this.items[this.current] : undefined;
+    return it ? it.x + Math.trunc(it.w / 2) : 0;
+  }
+
+  getCurItemCenterY(): number {
+    const it = this.current >= 0 ? this.items[this.current] : undefined;
+    return it ? it.y + Math.trunc(it.h / 2) : 0;
+  }
+
+  /** The label of item `i`. */
+  getItemText(i: number): string {
+    return this.items[i]?.text ?? "";
+  }
+
+  setSubMenu(sub: TSPieMenu | null): void {
+    this.subMenu = sub;
+  }
+
+  getSubMenu(): TSPieMenu | null {
+    return this.subMenu;
+  }
+
   /** cTSPieMenu::InsertString; a button replaces the framed label. */
   insertString(text: string, btn: TSWinBtn | null = null): void {
     this.items.push({ text, btn, enabled: true, angle: 0, x: 0, y: 0, w: 0, h: 0 });
@@ -191,7 +264,7 @@ export class TSPieMenu extends TSWin {
     this.clear();
     for (const s of items) this.insertString(s);
     this.onPick = onPick;
-    this.popupBegin(x, y, !winMgr.isMouseButtonDown(), true);
+    this.popupBegin(x, y, !winMgr.isMouseButtonDown(), 1);
     void this.popupEventLoop().then((sel) => {
       this.popupEnd();
       this.onPick?.(sel);
@@ -321,17 +394,18 @@ export class TSPieMenu extends TSWin {
 
   /**
    * cTSPieMenu::PopupBegin + BeginPopupWindow. `clickMode`: the button is
-   * already up, so the menu stays open until a click; `endOnSelect` ends the
-   * popup as soon as something is picked.
+   * already up, so the menu stays open until a click; `endMode`: see the
+   * header.
    */
-  popupBegin(x: number, y: number, clickMode: boolean, endOnSelect: boolean): void {
+  popupBegin(x: number, y: number, clickMode: boolean, endMode: number): void {
     this.inEventLoop = false;
     soundPlayer.playUISound(UI.pieAppear);
     winMgr.setCapture(this);
+    this.poppedUp = true;
     this.popupX = x;
     this.popupY = y;
     this.clickMode = clickMode;
-    this.endOnSelect = endOnSelect;
+    this.endMode = endMode;
     this.tracking = true;
     this.clamped = false;
     this.layout();
@@ -380,31 +454,43 @@ export class TSPieMenu extends TSWin {
     return winMgr.doModalWin(this);
   }
 
-  /** cTSPieMenu::PopupEnd + EndPopupWindow */
+  /** cTSPieMenu::PopupEnd */
   popupEnd(): void {
     winMgr.releaseCapture(this);
-    if (!this.endOnSelect) return;
-    for (const it of this.items) if (it.btn) winMgr.main.childRemove(it.btn);
+    if (this.endMode >= 0) this.endPopupWindow();
   }
 
-  /** cTSPieMenu::EndPopup */
+  /** cTSPieMenu::EndPopupWindow */
+  endPopupWindow(): void {
+    for (const it of this.items) if (it.btn) winMgr.main.childRemove(it.btn);
+    this.poppedUp = false;
+  }
+
+  /** cTSPieMenu::EndPopup: the event loop returns `sel`. */
   endPopup(sel = this.current): void {
     if (!this.inEventLoop) {
       this.popupEnd();
       return;
     }
     winMgr.endDialog(this, sel);
+    this.poppedUp = false;
     this.tracking = false;
+  }
+
+  /** Sends `cmd` to the owner (cTSPieMenu+0x50), else to the parent. */
+  private notify(cmd: number, arg = 0): boolean {
+    if (this.onCommand) return this.onCommand(cmd, this, arg);
+    return this.parent?.tsOnCommand(cmd, this) ?? false;
   }
 
   /** cTSPieMenu::SetSelection */
   setSelection(sel: number, pick: boolean): void {
     if (sel !== -1 && (sel < 0 || sel >= this.items.length)) sel = Math.max(0, Math.min(this.items.length - 1, sel));
     this.current = sel;
-    this.parent?.tsOnCommand(CMD_PIE_HILITE, this);
+    this.notify(CMD_PIE_HILITE);
     if (!pick) return;
-    this.parent?.tsOnCommand(this.current === -1 ? CMD_PIE_CANCEL : CMD_PIE_PICK, this);
-    if (this.endOnSelect) this.endPopup();
+    this.notify(this.current === -1 ? CMD_PIE_CANCEL : CMD_PIE_PICK);
+    if (this.endMode !== 0) this.endPopup();
   }
 
   /** cTSPieMenu::CalcItem: item under (x, y) in window coordinates, or -1. */
@@ -454,7 +540,7 @@ export class TSPieMenu extends TSWin {
     if (this.autoCancel && this.maxRadius && this.current === -1 && this.maxRadius < this.distance) {
       this.setSelection(-1, true);
     }
-    this.parent?.tsOnCommand(CMD_PIE_MOVE, this);
+    this.notify(CMD_PIE_MOVE);
     return true;
   }
 
@@ -490,12 +576,16 @@ export class TSPieMenu extends TSWin {
     return this.tsOnMouseUpL(x, y);
   }
 
+  /** cTSPieMenu::TSOnKeyDown (Escape cancels) and TSOnCharacter (0x11 to the owner). */
   override tsOnKeyDown(key: string): boolean {
-    if (key !== "Escape") return false;
-    this.current = -1;
-    this.parent?.tsOnCommand(CMD_PIE_CANCEL, this);
-    this.endPopup();
-    return true;
+    if (key === "Escape") {
+      this.current = -1;
+      this.notify(CMD_PIE_CANCEL);
+      this.endPopup();
+      return true;
+    }
+    const c = key === "Tab" ? 9 : key.length === 1 ? key.charCodeAt(0) : -1;
+    return c >= 0 && this.notify(CMD_PIE_CHAR, c);
   }
 
   /** cTSPieMenu::DrawLabelFrame: a box with two 1 px rings rounded at the corners. */
@@ -522,7 +612,6 @@ export class TSPieMenu extends TSWin {
 
   override tsPaint(g: Gfx): void {
     if (this.background) g.blit(this.background, this.bgX, this.bgY);
-    this.onPaintCenter?.(g, this.centerX, this.centerY);
     if (this.title) {
       this.drawFramedLabel(g, this.title, this.selectedColor, this.titleX, this.titleY, this.titleW, this.titleH);
     }

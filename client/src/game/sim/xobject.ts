@@ -28,6 +28,8 @@ import type { SimModule } from "./simmodule.js";
 import { PRIM_CONTINUE, PRIM_FALSE, PRIM_TRUE, PRIM_WAIT, TreeSim, simThrow, treeSimGlobals } from "./treesim.js";
 import type { ParamSource, StackElem } from "./treestack.js";
 import { DIR_VEC, rotateOffset } from "./routing.js";
+import { getBehCareerData } from "./careers.js";
+import { addToken, findToken, removeAllTokensOfType, removeToken, removeTokenByIndex, setToNextToken } from "./inventory.js";
 
 /** Object data indexes (Behavior.iff STR# 141; index = (offset - 0x4a) / 2). */
 const OD = {
@@ -189,13 +191,21 @@ export class SimObject extends TreeSim {
 
   /**
    * cXObject::HandleError (retail: no dialog): ObjectModule::CleanupPeople
-   * (people are not simulated yet) then Cleanup.
+   * then Cleanup.
    */
   handleError(): void {
     this.errorPending = false;
     if (this.getError() === 0) return;
+    this.module.cleanupPeople(this);
     this.cleanup();
   }
+
+  /**
+   * Cleanup (vtable +0x40) called with another object, as
+   * ObjectModule::CleanupPeople does on people: cXPerson::Cleanup(obj)
+   * (not ported; PersonSim overrides this). Objects never get it.
+   */
+  cleanupFor(_obj: SimObject): void {}
 
   /**
    * cXObject::Cleanup(0): runs the cleanup entry point and restarts Main, or
@@ -502,11 +512,19 @@ export class SimObject extends TreeSim {
       }
       case 32: // neighbor's person data
         return m.neighborPersonData(this.getCurElem()!.stackObj, data);
-      case 33: // job data[temp 0, 1]
-        return m.unportedValue("scope 33 job data", 0);
-      case 34: // neighborhood data
+      case 33: {
+        // job data: cCareer::GetBehCareerData of career temp 0 (error 0x39 when
+        // none), job level temp 1 (0 for career -1), field `data` (error 0x3a)
+        const career = m.careers.find((c) => c.id === this.obj.temps[0]!);
+        if (!career) simThrow(0x39);
+        const level = career.id === -1 ? 0 : this.obj.temps[1]!;
+        const v = getBehCareerData(career, level, data);
+        if (v === null) simThrow(0x3a);
+        return (v << 16) >> 16;
+      }
+      case 34: // neighborhood data (Neighborhood +0x128, read only)
         if (data <= 0 || data >= 0x10) simThrow(0x3c);
-        return m.unportedValue("scope 34 neighborhood data", 0);
+        return m.nbhd?.data[data] ?? 0;
       case 35: {
         // stack object's function: does it have this entry point?
         const o = this.stackObject();
@@ -758,8 +776,8 @@ export class SimObject extends TreeSim {
         this.module.soundHooks?.playSound(elem.behavior, s16(0), f !== 0xff && f & 2 ? elem.stackObj : this.id);
         return PRIM_TRUE;
       }
-      case 24: // Old Relationship
-        return this.module.unportedPrim(op, "old relationship", PRIM_FALSE);
+      case 24:
+        return this.tryRelationship(elem, u8(0), (u8(1) << 24) >> 24, (u8(2) << 24) >> 24, (u8(3) << 24) >> 24, u8(4));
       case 26: // Relationship
         return this.tryRelationship2(elem, u8(0), u8(1), u8(2), u8(3), (u8(4) << 24) >> 24, s16(6));
       case 25:
@@ -777,9 +795,14 @@ export class SimObject extends TreeSim {
         return PRIM_TRUE;
       case 35: // Special effect (TryUserEvent): recorded only.
         return this.module.unportedPrim(op, "user event", PRIM_TRUE);
-      case 36: // Dialog: recorded; answered as the first button (true).
+      case 36: { // Dialog: the town pickers go to the transit hooks; others recorded, answered as the first button (true).
+        if ((u8(7) & 1) === 0) {
+          const r = this.module.transitHooks?.tryDialog(this, u8(5) & 0x7f);
+          if (r !== undefined) return r;
+        }
         this.module.record(this, "dialog", u8(5) & 0x7f);
         return PRIM_TRUE;
+      }
       case 41: // Set Balloon / Headline: recorded only (no sprite slot activation).
         this.module.record(this, "balloon", s16(2));
         return PRIM_TRUE;
@@ -798,8 +821,8 @@ export class SimObject extends TreeSim {
       case 50: // Add / Change Action String: person interaction queue, recorded only.
         this.module.record(this, "actionString", s16(0));
         return PRIM_TRUE;
-      case 51: // Manage Inventory
-        return this.module.unportedPrim(op, "inventory", PRIM_FALSE);
+      case 51:
+        return this.tryInventoryAction(elem, u8(0), u8(1), v.getUint16(p + 2, true), v.getUint32(p + 4, true));
       default:
         // 3, 6, 17, 22, 27, 29, 30, 37..40, 44, 45, 47 (person primitives) and >= 0x34: error 5.
         simThrow(XERR.unknownPrimitive);
@@ -995,6 +1018,11 @@ export class SimObject extends TreeSim {
         this.temps[0] = r;
         return PRIM_TRUE;
       }
+      case 3:
+      case 17:
+        // cSimsApp::RemoveTaxiDialog / cXPerson::TryChangeLots (nbhd/transit.ts).
+        if (m.transitHooks) return m.transitHooks.genericSimCall(this, call);
+        return m.unportedPrim(1, `generic sim call ${call}`, PRIM_TRUE);
       default:
         return m.unportedPrim(1, `generic sim call ${call}`, PRIM_TRUE);
     }
@@ -1096,6 +1124,158 @@ export class SimObject extends TreeSim {
       if (!ref) simThrow(XERR.cantWrite);
       ref.a[ref.i] = arr[index]!;
     }
+    return PRIM_TRUE;
+  }
+
+  /**
+   * cXObject::TryRelationship (Old Relationship). Operands: +0 get (0) or
+   * set, +1 variable index, +2 parameter holding / receiving the value, +3
+   * mode (0 me -> stack object, 1 stack object -> me, 2 stack object ->
+   * parameter 0's object, 3 parameter 0's object -> stack object), +4 flags
+   * (1 fail when the variable is missing, 2 the ids are neighbor ids). Two
+   * people use the source neighbor's RelMatrix keyed by the other's neighbor
+   * id, other objects the source object's keyed by the target's object id.
+   * Errors: 0x15 missing object / neighbor, 0x1c flag 2 with modes 0 / 1
+   * run by a non-person, 8 bad parameter index (or a frame without
+   * parameters).
+   */
+  protected tryRelationship(elem: StackElem, set: number, index: number, param: number, mode: number, flags: number): number {
+    const m = this.module;
+    let arr: number[] | undefined;
+    let grow: (n: number) => number[];
+    if (flags & 2) {
+      const myNeighbor = (): number => {
+        if (!this.person) simThrow(XERR.notPerson);
+        return this.person.personData[0x1f]!;
+      };
+      let from = null;
+      let to = null;
+      if (mode === 0) {
+        from = m.findNeighborByID(myNeighbor());
+        to = m.findNeighborByID(elem.stackObj);
+      } else if (mode === 1) {
+        const me = myNeighbor();
+        from = m.findNeighborByID(elem.stackObj);
+        to = m.findNeighborByID(me);
+      } else if (mode === 2) {
+        from = m.findNeighborByID(elem.stackObj);
+        to = m.findNeighborByID(elem.getParam(0));
+      } else if (mode === 3) {
+        from = m.findNeighborByID(elem.getParam(0));
+        to = m.findNeighborByID(elem.stackObj);
+      }
+      if (!from || !to) simThrow(XERR.noStackObject);
+      ({ arr, grow } = m.neighborRelation(from, to.id));
+      // ObjectModule::SetRelationshipDirty
+      if (set) m.record(this, "relationshipDirty", `${from.id}->${to.id}:${index}`);
+    } else {
+      let from: SimObject | null = null;
+      let to: SimObject | null = null;
+      if (mode === 0) {
+        from = this;
+        to = m.getObject(elem.stackObj);
+      } else if (mode === 1) {
+        from = m.getObject(elem.stackObj);
+        to = this;
+      } else if (mode === 2) {
+        from = m.getObject(elem.stackObj);
+        to = m.getObject(elem.getParam(0));
+      } else if (mode === 3) {
+        from = m.getObject(elem.getParam(0));
+        to = m.getObject(elem.stackObj);
+      }
+      if (!from || !to) simThrow(XERR.noStackObject);
+      if (from.obj.selector.objd.objectType === OBJ_TYPE_PERSON && to.obj.selector.objd.objectType === OBJ_TYPE_PERSON) {
+        const a = m.findNeighborByID(from.person?.personData[0x1f] ?? 0);
+        const b = to.person?.personData[0x1f] ?? 0;
+        if (!a) simThrow(XERR.noStackObject);
+        ({ arr, grow } = m.neighborRelation(a, b));
+        if (set) m.record(this, "relationshipDirty", `${a.id}->${b}:${index}`);
+      } else {
+        const rel = from.obj.relations;
+        const key = to.id;
+        arr = rel.get(key);
+        grow = (n) => {
+          const x = rel.get(key) ?? [];
+          while (x.length < n) x.push(0);
+          rel.set(key, x);
+          return x;
+        };
+      }
+    }
+    if (!arr || arr.length <= index) {
+      if (flags & 1) return PRIM_FALSE;
+      arr = grow(index + 1);
+    }
+    if (param < 0 || elem.numParams === 0) simThrow(8);
+    if (set === 0) elem.setParam(param, arr[index]!);
+    else arr[index] = elem.getParam(param);
+    return PRIM_TRUE;
+  }
+
+  /**
+   * cXObject::TryInventoryAction (Manage Inventory). Operands: +0 action,
+   * +1 token type, +2 flags, +4 GUID (0: the stack object's). The inventory
+   * is the neighbor's of the person running it (flag 0x2000: of the person
+   * whose id is in temp 4); error 0x1c when that is no person. Flags pick
+   * temps 0..3 by 2-bit fields: bit 1 + 0x0c the count (else 1), 0x300 the
+   * index read, 0x60 the count written, 0x1800 the index written; bit 0
+   * makes Set To Next match the GUID. Actions: 0 add, 1 remove one (count
+   * -1: the whole token), 2 remove by index, 3 find (false when missing),
+   * 4 set to next (false at the end), 5 / 6 replace the type 1 / 3 tokens
+   * by one for the neighbor whose id is in temp 0. Success dirties the
+   * control panel's inventory (CPState::SetDirty 0x4000000).
+   */
+  protected tryInventoryAction(elem: StackElem, action: number, type: number, flags: number, guidOperand: number): number {
+    const m = this.module;
+    const who = flags & 0x2000 ? m.getObject(this.temps[4]!) : this;
+    if (!who?.person) simThrow(XERR.notPerson);
+    const nb = m.findNeighborByGUID(who.obj.selector.guid);
+    if (!nb) return m.unportedPrim(51, "inventory of a person without neighbor", PRIM_FALSE);
+    const inv = m.getInventoryByNeighbourID(nb.id);
+    let guid = guidOperand | 0;
+    if (guid === 0) guid = m.getObject(elem.stackObj)?.obj.selector.guid ?? 0;
+    const temps = this.temps;
+    const count = flags & 2 ? temps[(flags >> 2) & 3]! : 1;
+    const indexIn = temps[(flags >> 8) & 3]!;
+    let ok = true;
+    switch (action) {
+      case 0:
+        ok = addToken(inv, type, guid, count);
+        break;
+      case 1:
+        ok = removeToken(inv, type, guid, count);
+        break;
+      case 2:
+        ok = removeTokenByIndex(inv, indexIn, count);
+        break;
+      case 3: {
+        const r = findToken(inv, type, guid);
+        if (r.count === 0) return PRIM_FALSE;
+        temps[(flags >> 5) & 3] = r.count;
+        temps[(flags >> 11) & 3] = r.index;
+        break;
+      }
+      case 4: {
+        const r = setToNextToken(inv, type, indexIn, flags & 1 ? guid : 0);
+        temps[(flags >> 5) & 3] = r.count;
+        temps[(flags >> 11) & 3] = r.index;
+        ok = r.index !== -1;
+        break;
+      }
+      case 5:
+      case 6: {
+        const t = action === 5 ? 1 : 3;
+        const g = m.findNeighborByID(temps[0]!)?.guid ?? 0;
+        removeAllTokensOfType(inv, t);
+        addToken(inv, t, g, 1);
+        break;
+      }
+      default:
+        break;
+    }
+    if (!ok) return PRIM_FALSE;
+    m.record(this, "inventoryDirty", nb.id);
     return PRIM_TRUE;
   }
 
@@ -1763,9 +1943,29 @@ export class SimObject extends TreeSim {
           return PRIM_TRUE;
         }
       }
-      case 10: // career
-      case 11: // neighborhood list
-        return m.unportedPrim(31, `set to next type ${kind}`, PRIM_FALSE);
+      case 10: {
+        // career (GetCareers / GetCareerByID): the career after the one whose id
+        // is in the variable, the first one when it holds no career id
+        const ids = m.careers.map((c) => c.id);
+        const at = ids.indexOf(cur);
+        const next = at < 0 ? 0 : at + 1;
+        if (next >= ids.length) return PRIM_FALSE;
+        ref.a[ref.i] = ids[next]!;
+        return PRIM_TRUE;
+      }
+      case 11: {
+        // the neighborhood's other houses (Neighborhood +0x11c): from the first
+        // (variable 0) or after the house number in the variable
+        const list = m.neighborhoodHouses;
+        let at = 0;
+        if (cur !== 0) {
+          at = list.indexOf(cur);
+          at = at < 0 ? list.length : at + 1;
+        }
+        if (at >= list.length) return PRIM_FALSE;
+        ref.a[ref.i] = list[at]!;
+        return PRIM_TRUE;
+      }
       case 8: {
         // object on the same tile (ObjectIterator over the tile, wrapping)
         const o = m.getObject(cur);

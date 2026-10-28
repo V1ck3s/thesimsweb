@@ -21,6 +21,7 @@
  * layers and damage rectangles.
  */
 
+import { resolveRoomID } from "../../sim/routing.js";
 import { OD, type ObjectModule, type XObject } from "../objects.js";
 import { getWall, segIndex, SEG_ROTATION, type TileWalls } from "../tilewalls.js";
 import { setFixedWall } from "./wallworld.js";
@@ -317,7 +318,7 @@ export class Placement {
     return r;
   }
 
-  /** cXObject::SetLocation (contained objects follow). */
+  /** cXObject::SetLocation (contained objects follow; the room id is resolved). */
   setLocation(obj: XObject, p: FPt, level: number, depth = 0): void {
     obj.isStatic = false;
     obj.staticWhenIdle = false;
@@ -325,6 +326,8 @@ export class Placement {
     obj.fy = p.fy;
     obj.level = level;
     obj.rect = this.computeRect(obj, p);
+    // ResolveRoomID into object data 29 (the room-changed dispatch 0xf3 is not ported).
+    Placement.setOd(obj, 29, resolveRoomID(this.world, p.fx, p.fy, level));
     if (depth > 64) return;
     for (const s of obj.objectSlots.slice(1)) {
       const c = this.get(s.containedId);

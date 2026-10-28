@@ -43,8 +43,18 @@ import { Simulator } from "../sim/simulator.js";
 import type { WorldHooks } from "../sim/simmodule.js";
 import { SimObject } from "../sim/xobject.js";
 import type { PersonSim } from "../sim/person.js";
-import { TSPieMenu } from "../ui/piemenu.js";
-import { popupHeadImage } from "../cas/portraits.js";
+import { CMD_PIE_CANCEL, CMD_PIE_CHAR, CMD_PIE_HILITE, CMD_PIE_PICK, TSPieMenu } from "../ui/piemenu.js";
+import {
+  getPopupHeadLocation,
+  nodPopupHead,
+  renderPopupHead,
+  renderRoundShadow,
+  setPopupHeadAttitude,
+  startPopupHead,
+  startPopupHeadSubmenu,
+  stopPopupHead,
+  stopPopupHeadSubmenu,
+} from "../sims/popuphead.js";
 import { winMgr } from "../ui/winmgr.js";
 import type { TreeTableEntry } from "../sim/treetable.js";
 import { pointToObjectId, PickMode } from "./tools/picking.js";
@@ -212,7 +222,7 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
       v.people = this.people;
       this.lotObjects.drawer.placeHeld = (d, rp) => this.placeHeld(d, rp);
       // `?nosim` keeps the lot static (debug comparison).
-      if (!new URLSearchParams(location.search).has("nosim")) await this.initSimulator(house, this.lotObjects);
+      if (!new URLSearchParams(location.search).has("nosim")) await this.initSimulator(house, this.lotObjects, world.fixed);
     }
     // HouseViewer::DoStream's roof settings; DiscoverTilesToRoof's stairs test reads the objects.
     loadRoofSettings(house);
@@ -699,7 +709,7 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
       present.add(info.guid | 0);
       const ps = sim.module.persons.find((x) => x.obj === obj);
       if (ps && this.people && (await this.people.addPerson(nbhdDir, obj))) {
-        this.people.bindSim(obj, (sk) => ps.animator.attach(sk), () => ps.renderDir ?? ps.obj.dir);
+        this.people.bindSim(obj, (sk) => ps.animator.attach(sk), () => ps.renderDir ?? ps.obj.dir, () => ps.animator.followPos);
       }
     }
     v.dirty = true;
@@ -738,27 +748,32 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
     if (!target) return;
     const entries = person.menuFor(target);
     if (!entries.length) return;
-    const e = await this.doMenu(person, entries, this.area.left + x, this.area.top + y);
-    if (e) person.addAction(person.makeInteraction(target, e, 50));
+    await this.doMenu(person, entries, this.area.left + x, this.area.top + y, (e) => person.addAction(person.makeInteraction(target, e, 50)));
   }
 
   /** The Live mode sub pie (cWinPeople::GetPeopleSubPie), made on first use. */
   private subPie: TSPieMenu | null = null;
-  /** The pie heads made so far, by body strings. */
-  private readonly popupHeads = new Map<string, ImageBitmap | null>();
 
   /**
-   * cObjPickerTool::DoMenu: names "a/b" go in a sub menu "a" (made at the
-   * place of its first entry), others straight in the people pie. Picking a
-   * sub menu pops the sub pie up at the cursor with the sub menu's name as
-   * title; letting go there near its center comes back to the people pie,
-   * elsewhere cancels. The selected sim's head (SAnimator::StartPopupHead)
-   * sits at the center. Not ported: pages of 12 items (-3), and the people
-   * pie staying up, its items disabled, under the sub pie.
+   * cObjPickerTool::DoMenu. Names "a/b" go in a sub menu "a" (made at the
+   * place of its first entry), others straight in the people pie. A pie
+   * shows 12 entries from the current page; Tab (cWinPeople::TSOnCommand
+   * ends the popped pie with -3) moves to the next 12, back to the first
+   * past the end. The people pie pops at the click with end mode -1 and,
+   * once its loop is over, stays up in the main window; the selected sim's
+   * head (SAnimator::StartPopupHead) starts after its first popup. Picking
+   * a sub menu disables (hides) the people pie's items, titles the sub pie
+   * with the sub menu's name and pops it (end mode 0) centered on the
+   * picked label (GetPopupX + GetCurItemCenterX; the original also warps
+   * the cursor there), the head's shadow following
+   * (StartPopupHeadSubmenu). Letting go of the sub pie within its inactive
+   * radius comes back to the people pie at the click, elsewhere cancels.
+   * Interactions are queued as they are picked (MenuItemSelected through
+   * `onSelected`), so Shift keeps the sub pie up for more.
    */
-  private async doMenu(person: PersonSim, entries: TreeTableEntry[], x: number, y: number): Promise<TreeTableEntry | null> {
-    type Item = { text: string; entry: TreeTableEntry | null; sub: Array<{ text: string; entry: TreeTableEntry }> };
-    const top: Item[] = [];
+  private async doMenu(person: PersonSim, entries: TreeTableEntry[], x: number, y: number, onSelected: (e: TreeTableEntry) => boolean): Promise<void> {
+    type MenuEntry = { text: string; entry: TreeTableEntry | null; sub: MenuEntry[] };
+    const top: MenuEntry[] = [];
     for (const e of entries) {
       const slash = e.name.indexOf("/");
       if (slash < 0) {
@@ -771,54 +786,126 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
         m = { text: head, entry: null, sub: [] };
         top.push(m);
       }
-      m.sub.push({ text: e.name.slice(slash + 1), entry: e });
+      m.sub.push({ text: e.name.slice(slash + 1), entry: e, sub: [] });
     }
     const pie = (this.pie ??= await TSPieMenu.forLiveMode(this.ctx));
     const sub = (this.subPie ??= await TSPieMenu.forLiveMode(this.ctx));
-    const headImg = await this.popupHead(person, pie);
-    const paintHead = headImg
-      ? (g: Gfx, cx: number, cy: number): void => g.blit(headImg, cx - (headImg.width >> 1), cy - (headImg.height >> 1))
-      : null;
-    pie.onPaintCenter = paintHead;
-    sub.onPaintCenter = paintHead;
-    const popup = (m: TSPieMenu, px: number, py: number, items: string[]): Promise<number> =>
-      new Promise((resolve) => m.show(px, py, items, resolve));
+    const downX = x;
+    const downY = y;
+    /** +0x5c / +0x60: in the sub menu `subIndex` of `top`; +0x64: first entry shown. */
+    let inSub = false;
+    let subIndex = -1;
+    let page = 0;
+    let list = top;
+    /** +0x90: the people pie went up (it stays in the main window). */
+    let keepPie = false;
+    const shown = (): MenuEntry[] => (inSub ? top[subIndex]!.sub : top);
+    // cWinPeople::TSOnCommand for both pies: picks (MenuItemSelected),
+    // highlights (MenuItemChanged) and the Tab / Escape characters.
+    const onCommand = (cmd: number, m: TSPieMenu, arg: number): boolean => {
+      if (cmd === CMD_PIE_PICK) {
+        // cObjPickerTool::MenuItemSelected
+        const shift = winMgr.isKeyDown("Shift");
+        const it = list[m.getSelection() + page];
+        if (it && m.getSelection() >= 0) {
+          if (!it.entry) {
+            m.endPopup();
+            return true;
+          }
+          if (onSelected(it.entry)) {
+            if (shift) nodPopupHead();
+            else m.endPopup();
+            return true;
+          }
+        }
+        if (!shift) m.endPopup();
+        // sound: cTool::DoDeniedSound
+        return false;
+      }
+      if (cmd === CMD_PIE_HILITE) {
+        // cObjPickerTool::MenuItemChanged: the attitude (score unused by SetAttitude)
+        setPopupHeadAttitude(0, winMgr.isKeyDown("Shift"), winMgr.isKeyDown("Control"));
+        return true;
+      }
+      if (cmd === CMD_PIE_CANCEL) {
+        if (m.getPoppedUp()) m.endPopup(-1);
+        return true;
+      }
+      if (cmd === CMD_PIE_CHAR) {
+        if (arg === 9) m.endPopup(-3);
+        else if (arg === 0x1b) m.endPopup(-1);
+        else return false;
+        return true;
+      }
+      return false;
+    };
+    pie.onCommand = onCommand;
+    sub.onCommand = onCommand;
+    const cleanup = (): void => {
+      inSub = false;
+      subIndex = -1;
+      stopPopupHead();
+      if (keepPie) {
+        winMgr.main.childRemove(pie);
+        pie.endPopupWindow();
+      }
+    };
+    let first = true;
     for (;;) {
-      const sel = await popup(
-        pie,
-        x,
-        y,
-        top.map((t) => t.text),
-      );
-      const it = top[sel];
-      if (!it) return null;
-      if (it.entry) return it.entry;
-      sub.title = it.text;
-      const c = winMgr.cursorPosition();
-      const s = await popup(
-        sub,
-        c.x,
-        c.y,
-        it.sub.map((t) => t.text),
-      );
-      const leaf = it.sub[s];
-      if (leaf) return leaf.entry;
-      if (sub.inactiveRadius < sub.getDistance()) return null;
+      const m = inSub ? sub : pie;
+      const l = shown();
+      if (l !== list) page = 0;
+      list = l;
+      m.clear();
+      for (let i = 0; i < 12 && page + i < list.length; i++) m.insertString(list[page + i]!.text);
+      if (!inSub) {
+        keepPie = true;
+      } else {
+        x = pie.getPopupX() + pie.getCurItemCenterX();
+        y = pie.getPopupY() + pie.getCurItemCenterY();
+      }
+      m.popupBegin(x, y, !winMgr.isMouseButtonDown(), inSub ? 0 : -1);
+      if (first) {
+        first = false;
+        const lp = this.people?.people.find((q) => q.obj === person.obj);
+        if (lp) startPopupHead(pie, lp.anim.bodyStrings.strings);
+      }
+      const sel = await m.popupEventLoop();
+      m.popupEnd();
+      if (keepPie) winMgr.main.childAdd(pie);
+      if (sel === -3) {
+        page = page + 12 > list.length ? 0 : page + 12;
+        continue;
+      }
+      if (sel === -2) {
+        if (inSub) stopPopupHeadSubmenu();
+        cleanup();
+        return;
+      }
+      if (sel === -1) {
+        // the sub pie let go near its center: back to the people pie
+        if (inSub && sub.getDistance() <= sub.getInactiveRadius()) {
+          inSub = false;
+          x = downX;
+          y = downY;
+          stopPopupHeadSubmenu();
+          continue;
+        }
+        cleanup();
+        return;
+      }
+      const it = list[sel + page];
+      if (!it || it.entry) {
+        if (it && inSub) stopPopupHeadSubmenu();
+        cleanup();
+        return;
+      }
+      subIndex = sel + page;
+      inSub = true;
+      if (m.getSelection() >= 0) sub.title = m.getItemText(m.getSelection());
+      startPopupHeadSubmenu(sub);
+      for (let i = 0; i < pie.getItemCount(); i++) pie.enableItem(i, false);
     }
-  }
-
-  /** PopupHead: the selected sim's head for the pie center (a still here). */
-  private async popupHead(person: PersonSim, pie: TSPieMenu): Promise<ImageBitmap | null> {
-    const lp = this.people?.people.find((q) => q.obj === person.obj);
-    if (!lp) return null;
-    const strings = lp.anim.bodyStrings.strings;
-    const key = strings.join("|");
-    if (!this.popupHeads.has(key)) {
-      // inside the pie's inactive circle
-      const size = Math.max(16, 2 * pie.inactiveRadius - 6);
-      this.popupHeads.set(key, await popupHeadImage(strings, Math.trunc(size * 0.8), size).catch(() => null));
-    }
-    return this.popupHeads.get(key) ?? null;
   }
 
   /** XViewer routes the mouse to cGameTools' current tool in buy and build modes. */
@@ -872,9 +959,11 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
    * and hides killed objects (the object module and tile arrays are not
    * updated yet). A load failure leaves the lot static.
    */
-  private async initSimulator(house: ResFile, lot: LotObjects): Promise<void> {
+  private async initSimulator(house: ResFile, lot: LotObjects, fixed?: FixedWorld): Promise<void> {
     try {
       const sim = await Simulator.create(house, lot.objects.values() as Iterable<XObject>);
+      // The simulation works on the viewer's fixed world (the router reads its rooms, walls and tile objects).
+      if (fixed) sim.world = fixed;
       sim.state = this.ctx.state;
       sim.module.onDirty = (): void => {
         if (this.viewer) this.viewer.dirty = true;
@@ -893,6 +982,7 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
           ps.obj,
           (sk) => ps.animator.attach(sk),
           () => ps.renderDir ?? ps.obj.dir,
+          () => ps.animator.followPos,
         );
       }
     } catch (e) {
@@ -995,6 +1085,12 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
       fc.drawImage(v.comp.canvas, 0, 0);
     }
     if (this.frame) g.ctx.drawImage(this.frame, g.ox, g.oy);
+    // HouseViewer::UpdateStaticDynamic: the pie's round shadow, then the
+    // popup head over the 3D pass (SAnimator::GetPopupHeadLocation / RenderPopupHead).
+    const clip = { left: g.ox, top: g.oy, right: g.ox + this.getW(), bottom: g.oy + this.getH() };
+    const loc = getPopupHeadLocation();
+    if (loc) renderRoundShadow(g.ctx, clip, loc.x, loc.y, loc.z);
+    renderPopupHead(g.ctx, clip);
   }
 
   /** EdgeDetectScroller::OnKeyDown: arrows scroll (VK_LEFT 0x25 .. VK_DOWN 0x28). */

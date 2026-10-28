@@ -27,7 +27,8 @@ import { EP } from "./objfntable.js";
 import { PersonSim, SCORE_CURVE_MOTIVES, type Interaction } from "./person.js";
 import { curvesFromStrings, HAPPY_CURVE_MOTIVES, type MotiveCurve } from "./motives.js";
 import { loadStringSet, loadTree } from "./behavior.js";
-import type { Neighbor, NeighborhoodData } from "../data/neighborhood.js";
+import type { Neighbor, NeighborhoodData, SimInventory } from "../data/neighborhood.js";
+import type { SimCareer } from "./careers.js";
 import { TreeTable } from "./treetable.js";
 import { loadFloatConstants } from "./floatconstants.js";
 import { setMotiveConstants } from "./motives.js";
@@ -117,6 +118,14 @@ export interface WorldHooks {
   lastError(): { code: number; obstacle: number };
 }
 
+/** See SimModule.transitHooks (nbhd/transit.ts). */
+export interface TransitHooks {
+  /** cXObject::TryDialog kinds 5 / 7 / 0xb / 0xd; undefined = not handled. */
+  tryDialog(o: SimObject, kind: number): number | undefined;
+  /** cXObject::TryGenericSimCall entries 3 (RemoveTaxiDialog) and 17 (TryChangeLots). */
+  genericSimCall(o: SimObject, call: number): number;
+}
+
 /** One recorded side effect the port does not perform (sounds, dialogs, UI). */
 export interface SimEvent {
   tick: number;
@@ -136,6 +145,17 @@ export class SimModule {
   readonly people: SimObject[] = [];
   /** The neighborhood (person persistent data, relationships); null when it failed to load. */
   nbhd: NeighborhoodData | null = null;
+  /** Inventories made while no neighborhood is loaded (GetInventoryByNeighbourID). */
+  private readonly sessionInventories: SimInventory[] = [];
+  /** GetCareers: the careers in LoadCareers' order (sim/careers.ts); set by the Simulator. */
+  careers: SimCareer[] = [];
+  /**
+   * Neighborhood +0x11c: the other house numbers, sorted by distance to the
+   * current one (Neighborhood::LoadHouse, compareHouses). LoadHouse adds the
+   * numbers 1 .. n-1, n being the size of the house position vector
+   * (+0x110), which nothing in the Mac build fills: the list stays empty.
+   */
+  readonly neighborhoodHouses: number[] = [];
   /** cXPerson's happiness weight curves (Global.iff STR# 0x1f6 adult, 0x1f8 child). */
   happyCurves: MotiveCurve[] = [];
   happyCurvesChild: MotiveCurve[] = [];
@@ -186,6 +206,14 @@ export class SimModule {
   }
 
   /**
+   * ObjectModule::CleanupPeople: every person but `obj` gets Cleanup(obj)
+   * (vtable +0x40, cXPerson::Cleanup: what it was doing with `obj`).
+   */
+  cleanupPeople(obj: SimObject): void {
+    for (const p of this.people) if (p !== obj) p.cleanupFor(obj);
+  }
+
+  /**
    * The world side of the placement primitives (set by the lot view; null
    * in the headless test, where they are logged and fail): `selector` looks
    * a GUID up (undefined while its object file opens, null when unknown),
@@ -200,6 +228,9 @@ export class SimModule {
 /** lbl_105BE790: the interaction being run immediately by cXPerson::AddAction. */
   immediateAction: Interaction | null = null;
     worldHooks: WorldHooks | null = null;
+
+  /** Lot changes (town pickers, taxi splash, TryChangeLots), set by the game. */
+  transitHooks: TransitHooks | null = null;
 
   /** Called when a person's interaction queue or current action changes (the Live panel). */
   onQueueChanged: ((p: PersonSim) => void) | null = null;
@@ -562,6 +593,26 @@ export class SimModule {
   /** Neighborhood::FindNeighborByID. */
   findNeighborByID(id: number): Neighbor | null {
     return this.nbhd?.neighbors.find((n) => n.id === id) ?? null;
+  }
+
+  /** Neighborhood::FindNeighborByGUID. */
+  findNeighborByGUID(guid: number): Neighbor | null {
+    return this.nbhd?.neighbors.find((n) => (n.guid | 0) === (guid | 0)) ?? null;
+  }
+
+  /**
+   * Neighborhood::GetInventoryByNeighbourID: the neighbor's SimInventory,
+   * a new empty one added when it has none. Without a neighborhood they
+   * are kept for the session.
+   */
+  getInventoryByNeighbourID(id: number): SimInventory {
+    const list = this.nbhd?.inventories ?? this.sessionInventories;
+    let inv = list.find((x) => x.neighborId === id);
+    if (!inv) {
+      inv = { neighborId: id, tokens: [] };
+      list.push(inv);
+    }
+    return inv;
   }
 
   /**

@@ -7,6 +7,8 @@
  *         STR# 200 "Person Data Labels") and the relationship matrix.
  *   FAMI  "IMAF" one Family per chunk: house number, budget, member GUIDs...
  *   FAMs  the family name (STR#, chunk id = FAMI id).
+ *   NGBH  Neighborhood::DoStream (chunk 1): tutorial flags, then (version
+ *         > 0x3f) the SimInventory of each neighbor.
  *
  * Characters live in UserData<N>/Characters/<Name>.iff: CTSS 2000 holds the first
  * name and biography per language, BMP_ 2002..2004 the pre-rendered portraits.
@@ -15,6 +17,7 @@
 import { readStandaloneIff, type IffChunkInfo } from "../../engine/assets.js";
 import { engine } from "../../engine/wasm.js";
 import { LANG_FRENCH } from "../res/uires.js";
+import { ReconBuffer } from "../world/reconbuffer.js";
 import { ReconReader } from "./recon.js";
 
 /** Person data indices (Behavior.iff STR# 200). */
@@ -84,10 +87,52 @@ export interface Character {
   bitmaps: Map<number, Uint8Array>;
 }
 
+/** SimInventoryToken: +0 token type, +4 GUID, +8 count. */
+export interface SimInventoryToken {
+  type: number;
+  guid: number;
+  count: number;
+}
+
+/** SimInventory: +0 neighbor id, +4 its tokens. */
+export interface SimInventory {
+  neighborId: number;
+  tokens: SimInventoryToken[];
+}
+
 export interface NeighborhoodData {
   dir: string;
   neighbors: Neighbor[];
   families: Family[];
+  /** Neighborhood +400 (NGBH): one SimInventory per neighbor that has one. */
+  inventories: SimInventory[];
+  /** Neighborhood +0x128 (NGBH): 16 shorts (one before version 0x14), read by expression scope 34. */
+  data: Int16Array;
+}
+
+/**
+ * Neighborhood::DoStream (read): +0x128 one short (version < 0x14) or 16,
+ * then (version > 0x3f) DoPtrVectorStream<SimInventory>: a count, then per
+ * entry a ReconInt "present" flag and SimInventory::DoStream (neighbor id,
+ * DoContainerStream of tokens: count, then type, GUID, count). The flags
+ * that follow (+0x19c..) are not kept.
+ */
+export function parseNgbh(bytes: Uint8Array): { data: Int16Array; inventories: SimInventory[] } {
+  const { buf, version } = ReconBuffer.fromChunk(bytes);
+  const data = new Int16Array(0x10);
+  data.set(buf.recon16s(version < 0x14 ? 1 : 0x10));
+  const out: SimInventory[] = [];
+  if (version <= 0x3f) return { data, inventories: out };
+  const n = buf.recon32();
+  for (let i = 0; i < n; i++) {
+    if (buf.recon32() === 0) continue;
+    const neighborId = buf.recon16();
+    const count = buf.recon32();
+    const tokens: SimInventoryToken[] = [];
+    for (let k = 0; k < count; k++) tokens.push({ type: buf.recon32(), guid: buf.recon32(), count: buf.recon16() });
+    out.push({ neighborId, tokens });
+  }
+  return { data, inventories: out };
 }
 
 function payload(data: Uint8Array, c: IffChunkInfo): Uint8Array {
@@ -206,7 +251,14 @@ export async function loadNeighborhood(dir = "UserData", lang = LANG_FRENCH): Pr
   const families = chunks
     .filter((c) => c.kind === "FAMI")
     .map((c) => parseFami(payload(data, c), c.id, names.get(c.id) ?? ""));
-  return { dir, neighbors, families };
+  const ngbh = chunks.find((c) => c.kind === "NGBH" && c.id === 1);
+  let ngbhData: { data: Int16Array; inventories: SimInventory[] } = { data: new Int16Array(0x10), inventories: [] };
+  try {
+    if (ngbh) ngbhData = parseNgbh(payload(data, ngbh));
+  } catch {
+    // keep the defaults
+  }
+  return { dir, neighbors, families, inventories: ngbhData.inventories, data: ngbhData.data };
 }
 
 export async function loadCharacter(dir: string, shortName: string, lang = LANG_FRENCH): Promise<Character> {

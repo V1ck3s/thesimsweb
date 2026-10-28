@@ -278,6 +278,31 @@ export class Behavior {
     return 0;
   }
 
+  /**
+   * Behavior::GetCumulativeTreeVersion: the root tree's version << 16 plus
+   * the versions of every tree it reaches through subroutine calls
+   * (primitives > 0xff), itself included. ObjSelector::GetInitTreeVersion /
+   * GetMainTreeVersion apply it to entry points 0 / 1.
+   */
+  getCumulativeTreeVersion(root: number): number {
+    const todo = [root];
+    const seen: number[] = [];
+    while (todo.length) {
+      const id = todo.pop()!;
+      if (seen.includes(id)) continue;
+      seen.push(id);
+      const t = this.getTree(id);
+      if (!t) continue;
+      for (let i = 0; i < t.count; i++) {
+        const op = t.primitive(t.nodeOffset(i)) & 0x7fff;
+        if (op > 0xff) todo.push(op);
+      }
+    }
+    let v = (this.getTree(root)?.version ?? 0) << 16;
+    for (const id of seen) v += this.getTree(id)?.version ?? 0;
+    return v | 0;
+  }
+
   /** Behavior::GetTreeName. */
   getTreeName(id: number): string {
     if (id === 0x7fff) return "";

@@ -17,12 +17,14 @@
  */
 
 import { loadNeighborhood } from "../data/neighborhood.js";
+import { loadSimCareers } from "./careers.js";
 import { VBAnimMgr } from "../sims/vbanimmgr.js";
 import { Mode, type CPState } from "../cpstate.js";
 import { ResFile } from "../world/iffres.js";
 import { FixedWorld } from "../world/world.js";
 import { loadStringSet } from "./behavior.js";
 import type { XObject } from "../world/objects.js";
+import type { ObjSelector } from "../world/objselector.js";
 import { getNextRandomNumber, getSRandSeed, setSRandSeed } from "../world/random.js";
 import { ReconBuffer } from "../world/reconbuffer.js";
 import { EP } from "./objfntable.js";
@@ -115,6 +117,12 @@ export class Simulator {
   world: FixedWorld | null = null;
   /** Tick the people (cXPerson); false keeps them frozen (debug). */
   static simulatePeople = true;
+  /**
+   * lbl_105BA214 (byte 1 in the data section; a cheat command stores into
+   * it): cXObject::PostLoad restarts objects whose trees changed since the
+   * save only while it is set.
+   */
+  static resetChangedTrees = true;
 
   /** cSimulator::Init defaults. */
   constructor() {
@@ -154,6 +162,8 @@ export class Simulator {
     // Neighborhood::Load reads the lot zoning from <neighborhood>/LotZoning.iff.
     const zoning = await ResFile.open(`${nbhdDir}/LotZoning.iff`).catch(() => null);
     if (zoning) sim.module.loadZoning(loadStringSet(zoning, 1) ?? []);
+    // LoadCareers: one cCareer per CARR chunk of work.iff, in index order (GetCareers).
+    sim.module.careers = await loadSimCareers();
     // SAnimator::Initialize: a skeleton per person (the lot view attaches its VitaBoy's instead).
     const mgr = await VBAnimMgr.get().catch(() => null);
     for (const p of sim.module.persons) {
@@ -204,6 +214,7 @@ export class Simulator {
         );
       }
     }
+    const versions = new Map<ObjSelector, boolean>();
     for (const o of m.list) {
       if (o.isPerson && !Simulator.simulatePeople) {
         m.setSimFlag(o.id, 1, false);
@@ -212,10 +223,17 @@ export class Simulator {
       try {
         const load = o.fnTable.getTreeID(EP.load);
         if (load !== 0) o.runCheckTree(o.behavior, 0, load, null);
-        // A placeholder selector (or changed trees, +0xb4 bit 1, not detected here) restarts the object.
-        if (o.obj.isPlaceholder || o.stack.getStackSize() === 0) {
+        // cXObject::PostLoad: changed trees (ObjSelector +0xb4 bit 1, with
+        // lbl_105BA214 set) or the standard placeholder: ObjectModule::CleanupPeople
+        // and Cleanup(0); changed trees then rerun Init. (An object saved
+        // without a stack is also restarted here: it would underflow on its
+        // first tick.)
+        const changed = Simulator.resetChangedTrees && this.treeVersionChanged(o, versions);
+        const empty = o.stack.getStackSize() === 0;
+        if (changed || o.obj.isPlaceholder || empty) {
+          m.cleanupPeople(o);
           o.cleanup();
-          const init = o.fnTable.getTreeID(EP.init);
+          const init = changed || empty ? o.fnTable.getTreeID(EP.init) : 0;
           if (init !== 0) o.runCheckTree(o.behavior, 0, init, null);
         }
       } catch (e) {
@@ -227,6 +245,31 @@ export class Simulator {
       }
       m.setSimFlag(o.id, 2, o.obj.objectData[60]! !== 0);
     }
+  }
+
+  /**
+   * ObjectSaveTypeTable::DoStream (read) sets ObjSelector +0xb4 bit 1 when
+   * the type's saved init / main cumulative tree versions differ from the
+   * installed trees' (ObjSelector::GetInitTreeVersion / GetMainTreeVersion);
+   * a version 0 table saved none and flags the person types. Cached per
+   * selector like the selector bit.
+   */
+  private treeVersionChanged(o: SimObject, cache: Map<ObjSelector, boolean>): boolean {
+    const sel = o.obj.selector;
+    let changed = cache.get(sel);
+    if (changed === undefined) {
+      const saved = o.obj.savedTreeVersions;
+      if (!saved) {
+        changed = o.isPerson;
+      } else {
+        const b = this.module.behaviorOf(sel);
+        changed =
+          saved.init !== b.getCumulativeTreeVersion(o.fnTable.getTreeID(EP.init)) ||
+          saved.main !== b.getCumulativeTreeVersion(o.fnTable.getTreeID(EP.main));
+      }
+      cache.set(sel, changed);
+    }
+    return changed;
   }
 
   // --- clock / speed ----------------------------------------------------------------

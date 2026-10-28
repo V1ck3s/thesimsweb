@@ -184,6 +184,12 @@ export class XObject implements PlacedObject {
   mt1a8 = 0;
   portalValues: number[] = [];
   simFlags = 0xffff;
+  /**
+   * ObjectSaveTypeTable: the init / main cumulative tree versions saved with
+   * this object's type (null: none saved). cXObject::PostLoad compares them
+   * with the installed trees (ObjSelector +0xb4 bit 1).
+   */
+  savedTreeVersions: { init: number; main: number } | null = null;
   /** TreeStack::ReconStream: the saved interpreter stack (null when not saved). */
   savedStack: SavedTreeStack | null = null;
   /** +0xe4 RelMatrix: other object id -> relationship values (RelInt). */
@@ -538,6 +544,7 @@ export class ObjectModule {
       const obj = constructObject(sel, placeholderSet.has(sel), missing);
       if (!obj || this.objects.has(id) || id < 1) continue;
       obj.objectId = id;
+      obj.savedTreeVersions = table.treeVersions.get(index) ?? null;
       this.objects.set(id, obj);
       obj.initialize();
       obj.objFlags |= 0x80;

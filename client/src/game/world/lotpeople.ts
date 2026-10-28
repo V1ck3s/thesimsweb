@@ -23,6 +23,13 @@ export interface LotPerson {
   anim: SAnimator;
   /** Set when the simulation drives the person (bindSim): its facing (45 degree units, fractional). */
   simDir?: () => number;
+  /** Set when the simulation drives the person: the walk engine's position while it moves it (SAnimator +0x80/+0x84), null otherwise. */
+  simPos?: () => { fx: number; fy: number } | null;
+}
+
+/** Where a person is drawn: the walk engine's grid position while it moves, else the object's. */
+function drawPos(p: LotPerson): { fx: number; fy: number } {
+  return p.simPos?.() ?? p.obj;
 }
 
 export class LotPeople {
@@ -67,12 +74,13 @@ export class LotPeople {
    * `attach` receives the VitaBoy skeleton (the sim's SAnimator poses it),
    * and `dir` gives the facing to draw. False when `obj` has no animator.
    */
-  bindSim(obj: PlacedObject, attach: (skeleton: Skeleton) => void, dir: () => number): boolean {
+  bindSim(obj: PlacedObject, attach: (skeleton: Skeleton) => void, dir: () => number, pos?: () => { fx: number; fy: number } | null): boolean {
     const p = this.people.find((x) => x.obj === obj);
     if (!p) return false;
     p.anim.vitaboy.practices.length = 0;
     attach(p.anim.vitaboy.skeleton);
     p.simDir = dir;
+    if (pos) p.simPos = pos;
     return true;
   }
 
@@ -95,7 +103,8 @@ export class LotPeople {
     const t = OFFSETS[bs.get(slot === 0 ? 7 : 5).toLowerCase()] ?? [0, 0, 0];
     const r = quatRotate(bone.worldRot, t);
     const local: Vec3 = [bone.worldPos[0] + r[0], bone.worldPos[1] + r[1], bone.worldPos[2] + r[2]];
-    const place = { x: obj.fx / 16, y: obj.fy / 16, level: 1, alt, direction: p.simDir ? p.simDir() : obj.dir };
+    const at = drawPos(p);
+    const place = { x: at.fx / 16, y: at.fy / 16, level: 1, alt, direction: p.simDir ? p.simDir() : obj.dir };
     return transformPoint(local, rootTransform(place, rotation));
   }
 
@@ -125,8 +134,9 @@ export class LotPeople {
     const p = this.people.find((x) => x.obj === obj);
     if (!p || obj.level > viewer.level || obj.hidden !== 0) return null;
     const cam = this.renderer.cameraFor(LotPeople.viewOf(viewer));
+    const at = drawPos(p);
     const root = rootTransform(
-      { x: obj.fx / 16, y: obj.fy / 16, level: obj.level, alt: viewer.world.fixed.getFAlt(obj.fx, obj.fy), direction: p.simDir ? p.simDir() : obj.dir },
+      { x: at.fx / 16, y: at.fy / 16, level: obj.level, alt: viewer.world.fixed.getFAlt(at.fx, at.fy), direction: p.simDir ? p.simDir() : obj.dir },
       viewer.world.rotation,
     );
     let r: [number, number, number, number] | null = null;
@@ -148,14 +158,16 @@ export class LotPeople {
   /** Draw everyone on the levels up to the viewer's current level. */
   draw(viewer: HouseViewer): void {
     const view = LotPeople.viewOf(viewer);
-    for (const { obj, anim, simDir } of this.people) {
+    for (const person of this.people) {
+      const { obj, anim, simDir } = person;
       if (obj.level > viewer.level) continue;
+      const at = drawPos(person);
       // HouseViewer::Render3DObject: RoomManager::GetRoomAmbientLight at the person's view position.
-      const [vx, vy] = RotatableWorld.rotateCoords(obj.fx, obj.fy, viewer.world.rotation, 0x400);
+      const [vx, vy] = RotatableWorld.rotateCoords(Math.round(at.fx), Math.round(at.fy), viewer.world.rotation, 0x400);
       const ambient = viewer.ambientAt(vx, vy, obj.level);
       this.renderer.renderSim(
         anim.vitaboy,
-        { x: obj.fx / 16, y: obj.fy / 16, level: obj.level, alt: viewer.world.fixed.getFAlt(obj.fx, obj.fy), direction: simDir ? simDir() : obj.dir },
+        { x: at.fx / 16, y: at.fy / 16, level: obj.level, alt: viewer.world.fixed.getFAlt(Math.round(at.fx), Math.round(at.fy)), direction: simDir ? simDir() : obj.dir },
         view,
         { ambient },
       );
