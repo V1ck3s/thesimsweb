@@ -143,6 +143,37 @@ export interface SimEvent {
 /** Family::LoadSpellsForFamily's spell book (ObjectModule::GetObjectByGUID). */
 const GUID_SPELL_BOOK = 0xb6c90029;
 
+/**
+ * The first relationship entry of `nb` toward `other` (what
+ * `relationships.find` returns), through an index rebuilt when entries were
+ * added: the neighbor loops of the Visit Generator read friend counts for
+ * every neighbor pair each hour.
+ */
+const relIndexes = new WeakMap<Neighbor, { n: number; map: Map<number, Neighbor["relationships"][number]> }>();
+function relationEntry(nb: Neighbor, other: number): Neighbor["relationships"][number] | undefined {
+  let ix = relIndexes.get(nb);
+  if (!ix || ix.n !== nb.relationships.length) {
+    const map = new Map<number, Neighbor["relationships"][number]>();
+    for (const r of nb.relationships) if (!map.has(r.other)) map.set(r.other, r);
+    ix = { n: nb.relationships.length, map };
+    relIndexes.set(nb, ix);
+  }
+  return ix.map.get(other);
+}
+
+/** The neighbors by id (the first one of an id, as `find`) and their sorted ids, rebuilt when neighbors were added. */
+const neighborIndexes = new WeakMap<Neighbor[], { n: number; byId: Map<number, Neighbor>; ids: number[] }>();
+function neighborIndex(list: Neighbor[]): { byId: Map<number, Neighbor>; ids: number[] } {
+  let ix = neighborIndexes.get(list);
+  if (!ix || ix.n !== list.length) {
+    const byId = new Map<number, Neighbor>();
+    for (const nb of list) if (!byId.has(nb.id)) byId.set(nb.id, nb);
+    ix = { n: list.length, byId, ids: [...byId.keys()].sort((a, b) => a - b) };
+    neighborIndexes.set(list, ix);
+  }
+  return ix;
+}
+
 export class SimModule {
   /** +0x20: objects by id - 1. */
   readonly objects: Array<SimObject | null> = [];
@@ -212,6 +243,8 @@ export class SimModule {
   /** Called when an object's look changed (cXObject::Dirty) or it was killed. */
   onDirty: ((o: SimObject) => void) | null = null;
   onKill: ((o: SimObject) => void) | null = null;
+  /** KillOutOfWorldObject's deselection of the selected person (OnSelectionChange, GlobalDispatch(0xe4, 0)). */
+  onDeselect: ((o: SimObject) => void) | null = null;
   /** Neighborhood +0x16c zoning: house number -> 1 residential / 2 community (UserData LotZoning.iff STR# 1). */
   readonly zoning = new Map<number, number>();
   /** ObjectModule::DisableBuyAndBuild: the object that disabled buy and build modes (0 = enabled). */
@@ -822,6 +855,12 @@ export class SimModule {
     // KillOutOfWorldObject flags every part (+0x114 0x40) before the first one goes.
     for (const x of group) x.killed = true;
     for (const x of group) {
+      // The selected person (+0x114 bit 2) loses its hilite and OnSelectionChange
+      // runs first: the plumb bob on its head is picked up, not killed with the slots.
+      if (x.isPerson && this.sim.globals[3] === x.id) {
+        this.sim.globals[3] = 0;
+        this.onDeselect?.(x);
+      }
       this.cleanupPeople(x);
       x.cleanup();
       for (const s of x.obj.objectSlots.slice(1)) {
@@ -898,14 +937,20 @@ export class SimModule {
 
   /** Neighborhood::GetNextNeighborID: the next id above `id` that has a neighbor (0 when none). */
   nextNeighborID(id: number): number {
-    let best = 0;
-    for (const n of this.nbhd?.neighbors ?? []) if (n.id > id && (best === 0 || n.id < best)) best = n.id;
-    return best;
+    const ids = neighborIndex(this.nbhd?.neighbors ?? []).ids;
+    let lo = 0;
+    let hi = ids.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (ids[mid]! > id) hi = mid;
+      else lo = mid + 1;
+    }
+    return ids[lo] ?? 0;
   }
 
   /** Neighborhood::FindNeighborByID. */
   findNeighborByID(id: number): Neighbor | null {
-    return this.nbhd?.neighbors.find((n) => n.id === id) ?? null;
+    return neighborIndex(this.nbhd?.neighbors ?? []).byId.get(id) ?? null;
   }
 
   /** Neighborhood::FindNeighborByGUID. */
@@ -935,7 +980,7 @@ export class SimModule {
    * neighborhood's own (the relationships panel and the save read them).
    */
   neighborRelation(nb: Neighbor, other: number): { arr: number[] | undefined; grow: (n: number) => number[] } {
-    const find = () => nb.relationships.find((r) => r.other === other);
+    const find = () => relationEntry(nb, other);
     return {
       arr: find()?.values,
       grow: (n) => {
@@ -1006,7 +1051,7 @@ export class SimModule {
 
   /** The daily relationship (RelMatrix value 0) of `from` toward neighbor id `to`, null without an entry. */
   private static dailyRel(from: Neighbor, to: number): number | null {
-    const r = from.relationships.find((x) => x.other === to);
+    const r = relationEntry(from, to);
     return r && r.values.length > 0 ? r.values[0]! : null;
   }
 
@@ -1069,10 +1114,11 @@ export class SimModule {
   /** Neighborhood::UpdateFamilyFriendsCount for one family (see NghInterface.getFamilyFriendsCount). */
   private familyFriendCount(memberGuids: number[]): number {
     const all = this.nbhd?.neighbors ?? [];
-    const members = all.filter((n) => memberGuids.some((g) => (g | 0) === (n.guid | 0)));
+    const guids = new Set(memberGuids.map((g) => g | 0));
+    const members = all.filter((n) => guids.has(n.guid | 0));
     let count = 0;
     for (const n of all) {
-      if (members.includes(n) || !n.personData || n.personData[0x3d] === 0) continue;
+      if (guids.has(n.guid | 0) || !n.personData || n.personData[0x3d] === 0) continue;
       if (members.some((m) => SimModule.areFriends(n, m)) && (n.personData[65] ?? 0) < 2) count++;
     }
     return count;

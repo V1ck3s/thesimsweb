@@ -787,11 +787,13 @@ export class Placement {
    * diagonal wall (segments 0x30), empty when `emptyTile` (levels 1 / 2),
    * in the start tile's room when `sameRoom`, no pool, not flagged 0x20
    * when `buildable`. `random` starts from a random tile near `start` (or
-   * anywhere). The walk around the start (offsets dy / dx): with no
-   * `direction` (-1) a square spiral; directions 0 / 4 search along x
-   * (0, 1, -1, 2, -2, ...), 2 / 6 along y, odd ones stay on the start tile
-   * (jump table lbl_105BB9A4). It gives up after 0x1000 steps or size * 8
-   * steps in a row off the lot.
+   * anywhere). The walk around the start: with no `direction` (-1) a
+   * square spiral; directions 0 / 4 search along y (0, 1, -1, 2, -2, ...),
+   * 2 / 6 along x, odd ones stay on the start tile (jump table
+   * lbl_105BB9A4). The original works on FTilePt { y, x }: its first
+   * coordinate (r28, +0xf4) is `fy`, the second (r27, +0xf8) `fx` (the
+   * random start's offset loop draws y first). It gives up after 0x1000 steps or
+   * size * 8 steps in a row off the lot.
    */
   findGoodLocation(
     obj: XObject,
@@ -805,13 +807,13 @@ export class Placement {
     if (opts.random) {
       const rnd = opts.random;
       if (tileOf(fx) === 0 && tileOf(fy) === 0) {
-        fy = ((rnd() % n) << 4) | 8;
         fx = ((rnd() % n) << 4) | 8;
+        fy = ((rnd() % n) << 4) | 8;
       } else {
         // the offsets add up until the tile is inside the lot
         for (let guard = 0; guard < 64; guard++) {
-          const rx = rnd();
           const ry = rnd();
+          const rx = rnd();
           fy += (((ry % 10) - 5) << 4) | 8;
           fx += (((rx % 10) - 5) << 4) | 8;
           if (!this.outOfBounds(tileOf(fx), tileOf(fy))) break;
@@ -843,13 +845,14 @@ export class Placement {
           return { fx: (x << 4) | 8, fy: (y << 4) | 8 };
         }
       }
+      // r28 = dy (the FTilePt's first coordinate), r27 = dx
       if (dir === -1) {
-        if (dx <= -dy && dx <= dy) dy--;
-        else if (dx <= dy && dx > -dy) dx--;
-        else if (dx > dy && dx >= -dy) dy++;
-        else if (dx > dy && dx < -dy) dx++;
-      } else if (dir === 0 || dir === 4) dx = dx > 0 ? -dx : 1 - dx;
-      else if (dir === 2 || dir === 6) dy = dy > 0 ? -dy : 1 - dy;
+        if (dy <= -dx && dy <= dx) dx--;
+        else if (dy <= dx && dy > -dx) dy--;
+        else if (dy > dx && dy >= -dx) dx++;
+        else if (dy > dx && dy < -dx) dy++;
+      } else if (dir === 0 || dir === 4) dy = dy > 0 ? -dy : 1 - dy;
+      else if (dir === 2 || dir === 6) dx = dx > 0 ? -dx : 1 - dx;
     }
     return null;
   }

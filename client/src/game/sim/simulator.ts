@@ -603,7 +603,7 @@ export class Simulator {
         node: e?.node ?? -1,
         depth: o.getStackSize(),
         prims,
-        errors: o.errors.length,
+        errors: o.errorCount,
         idle: this.module.idleCounter(o.id),
         flags: this.module.getSimFlags(o.id) >>> 16,
       };

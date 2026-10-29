@@ -2013,8 +2013,7 @@ export class PersonSim extends SimObject {
     try {
       this.runOneTickTree(target.behavior, target.id, i.actionTree, { src: Array.from(i.args), at: 0 });
     } catch (err) {
-      const cur = this.getCurElem();
-      if (err instanceof SimError) this.errors.push({ code: err.code, tree: cur?.getTreeID() ?? -1, node: cur?.node ?? -1 });
+      if (err instanceof SimError) this.recordError(err.code);
       while (this.getStackSize() > depth) {
         this.stack.pop();
         this.stackJustPopped();

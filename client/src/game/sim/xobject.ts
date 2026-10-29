@@ -29,7 +29,8 @@ import type { SimModule } from "./simmodule.js";
 import { tryLotChangeCall } from "./lotcalls.js";
 import { PRIM_CONTINUE, PRIM_FALSE, PRIM_TRUE, PRIM_WAIT, TreeSim, simThrow, treeSimGlobals } from "./treesim.js";
 import type { ParamSource, StackElem } from "./treestack.js";
-import { DIR_VEC, rotateOffset } from "./routing.js";
+import { DIR_VEC, rotateOffset, tileObjects } from "./routing.js";
+import { getWall, SEG_ROTATION } from "../world/tilewalls.js";
 import { getBehCareerData, getGrade, offerDialogText, simJobName, type SimCareer } from "./careers.js";
 import { demoteIfNeeded, getTitleFromLevel, promoteIfNeeded } from "./fametrack.js";
 import { balloonSpriteCount, balloonSpriteID, iconSpriteID } from "../world/balloons.js";
@@ -119,6 +120,9 @@ export interface PrimitiveLog {
   counts: Map<number, number>;
 }
 
+/** The Fire object TryBurn makes (ObjectFolder::GetSelectorByGUID(0x24c95f99)). */
+const GUID_FIRE = 0x24c95f99;
+
 /** Person data read by ParseUIString (cXPerson +0x5fc / +0x5fe / +0x60e): job type, job level, gender. */
 const PD_JOB_TYPE = 0x38;
 const PD_JOB_LEVEL = 0x39;
@@ -139,8 +143,10 @@ export class SimObject extends TreeSim {
   errorPending = false;
   /** Primitive opcode -> times run (trace). */
   readonly primCounts = new Map<number, number>();
-  /** Errors caught on this object (code, tree, node). */
-  readonly errors: Array<{ code: number; tree: number; node: number }> = [];
+  /** The last errors caught on this object (code, tree and its label, node), bounded. */
+  readonly errors: Array<{ code: number; tree: number; node: number; label: string }> = [];
+  /** Errors caught on this object since it was made (`errors` keeps the last ones). */
+  errorCount = 0;
   /** InterpValue outputs (+0x128 / +0x12c). */
   outRef: ShortRef | null = null;
   outFRef: FloatRef | null = null;
@@ -179,10 +185,18 @@ export class SimObject extends TreeSim {
 
   /** cXObject::Error: flags the object; TickAllObjects handles it on the next pass. */
   error(code: number): void {
-    const e = this.getCurElem();
-    this.errors.push({ code, tree: e?.getTreeID() ?? -1, node: e?.node ?? -1 });
+    this.recordError(code);
     this.errorPending = true;
     this.module.setSimFlag(this.id, 4, true);
+  }
+
+  /** Notes an error at the current stack frame for the traces (the last 32 are kept). */
+  recordError(code: number): void {
+    const e = this.getCurElem();
+    const tree = e?.getTreeID() ?? -1;
+    this.errors.push({ code, tree, node: e?.node ?? -1, label: e?.behavior?.getTreeName(tree) ?? "" });
+    if (this.errors.length > 32) this.errors.shift();
+    this.errorCount++;
   }
 
   /** cXObject::Simulate: one tick of the main stack, then the keep-awake counter and sprite slots. */
@@ -805,8 +819,8 @@ export class SimObject extends TreeSim {
         return this.tryUpdate(elem, s16(0), s16(2));
       case 8:
         return this.tryRandom(s16(0), s16(2), s16(4), s16(6));
-      case 9: // Burn
-        return this.module.unportedPrim(op, "burn", PRIM_FALSE);
+      case 9:
+        return this.tryBurn(elem, u8(0), u8(1));
       case 10:
         return this.tryTutorial(u8(0));
       case 11:
@@ -2385,6 +2399,131 @@ export class SimObject extends TreeSim {
     // the start tile's room first, then anywhere
     const pos = hooks.findGoodLocation(x, start, level, { ...opts, sameRoom: true }) ?? hooks.findGoodLocation(x, start, level, { ...opts, sameRoom: false });
     return placeAt(pos, level);
+  }
+
+  /**
+   * cXObject::TryBurn (prim 9): sets fire (the Fire object, GUID 0x24c95f99)
+   * to the stack object's tile (operand 0 = 0) or to the tile in front of it
+   * (1: offsets of the jump table lbl_105BBA88; a wall on that side of the
+   * tile stops it unless its style is 3, 5, 6, 0xf or 0x17, a diagonal wall
+   * always). False outside the lot, or when an object on that tile has flag
+   * 0x800 (object data 8) or is a fire already. No burnable object (object
+   * data 40 bit 0x20) on it: a fire at the spot itself. Otherwise the
+   * burnable objects touching it are gathered one at a time (multi-tile
+   * groups, the objects on their tiles, those whose rectangle overlaps one
+   * of the 8 tiles around); any with flag 0x800 stops it, and so do flag
+   * 0x20 or people using it (object data 62) unless operand 1 bit 0 is set.
+   * The persons among them stop what they do (Cleanup) and are put back at
+   * their tile's center (Place, ForceLocation); then every tile of the set
+   * without a fire gets one. True when a fire was made.
+   */
+  protected tryBurn(elem: StackElem, mode: number, flags: number): number {
+    const m = this.module;
+    const target = this.obj_(elem.stackObj);
+    if (!target) simThrow(XERR.noStackObject);
+    if (target.obj.tileX < 0) return PRIM_FALSE;
+    const hooks = m.worldHooks;
+    const world = m.sim.world;
+    if (!hooks || !world) return m.unportedPrim(9, "burn (no world)", PRIM_FALSE);
+    const fireSel = hooks.selector(GUID_FIRE);
+    if (fireSel === undefined) return PRIM_WAIT;
+    const t = target.obj;
+    let fy = t.fy;
+    let fx = t.fx;
+    const level = t.level;
+    if (mode === 1) {
+      const [dx, dy] = DIR_VEC[t.dir & 7]!;
+      fx += dx * 16;
+      fy += dy * 16;
+    }
+    const tx = fx >> 4;
+    const ty = fy >> 4;
+    if (tx < 1 || tx >= world.size - 1 || ty < 1 || ty >= world.size - 1) return PRIM_FALSE;
+    if (mode === 1) {
+      const w = getWall(world, tx, ty, level);
+      const mask = SEG_ROTATION[(t.dir & 7) >> 1]![8]!;
+      if (mask !== 0 && (mask & w.segs) === mask) {
+        const style = w.styles[31 - Math.clz32(mask & -mask)]!;
+        if (!(style === 3 || style === 5 || style === 6 || style === 0xf || style === 0x17)) return PRIM_FALSE;
+      }
+      if (w.segs & 0x30) return PRIM_FALSE;
+    }
+    const burnable = (o: SimObject): boolean => (o.obj.objectData[40]! & 0x20) !== 0;
+    const isFire = (o: SimObject): boolean => fireSel !== null && o.obj.selector === fireSel;
+    let first: SimObject | null = null;
+    for (const o of tileObjects(m, tx, ty, level)) {
+      if (burnable(o)) first = o;
+      if (o.obj.objectData[WOD.flags]! & 0x800 || isFire(o)) return PRIM_FALSE;
+    }
+    const makeFire = (pos: { fx: number; fy: number }, lvl: number): boolean | null => {
+      if (!fireSel) return null;
+      const x = hooks.make(fireSel);
+      if (!x) return null;
+      const o = m.addObject(x, true);
+      if (!hooks.canPlace(x, pos, lvl, null, 0)) {
+        m.killObject(o);
+        return false;
+      }
+      hooks.place(x, pos, lvl, null, 0);
+      m.dirty(o);
+      return true;
+    };
+    if (!first) return makeFire({ fx, fy }, level) ? PRIM_TRUE : PRIM_FALSE;
+    // The burnable objects touching the first one, added one at a time.
+    const set: SimObject[] = [first];
+    const add = (o: SimObject | null): boolean => {
+      if (!o || set.includes(o)) return false;
+      set.push(o);
+      return true;
+    };
+    const grow = (): boolean => {
+      for (const o of set) {
+        if (o.obj.selector.objd.masterId !== 0 && burnable(o)) {
+          const lead = o.obj.mtLeadId !== 0 ? o.obj.mtLeadId : o.id;
+          for (const p of m.list) if ((p.id === lead || p.obj.mtLeadId === lead) && add(p)) return true;
+        }
+        for (const p of tileObjects(m, o.obj.tileX, o.obj.tileY, o.obj.level)) if (burnable(p) && add(p)) return true;
+        const ox = o.obj.tileX;
+        const oy = o.obj.tileY;
+        for (const [dx, dy] of DIR_VEC) {
+          for (const p of tileObjects(m, ox + dx, oy + dy, o.obj.level)) {
+            let [maxY, maxX, minY, minX] = p.obj.rect;
+            if (p.isPerson) {
+              minX -= 2;
+              maxX += 2;
+              minY -= 2;
+              maxY += 2;
+            }
+            if (minY < (oy + 1) * 16 && oy * 16 < maxY && minX < (ox + 1) * 16 && ox * 16 < maxX && add(p)) return true;
+          }
+        }
+      }
+      return false;
+    };
+    while (grow());
+    for (const o of set) {
+      const f = o.obj.objectData[WOD.flags]!;
+      if (f & 0x800) return PRIM_FALSE;
+      if (!(flags & 1) && (f & 0x20 || o.obj.objectData[62]! > 0)) return PRIM_FALSE;
+    }
+    for (const o of set) {
+      if (!o.isPerson) continue;
+      const pos = { fx: (o.obj.fx & ~0xf) | 8, fy: (o.obj.fy & ~0xf) | 8 };
+      const lvl = o.obj.level;
+      o.cleanup();
+      hooks.moveTo(o.obj, pos, lvl);
+      (o as unknown as { animator?: { forceLocation(p: XObject): void } }).animator?.forceLocation(o.obj);
+    }
+    let made = false;
+    for (const o of set) {
+      let burning = false;
+      for (const p of tileObjects(m, o.obj.tileX, o.obj.tileY, o.obj.level)) if (isFire(p)) burning = true;
+      if (burning) continue;
+      const r = makeFire({ fx: (o.obj.fx & ~0xf) | 8, fy: (o.obj.fy & ~0xf) | 8 }, o.obj.level);
+      if (r === null) return PRIM_FALSE;
+      if (r) made = true;
+    }
+    return made ? PRIM_TRUE : PRIM_FALSE;
   }
 
   /**

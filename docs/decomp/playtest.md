@@ -250,3 +250,13 @@ the routing problem below).
 | Downtown "Have A Meal" from the expensive fridge repeats ($10 each) | Not compared with the original yet (possibly faithful: each meal is a new autonomous choice while hungry) |
 | "missing skill listen normal apathetic" once after the agent contract | Faithful data bug: SocialChild.iff (ExpansionShared.far) STR# 129 (adult animations) entry 73 is "Listen normal apathetic" (the child / mixed tables 130..132 have "C2C-listen-normal-apathetic" etc.); VBAnimMgr::FindSkill finds nothing in the original either. SAnimator::TryAnimate then runs the person's "missing animation tree" and starts GetSkill(0x25) on the main practice: now ported (`sim/person.ts` startMissingAnimation) |
 | Magic Town clouds and balloons (cMagiclandSprites::DoClouds / DoBalloons), Studio Town cars | Fixed (see the fixes above) |
+
+## Soak test (interrupted, 2026-10-30)
+
+The long-play agent was stopped when the user paused the work, before it wrote its report. What its code changes show (committed as is, `tsc` clean, not re-verified):
+- `sim/xobject.ts`: cXObject::TryBurn (prim 9, fires: Fire object 0x24c95f99, burnable gathering, people cleaned up and re-placed); per-object error traces (last 32 kept).
+- `sim/simmodule.ts`: indexed relationship lookups and neighbor-by-id index (the Visit Generator reads friend counts for every neighbor pair each hour: sim tick spikes); KillOutOfWorldObject deselects the selected person first (plumb bob picked up, not killed).
+- `world/tools/placement.ts`: FindGoodLocation coordinate order fixed (FTilePt is {y, x}; the random start draws y first).
+- Its last measurement: Firefox WebGL→2D copy 5.7 ms per frame (was 7.4 ms), so no regression from the compositor framebuffer / depth texture change.
+
+To redo: the soak itself, i.e. 14+ sim days at speed 3 on a throwaway copy of a neighborhood house (jobs, bills, party, baby, school, fire, saves every few days). Track tree errors, memory, sim tick spikes, accumulating objects and save sizes. Verify the fire flow end to end (TryBurn, firefighters, smoke detector).

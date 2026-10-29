@@ -74,7 +74,7 @@ export async function mount(_ctx: GameContext, _mgr: WinMgr): Promise<void> {
   const failing = sim.module.list.filter((o) => o.errors.length);
   for (const o of failing.slice(0, 40)) {
     const e = o.errors[0]!;
-    out(`  ${o.id} ${o.obj.selector.name}: code 0x${e.code.toString(16)} in tree ${e.tree} ${o.behavior.getTreeName(e.tree)} node ${e.node} (x${o.errors.length})`);
+    out(`  ${o.id} ${o.obj.selector.name}: code 0x${e.code.toString(16)} in tree ${e.tree} ${o.behavior.getTreeName(e.tree)} node ${e.node} (x${o.errorCount})`);
   }
   for (const p of sim.module.persons) {
     const m = p.motives;
