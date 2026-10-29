@@ -150,6 +150,8 @@ interface TownDef {
   lowIconHouses: readonly number[];
   /** RegularModeLotHandler plays this first (Studio Town: main screen only; Magic Town: always). */
   lotSound: string | null;
+  /** RegularModeBtnHandler(logo): the credits music (cWinMagicland: "music_magictown_credits"). */
+  credits: string;
   /** RegularModeBtnHandler(logo): the music played again after the credits. */
   music: string;
 }
@@ -182,6 +184,7 @@ export const TOWNS: Readonly<Record<Town, TownDef>> = {
     defaultFilter: 2,
     lowIconHouses: [0x17],
     lotSound: null,
+    credits: MUSIC.credits,
     music: "station_dtnhood",
   },
   [Town.Vacation]: {
@@ -207,6 +210,7 @@ export const TOWNS: Readonly<Record<Town, TownDef>> = {
     defaultFilter: 2,
     lowIconHouses: [0x2a, 0x28],
     lotSound: null,
+    credits: MUSIC.credits,
     music: "station_vacation",
   },
   [Town.Studiotown]: {
@@ -242,6 +246,7 @@ export const TOWNS: Readonly<Record<Town, TownDef>> = {
     defaultFilter: 0x400,
     lowIconHouses: [0x53],
     lotSound: MUSIC.fade,
+    credits: MUSIC.credits,
     music: "station_superstar",
   },
   [Town.Magictown]: {
@@ -275,6 +280,7 @@ export const TOWNS: Readonly<Record<Town, TownDef>> = {
     defaultFilter: 0x400,
     lowIconHouses: [],
     lotSound: MUSIC.fade,
+    credits: "music_magictown_credits",
     music: "music_magictown",
   },
 };
@@ -849,7 +855,7 @@ export class WinTown extends TSWin implements LotBtnOwner {
     try {
       const dlg = new WinCredits(this.ctx);
       this.hideWindow();
-      soundPlayer.playBySource(MUSIC.credits, -1);
+      soundPlayer.playBySource(this.def.credits, -1);
       dlg.setArea(this.area.left, this.area.top, this.area.right, this.area.bottom);
       if (await dlg.init()) await winMgr.doModalWin(dlg);
       soundPlayer.playBySource(this.def.music, -1);

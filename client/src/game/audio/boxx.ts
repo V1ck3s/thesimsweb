@@ -63,6 +63,15 @@ export const MODE = {
   Downtown: 0xa,
   Vacation: 0xb,
   Unleashed: 0xc,
+  /** station_superstar (Studio Town credits return, Superstar community lots in Buy mode). */
+  Superstar: 0xd,
+  /** music_superstar_transition (cWinStudiotown::Init). */
+  SuperstarTransition: 0xe,
+  /** music_magictown (cWinMagicland::Init, Magic Town community lots in Buy mode). */
+  Magictown: 0xf,
+  MagictownCredits: 0x10,
+  MagictownBuild: 0x11,
+  MagictownBuy: 0x12,
 } as const;
 
 /** Options volume 0..10 -> engine volume (table at 0x1059BAF8, also cSimsApp's 0x1059B478). */
@@ -74,8 +83,36 @@ const TRK_SET_MAIN_SONG_AND_HITLIST = 516;
 const TRK_SET_MAIN_AND_HITLIST_KILL_FIRST = 517;
 const TRK_FADE_AND_KILL_SLOW = 519;
 const TRK_RIVER_LOOP = 2957;
-const TRK_MODE_KILLED_1 = 0x1bec2;
+/** mt_river_loop (sep7snds.hot): the Magic Town screen's river, started by mode 0xf. */
+const TRK_MT_RIVER_LOOP = 0x1bec2;
 const TRK_FAMILY_STOPPED = 0x60f;
+/** Grimreaper_loop (xpack.hot), killed when the neighborhood shows. */
+const TRK_GRIMREAPER_LOOP = 0x14cb;
+
+/** Mode music hitlists (cBoxX::Init receivers below). */
+const HL_BUY = 0xdd;
+const HL_BUILD = 0xde;
+const HL_NHOOD = 0xdf;
+const HL_DT_NHOOD = 0x17d4;
+const HL_VACATION = 0x370d;
+const HL_UNLEASHED = 0x51a6;
+const HL_DISCO = 0x635;
+const HL_SUPERSTAR = 0x18706;
+const HL_SUPERSTAR_STATION = 0x18705;
+const HL_MAGICTOWN = 0x192bc;
+const HL_MM_CREDITS = 0x192bd;
+const HL_MM_BUILD = 0x192be;
+const HL_MM_BUY = 0x192c0;
+
+/**
+ * cSimsApp +0x66, the installed expansion packs: 1 Livin' Large, 2 House
+ * Party, 4 Hot Date, 8 Vacation, 0x20 Unleashed, 0x40 Superstar, 0x80
+ * Makin' Magic. All present in the Complete Collection.
+ */
+const EXPANSION_FLAGS = 0xef;
+
+/** onTimer: ticks run at most per timer callback (1 s; a hidden tab gets one callback a second). */
+const MAX_CATCHUP_TICKS = 50;
 
 /**
  * cBoxX::Init receivers: folder, receiver id (the radio track using it, 0 for
@@ -240,6 +277,8 @@ export class BoxX {
   /** lbl_105C1C40: last simulator speed sent to register 100. */
   private lastSimSpeed = -1;
   private timer: number | null = null;
+  /** Time (performance.now) the last tick was due at. */
+  private lastTick = 0;
   readonly loaded: { codes: string[]; tracks: number; patches: number; events: number; receivers: Record<string, number>; ambience: string[] } = {
     codes: [],
     tracks: 0,
@@ -267,7 +306,8 @@ export class BoxX {
     // cHitMan::RegisterSourceDataRequestHandler(BoxxGlobalGetSourceParamValue): fields 0..0x15 -> cAudioInfo::GetObjectData.
     this.hm.sourceDataHandler = (source, field) => (field > 0x15 || field < 0 ? null : (getAudioInfo()?.objectData(source, field) ?? 0));
     this.updateAmbienceLoop();
-    this.timer = window.setInterval(() => this.update(), TICK_MS);
+    this.lastTick = performance.now();
+    this.timer = window.setInterval(() => this.onTimer(), TICK_MS);
   }
 
   /** cBoxX::LoadDataDirectory: every .hsm/.hit/.hot triple in the folder. */
@@ -304,6 +344,24 @@ export class BoxX {
 
   mappedEvent(name: string): MappedEvent | null {
     return this.events.get(name.toLowerCase()) ?? null;
+  }
+
+  /**
+   * The cTSCallbackTimer (0x14 ms) runs on its own thread and never misses a
+   * tick; a page interval is late whenever the main thread is busy (lot
+   * rendering), which would stretch every HIT wait and fade. The ticks due
+   * since the last one run here, at most one second's worth.
+   */
+  private onTimer(): void {
+    const now = performance.now();
+    let n = Math.floor((now - this.lastTick) / TICK_MS);
+    if (n > MAX_CATCHUP_TICKS) {
+      n = MAX_CATCHUP_TICKS;
+      this.lastTick = now;
+    } else {
+      this.lastTick += n * TICK_MS;
+    }
+    for (let i = 0; i < n; i++) this.update();
   }
 
   /** cBoxX::Update (every TICK_MS). */
@@ -733,58 +791,96 @@ export class GameModeManager {
     this.obj(TRK_MAIN_MUSIC_LOOP)?.unpause();
   }
 
-  /** cGameModeManager::SetMode */
+  /**
+   * cGameModeManager::SetMode (Windows build FUN_005752c4, same as the Mac
+   * 0x102d8fb0 apart from the credits hitlist). The music tracks: 515
+   * MainMusicLoop, 516 SetMainMusicSongAndHitList (keeps the song that plays
+   * and changes the hitlist of the next one), 517 SetMainAndHitListKillFirst,
+   * 519 FadeAndKillTrackSlow (6.8 s). The Sleep(100) between the calls are
+   * left out.
+   */
   setMode(mode: number): void {
     if (mode === this.mode) return;
     if (mode === MODE.Hood) this.started = true;
     if (!this.started) return;
     const prev = this.mode;
     this.mode = mode;
-    if (mode !== MODE.Hood) this.obj(TRK_RIVER_LOOP)?.kill();
-    if (mode !== 0xf) this.obj(TRK_MODE_KILLED_1)?.kill();
+    if (mode === MODE.Hood) {
+      if (EXPANSION_FLAGS & 1) this.obj(TRK_GRIMREAPER_LOOP)?.kill();
+      this.obj(TRK_MT_RIVER_LOOP)?.kill();
+    } else {
+      this.obj(TRK_RIVER_LOOP)?.kill();
+      if (mode !== MODE.Magictown) this.obj(TRK_MT_RIVER_LOOP)?.kill();
+    }
     const play = (id: number, arg = 0): void => this.obj(id)?.play(arg, 0, 0);
+    /** Fade the mode music out, then start a hitlist from a new song. */
+    const switchTo = (hitList: number): void => {
+      this.obj(TRK_FADE_AND_KILL_SLOW)?.kill();
+      play(TRK_SET_MAIN_AND_HITLIST_KILL_FIRST, hitList);
+    };
     switch (mode) {
       case MODE.Live:
       case MODE.FrontEnd:
       case MODE.Fade:
-        // fade the mode music out (FadeAndKillTrackSlow on MainMusicLoop)
-        play(TRK_FADE_AND_KILL_SLOW, TRK_MAIN_MUSIC_LOOP);
+        // Leaving Buy / Build stops the music at once, anything else fades it out.
+        if (prev === MODE.Buy || prev === MODE.Build || prev === MODE.MagictownBuild || prev === MODE.MagictownBuy) {
+          this.obj(TRK_MAIN_MUSIC_LOOP)?.kill();
+        } else {
+          play(TRK_FADE_AND_KILL_SLOW, TRK_MAIN_MUSIC_LOOP);
+        }
         break;
       case MODE.Buy:
-        play(TRK_SET_MAIN_SONG_AND_HITLIST, 0xdd);
+        play(TRK_SET_MAIN_SONG_AND_HITLIST, HL_BUY);
         break;
       case MODE.Build:
-        play(TRK_SET_MAIN_SONG_AND_HITLIST, 0xde);
+        play(TRK_SET_MAIN_SONG_AND_HITLIST, HL_BUILD);
         break;
       case MODE.Hood:
-        if (prev !== MODE.Family) {
-          this.obj(TRK_FADE_AND_KILL_SLOW)?.kill();
-          play(TRK_SET_MAIN_AND_HITLIST_KILL_FIRST, 0xdf);
-        }
+        if (prev !== MODE.Family) switchTo(HL_NHOOD);
         play(TRK_RIVER_LOOP);
         break;
-      case MODE.Credits:
-        play(TRK_SET_MAIN_AND_HITLIST_KILL_FIRST, 0xdf);
+      case MODE.Credits: {
+        // The newest pack's credits music (the Mac build predates Makin' Magic: 0x80 -> Superstar).
+        const f = EXPANSION_FLAGS;
+        const hl = f & 0x80 ? HL_MM_CREDITS : f & 0x40 ? HL_SUPERSTAR : f & 0x20 ? HL_UNLEASHED : f & 8 ? HL_VACATION : f & 2 ? HL_DISCO : f & 4 ? HL_DT_NHOOD : HL_NHOOD;
+        play(TRK_SET_MAIN_AND_HITLIST_KILL_FIRST, hl);
         break;
+      }
       case MODE.Family:
         this.obj(TRK_RIVER_LOOP)?.stop();
-        this.obj(TRK_MODE_KILLED_1)?.stop();
+        this.obj(TRK_MT_RIVER_LOOP)?.stop();
         this.obj(TRK_FAMILY_STOPPED)?.stop();
         break;
       case MODE.Downtown:
-        this.obj(TRK_FADE_AND_KILL_SLOW)?.kill();
-        play(TRK_SET_MAIN_AND_HITLIST_KILL_FIRST, 0x17d4);
+        switchTo(HL_DT_NHOOD);
         break;
       case MODE.Vacation:
-        this.obj(TRK_FADE_AND_KILL_SLOW)?.kill();
-        play(TRK_SET_MAIN_AND_HITLIST_KILL_FIRST, 0x370d);
+        switchTo(HL_VACATION);
         break;
       case MODE.Unleashed:
-        this.obj(TRK_FADE_AND_KILL_SLOW)?.kill();
-        play(TRK_SET_MAIN_AND_HITLIST_KILL_FIRST, 0x51a6);
+        switchTo(HL_UNLEASHED);
+        break;
+      case MODE.Superstar:
+        switchTo(HL_SUPERSTAR);
+        break;
+      case MODE.SuperstarTransition:
+        switchTo(HL_SUPERSTAR_STATION);
+        break;
+      case MODE.Magictown:
+        switchTo(HL_MAGICTOWN);
+        play(TRK_MT_RIVER_LOOP);
+        break;
+      case MODE.MagictownCredits:
+        switchTo(HL_MM_CREDITS);
+        break;
+      case MODE.MagictownBuild:
+      case MODE.MagictownBuy:
+        // Magic Town Buy <-> Build keeps the song.
+        if (prev === MODE.MagictownBuild || prev === MODE.MagictownBuy) break;
+        switchTo(mode === MODE.MagictownBuild ? HL_MM_BUILD : HL_MM_BUY);
         break;
       default:
-        // Load, Options and the other expansion neighborhoods: no change.
+        // Load, Options: no change.
         break;
     }
   }

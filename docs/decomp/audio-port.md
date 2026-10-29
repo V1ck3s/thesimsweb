@@ -156,6 +156,30 @@ pause toggles; radio vol 923 pan 546; stereo_rock on a sim 1024 at zoom 3, 800
 BeachLoop plays with pan register 0: cTrackPlayer::PlayPause with kArgsIdVolPan sets
 reg 0x13 = a2, 0x14 = a3, and UpdateAmbienceLoop passes (0, 0, 0) — same as original.
 
+## Mode music, towns (U7 / U8, 2026-10-29)
+
+- cGameModeManager::SetMode ported for every mode from the Windows build
+  (FUN_005752c4; the Mac 0x102d8fb0 differs only in the credits hitlist):
+  0/4/9 kill MainMusicLoop at once when coming from Buy / Build / MM Buy /
+  MM Build, else FadeAndKillTrackSlow; 1/2 SetMainMusicSongAndHitList 0xdd /
+  0xde (the playing song goes on); 3 hood (+ river 2957; Grimreaper_loop
+  killed); 6 credits by expansion flags (Makin' Magic first: 0x192bd);
+  8 family; 10..16 kill 519 then SetMainAndHitListKillFirst (dt_nhood 0x17d4,
+  Vacation 0x370d, UnlSpeak 0x51a6, Modes\Superstar 0x18706, Stations\Superstar
+  0x18705, MakinMagic 0x192bc + mt_river_loop 0x1bec2, MM_Credits 0x192bd);
+  17/18 MM_Build 0x192be / MM_Buy 0x192c0, skipped between each other.
+- The mode event (`modeMusicEvent`, uisound.ts) follows CPState::UpdateWorldFromCPState:
+  Live `bkground_live`; Buy on a visited lot (global 0x20): 40..49
+  `station_vacation`, community `station_unleashed`, 81..89 `station_superstar`,
+  93..98 `music_magictown`, else `station_dtbuy`; Buy at home: 90..92
+  `music_magictown_buy`, else `bkground_buy1`; Build: nothing on a visited lot,
+  90..92 `music_magictown_build`, else `bkground_build`; Camera
+  `bkground_camera` (= build music); Options `bkground_option` (no change).
+- Buy -> Build keeps the current song in the original too (see U8 in playtest.md).
+- cBoxX's timer catches up missed 20 ms ticks (at most 1 s per callback): the
+  original cTSCallbackTimer runs on its own thread.
+- Camera: `ui_camera_photo` on each snapshot (HouseViewer::TakeAsyncSnapshot, Windows).
+
 ## Gaps
 
 - The view and the clock are polled every 50 ms (`lotaudio.ts`) instead of the

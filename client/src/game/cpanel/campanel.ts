@@ -14,8 +14,9 @@
  *    kCamPopupQualDetail; it opens after the async timeout on hover with
  *    quick tips on, or after a press otherwise (cTSWinBtn flags 1 / 6);
  *  - TSPaint: the control panel background, then two vertical toothpicks.
- * Not ported: the photo album (cWinScrapbook, reached through
- * GameHooks.showScrapbook), the custom size tWinFlag 0x400, UI sounds.
+ * The album button opens cWinScrapbook (camscrapbook.ts); the snapshot
+ * itself is taken by the lot view (camsnapshot.ts).
+ * Not ported: the custom size tWinFlag 0x400.
  */
 
 import { CameraQuality, CameraSize, DIRTY_CAMERA } from "../cpstate.js";
@@ -26,6 +27,7 @@ import { BTN_PUSH, BTN_TOGGLE } from "../ui/btn.js";
 import { TSWinCtrlMgr } from "../ui/ctrlmgr.js";
 import { Gfx, TSWin } from "../ui/tswin.js";
 import { winMgr } from "../ui/winmgr.js";
+import { scrapbookOpenListeners, showScrapbook } from "./camscrapbook.js";
 import {
   ASYNC_ON_DOWN,
   ASYNC_ON_ENTER,
@@ -108,6 +110,8 @@ export class WinCamPanel extends TSWin {
   /** lbl_105C0A50: the album is open. */
   private static albumOpen = false;
   private mouseInside = false;
+  /** cWinCPanel::SetScrapbookOpen reaches this panel. */
+  private readonly onScrapbookOpen = (open: boolean): void => this.setScrapbookOpen(open);
 
   constructor(readonly ctx: GameContext) {
     super();
@@ -163,6 +167,7 @@ export class WinCamPanel extends TSWin {
     this.popup = new WinLivePopup(this.ctx);
     if (!(await this.popup.init())) return false;
     this.setQuickTips(this.quickTips);
+    scrapbookOpenListeners.add(this.onScrapbookOpen);
     return true;
   }
 
@@ -280,7 +285,8 @@ export class WinCamPanel extends TSWin {
     if (WinCamPanel.albumOpen) return;
     WinCamPanel.albumOpen = true;
     try {
-      await this.ctx.hooks?.showScrapbook?.();
+      if (this.ctx.hooks?.showScrapbook) await this.ctx.hooks.showScrapbook();
+      else await showScrapbook(this.ctx);
     } finally {
       WinCamPanel.albumOpen = false;
     }
@@ -310,6 +316,7 @@ export class WinCamPanel extends TSWin {
   }
 
   override shutdown(): void {
+    scrapbookOpenListeners.delete(this.onScrapbookOpen);
     if (this.popup) {
       this.popup.disablePopup();
       this.popup.parent?.childDelete(this.popup);

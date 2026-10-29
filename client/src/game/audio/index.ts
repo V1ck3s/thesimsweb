@@ -2,4 +2,4 @@
 
 export { soundPlayer, SoundPlayer } from "./soundplayer.js";
 export { MODE, EV, VOLUME_TABLE } from "./boxx.js";
-export { UI, MUSIC, UI_SOURCE, speedTransitionSound } from "./uisound.js";
+export { UI, MUSIC, UI_SOURCE, modeMusicEvent, speedTransitionSound, type ModeMusicLot } from "./uisound.js";

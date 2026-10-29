@@ -65,6 +65,48 @@ export const MUSIC = {
   fade: "bkground_fade",
 } as const;
 
+/** The lot CPState::UpdateWorldFromCPState picks the mode music for. */
+export interface ModeMusicLot {
+  /** Simulator global 10. */
+  house: number;
+  /** Simulator global 0x20 (cSimulator +0x50): visited without the family (town and community lots). */
+  visiting: boolean;
+  /** Neighborhood::GetZoningType(house) === 2. */
+  community: boolean;
+}
+
+/**
+ * CPState::UpdateWorldFromCPState (dirty bit 2, after QuietBySourceID(-1)):
+ * the music event of a control panel mode (CPState mode 0 Build, 1 Buy,
+ * 2 Live, 3 Options, 4 Camera), from the lot. null: nothing plays (Build on
+ * a visited lot).
+ */
+export function modeMusicEvent(mode: number, lot: ModeMusicLot): string | null {
+  const h = lot.house;
+  const magicTownHome = h > 0x59 && h < 0x5d;
+  const magicTownShop = h > 0x5c && h < 99;
+  switch (mode) {
+    case 2:
+      return MUSIC.live;
+    case 1:
+      if (!lot.visiting) return magicTownHome ? "music_magictown_buy" : MUSIC.buy;
+      if (h > 0x27 && h < 0x32) return "station_vacation";
+      if (lot.community && !magicTownShop) return "station_unleashed";
+      if (h > 0x50 && h < 0x5a) return "station_superstar";
+      if (magicTownShop) return "music_magictown";
+      return "station_dtbuy";
+    case 0:
+      if (lot.visiting) return null;
+      return magicTownHome ? "music_magictown_build" : MUSIC.build;
+    case 4:
+      return MUSIC.camera;
+    case 3:
+      return "bkground_option";
+    default:
+      return null;
+  }
+}
+
 /**
  * cWinViewControl::DoSpeedTransitionSound: "UI_speed_<from>to<to>", where a
  * speed is 1..3 and 0 means paused ("P").
