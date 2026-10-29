@@ -21,7 +21,7 @@ import { LANG_FRENCH } from "../res/uires.js";
 import { createCharacterFile, createCharacterFileFrom, deleteCharacterFile, GUID_TEMPLATE_PERSON } from "./character.js";
 import { deleteGameFile, writeGameFile } from "./files.js";
 import { buildIff, decodeStrSet, parseIff, stringSetBaseResave, stringSetMultiSave, stringSetMultiSaveLocal, type IffChunk } from "./iff.js";
-import { PD } from "./neighborhood.js";
+import { PD, type NeighborhoodData } from "./neighborhood.js";
 import { ReconReader, ReconWriter } from "./recon.js";
 
 /** RelMatrix: a counted list (count >= 0) or a pointer vector (count < 0). */
@@ -80,6 +80,48 @@ interface FamilyRaw {
   spells: number[];
   /** Original chunk bytes (written back verbatim unless dirty). */
   dirty: boolean;
+}
+
+/**
+ * The Neighborhood the simulation holds in memory while a lot is loaded (the
+ * module's NeighborhoodData): the relationships (Neighbor +0xc RelMatrix) and
+ * SimInventories (Neighborhood +400) the behaviors change live there, and
+ * Neighborhood::SavePersistentData calls made by the simulation (generic sim
+ * call 25, ...) are queued in `persistent` by GUID. Neighborhood::Save writes
+ * them out (see `NeighborhoodStore.save`).
+ */
+export interface LiveNeighborhood {
+  data: NeighborhoodData;
+  persistent: Map<number, Int16Array>;
+}
+
+let liveNeighborhood: LiveNeighborhood | null = null;
+
+/** The lot's Neighborhood in memory (null when no lot is loaded). */
+export function setLiveNeighborhood(live: LiveNeighborhood | null): void {
+  liveNeighborhood = live;
+}
+
+export function getLiveNeighborhood(): LiveNeighborhood | null {
+  return liveNeighborhood;
+}
+
+/** SimInventory vector as NGBH stores it (DoPtrVectorStream: count, then present, id, tokens of type, GUID, count). */
+function serializeInventories(data: NeighborhoodData): Uint8Array {
+  const w = new ReconWriter();
+  const invs = data.inventories;
+  w.i32(invs.length);
+  for (const inv of invs) {
+    w.i32(1);
+    w.i16(inv.neighborId);
+    w.i32(inv.tokens.length);
+    for (const t of inv.tokens) {
+      w.i32(t.type);
+      w.i32(t.guid | 0);
+      w.i16(t.count);
+    }
+  }
+  return w.finish();
 }
 
 /** NghInterface: families that are not "real" (downtown, vacation, studio town, magic town...). */
@@ -506,6 +548,8 @@ export class NeighborhoodStore {
 
   /** Neighborhood::SavePersistentData */
   savePersistentData(guid: number, personData: Int16Array): void {
+    // A later call wins over one the simulation queued.
+    if (liveNeighborhood?.data.dir === this.dir) liveNeighborhood.persistent.delete(guid >>> 0);
     const n = this.neighborByGuid(guid);
     if (!n) return;
     n.pdVersion = LATEST_PERS_DATA_VERSION;
@@ -730,6 +774,7 @@ export class NeighborhoodStore {
 
   /** Neighborhood::Save (see the file comment for what is rewritten). */
   async save(): Promise<void> {
+    this.takeLive();
     const nbrs = this.chunks.find((c) => c.type === "NBRS")!;
     this.put({ ...nbrs, data: serializeNbrs(this.nbrs) });
     for (const f of this.families) {
@@ -753,6 +798,30 @@ export class NeighborhoodStore {
       this.ngbhRaw.dirty = false;
     }
     await writeGameFile(`${this.dir}/Neighborhood.iff`, buildIff(this.chunks));
+  }
+
+  /**
+   * The in-memory Neighborhood's state that Neighborhood::Save streams: the
+   * queued persistent data, every neighbor's RelMatrix and the SimInventory
+   * vector (NGBH).
+   */
+  private takeLive(): void {
+    const live = liveNeighborhood;
+    if (!live || live.data.dir !== this.dir) return;
+    for (const [guid, pd] of live.persistent) this.savePersistentData(guid, pd);
+    live.persistent.clear();
+    for (const e of this.nbrs.entries) {
+      if (!e) continue;
+      const n = live.data.neighbors.find((x) => x.id === e.id && x.guid >>> 0 === e.guid >>> 0);
+      if (!n) continue;
+      const entries = n.relationships.map((r) => ({ present: 1, other: r.other, values: [...r.values] }));
+      e.rels = e.rels.count < 0 ? { count: e.rels.count, vecCount: entries.length, entries } : { count: entries.length, vecCount: 0, entries };
+    }
+    const ngbh = this.ngbh();
+    if (ngbh.version > 0x3f || ngbh.inventory || live.data.inventories.length) {
+      ngbh.inventory = serializeInventories(live.data);
+      ngbh.dirty = true;
+    }
   }
 
   // --- Townies (Neighborhood::DoFirstTimeTownies / RefillTownies / AddNewTownie, nbhd/townies.ts) ---

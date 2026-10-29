@@ -79,6 +79,8 @@ export interface Family {
   netWorth: number;
   flags: number;
   memberGuids: number[];
+  /** Family +0x13c (version > 7): the vacation lot the family stays on, 0 for none. */
+  vacationLot?: number;
   /** Family +0x14e: the six spell levels, when the stream had them (Family +0x14c). */
   spells?: number[];
 }
@@ -228,7 +230,8 @@ export function parseFami(bytes: Uint8Array, chunkId: number, name: string): Fam
     for (let i = 0; i < n; i++) memberGuids.push(r.u32());
   }
   const f: Family = { chunkId, name, houseNumber, familyNumber, budget, netWorth, flags, memberGuids };
-  if (v > 7) r.i32();
+  // +0x13c: the vacation lot the family stays on (0: none).
+  if (v > 7) f.vacationLot = r.i32();
   // +0x14e: the spells (version > 8); +0x14c is set when they were read.
   if (v > 8) f.spells = Array.from(r.i16s(6));
   return f;

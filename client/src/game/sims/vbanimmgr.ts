@@ -103,7 +103,16 @@ export class VBAnimMgr {
         if (EXTS.has(ext(n)) && !m.files.has(n)) m.files.set(n, { path: p });
       }
     }
-    const fars = FARS.filter((f) => paths.has(f));
+    // Animator's site setup: after the game's own sites, each download directory
+    // (ObjectFolder::GetDownloadDirectories) holding "<dir>/<dir>.far" joins the
+    // indexed site (the Downloads/HPPottyPack stalls of the downtown lots).
+    const downloads = [...paths]
+      .filter((p) => {
+        const m = /^Sims\/Downloads\/([^/]+)\/([^/]+)\.far$/i.exec(p);
+        return !!m && m[1]!.toLowerCase() === m[2]!.toLowerCase();
+      })
+      .sort();
+    const fars = [...FARS.filter((f) => paths.has(f)), ...downloads];
     const lists = await Promise.all(fars.map((f) => readFarManifest(f).catch(() => [])));
     const ndx: Array<{ far: string; entry: string }> = [];
     fars.forEach((far, i) => {

@@ -31,7 +31,7 @@ import { PRIM_CONTINUE, PRIM_FALSE, PRIM_TRUE, PRIM_WAIT, TreeSim, simThrow, tre
 import type { ParamSource, StackElem } from "./treestack.js";
 import { DIR_VEC, rotateOffset } from "./routing.js";
 import { getBehCareerData, getGrade, offerDialogText, simJobName, type SimCareer } from "./careers.js";
-import { getTitleFromLevel } from "./fametrack.js";
+import { getTitleFromLevel, promoteIfNeeded } from "./fametrack.js";
 import { balloonSpriteCount, balloonSpriteID, iconSpriteID } from "../world/balloons.js";
 import { tickSpriteSlot } from "../world/slots.js";
 import { EditPerson } from "../cas/editperson.js";
@@ -578,8 +578,16 @@ export class SimObject extends TreeSim {
         if (!o) simThrow(0xa);
         return this.typeAttribute(o, data, want);
       }
-      case 38: // definition of the neighbor in the stack object
-        return m.unportedValue("scope 38 neighbor definition", 0);
+      case 38: {
+        // OBJD field `data` of the neighbor whose id is in the stack object (Neighbor +8, its
+        // ObjSelector): error 0x37 without such a neighbor, 0x23 out of [0, 0x6c).
+        const nb = m.findNeighborByID(this.getCurElem()!.stackObj);
+        if (!nb) simThrow(XERR.neighbor);
+        if (data < 0 || data >= 0x6c) simThrow(XERR.definitionRange);
+        // An object file not opened yet loads asynchronously (the original has them all): 0 meanwhile.
+        const sel = m.worldHooks?.selector(nb.guid >>> 0);
+        return sel ? sel.objd.i16(data * 2) : 0;
+      }
       default:
         m.unportedValue(`bad scope ${scope} (error 9)`, 0);
         simThrow(XERR.badScope);
@@ -1048,6 +1056,8 @@ export class SimObject extends TreeSim {
     const o = this.obj_(id);
     if (!o) return PRIM_FALSE;
     this.module.addToKillQueue(id, ((flags >> 1) & 1) ^ 1);
+    // A person killed (a visitor leaving) keeps its persistent data: Neighborhood::SavePersistentData.
+    if (o.person) this.module.savePersistentData(o);
     if (id === this.id && treeSimGlobals.notInCheckTree && (flags & 1) === 0) return PRIM_WAIT;
     return PRIM_TRUE;
   }
@@ -1117,11 +1127,11 @@ export class SimObject extends TreeSim {
     if (!o) simThrow(XERR.noStackObject);
     const EPS = [0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, -1, 0x1b, 0xe, 0x1c, 0x10, 0x11, 0x1d];
     if (fn < 0 || fn > 14) return PRIM_FALSE;
-    const ep = EPS[fn]!;
+    let ep = EPS[fn]!;
     if (ep === -1) {
-      // Entry point 0x1a is only called for people (a cXPerson +0x60e test): not ported.
-      if (!this.isPerson) return PRIM_FALSE;
-      return this.module.unportedPrim(20, "functional tree 8 (person)", PRIM_FALSE);
+      // Function 8 (entry point 0x1a) only for a person whose person data 0x41 (+0x60e) is below 2.
+      if (!this.person || this.person.personData[0x41]! >= 2) return PRIM_FALSE;
+      ep = 0x1a;
     }
     const tree = o.fnTable.getTreeID(ep);
     if (tree === 0) return PRIM_FALSE;
@@ -1196,6 +1206,59 @@ export class SimObject extends TreeSim {
         this.temps[1] = family !== 0 ? 1 : 0;
         return PRIM_TRUE;
       }
+      case 25:
+        // Neighborhood::SavePersistentData(me) (person only, error 0x1c).
+        if (!this.person) simThrow(XERR.notPerson);
+        m.savePersistentData(this);
+        return PRIM_TRUE;
+      case 27: {
+        // temp 0 = the vacation lots (0x28..0x30) no family stays on (Family +0x13c).
+        let free = 9;
+        for (let h = 0x28; h < 0x31; h++) if (m.nbhd?.families.some((f) => f.vacationLot === h)) free--;
+        this.temps[0] = free;
+        return PRIM_TRUE;
+      }
+      case 34: {
+        // The stack object (a person, error 0x1c): cFameTrack::PromoteIfNeeded, then
+        // ObjectModule::OnStarPowerChange (the star plumb bobs: not ported). True when promoted.
+        const o = this.obj_(elem.stackObj);
+        if (!o?.person) simThrow(XERR.notPerson);
+        const t = m.fameScoring;
+        if (!t) return PRIM_FALSE;
+        return promoteIfNeeded(t, o.person.personData, m.famousFriendCount(o.obj.selector.guid >>> 0)) ? PRIM_TRUE : PRIM_FALSE;
+      }
+      case 41:
+        // Jumps straight to the common exit (lbl_100EB28C): nothing, true.
+        return PRIM_TRUE;
+      case 38: {
+        // The numbers of a string: temp 0 names the STR# of the running tree's file
+        // (0: nothing), temp 1 the entry (0-based). Up to 7 runs of digits go to
+        // temps 1..7 and their count to temp 0; no file or string: temp 0 = -1, false.
+        const strId = this.temps[0]!;
+        const index = this.temps[1]!;
+        this.temps[0] = 0;
+        if (strId === 0) return PRIM_TRUE;
+        const file = elem.behavior?.getResFile(elem.getTreeID()) ?? null;
+        const s = file ? loadStringSet(file, strId)?.[index] : undefined;
+        if (s === undefined) {
+          this.temps[0] = -1;
+          return PRIM_FALSE;
+        }
+        let n = 0;
+        for (const run of s.matchAll(/\d+/g)) {
+          if (n >= 7) break;
+          this.temps[1 + n] = parseInt(run[0], 10);
+          n++;
+        }
+        this.temps[0] = n;
+        return PRIM_TRUE;
+      }
+      case 35:
+        // Me (a person, error 0x1c) becomes ObjectModule +0x110, the person the
+        // Studio Town picker is for (nbhd/transit.ts).
+        if (!this.person) simThrow(XERR.notPerson);
+        m.studioCaller = this;
+        return PRIM_TRUE;
       case 43:
         // Family::LoadSpellsForFamily on the current family.
         m.loadSpellsForFamily();

@@ -48,10 +48,8 @@
  *
  * Port: the ObjectModule fields live here (one Transit per loaded lot), the
  * modal picker is awaited while the simulator is held, the trigger is
- * handed to the game (Game.switchLots) once the tick is over. The
- * SimInventory tokens are not written: the person data goes through
- * Neighborhood::SavePersistentData and the arrival clock rides along with
- * the trigger.
+ * handed to the game (Game.switchLots) once the tick is over. The arrival
+ * clock also rides along with the trigger.
  */
 
 import { MUSIC, soundPlayer, UI_SOURCE } from "../audio/index.js";
@@ -60,6 +58,8 @@ import { DIRTY_ALL } from "../cpstate.js";
 import { personFromNeighbor } from "../data/family.js";
 import { NeighborhoodStore } from "../data/nbhdstore.js";
 import { loadNeighborhood, neighborByGuid } from "../data/neighborhood.js";
+import type { SimInventory } from "../data/neighborhood.js";
+import { addToken, removeAllTokensOfType, setToNextToken } from "../sim/inventory.js";
 import { PDX } from "../sim/person.js";
 import type { TransitHooks } from "../sim/simmodule.js";
 import { G, type Simulator } from "../sim/simulator.js";
@@ -208,8 +208,11 @@ export class Transit implements TransitHooks {
       const here = this.sim.globals[G.houseNumber]!;
       screen = nb.getZoningType(here) === Zone.Residential ? TransitScreen.Vacation2 : TransitScreen.Vacation;
     } else if (town === Town.Studiotown) {
-      // Taxi 5 when the asking person (ObjectModule +0x110) is a star (person +0x62c > 0, +0x5fc == 0): not tracked.
-      screen = TransitScreen.StudiotownFan;
+      // Taxi 5 when the asking person (ObjectModule +0x110, generic call 35) is a
+      // star: person data 0x50 (+0x62c, fame points) > 0 and 0x38 (+0x5fc, job) 0.
+      const caller = this.sim.module.studioCaller?.person?.personData;
+      screen = caller && caller[0x50]! > 0 && caller[0x38] === 0 ? TransitScreen.Studiotown : TransitScreen.StudiotownFan;
+      this.sim.module.studioCaller = null;
     } else if (town === Town.Magictown) {
       // Taxi 7 when the picker's +0xdc flag (the view's +0x54) was set: not tracked.
       screen = TransitScreen.Magictown;
@@ -256,28 +259,64 @@ export class Transit implements TransitHooks {
   }
 
   /**
-   * cXPerson::TryChangeLots (the SimInventory tokens aside), then
-   * cSimsApp::SetChangeLotTrigger.
+   * cXPerson::TryChangeLots, then cSimsApp::SetChangeLotTrigger. The
+   * SimInventory tokens carry the sims across: type-2 tokens 0..6 (motives
+   * 9, 6, 5, 15, 7, 8, 14), 9..12 (person data 8, 0x50, 0x52, 0x51) for each
+   * sim going (generic sim call 21 reads them back), 7 / 8 the arrival
+   * clock; the companion of a single sim is the neighbor of its first token
+   * of type 1 (going out) or 3 (going home), when it is on the lot.
    */
   private async tryChangeLots(o: SimObject, houseArg: number, hours: number, minutes: number, mode: number): Promise<void> {
     const person = o.person;
     if (!person) return;
+    const m = o.module;
     const nbhdDir = this.host.nb()?.dir;
     if (!nbhdDir) return;
-    const store = await NeighborhoodStore.open(nbhdDir);
     const guid = o.obj.guid >>> 0;
+    const me = m.findNeighborByGUID(guid);
+    if (!me) return;
+    let inv: SimInventory | null = m.getInventoryByNeighbourID(me.id);
+    const store = await NeighborhoodStore.open(nbhdDir);
     const familyId = person.personData[PDX.familyNumber] ?? 0;
     let house = houseArg;
     if (house === -1) house = store.family(familyId)?.houseNumber ?? 0;
-    // Mode 1: every member's persistent data (Neighborhood::SavePersistentData).
-    const family = mode === 1 ? store.family(familyId) : undefined;
-    if (family) {
-      for (const g of family.memberGuids) {
-        const p = o.module.persons.find((x) => x.obj.guid >>> 0 === g >>> 0);
-        if (p?.person) store.savePersistentData(g, p.person.personData);
+    // The companion (mode 0) or the family (mode 1).
+    let companion: SimObject | null = null;
+    let family: number[] | null = null;
+    if (mode === 0) {
+      const at = setToNextToken(inv, houseArg === -1 ? 3 : 1, -1, 0);
+      if (at.index >= 0) {
+        const g = inv.tokens[at.index]!.guid;
+        companion = m.people.find((p) => !p.killed && (p.obj.selector.guid | 0) === (g | 0)) ?? null;
       }
+    } else if (mode === 1) {
+      family = store.family(familyId)?.memberGuids ?? [];
+    }
+    const writeTokens = (target: SimInventory, p: SimObject): void => {
+      removeAllTokensOfType(target, 2);
+      const mv = p.person!.motives;
+      [9, 6, 5, 0xf, 7, 8, 0xe].forEach((k, i) => addToken(target, 2, i, Math.trunc(mv[k] ?? 0)));
+      const pd = p.person!.personData;
+      [8, 0x50, 0x52, 0x51].forEach((k, i) => addToken(target, 2, 9 + i, pd[k] ?? 0));
+    };
+    if (companion) {
+      const nb = m.findNeighborByGUID(companion.obj.selector.guid >>> 0);
+      if (nb) writeTokens(m.getInventoryByNeighbourID(nb.id), companion);
+    }
+    if (!family) {
+      writeTokens(inv, o);
     } else {
-      store.savePersistentData(guid, person.personData);
+      family.forEach((g, i) => {
+        const p = m.persons.find((x) => x.obj.guid >>> 0 === g >>> 0);
+        if (!p?.person) return;
+        // Neighborhood::SavePersistentData of each member here.
+        store.savePersistentData(g, p.person.personData);
+        const nb = m.findNeighborByGUID(g);
+        if (!nb) return;
+        const memberInv = m.getInventoryByNeighbourID(nb.id);
+        if (i === 0) inv = memberInv;
+        writeTokens(memberInv, p);
+      });
     }
     // The arrival clock: now + hours:minutes, unless leaving a residential lot for a vacation lot.
     let hour = this.sim.globals[G.hour]!;
@@ -292,6 +331,11 @@ export class Transit implements TransitHooks {
       }
       hour = (hour + hours) % 0x18;
     }
+    if (inv) {
+      addToken(inv, 2, 7, hour);
+      addToken(inv, 2, 8, minute);
+    }
+    // Neighborhood::Save (the live inventories go with it).
     await store.save();
     // SetChangeLotTrigger: ignored while one is pending.
     if (this.triggered) return;
@@ -451,6 +495,8 @@ export async function applyLoadGameLocation(ctx: GameContext, view: WinLotView, 
             const store = await NeighborhoodStore.open(nb.dir);
             store.setFamilyVacationLot(arrival.family, house);
             await store.save();
+            const fam = sim?.module.nbhd?.families.find((f) => f.chunkId === arrival.family);
+            if (fam) fam.vacationLot = house;
           }
         } else {
           visit();

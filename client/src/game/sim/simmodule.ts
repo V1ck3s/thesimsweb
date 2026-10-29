@@ -28,7 +28,9 @@ import { PersonSim, SCORE_CURVE_MOTIVES, type Interaction, type MenuItem } from 
 import { curvesFromStrings, HAPPY_CURVE_MOTIVES, type MotiveCurve } from "./motives.js";
 import { loadStringSet, loadTree } from "./behavior.js";
 import type { Neighbor, NeighborhoodData, SimInventory } from "../data/neighborhood.js";
+import { getLiveNeighborhood, PERSISTENT_DATA_FIELDS, setLiveNeighborhood } from "../data/nbhdstore.js";
 import type { SimCareer } from "./careers.js";
+import type { FameScoring } from "./fametrack.js";
 import { ObjectDialog, type DialogHooks } from "./objectdialog.js";
 import type { StackElem } from "./treestack.js";
 import { TreeTable, type TreeTableEntry } from "./treetable.js";
@@ -166,6 +168,13 @@ export class SimModule {
   jobGrades: string[] = [];
   /** GetFameTrackData: the fame titles by level (sim/fametrack.ts), null without a fame track; set by the Simulator. */
   fameTitles: string[] | null = null;
+  /** cFameTrack's scoring tables (null without GameData/fame.iff: no fame track). */
+  fameScoring: FameScoring | null = null;
+  /**
+   * ObjectModule +0x110: the person who asked for the Studio Town picker
+   * (generic call 35); PostSim's picker reads then clears it.
+   */
+  studioCaller: SimObject | null = null;
   /**
    * Neighborhood +0x11c: the other house numbers, sorted by distance to the
    * current one (Neighborhood::LoadHouse, compareHouses). LoadHouse adds the
@@ -425,6 +434,8 @@ export class SimModule {
   /** cXPerson::Initialize / PostLoad's person part: neighbor data and motive curves. */
   initPeople(nbhd: NeighborhoodData | null): void {
     this.nbhd = nbhd;
+    // This Neighborhood is the one in memory: Neighborhood::Save writes its relationships and inventories.
+    setLiveNeighborhood(nbhd ? { data: nbhd, persistent: new Map() } : null);
     const g = this.res.glob;
     // GlobalConstantsClient: FCNS 1 / 5 / 6 motives, FCNS 2 autonomy.
     setMotiveConstants([1, 5, 6].map((id) => loadFloatConstants(g, id)));
@@ -446,6 +457,26 @@ export class SimModule {
     const own = p.obj.selector.objd.i16(0x66);
     const strings = own !== 0 ? loadStringSet(p.obj.selector.res, own) : g ? loadStringSet(g, p.isChild ? 0x1f7 : 0x1f5) : null;
     p.scoreCurves = curvesFromStrings(strings ?? [], SCORE_CURVE_MOTIVES, 4);
+  }
+
+  /**
+   * Neighborhood::SavePersistentData(person): the persistent data fields
+   * (Neighbor::GetPersistentDataFields) copied from the person (+0x58c) into
+   * its neighbor (+0x74); the next Neighborhood::Save writes them.
+   */
+  savePersistentData(p: SimObject): void {
+    if (!p.person) return;
+    const guid = p.obj.selector.guid >>> 0;
+    const nb = this.findNeighborByGUID(guid);
+    if (!nb) return;
+    if (!nb.personData || nb.personData.length < 0x100) {
+      const pd = new Int16Array(0x100);
+      if (nb.personData) pd.set(nb.personData);
+      nb.personData = pd;
+    }
+    for (const i of PERSISTENT_DATA_FIELDS) nb.personData[i] = p.person.personData[i] ?? 0;
+    const live = getLiveNeighborhood();
+    if (live?.data === this.nbhd) live.persistent.set(guid, nb.personData.slice());
   }
 
   /** Neighborhood::GetZoningType: house 0 -> 1, listed -> its type, else 0. */
@@ -941,6 +972,25 @@ export class SimModule {
     for (const o of this.nbhd?.neighbors ?? []) {
       if (o === nb || !o.personData || o.personData[0x3d] === 0) continue;
       if (SimModule.areFriends(nb, o)) n++;
+    }
+    return n;
+  }
+
+  /**
+   * Neighborhood::GetFamousFriendCount(neighbor), through
+   * PersonFinder::GetFamousFriendCount: the fame levels (person data 0x51) of
+   * the other characters of another family (person data 0x3d) sharing a
+   * daily relationship of at least 25 both ways.
+   */
+  famousFriendCount(guid: number): number {
+    const nb = this.findNeighborByGUID(guid);
+    if (!nb) return 0;
+    const fam = nb.personData?.[0x3d] ?? 0;
+    let n = 0;
+    for (const o of this.nbhd?.neighbors ?? []) {
+      const ofam = o.personData?.[0x3d] ?? 0;
+      if (o === nb || ofam === 0 || ofam === fam) continue;
+      if (SimModule.areFriends(nb, o)) n += o.personData?.[0x51] ?? 0;
     }
     return n;
   }

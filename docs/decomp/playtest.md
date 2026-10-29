@@ -155,3 +155,62 @@ Reported by the user after playing. Each is assigned to an agent; mark fixed one
 | U12 | The cursor does not change during actions (e.g. picking up an object in Buy mode) | fixed: cDDDSimsView::SetToolCursor (id 5 = keep) and the tools' cursors: cMoveTool::UpdateCursor (hand 10, place 0xb, can't grab 0xc, rotate 0xd..0x10, Ctrl on doors / windows 6), wall tool (delete 6), floor / wallpaper (0 / 6), water (0x26), cTool::Select resets to 0; Live mode follows cObjPickerTool::Float (LiveNothing 0x1c / pet 0x2b, LivePerson 0x1d / pet 0x2a, object with interactions 0x1e, none or off the lot 0x1f). cWinCPanel sets the arrow (GetCursor(0)) so the tool cursor stops at the panel. Also: mouse downs on the panel's dead areas bubbled up to the lot view (the panel is its child) and clicked the world under it; they are now swallowed |
 | U13 | Kyle and Jada (House01) have black portraits in the control panel | fixed (documented deviation): the data is damaged, not the port. Their BMP_ 2002 (User00109..User00174 in UserData, all of them) has a solid 0x000000 middle head: MakePersonBtnImage does not clear its buffer, so a head that failed to render was saved black, and cWinPeople shows that third (row 1) when the mood is above 25. The original only re-renders the faces when the thumbnails are dirty (PersonFinder::DirtyThumbnails -> GetPictureBuffer -> GenerateBitmaps(i, 1, 0), in memory). `loadCharacter` (data/neighborhood.ts) treats a blank third as such a dirty face and regenerates the 2002 in memory (never written), so every reader (control panel, phone book, dialogs, family picker) gets it. generatePortraits now leaves the faces buffer black, not magenta |
 | U14 | Clicking a sim standing in front of the sofa or the easel picks the furniture | fixed: HouseViewer::PointToObjectID starts its tile walk at HouseViewer::PointToTile(pt, false), which reads the z-buffer at the point, unprojects it through the 3D camera (cAnimDeviceSub+0xa4) and, when HouseViewer::WorldToLevel gives the viewed level, takes that surface's tile; the port started from the floor tile (PointToWholeTile), behind the sim. The compositor now renders into a framebuffer with a depth texture (Compositor.present / readDepth), the picking is otherwise unchanged (rectangles, last on the tile wins). House01 (Chrome and Firefox): points on Kyle and Jada in front of the sofa pick them, the sofa and easel around them still pick. Not ported: PointToObjectID's mode 1 fallback test of the app's +0x1c / +0x36 short and the object definition's +0xb6 bit |
+
+## Expansions playtest (2026-10-29)
+
+House01 (Kyle, Jada) in a copy of UserData (`?nbhd=UserData9`, overlay, deleted afterwards),
+driven through pie menu entries (the same code path as a click) and the real dialogs. To save
+time, needs, skills (fame test) and magicoins (Magic Town test) were set from the console, and
+some lot changes used generic call 17 directly when the sims could not walk to the phone (see
+the routing problem below).
+
+### What works
+
+1. **Hot Date**: phone → Appeler voisin → phone book → Inviter... → Inviter en ville (type 1
+   token) → taxi → downtown picker (lot 26); Kyle and Edmond arrive together. Talk (relationship
+   up and kept), restaurant "Commander… / Plat du jour" with the date eating along, red roses
+   bought ($200, type 0 token), pay phone "Rentrer" → home with the relationship, the date's
+   memories and the roses (Gifts page). Giving the roses is refused by the data below
+   relationship 50.
+2. **Vacation**: phone "Partir en vacances" → picker → lot 48 with the whole family (-$500),
+   check-in ($120), buffet, sleep, pay phone "Rentrer" → the family comes home, the clock tokens
+   7 / 8 are consumed and the postcard token kept.
+3. **Superstar**: "La Pipelette" tabloid → "Trouver un agent" → contract accepted: job 0, fame
+   points 1, the agency's "Aller à Studio City" is free. Studio lot 83: open mic "Amuser" (a poor
+   show gives the "work on it" dialog; with skills, the promotion dialog and person data
+   0x50 / 0x51 / 0x52 = 2 / 1 / 1), Studio Town phone "Rentrer" → home with the fame kept.
+4. **Makin' Magic**: Magic Town lot 93: the Dragon cart's "Troquer..." entries show once the sim
+   has magicoins, "Friandise pour dragon" costs 5 coins and the ingredient token comes home; the
+   clown portal "Rentrer à la maison" goes home. At home: wand charger "Ajouter.../Miel",
+   "Charger.../Meilleures relations", then "Jeter.../Meilleures relations" on Jada (relationship
+   98 → 100 both ways).
+
+### Fixes
+
+| Symptom | Cause | Fix (original function) |
+|---|---|---|
+| Downtown toilet stalls froze the sims ("missing skill a2o-toilet-stall-*") | The skills live in `Downloads/HPPottyPack/HPPottyPack.far`; only the game's own archives were indexed | VBAnimMgr also indexes each download directory's `<dir>/<dir>.far` (ObjectFolder::GetDownloadDirectories) (`sims/vbanimmgr.ts`) |
+| Relationships, tokens and person data of a trip lost on the next lot | Neighborhood::Save rewrote the file's old NBRS / inventory; the live neighborhood was never written back | `NeighborhoodStore.save` takes the live neighborhood (rels, inventories, queued persistent data) (`data/nbhdstore.ts`, `sim/simmodule.ts` setLiveNeighborhood) |
+| The date / family did not travel or lost their needs | cXPerson::TryChangeLots only half ported | Companion from the type 1 / 3 token, type 2 tokens (motives 0..6, person data 9..12, clock 7 / 8), Neighborhood::SavePersistentData of each member, then the save (`nbhd/transit.ts`) |
+| Person data lost when a visitor leaves or the town lot is saved | Neighborhood::SavePersistentData / SaveAllPersistentDataForMatterTransferance / cXPerson::PreSave not ported | Generic call 25, tryKillObject on a person, SaveGame's town and residential branches (`sim/xobject.ts`, `world/savegame.ts`) |
+| Vacation phone always offered every lot / families on vacation not tracked | Family +0x13c (vacation lot) not read; generic call 27 not ported | FAMI version > 7 field read, set on arrival; call 27 counts the free vacation lots (`data/neighborhood.ts`, `nbhd/transit.ts`, `sim/xobject.ts`) |
+| False "Félicitations ... niveau supplémentaire" dialogs on every Studio Town visit | Generic call 34 (cFameTrack::PromoteIfNeeded) returned true | Ported with fame.iff's tables (STR# 4 / 5 / 6, skills lbl_105BB7FC, friend weight 0.5) and Neighborhood::GetFamousFriendCount (`sim/fametrack.ts`, `sim/simmodule.ts`) |
+| Studio Town taxi splash always the fan one | Generic call 35 (ObjectModule +0x110, the person asking) not ported | Call 35 records the person; PostSim shows splash 5 for a star (person data 0x50 > 0, job 0) (`sim/xobject.ts`, `nbhd/transit.ts`) |
+| Wand charger "Ajouter..." did nothing (32 unported hits) | Generic call 38 not ported | The numbers of STR# temp 0 entry temp 1 of the running tree's file into temps 1..7, count in temp 0 (`sim/xobject.ts`) |
+| Functional tree 8 / scope 38 unported (62 / 2106 hits) | Not ported | Functional tree 8: entry point 0x1a for a person with person data 0x41 < 2; scope 38: FindNeighborByID(stack object), definition field (0..0x6c) of the neighbor's object (`sim/xobject.ts`) |
+| Generic call 41 logged as unported | It jumps to the common exit | Returns true |
+| Lot view black, SaveGame thumbnail error after a few lot changes | Each portrait generation made a new WebGL context ("Too many active WebGL contexts") | `generatePortraits` shares one head camera (`cas/portraits.ts`, minimal change in that area) |
+
+### Remaining problems
+
+| Problem | Notes |
+|---|---|
+| Sims idling in a doorway never step aside on a crowded lot (House01 with ~20 guests): phone, tabloid and spellbook interactions fail with "route failure" | The asker calls MoveOutOfWay (askToMove events every ~50 ticks) but the blocker never runs the 0x7c4 helper's interaction 3 (queue stays empty). Lies in the Go Here helper (0x7c4) / routing area handled by another agent |
+| The tabloid / newspapers show only "Recycler" in the afternoon | Graphic 1 (old paper); their check trees need graphic 0 or 2. Probably faithful (a fresh paper comes in the morning), not compared |
+| Studio Town movie set and photo camera have no entries for a signed star on lot 83 | Not investigated; the open mic works |
+| ObjectModule::OnStarPowerChange (star plumb bobs) after a promotion | Not ported |
+| "NPC - Vacation - Controller" makes the mascot / janitor / maid / director during Simulator.postLoad, before the world hooks exist ("create object (no world)") | Not fixed |
+| A family member (Jada) once appeared downtown as a townie while living at home | Not investigated |
+| Downtown "Have A Meal" from the expensive fridge repeats ($10 each) | Possibly faithful |
+| "missing skill listen normal apathetic" once after the agent contract | A skill name without its a2a- prefix; not investigated |
+| Studio Town's cWinStudiotown star flag (+0xd0) and Magic Town's taxi 7 | Not ported |

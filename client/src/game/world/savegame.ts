@@ -94,6 +94,8 @@ export async function saveGame(ctx: GameContext, lv: WinLotView | null, nbhdDir:
         const visitor = lv.selectedPerson();
         const fam = visitor ? store.family(visitor.pd[PDX.familyNumber] ?? 0) : undefined;
         if (fam) store.setFamilyLotSave(fam.id, sim.getFunds(), fam.flags);
+        // Neighborhood::SaveAllPersistentDataForMatterTransferance: every neighbor with a person here.
+        for (const p of sim.module.persons) if (p.person && !p.killed) store.savePersistentData(p.obj.selector.guid >>> 0, p.person.personData);
         await store.save();
       }
       markLotClean(lv);
@@ -123,6 +125,8 @@ export async function saveGame(ctx: GameContext, lv: WinLotView | null, nbhdDir:
     });
     await writeGameFile(lv.housePath, bytes);
     if (store) {
+      // House::SaveFile's cXPerson::PreSave: Neighborhood::SavePersistentData of each person.
+      if (sim) for (const p of sim.module.persons) if (p.person && !p.killed) store.savePersistentData(p.obj.selector.guid >>> 0, p.person.personData);
       if (familyId !== undefined && sim) store.setFamilyLotSave(familyId, sim.getFunds(), st.familyFlags);
       await store.save();
     }

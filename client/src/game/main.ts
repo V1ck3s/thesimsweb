@@ -14,7 +14,7 @@ import { CPState, DIRTY_ALL, Mode } from "./cpstate.js";
 import type { GameContext } from "./context.js";
 import { CPANEL_HEIGHT, WinCPanel } from "./cpanel/cpanel.js";
 import { activateFamily } from "./data/family.js";
-import { NeighborhoodStore } from "./data/nbhdstore.js";
+import { NeighborhoodStore, setLiveNeighborhood } from "./data/nbhdstore.js";
 import { loadNeighborhood } from "./data/neighborhood.js";
 import { currentNeighborhoodDir, Neighborhood, storeCurrentNeighborhoodDir, Zone } from "./nbhd/nghinterface.js";
 import { getOptionsMgr } from "./optionsmgr.js";
@@ -129,6 +129,8 @@ class Game {
 
   private leaveLot(): void {
     if (!this.lotView) return;
+    // UnloadHouse: the next Neighborhood::Save no longer takes the lot's live data.
+    setLiveNeighborhood(null);
     this.mgr.main.childDelete(this.lotView);
     this.lotAudioOff?.();
     this.lotAudioOff = null;

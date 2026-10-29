@@ -368,6 +368,18 @@ class HeadCamera {
   }
 }
 
+/** One camera (one WebGL context) for every portrait: a context per call made the browser drop the lot view's. */
+let sharedHeadCamera: Promise<HeadCamera> | null = null;
+
+function headCamera(): Promise<HeadCamera> {
+  sharedHeadCamera ??= (async () => {
+    const cam = new HeadCamera();
+    await cam.init();
+    return cam;
+  })();
+  return sharedHeadCamera;
+}
+
 /**
  * PersonFinder::GenerateBitmaps(all, save): BMP_ id -> 24-bit BMP bytes.
  * `res` supplies the template bitmaps (loaded when omitted).
@@ -377,8 +389,7 @@ export async function generatePortraits(bodyStrings: readonly string[], res?: UI
   const vb = await headPerson(bodyStrings);
   if (!vb) return out;
   const ui = res ?? (await UIRes.load());
-  const cam = new HeadCamera();
-  await cam.init();
+  const cam = await headCamera();
   const save = (id: number, p: Pixels): void => void out.set(id, encodeBmp(p.data, p.w, p.h, 24));
 
   // MakePersonBtnImage

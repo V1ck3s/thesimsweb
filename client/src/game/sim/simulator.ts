@@ -19,7 +19,7 @@
 import { invalidateAllRoutes } from "./portals.js";
 import { loadNeighborhood } from "../data/neighborhood.js";
 import { loadJobGrades, loadSimCareers } from "./careers.js";
-import { loadFameTitles } from "./fametrack.js";
+import { loadFameScoring, loadFameTitles } from "./fametrack.js";
 import { VBAnimMgr } from "../sims/vbanimmgr.js";
 import { Mode, type CPState } from "../cpstate.js";
 import { ResFile } from "../world/iffres.js";
@@ -187,6 +187,7 @@ export class Simulator {
     sim.module.jobGrades = await loadJobGrades();
     // cFameTrack::LoadUpFameTrackScoring
     sim.module.fameTitles = await loadFameTitles();
+    sim.module.fameScoring = await loadFameScoring();
     // SAnimator::Initialize: a skeleton per person (the lot view attaches its VitaBoy's instead).
     for (const p of sim.module.persons) await Simulator.attachSkeleton(p);
     sim.module.onPersonMade = (p) => void Simulator.attachSkeleton(p);
