@@ -10,7 +10,9 @@
   "packageManager": "pnpm@10.33.2",
   "scripts": {
     "dev": "pnpm --parallel --filter \"./{client,server}\" run dev",
-    "build": "pnpm -r run build",
+    "build": "pnpm run build:wasm && pnpm --filter @thesimsweb/client --filter @thesimsweb/server run build",
+    "build:wasm": "wasm-pack build --target web --scope thesimsweb crates/wasm-bindings",
+    "start": "node scripts/start.mjs",
     "test": "pnpm -r run test",
     "lint": "pnpm -r run lint",
     "typecheck": "pnpm -r run typecheck"

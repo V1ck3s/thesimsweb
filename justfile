@@ -21,11 +21,13 @@ dev-client:
 dev-server:
     pnpm --filter @thesimsweb/server dev
 
-# build everything (TS + WASM)
-build: build-wasm build-ts
-
-build-ts:
+# build everything (WASM + client bundle + server)
+build:
     pnpm build
+
+# production: build what is stale, then serve the game on http://127.0.0.1:3000/
+start *args:
+    pnpm start {{args}}
 
 build-wasm:
     wasm-pack build --target web --scope thesimsweb crates/wasm-bindings

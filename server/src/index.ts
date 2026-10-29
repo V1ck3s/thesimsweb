@@ -3,6 +3,7 @@ import { dirname, resolve } from "node:path";
 import Fastify from "fastify";
 import fastifyCors from "@fastify/cors";
 import fastifyStatic from "@fastify/static";
+import { registerClientRoute } from "./routes/client.js";
 import { registerManifestRoute } from "./routes/manifest.js";
 import { registerRangesRoute } from "./routes/ranges.js";
 import { registerSavesRoute } from "./routes/saves.js";
@@ -14,6 +15,7 @@ const __dirname = dirname(__filename);
 const repoRoot = resolve(__dirname, "..", "..");
 const assetsDir = resolve(repoRoot, "server", "assets");
 const overlayDir = overlayDirOf(repoRoot);
+const clientDir = resolve(process.env["CLIENT_DIST"] ?? resolve(repoRoot, "client", "dist"));
 
 const HOST = process.env["HOST"] ?? "127.0.0.1";
 const PORT = Number(process.env["PORT"] ?? 3000);
@@ -48,6 +50,11 @@ await registerUserDataRoute(app, { overlayDir, onChange: () => invalidateOverlay
 await registerRangesRoute(app, { assetsDir, overlayDir });
 await registerSavesRoute(app, { repoRoot });
 await registerTemplatesRoute(app, { assetsDir });
+// The built game (`pnpm build`); in dev, vite serves the client on :5173 instead.
+// Served whenever client/dist exists; SERVE_CLIENT=0 turns it off.
+if (process.env["SERVE_CLIENT"] !== "0" && (await registerClientRoute(app, { clientDir }))) {
+  app.log.info(`serving the built client from ${clientDir}`);
+}
 
 try {
   await app.listen({ host: HOST, port: PORT });

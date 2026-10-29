@@ -38,6 +38,11 @@ export default defineConfig({
   },
   build: {
     target: "es2022",
+    // The server owns `/assets/` (the game folder): hashed bundle files go to
+    // `/static/` instead, served with an immutable cache by server/src/routes/client.ts.
+    assetsDir: "static",
+    // The game is one ~1 MB chunk (plus lazy dev tests); nothing to split.
+    chunkSizeWarningLimit: 2048,
     sourcemap: true,
     rollupOptions: {
       input: {

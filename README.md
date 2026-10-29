@@ -30,6 +30,30 @@ pnpm dev   # → client http://localhost:5173/  ·  server http://127.0.0.1:3000
 
 Détails et bootstrap d'une machine vierge : `docs/DEVELOPMENT.md`.
 
+## Play (production build)
+
+You need Node 22, pnpm, and Rust with `wasm-pack` (the engine is compiled to
+WebAssembly). Point the server at your own installation of the game first:
+
+```bash
+pnpm install
+mkdir -p server/assets
+ln -s "/path/to/Maxis/The Sims" server/assets/Sims   # read-only is fine
+pnpm start                                            # → http://127.0.0.1:3000/
+```
+
+`pnpm start` (`scripts/start.mjs`) rebuilds whatever is stale — the WASM engine,
+the client bundle (`client/dist/`, vite) and the server (`server/dist/`, tsc) —
+then runs the Fastify server, which serves the game at `/` next to `/assets`,
+`/api/*` and the save overlay. Open the URL in Firefox or Chrome.
+
+- Port / interface: `pnpm start --port 4000` (or `PORT=4000`), `HOST=0.0.0.0 pnpm start` for the LAN.
+- `pnpm start --rebuild` forces every build step, `--no-build` only runs the server.
+- `pnpm build` builds everything without starting anything.
+- URL options: `/?nbhd=UserData2` opens another neighborhood, `/?house=1` goes straight into a lot.
+- Saves never touch the game folder: they go to `server/data/overlay/Sims/UserData*/`,
+  which shadows the originals (delete a folder there to reset that neighborhood).
+
 ## Layout
 
 ```
