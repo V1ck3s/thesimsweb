@@ -69,6 +69,7 @@ import { BalloonPainter, loadBalloonSprites } from "./balloons.js";
 import { WinPictureInPicture } from "./winpictureinpicture.js";
 import { killObject, makeNewOutOfWorldObject } from "./tools/objectfactory.js";
 import { updateSimObjects } from "./simobjects.js";
+import { PlumbBobs } from "./plumbbobs.js";
 import { GiftsPanel } from "../cpanel/live/gifts.js";
 
 /** HOUS chunk id 0: HouseViewer::DoStream (saved camera). */
@@ -152,6 +153,8 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
   /** Buy / build commands submitted, undone or redone (the save's dirty test). */
   editCount = 0;
   placement: Placement | null = null;
+  /** ObjectModule's plumb bobs (the selected person's diamond, the date and star bobs). */
+  plumbBobs: PlumbBobs | null = null;
   private tip: { win: DefaultTTWindow; x: number; y: number; text: string } | null = null;
   private tipWin: DefaultTTWindow | null = null;
   private buttonDown = false;
@@ -274,6 +277,7 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
     // ObjectModule::Load -> UpdateSimObjects: the controllers / phone plugins every lot holds.
     if (this.lotObjects && this.sim && this.placement) await updateSimObjects(this.placement, this.lotObjects.folder, this.sim.module);
     if (this.lotObjects && this.sim) await this.bringInFamily(v, this.lotObjects);
+    if (this.lotObjects && this.sim && this.placement) await this.initPlumbBobs(this.lotObjects, this.sim, this.placement);
     this.edge = new EdgeDetectScroller(v, this.ctx.width, this.ctx.height);
     const st = this.ctx.state;
     st.viewer = this;
@@ -598,8 +602,13 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
       onEnterWorld: (obj) => {
         simObject(obj);
         if (obj.isPerson) void this.drawPerson(obj);
+        this.plumbBobs?.onEnterWorld(obj);
+      },
+      onExitWorld: (obj) => {
+        this.plumbBobs?.onExitWorld(obj);
       },
       onKill: (obj) => {
+        this.plumbBobs?.onKill(obj);
         this.sim?.module.removeObject(obj);
       },
       personData: (obj) => this.sim?.module.persons.find((p) => p.obj === obj)?.pd ?? null,
@@ -1350,6 +1359,34 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
     }
   }
 
+  /**
+   * ObjectModule::PostLoad's plumb bobs (InitPlumbBobs, OnSelectionChange of
+   * the selected person, OnStarPowerChange of everyone), once the bobs'
+   * object files are open. LotPeople draws them on their carriers.
+   */
+  private async initPlumbBobs(lot: LotObjects, sim: Simulator, p: Placement): Promise<void> {
+    const bobs = new PlumbBobs({
+      placement: p,
+      folder: lot.folder,
+      sim: sim.module,
+      kill: (obj) => {
+        this.killing.add(obj);
+        try {
+          killObject(p, obj);
+        } finally {
+          this.killing.delete(obj);
+        }
+      },
+    });
+    await bobs.load();
+    this.plumbBobs = bobs;
+    bobs.postLoad(this.selectedPerson()?.obj ?? null);
+    if (this.people) {
+      this.people.objectById = (id) => lot.objects.get(id) ?? null;
+      this.people.motive = (o, i) => sim.module.getObject(o.objectId)?.person?.motives[i] ?? 0;
+    }
+  }
+
   /** cSimulator::SetCurrentHour's time-of-day change (global 4): relight the rooms and the terrain. */
   private updateTimeOfDay(): void {
     const l = this.lighting;
@@ -1437,6 +1474,11 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
     if (this.sim && this.viewer) {
       this.sim.syncFromState();
       this.sim.simulate(nowMs);
+      // ObjectModule::SetSelectedPerson (CPState's selection), then HouseViewer's ObjectModule::UpdatePlumbBobs.
+      if (this.plumbBobs) {
+        this.plumbBobs.setSelectedPerson(this.selectedPerson()?.obj ?? null);
+        this.plumbBobs.updatePlumbBobs();
+      }
     }
     if (this.viewer && this.people?.people.length) {
       this.people.update(nowMs);

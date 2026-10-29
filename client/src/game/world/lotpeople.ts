@@ -10,9 +10,10 @@
  */
 
 import { loadNeighborhood, neighborByGuid } from "../data/neighborhood.js";
-import { loadPerson, personLooks, rootTransform, SAnimator, SimRenderer, type SimView } from "../sims/index.js";
+import { loadPerson, personLooks, rootTransform, SAnimator, SimRenderer, type SimPlacement, type SimView } from "../sims/index.js";
+import { Animator, AnimStyle } from "../sims/animator.js";
 import { loadStringSet } from "../sim/behavior.js";
-import { quatRotate, transformPoint, type Vec3 } from "../sims/math3d.js";
+import { mat4Mul, quatRotate, transformPoint, translationTf, type Vec3 } from "../sims/math3d.js";
 import type { Skeleton } from "../sims/skeleton.js";
 import type { Compositor } from "./compositor.js";
 import type { HouseViewer } from "./houseviewer.js";
@@ -54,7 +55,25 @@ async function loadLotPerson(nbhdDir: string, nbhd: Awaited<ReturnType<typeof lo
   return nb ? await loadPerson(nbhdDir, nb.name).catch(() => null) : null;
 }
 
+/** cXPerson::Initialize's third object slot ("HEAD", flag 2): where the plumb bobs go. */
+const HEAD_SLOT = 2;
+/** Object data 34: hidden. */
+const OD_HIDDEN = 34;
+/** Person data 74 bit 0: VitaBoy::SetRenderFlags' hide flag for the date and star bobs. */
+const PD_RENDER_FLAGS = 0x4a;
+
 export class LotPeople {
+  /** cXObject::Initialize3D's animators of the 3D objects carried (null: none or failed; absent: loading). */
+  private readonly animators = new Map<PlacedObject, Animator | null>();
+  /** The real-time clock of the last update (lbl_105BA230). */
+  private now = 0;
+  /**
+   * The lot view's object lookup (the HEAD slot's contents) and
+   * cXPerson::GetMotive of a person; no 3D object is drawn until set.
+   */
+  objectById: ((id: number) => PlacedObject | null) | null = null;
+  motive: ((person: PlacedObject, i: number) => number) | null = null;
+
   private constructor(
     private readonly renderer: SimRenderer,
     readonly people: LotPerson[],
@@ -133,6 +152,7 @@ export class LotPeople {
   }
 
   update(nowMs: number): void {
+    this.now = nowMs;
     // Sim-driven people have no practices here: this only deforms their meshes.
     for (const p of this.people) {
       // SAnimator::Render -> UpdateOutfitAndHands(false): redressed when the outfit, gestures or accessories changed.
@@ -195,12 +215,45 @@ export class LotPeople {
       // HouseViewer::Render3DObject: RoomManager::GetRoomAmbientLight at the person's view position.
       const [vx, vy] = RotatableWorld.rotateCoords(Math.round(at.fx), Math.round(at.fy), viewer.world.rotation, 0x400);
       const ambient = viewer.ambientAt(vx, vy, obj.level);
-      this.renderer.renderSim(
-        anim.vitaboy,
-        { x: at.fx / 16, y: at.fy / 16, level: obj.level, alt: viewer.world.fixed.getFAlt(Math.round(at.fx), Math.round(at.fy)), direction: simDir ? simDir() : obj.dir },
-        view,
-        { ambient },
-      );
+      const place: SimPlacement = {
+        x: at.fx / 16,
+        y: at.fy / 16,
+        level: obj.level,
+        alt: viewer.world.fixed.getFAlt(Math.round(at.fx), Math.round(at.fy)),
+        direction: simDir ? simDir() : obj.dir,
+      };
+      this.renderer.renderSim(anim.vitaboy, place, view, { ambient });
+      this.drawHeadObject(person, place, view);
     }
+  }
+
+  /**
+   * A 3D object in the person's HEAD slot (a plumb bob): SAnimator::
+   * UpdatePose sets its root transform (the HEAD bone's position, then the
+   * person's root transform) and its value (cXPerson::GetMotive(3), the
+   * mood), then HouseViewer::Render3DObject draws it (Animator::Render).
+   */
+  private drawHeadObject(person: LotPerson, place: SimPlacement, view: SimView): void {
+    const { obj } = person;
+    const slot = obj.objectSlots.length - 1 < HEAD_SLOT ? undefined : obj.objectSlots[HEAD_SLOT];
+    const held = slot && slot.containedId > 0 ? (this.objectById?.(slot.containedId) ?? null) : null;
+    if (!held || (held.selector.objd.i16(0xcc) & 1) === 0 || !this.motive) return;
+    if (!this.animators.has(held)) {
+      this.animators.set(held, null);
+      const strings = loadStringSet(held.selector.res, held.selector.objd.i16(0x26)) ?? [];
+      void Animator.create(strings)
+        .catch(() => null)
+        .then((a) => this.animators.set(held, a));
+      return;
+    }
+    const anim = this.animators.get(held);
+    const head = person.anim.vitaboy.skeleton.findBone("HEAD");
+    if (!anim || !head) return;
+    // Animator::Render's hide flag for the date and star bobs: the carrier hidden or person data 74 bit 0.
+    const pd = personLooks.get(obj)?.pd;
+    if (anim.style !== AnimStyle.plumbBob && ((obj.objectData[OD_HIDDEN] ?? 0) !== 0 || ((pd?.[PD_RENDER_FLAGS] ?? 0) & 1) !== 0)) return;
+    anim.root = mat4Mul(translationTf(head.worldPos), rootTransform(place, view.rotation));
+    anim.value = Math.trunc(this.motive(obj, 3));
+    anim.render(this.renderer, view, this.now);
   }
 }

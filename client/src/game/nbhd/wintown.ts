@@ -37,6 +37,7 @@ import { MUSIC, soundPlayer, UI } from "../audio/index.js";
 import type { GameContext } from "../context.js";
 import { writeGameFile } from "../data/files.js";
 import { NeighborhoodStore } from "../data/nbhdstore.js";
+import { getOptionsMgr, TriState } from "../optionsmgr.js";
 import type { FfnFont } from "../res/ffn.js";
 import { LANG_FRENCH } from "../res/uires.js";
 import { BTN_TOGGLE, TSWinBtn } from "../ui/btn.js";
@@ -48,6 +49,7 @@ import type { Neighborhood } from "./nghinterface.js";
 import { WinCredits } from "./wincredits.js";
 import { WinLotBtn, type LotBtnOwner } from "./winlotbtn.js";
 import { WinLotPopup } from "./winlotpopup.js";
+import { MagiclandSprites, StudiotownCars } from "./townsprites.js";
 
 export const enum Town {
   Downtown = 0,
@@ -326,6 +328,8 @@ function logoImage(lang: number): number {
 const WATER_STEP_MS = 1000 / (2 * Math.PI);
 /** cWinMagicland::TSPaint's: 1000 / elapsed <= 26. */
 const MAGIC_STEP_MS = 1000 / 26;
+/** cWinStudiotown::TSPaint's: 1000 / elapsed <= 20 (lbl_105BCDF8 1000, 20; +0x454). */
+const STUDIO_STEP_MS = 1000 / 20;
 /** TSOnTimerMsg period; the first tick enables the lot rollovers. */
 const TIMER_MS = 1000;
 /** cWinLotBtn::InitData: the lots' tooltip unfurl time. */
@@ -387,10 +391,22 @@ class WaterLayer extends TSWin {
   /** Magic Town's (0, 0x3e). */
   frameX = 0;
   frameY = 0;
+  /** Magic Town's clouds and balloon, Studio Town's cars (drawn after the water). */
+  sprites: MagiclandSprites | StudiotownCars | null = null;
 
   override tsPaint(g: Gfx): void {
     for (const o of this.overlays) g.blit(o, this.ox, this.oy);
     if (this.frame) g.blit(this.frame, this.ox + this.frameX, this.oy + this.frameY);
+    if (this.sprites) {
+      // The original draws into the 800 x 600 screen; above that resolution
+      // the map's rectangle stands for the screen edges.
+      g.ctx.save();
+      g.ctx.beginPath();
+      g.ctx.rect(g.ox + this.ox, g.oy + this.oy, 800, 600);
+      g.ctx.clip();
+      this.sprites.draw(g, this.ox, this.oy);
+      g.ctx.restore();
+    }
   }
 }
 
@@ -423,6 +439,8 @@ export class WinTown extends TSWin implements LotBtnOwner {
   private title = "";
   private openedMs = -1;
   private lastTimerMs = 0;
+  /** Studio Town's car clock (cWinStudiotown::TSPaint's +0x454 / +0x358). */
+  private lastSpritesMs = 0;
   private firstTick = true;
   private hoveredLot: WinLotBtn | null = null;
   private popupShownMs = 0;
@@ -523,6 +541,16 @@ export class WinTown extends TSWin implements LotBtnOwner {
     water.overlays = overlays.filter((o): o is ImageBitmap => o !== null);
     water.frameX = def.waterCycle?.x ?? 0;
     water.frameY = def.waterCycle?.y ?? 0;
+    if (this.town === Town.Magictown) {
+      // cWinMagicland +0x38c: the clouds only above the Low terrain detail.
+      const sprites = new MagiclandSprites(getOptionsMgr().getTerrainDetail() !== TriState.Low);
+      await sprites.load(res);
+      water.sprites = sprites;
+    } else if (this.town === Town.Studiotown) {
+      const cars = new StudiotownCars();
+      await cars.load(res);
+      water.sprites = cars;
+    }
     this.childAdd(water);
     this.waterLayer = water;
 
@@ -920,13 +948,21 @@ export class WinTown extends TSWin implements LotBtnOwner {
         this.lastWaterMs = now;
         this.waterTick = (this.waterTick + 1) % (5 * this.water.length);
         if (this.waterLayer) this.waterLayer.frame = this.water[Math.trunc(this.waterTick / 5)] ?? null;
+        this.waterLayer?.sprites?.step();
       }
-    } else if (now - this.lastWaterMs >= WATER_STEP_MS) {
-      // TSPaint's clock: ticks 0..9, frame = tick for 0..4, 9 - tick after.
-      this.lastWaterMs = now;
-      this.waterTick = (this.waterTick + 1) % 10;
-      const i = this.waterTick > 4 ? 9 - this.waterTick : this.waterTick;
-      if (this.waterLayer) this.waterLayer.frame = this.water[i] ?? null;
+    } else {
+      if (now - this.lastWaterMs >= WATER_STEP_MS) {
+        // TSPaint's clock: ticks 0..9, frame = tick for 0..4, 9 - tick after.
+        this.lastWaterMs = now;
+        this.waterTick = (this.waterTick + 1) % 10;
+        const i = this.waterTick > 4 ? 9 - this.waterTick : this.waterTick;
+        if (this.waterLayer) this.waterLayer.frame = this.water[i] ?? null;
+      }
+      // Studio Town's cars: cWinStudiotown::TSPaint's own clock (+0x358).
+      if (this.waterLayer?.sprites && now - this.lastSpritesMs >= STUDIO_STEP_MS) {
+        this.lastSpritesMs = now;
+        this.waterLayer.sprites.step();
+      }
     }
     super.pump(now);
   }

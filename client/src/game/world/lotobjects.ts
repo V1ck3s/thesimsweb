@@ -99,13 +99,15 @@ export async function loadLotObjectDrawer(house: ResFile, world: IntegrityWorld)
   };
   const drawables = new Map<PlacedObject, DrawableLotObject>();
   // People stand in the tile links too (cXObject::Place) but are drawn by LotPeople: a tile's
-  // chain skips them.
+  // chain skips them. So are the 3D objects (OBJD +0xcc bit 0, the plumb bobs: cXObject::DrawIso
+  // goes to Draw3D, LotPeople draws them with their carrier).
+  const notSprite = (o: PlacedObject): boolean => o.isPerson || (o.selector.objd.i16(0xcc) & 1) !== 0;
   const skipPeople = (o: PlacedObject | undefined): PlacedObject | undefined => {
-    for (let guard = 0; o?.isPerson && guard < 64; guard++) o = objects.get(o.nextSiblingId);
+    for (let guard = 0; o && notSprite(o) && guard < 64; guard++) o = objects.get(o.nextSiblingId);
     return o;
   };
   const drawableOf = (o: PlacedObject | undefined): DrawableLotObject | null => {
-    if (!o || o.isPerson) return null;
+    if (!o || notSprite(o)) return null;
     let d = drawables.get(o);
     if (!d) {
       d = new DrawableLotObject(o, renderer(o.selector.res));

@@ -109,7 +109,10 @@ export async function saveGame(ctx: GameContext, lv: WinLotView | null, nbhdDir:
     // A pool or water tool keeps its pools out of the world layer while selected; Deselect puts them back.
     lv.gameTools?.issueToolSelection(null);
     const sel = lv.selectedPerson();
-    const bytes = await buildHouseFile({
+    // ObjectModule::Save: PickupAndKillPlumbBobs before the objects are written (no bob is
+    // saved), then InitPlumbBobs / OnSelectionChange / OnStarPowerChange.
+    lv.plumbBobs?.pickupAndKillPlumbBobs();
+    const building = buildHouseFile({
       house,
       fixed,
       floors: viewer.floors,
@@ -123,6 +126,7 @@ export async function saveGame(ctx: GameContext, lv: WinLotView | null, nbhdDir:
       stats: { objectValue: st.simA0, archValue: st.simA4, global16: st.lotHasHouse, global25: st.transitFilterFlags },
       thumbnails: () => saveHouseThumbnails({ viewer, walls, lighting: lv.lighting, terrain: lv.terrain }),
     });
+    const bytes = await building.finally(() => lv.plumbBobs?.afterSave());
     await writeGameFile(lv.housePath, bytes);
     if (store) {
       // House::SaveFile's cXPerson::PreSave: Neighborhood::SavePersistentData of each person.

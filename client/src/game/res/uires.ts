@@ -14,7 +14,7 @@
  */
 
 import { fetchManifest, readFarEntry } from "../../engine/assets.js";
-import { decodeImage } from "./bmp.js";
+import { decodeImage, type RgbaImage } from "./bmp.js";
 
 const ROOT = "Sims/UIGraphics/";
 const FAR = `${ROOT}UIGraphics.far`;
@@ -73,6 +73,13 @@ export class UIRes {
     const p = this.path(id);
     if (!p) return Promise.reject(new Error(`no UI bitmap for id ${id}`));
     return this.imageByPath(p);
+  }
+
+  /** The decoded pixels of a resource id, unkeyed (a TGA's own alpha kept: the Compose2 masks). */
+  async rgba(id: number): Promise<RgbaImage> {
+    const p = this.path(id);
+    if (!p) throw new Error(`no UI bitmap for id ${id}`);
+    return decodeImage(await this.readBytes(p), p);
   }
 
   /** Bitmap by its RT-style path ("CPanel/Buttons/ScrollLeft.bmp"). */

@@ -21,7 +21,7 @@ import type { SkeletonBinding } from "./deformablemesh.js";
 import { VERTEX_FLOATS } from "./deformablemesh.js";
 import { engageLights, loadStdLights, type U3DLight } from "./lighting.js";
 import type { VitaBoy } from "./vitaboy.js";
-import type { Mat4 } from "./math3d.js";
+import type { Mat4, Vec3 } from "./math3d.js";
 
 const VS = `#version 300 es
 in vec3 aPos;
@@ -32,7 +32,7 @@ uniform mat4 uViewProj;
 uniform vec2 uPixelFix;   // D3D pixel centers: +0.5 px right, +0.5 px down
 uniform vec3 uLightDir;
 uniform vec3 uLightColor;
-uniform float uAmbient;
+uniform vec3 uAmbient;
 out vec2 vUV;
 out vec3 vColor;
 out float vZ;
@@ -42,7 +42,7 @@ void main() {
   vec4 c = uViewProj * world;
   vZ = c.z / c.w;
   gl_Position = vec4(c.xy + uPixelFix * c.w, c.z * 2.0 - c.w, c.w);
-  vColor = min(vec3(1.0), vec3(uAmbient) + uLightColor * max(0.0, dot(n, -uLightDir)));
+  vColor = min(vec3(1.0), uAmbient + uLightColor * max(0.0, dot(n, -uLightDir)));
   vUV = aUV;
 }`;
 
@@ -53,11 +53,12 @@ in vec3 vColor;
 in float vZ;
 uniform sampler2D uTex;
 uniform bool uHasTex;
+uniform float uUntextured;
 uniform float uDepthMin;
 uniform float uDepthRange;
 out vec4 outColor;
 void main() {
-  vec3 t = uHasTex ? texture(uTex, vUV).rgb : vec3(0.5);
+  vec3 t = uHasTex ? texture(uTex, vUV).rgb : vec3(uUntextured);
   outColor = vec4(t * vColor, 1.0);
   gl_FragDepth = clamp((vZ * 65535.0 - uDepthMin) / uDepthRange, 0.0, 1.0);
 }`;
@@ -70,9 +71,22 @@ export interface DepthMapping {
 
 export const DEFAULT_DEPTH: DepthMapping = { depthMin: -32768, depthRange: 131072 };
 
+/**
+ * A light set up by the caller instead of the person rig (Animator::Render's
+ * self-lit objects: one directional light and a colored viewport ambient).
+ */
+export interface ObjectLighting {
+  /** Direction the light travels, world space, unit length. */
+  direction: Vec3;
+  color: Vec3;
+  ambient: Vec3;
+}
+
 export interface RenderSimOptions {
   /** Room ambient level 0..1 (RenderParam::GetAmbientLightLevel). */
   ambient?: number;
+  /** Replaces the light rig (the person lighting) when set. */
+  lighting?: ObjectLighting;
   depth?: DepthMapping;
 }
 
@@ -95,7 +109,7 @@ export class SimRenderer {
 
   private constructor(readonly gl: WebGL2RenderingContext) {
     this.prog = link(gl, VS, FS);
-    for (const n of ["uModel", "uViewProj", "uPixelFix", "uLightDir", "uLightColor", "uAmbient", "uTex", "uHasTex", "uDepthMin", "uDepthRange"]) {
+    for (const n of ["uModel", "uViewProj", "uPixelFix", "uLightDir", "uLightColor", "uAmbient", "uTex", "uHasTex", "uUntextured", "uDepthMin", "uDepthRange"]) {
       this.u[n] = gl.getUniformLocation(this.prog, n);
     }
   }
@@ -129,7 +143,8 @@ export class SimRenderer {
   renderSimModel(vb: VitaBoy, model: Mat4, view: SimView, opts: RenderSimOptions = {}): void {
     const gl = this.gl;
     const cam = this.cameraFor(view);
-    const light = engageLights(this.lights, cam, opts.ambient ?? 1);
+    const own = opts.lighting;
+    const rig = own ? null : engageLights(this.lights, cam, opts.ambient ?? 1);
     const depth = opts.depth ?? DEFAULT_DEPTH;
     const blend = gl.isEnabled(gl.BLEND);
     gl.useProgram(this.prog);
@@ -145,9 +160,11 @@ export class SimRenderer {
     gl.uniformMatrix4fv(this.u["uModel"]!, false, model);
     gl.uniformMatrix4fv(this.u["uViewProj"]!, false, cam.viewProjection);
     gl.uniform2f(this.u["uPixelFix"]!, 1 / view.width, -1 / view.height);
-    gl.uniform3fv(this.u["uLightDir"]!, light.direction);
-    gl.uniform3fv(this.u["uLightColor"]!, light.color);
-    gl.uniform1f(this.u["uAmbient"]!, light.ambient);
+    gl.uniform3fv(this.u["uLightDir"]!, own ? own.direction : rig!.direction);
+    gl.uniform3fv(this.u["uLightColor"]!, own ? own.color : rig!.color);
+    gl.uniform3fv(this.u["uAmbient"]!, own ? own.ambient : [rig!.ambient, rig!.ambient, rig!.ambient]);
+    // Without a texture Direct3D shows the lit material (white); people keep their grey placeholder.
+    gl.uniform1f(this.u["uUntextured"]!, own ? 1 : 0.5);
     gl.uniform1f(this.u["uDepthMin"]!, depth.depthMin);
     gl.uniform1f(this.u["uDepthRange"]!, depth.depthRange);
     gl.uniform1i(this.u["uTex"]!, 0);

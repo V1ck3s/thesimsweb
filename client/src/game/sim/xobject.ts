@@ -623,7 +623,12 @@ export class SimObject extends TreeSim {
   /** cXPerson +0x58c[data]; writes mark CPState dirty in the original (person panels). */
   protected personData(o: SimObject, data: number, want: boolean): number {
     const p = o.person!;
-    if (want) this.outRef = { a: p.personData, i: data };
+    if (want) {
+      this.outRef = { a: p.personData, i: data };
+      // InterpValue's address of person data 77 (date) / 81 (fame): the plumb bobs follow (ObjectModule::UpdatePlumbBobs).
+      if (data === 0x4d) this.module.setAutofollowSimDirty(o);
+      else if (data === 0x51) this.module.setStarSimDirty(o);
+    }
     return p.personData[data]!;
   }
 

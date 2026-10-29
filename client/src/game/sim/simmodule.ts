@@ -227,6 +227,14 @@ export class SimModule {
   tutorialObject: SimObject | null = null;
   /** GlobalDispatch(0x107) -> cSimsApp: cTutorialIcon::ObjectChanged (the tutorial icon is not ported). */
   onTutorialObjectChanged: ((o: SimObject | null) => void) | null = null;
+  /**
+   * ObjectModule +0xb0 / +0xb4 / +0xc0: the persons whose date (person data
+   * 77) or fame (81) was written, for ObjectModule::UpdatePlumbBobs
+   * (world/plumbbobs.ts) to move the date and star plumb bobs.
+   */
+  plumbBobsDirty = false;
+  readonly autofollowDirty: SimObject[] = [];
+  readonly starDirty: SimObject[] = [];
 
   constructor(
     readonly sim: Simulator,
@@ -245,6 +253,20 @@ export class SimModule {
       this.list.push(o);
       if (x.isPerson) this.people.push(o);
     }
+  }
+
+  /** ObjectModule::SetStarSimDirty. */
+  setStarSimDirty(p: SimObject | null): void {
+    if (p) this.starDirty.push(p);
+    this.plumbBobsDirty = true;
+  }
+
+  /** ObjectModule::SetAutofollowSimDirty: a person with a date (person data 77), once. */
+  setAutofollowSimDirty(p: SimObject | null): void {
+    if (!p?.person || p.person.personData[0x4d] === 0) return;
+    if (this.autofollowDirty.some((q) => q && q.id === p.id)) return;
+    this.autofollowDirty.push(p);
+    this.plumbBobsDirty = true;
   }
 
   /** The people as PersonSim. */
