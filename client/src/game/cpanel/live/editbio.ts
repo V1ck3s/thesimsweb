@@ -129,8 +129,6 @@ export class WinEditBio extends TSWin {
       winMgr.endDialog(this, 0);
       return true;
     }
-    // cTSWin::TSOnKeyDown: the other keys reach the focused edit (WinMgr routes them to the modal window).
-    if (this.edit && winMgr.getFocus() === this.edit && this.edit.tsOnKeyDown(key)) return true;
     return super.tsOnKeyDown(key);
   }
 

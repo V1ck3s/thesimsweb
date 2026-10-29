@@ -120,23 +120,25 @@ player meets were ported and checked in Chrome (screenshots in the local scratch
 |---|---|---|
 | cWinBudgetDlg / cWinBudgetRow (`cpanel/budgetdlg.ts`) | funds button, residential lot | House01: 3-day / today columns per expense type, balance, "Total compte du ménage", "Valeur nette des biens", days; the simulation is held while it is up. The simulator now keeps the SIMI expense blocks (+0xe4 history, +0x184 today) and `spend()` records by type; the midnight shift reproduces the original's copy of day 1 into days 1..4 |
 | cWinHelp (`cpanel/help.ts`) | "?" button | 30 topics, arrow keys, the last topic is remembered |
-| Friend count dialog (STR# 162) | view control smiley | opens; the count itself is not fed (CPState.familyFriendCount) |
+| Friend count dialog (STR# 162) | view control smiley | opens with the count fed (CPState.familyFriendCount: global 9 family's friends on a residential lot, else the selected person's person data 0x3d) |
 | cWinSubpanelReportCard (`cpanel/live/reportcard.ts`) | job page of a child | House01, Max: "Bulletin 15/20", the "Notes" popup with the school picture. Fixed on the way: CARR ids were read unsigned, so the school career (-1) was never found |
 | cWinSubpanelDogSkills / CatSkills (`cpanel/live/petskills.ts`) | job page of a pet | House69 copy, Luna: "Aptitudes des animaux"; the cat page ("Chasse") by changing the gender in memory |
 | cWinEditBio (`cpanel/live/editbio.ts`) | Ctrl+click on a portrait | Jada's biography saved into her CTSS (throwaway copy) |
-| cWinDeltaMeter (`cpanel/live/deltameter.ts`) | needs page | red / green arrows after a motive change; CPState now has the motive pulse (PulseGenerator +0x1f0) |
+| cWinDeltaMeter (`cpanel/live/deltameter.ts`) | needs page | red / green arrows after a motive change; CPState now has both pulses (PulseGenerator +0x1f0 for the motives, +0x200 every 3 s at speed 1 setting dirty 0x6078000 for the panels). The relationship page now hosts its meter (+0x1a0) and pumps it, but cWinDeltaMeter(int) leaves the history at +0xe8 null, so the original never shows arrows there: kept |
 | cWinDisposePopup (`cpanel/disposepopup.ts`) | holding a lot object in Buy mode | "Appuyer sur Suppr ou cliquer ici pour vendre Chaise El Tomayo pour $864", click sells (+$864), Escape restores the catalog |
 | cWinEditDTLotDesc (`nbhd/wineditdtlotdesc.ts`) | saving / leaving an empty town lot | UserData6 copy, lot 22: "Chez Corinne", edited name and description written to DTDesc.iff and read back |
-| cTSWinTutorialHighlight (`ui/tutorialhighlight.ts`) | tutorial lots, prim 34 effect 0 | forced on (no tutorial lot in the test neighborhoods) |
+| cTSWinTutorialHighlight (`ui/tutorialhighlight.ts`) | tutorial lots, prim 34 effects 0 / 1 / 2 | forced on (no tutorial lot in the test neighborhoods); effects 1 / 2 flash the person panel's family button / the relationship page's button of the neighbor |
 | Cheat console (`ui/cheat.ts`) | Ctrl+Shift+C | rosebud (+$1000, `rosebud;!;!` +$3000), "No such cheat!", xyzzy, interests, help window with `?devcheats`; the shipped build only registers 27 names (no "help", no "klapaucius" in this exe) |
 | Ask-for-Lot picker filters (`nbhd/winneighborhoodul.ts`) | TryDialog kind 8 | `?test=nbhd&picker=1`: kFilterToolbar with the 7 filters (lodging disabled without a lodging lot), random title, filter icons over the matching community lots, blue outlines; a residential lot shows "Impossible de visiter" (STR# 0x104) |
 | Neighborhood cheats | main neighborhood screen | `show_zones on` outlines the zones, `show_filter 2` the food icons |
 | Shift smiley | family bin opened with Shift held | kPickFamilySmiley on each family row |
 
-Open points: the relationship page's delta meters, prim 34 effects 1 / 2, the Magic Town
-family picker mode (MagiCoins), family / lot imports, the second CPState pulse (+0x200), modal
-windows with edit fields need the key forwarding WinEditBio does (WinMgr sends keys to the modal
-window, not its focused child), arrow keys still scroll the lot behind a modal window.
+| Keyboard focus (`ui/winmgr.ts`, `ui/tswin.ts`) | modal dialogs, edit fields | keys go only to the focused window and bubble to its parents (cTSWin::TSOnKeyDown), up to cTSMainWindowW95::TSOnKeyDown (Ctrl+Shift+C); a mouse down gives focus to the clicked window unless WF_NO_FOCUS; DoModalWin focuses the modal window and restores the old focus. Arrows no longer scroll the lot behind a modal window; the per-window key forwarding workarounds (bio, lot description, family / character design, help) are gone |
+| Family / lot imports (`nbhd/imports.ts`, `nbhd/winneighborhoodul.ts`) | neighborhood "Import" button | UserData9 copy: CycleThroughImports' dialog (STR# 143) for a .FAM in `Export/` and an uploaded one; imported families get new ids, character files (human / dog / cat templates by the uChr "dog" / "cat" entry), Gtab id remapping in the house file, portraits; lot 56 loaded with the imported family. Files can be dropped on the canvas or picked with a file input (web: written into the overlay's `Import/`); .rdt / .cmt lot imports follow CycleResidential / CommunityImports. Deviation: read-only `Export/` files cannot be deleted, so they are offered again on each cycle |
+| Magic Town family picker (`cas/winpickfamily.ts`) | Magicland "Move In" family bin | `?test=cas&magic=1`: background 0x13b3, MagiCoins column (token type 7, GUID 0x99e81bec), shifted tips, the two hints for the first runs. The Magicland Move In flow itself is not ported |
+
+Open points: the Magicland Move In flow, Tutorial.FAM's first-run import, the import charset
+check and ReportMissingTextures, imports from the town screens.
 
 ## Remaining problems
 

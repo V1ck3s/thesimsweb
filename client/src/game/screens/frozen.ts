@@ -54,9 +54,6 @@ class FrozenScreen extends TSWin {
   override tsOnMouseMove(): boolean {
     return true;
   }
-  override tsOnKeyDown(): boolean {
-    return true;
-  }
 }
 
 /**
@@ -73,11 +70,13 @@ export async function whileFrozen<T>(mgr: WinMgr, watchCursor: boolean, work: ()
   const frozen = new FrozenScreen(copy);
   frozen.setArea(0, 0, copy.width, copy.height);
   mgr.main.childAdd(frozen);
+  mgr.blockInput();
   if (watchCursor) mgr.setGlobalCursor(getStandardCursor(WATCH_CURSOR));
   try {
     return await work();
   } finally {
     mgr.main.childDelete(frozen);
+    mgr.unblockInput();
     if (watchCursor) requestAnimationFrame(() => requestAnimationFrame(() => mgr.setGlobalCursor(null)));
   }
 }

@@ -175,6 +175,15 @@ function flowLayout(wins: TSWin[], x0: number, y0: number, stepX: number, stepY:
   }
 }
 
+/** FindButton(main window, the person's picture buffer) of Tut_FlashPersonPanelButton: the first WinPeople's portrait. */
+export function findPersonPanelButton(win: TSWin, guid: number): TSWinBtn | null {
+  for (const c of win.children) {
+    const found = c instanceof WinPeople ? c.familyButtonOf(guid) : findPersonPanelButton(c, guid);
+    if (found) return found;
+  }
+  return null;
+}
+
 export class WinPeople extends TSWin {
   /** cWinPeople+0x3d: shown page. */
   private panel = LivePanel.None;
@@ -460,6 +469,17 @@ export class WinPeople extends TSWin {
   /** The five job pages, shown one at a time. */
   private jobPages(): TSWin[] {
     return [this.job, this.fame, this.dogSkills, this.catSkills, this.reportCard];
+  }
+
+  /**
+   * The family portrait button showing the person `guid` (the FindButton of
+   * Tut_FlashPersonPanelButton: the button whose bitmap is the person's
+   * PersonFinder::GetPictureBuffer).
+   */
+  familyButtonOf(guid: number): TSWinBtn | null {
+    const i = this.ctx.state.family.findIndex((p) => p.guid !== undefined && p.guid >>> 0 === guid >>> 0);
+    const b = i >= 0 ? this.familyBtns[i] : undefined;
+    return b?.isVisible() ? b : null;
   }
 
   private personAt(i: number): PersonInfo | null {

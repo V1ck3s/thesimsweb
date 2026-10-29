@@ -36,6 +36,7 @@ export async function mount(ctx: GameContext, mgr: WinMgr): Promise<void> {
     dlg = new WinCredits(ctx);
   } else if (screen === "pick") {
     const pick = new WinPickFamily(ctx, dir);
+    pick.magicTown = params.has("magic");
     pick.setOwner({ moveIn: (id) => log.push(`move in ${id}`) });
     dlg = pick;
   } else {

@@ -541,6 +541,7 @@ export class Simulator {
       for (let i = 0; i < 16; i++) info.motives[i] = p.motives[i]!;
       info.personData = p.pd;
     }
+    s.familyFriendCount = this.module.cpFamilyFriendCount(s.personGetSelected()?.guid);
   }
 
   /**

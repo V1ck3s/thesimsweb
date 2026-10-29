@@ -21,6 +21,16 @@ export const WF_HIT_ALPHA = 0x200;
 export const WF_NO_FOCUS = 0x2000;
 export const WF_MODAL = 0x10000;
 
+/**
+ * Called when a window leaves the tree or hides (cTSWin::child_remove_absolute,
+ * cTSWin::HideWindow): the window manager moves the focus off it. Set by WinMgr.
+ */
+let focusLost: ((w: TSWin, parent: TSWin | null, hidden: boolean) => void) | null = null;
+
+export function setFocusLostHook(fn: (w: TSWin, parent: TSWin | null, hidden: boolean) => void): void {
+  focusLost = fn;
+}
+
 export interface Rect {
   left: number;
   top: number;
@@ -147,8 +157,10 @@ export class TSWin {
     this.setFlag(WF_VISIBLE, true);
   }
 
+  /** cTSWin::HideWindow: a focused window gives the focus to its parent (the main window without one). */
   hideWindow(): void {
     this.setFlag(WF_VISIBLE, false);
+    focusLost?.(this, this.parent, true);
   }
 
   isVisible(): boolean {
@@ -164,15 +176,21 @@ export class TSWin {
 
   /** Adds `w` in front of the existing children (cTSWin::ChildAdd). */
   childAdd(w: TSWin): void {
-    w.parent?.childRemove(w);
+    w.parent?.detach(w);
     w.parent = this;
     this.children.unshift(w);
   }
 
+  /** cTSWin::child_remove_absolute: the focus on the removed window goes to this one. */
   childRemove(w: TSWin): void {
+    if (this.detach(w)) focusLost?.(w, this, false);
+  }
+
+  private detach(w: TSWin): boolean {
     const i = this.children.indexOf(w);
     if (i >= 0) this.children.splice(i, 1);
     if (w.parent === this) w.parent = null;
+    return i >= 0;
   }
 
   childDelete(w: TSWin): void {
@@ -181,12 +199,12 @@ export class TSWin {
   }
 
   childToFront(w: TSWin): void {
-    this.childRemove(w);
+    this.detach(w);
     this.childAdd(w);
   }
 
   childToBack(w: TSWin): void {
-    this.childRemove(w);
+    this.detach(w);
     w.parent = this;
     this.children.push(w);
   }
@@ -276,9 +294,17 @@ export class TSWin {
   }
   tsOnMouseEnter(): void {}
   tsOnMouseExit(): void {}
+  /**
+   * Keys go to the focus (cTSWinMgrW95::ProcessSystemMessage); cTSWin::TSOnKeyDown
+   * hands them to the parent: false here lets WinMgr try the parent next.
+   */
   tsOnKeyDown(_key: string): boolean {
     return false;
   }
+  /** cTSWin::TSOnSetFocus (message 0x15, `prev` lost it). */
+  tsOnSetFocus(_prev: TSWin | null): void {}
+  /** Message 0x14: `next` takes the focus. */
+  tsOnKillFocus(_next: TSWin | null): void {}
   /** Called by WinMgr.doModalWin / endDialog (cTSWin::TSBeginModal / TSEndModal). */
   tsBeginModal(): void {}
   tsEndModal(): void {}

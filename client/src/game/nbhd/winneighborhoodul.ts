@@ -45,10 +45,12 @@ import { NeighborhoodStore } from "../data/nbhdstore.js";
 import { IDOK, IDYES, MB_OK, MB_OKCANCEL, MB_YESNO, TSWinMsgBox } from "../ui/msgbox.js";
 import { getCursor, getStandardCursor } from "../ui/cursor.js";
 import { WinRadioDialogBox } from "../ui/radiodialog.js";
-import { writeGameFile } from "../data/files.js";
+import { deleteGameFile, writeGameFile } from "../data/files.js";
 import { buildIff, parseIff, stringSetMultiSave } from "../data/iff.js";
 import { makeMoneyString, Zone } from "./nghinterface.js";
 import { WinCredits } from "./wincredits.js";
+import { getImportInfoForFile, getLotImportInfo, hasImports, importFamily, importLotFile, listImports, pickAndUploadImports, uploadImports, type ImportInfo, type LotImportInfo } from "./imports.js";
+import { PD_AVOID_RECT, WinPictureDialog } from "../ui/picturedialog.js";
 import { getCheatCodeManager, type CheatCommandLine } from "../ui/cheat.js";
 import { doFirstTimeTownies, refillTownies, TOWNIE_COUNT } from "./townies.js";
 
@@ -238,6 +240,20 @@ let creditsOpen = false;
 
 /** UIText STR# 132 "MoveInModeStrs" (title, text pairs). */
 const STR_MOVE_IN = 132;
+/** UIText STR# 143: the family import dialog (lbl_105BCD34, loaded by LoadUIStrings). */
+const STR_IMPORT_FAMILY = 0x8f;
+/** UIText STR# 144 entry 5: "Delete" (the third button of the import dialogs). */
+const STR_IMPORT_DELETE = 0x90;
+/** UIText STR# 154: entries 0x12 / 0x13 confirm a file delete. */
+const STR_IMPORT_MISC = 0x9a;
+/** UIText STR# 172: the lot import dialog titles (1 residential, 2 community). */
+const STR_IMPORT_LOT = 0xac;
+/** lbl_105BCD5C +0x177 / +0x192: ImportFamily's error box (English literals in the code). */
+const IMPORT_ERROR_TEXT = "Couldn't import the family";
+const IMPORT_ERROR_TITLE = "Error";
+/** cWinPictureDialog::SetKey codes of the import dialogs. */
+const KEY_RETURN = 0x0d;
+const KEY_ESCAPE = 0x1b;
 const MOVE_IN = {
   buyHouse: 0,
   tooExpensive: 2,
@@ -403,8 +419,26 @@ export class WinNeighborhoodUL extends TSWin implements LotBtnOwner {
     }
     // The screen takes the keyboard (Escape leaves the modes).
     winMgr.setFocus(this);
+    if (!this.picker) {
+      winMgr.canvas.addEventListener("dragover", this.onDragOver);
+      winMgr.canvas.addEventListener("drop", this.onDrop);
+    }
     return true;
   }
+
+  /** Web: files dropped on the screen are copied into <neighborhood>/Import/ (uploadImports). */
+  private readonly onDragOver = (e: DragEvent): void => {
+    e.preventDefault();
+  };
+
+  private readonly onDrop = (e: DragEvent): void => {
+    e.preventDefault();
+    const files = e.dataTransfer?.files;
+    if (!files?.length || this.mode !== NbhdMode.Regular) return;
+    void uploadImports(this.nb.dir, files).then((names) => {
+      if (names.length) void this.checkForNewImports();
+    });
+  };
 
   /** LoadGimex(<neighborhood directory>/<name>), or null when the file is absent. */
   private async loadGimex(name: string): Promise<ImageBitmap | null> {
@@ -532,6 +566,8 @@ export class WinNeighborhoodUL extends TSWin implements LotBtnOwner {
       for (const [name] of CHEATS) if (name !== "reload_neighborhood") getCheatCodeManager()?.unregisterCheat(name);
     }
     this.saveCurrentFilter();
+    winMgr.canvas.removeEventListener("dragover", this.onDragOver);
+    winMgr.canvas.removeEventListener("drop", this.onDrop);
     TSWinBtn.overrideDefaultUISound();
     winMgr.setGlobalCursor(null);
     super.shutdown();
@@ -640,15 +676,191 @@ export class WinNeighborhoodUL extends TSWin implements LotBtnOwner {
     }
   }
 
-  /** cWinNeighborhoodUL::CheckForNewImports: Import is enabled when <dir>/Import holds *.FAM, *.rdt or *.cmt. */
+  /**
+   * cWinNeighborhoodUL::CheckForNewImports: Import is enabled when <dir>/Import
+   * holds *.FAM, *.rdt or *.cmt (nbhd/imports.ts adds the exported families).
+   * Web: the button stays enabled without files, since pressing it then opens
+   * the file picker (the player's disk stands for the Import folder).
+   * Not ported: the Tutorial.FAM import of the first run (it needs the
+   * tutorial neighborhood's lot).
+   */
   private async checkForNewImports(): Promise<void> {
-    const { files } = await fetchManifest();
-    const prefix = `Sims/${this.nb.dir}/Import/`.toLowerCase();
-    const any = files.some((f) => {
-      const p = f.path.toLowerCase();
-      return p.startsWith(prefix) && /\.(fam|rdt|cmt)$/.test(p);
-    });
-    this.buttons[BTN_IMPORT]!.setEnabled(any);
+    await hasImports(this.nb.dir);
+    this.buttons[BTN_IMPORT]!.setEnabled(true);
+  }
+
+  /** cWinNeighborhoodUL::HiliteLot: the lot's import outline (community outline in the picker), 0 = all off. */
+  private hiliteLot(house: number): void {
+    if (house === 0) {
+      for (const lot of this.lots.values()) lot.hiliteForImport(false);
+      return;
+    }
+    const lot = this.lots.get(house);
+    if (!lot) return;
+    if (this.picker) lot.hiliteForCommunity(true);
+    else lot.hiliteForImport(true);
+  }
+
+  /** A lot button's absolute area (cTSWin +0xc), the rect SetPositioning(2) keeps the dialog off. */
+  private lotRect(house: number): { left: number; top: number; right: number; bottom: number } | undefined {
+    const lot = this.lots.get(house);
+    if (!lot) return undefined;
+    const o = lot.absOrigin();
+    return { left: o.x, top: o.y, right: o.x + lot.getW(), bottom: o.y + lot.getH() };
+  }
+
+  /** The "Delete" answer: the STR# 154 confirmation (Yes = 4), then CTGFileManager::DeleteFile. */
+  private async confirmDeleteImport(path: string): Promise<void> {
+    const r = await TSWinMsgBox.show(this.ctx, this.str(STR_IMPORT_MISC, 0x12), this.str(STR_IMPORT_MISC, 0x11), MB_YESNO);
+    if (r === IDYES) await deleteGameFile(path).catch(() => console.warn(`[import] ${path} is read-only`));
+  }
+
+  /**
+   * cWinNeighborhoodUL::CycleThroughImports: every family file once
+   * (GetImportInfoForFile; files it refuses are skipped), each with the
+   * STR# 143 dialog: "A family was found... $family", then where it goes
+   * (no lot: the family bin; a lot: the family it displaces, the empty lot
+   * or the vacant house of $lot, the lot outlined and the dialog kept off
+   * it), the lot picture, Yes (Return) / No (Escape) / Delete. Yes refuses a
+   * lot whose family is on vacation (STR# 131 entries 22 / 23), else zones
+   * the lot residential and runs ImportFamily (the zoning comes back and
+   * "Couldn't import the family" shows when it fails). Then the residential
+   * and community lot files; DoNbhdScreen(1) when a lot changed.
+   * Not ported: the character set test (STR# 154 entries 20 / 21: all the
+   * shipped languages share one here) and ReportMissingTextures.
+   * Web: with nothing to import, the file picker opens first.
+   */
+  private async cycleThroughImports(): Promise<void> {
+    let files = await listImports(this.nb.dir);
+    if (!files.families.length && !files.residential.length && !files.community.length) {
+      if (!(await pickAndUploadImports(this.nb.dir)).length) return;
+      files = await listImports(this.nb.dir);
+    }
+    let reload = false;
+    for (const path of files.families) {
+      const info = await getImportInfoForFile(path);
+      if (!info) continue;
+      const r = await this.importFamilyDialog(info);
+      if (r === 1) {
+        if (await this.runImportFamily(info)) reload ||= info.house !== 0;
+      } else if (r === 2) {
+        await this.confirmDeleteImport(path);
+      }
+    }
+    if (await this.cycleLotImports(files.residential, Zone.Residential)) reload = true;
+    if (await this.cycleLotImports(files.community, Zone.Community)) reload = true;
+    if (reload) {
+      this.callbacks.onSwitchNeighborhood(this.nb.dir);
+      return;
+    }
+    await this.nb.reloadData();
+    await this.checkForNewImports();
+  }
+
+  private async importFamilyDialog(info: ImportInfo): Promise<number> {
+    const s = (i: number): string => this.str(STR_IMPORT_FAMILY, i - 1);
+    const dlg = new WinPictureDialog(this.ctx);
+    dlg.addText(s(1).replace("$family", info.familyName));
+    let where = "";
+    const house = info.house;
+    if (house === 0) {
+      where = s(2);
+    } else {
+      const lot = this.lots.get(house)?.info;
+      if (lot) {
+        if (lot.familyNumber === -1) where = lot.hasHouse ? s(5) : s(4);
+        else where = s(3).replace("$family", lot.familyName);
+        where = where.replace("$lot", String(house));
+      }
+    }
+    dlg.addText(where);
+    dlg.addButton(s(7), 1);
+    dlg.setKey(1, KEY_RETURN);
+    dlg.addButton(s(8), 0);
+    dlg.setKey(0, KEY_ESCAPE);
+    dlg.addButton(this.str(STR_IMPORT_DELETE, 4), 2);
+    if (info.image) dlg.setImage(info.image);
+    dlg.setTitle(s(9));
+    if (house !== 0) {
+      this.hiliteLot(house);
+      const rect = this.lotRect(house);
+      if (rect) dlg.setPositioning(PD_AVOID_RECT, rect);
+    }
+    const r = await dlg.run();
+    if (house !== 0) this.hiliteLot(0);
+    return r;
+  }
+
+  /** The Yes branch of CycleThroughImports (true when the family came in). */
+  private async runImportFamily(info: ImportInfo): Promise<boolean> {
+    const house = info.house;
+    const store = await NeighborhoodStore.open(this.nb.dir);
+    const resident = store.familyOfHouse(house);
+    if (house !== 0 && resident !== undefined && store.familyVacationLot(resident) !== 0) {
+      await this.message(STR_BULLDOZE, 22, 21);
+      return false;
+    }
+    const zone = this.nb.getZoningType(house);
+    if (house !== 0) await this.nb.setZoningType(house, Zone.Residential);
+    winMgr.setGlobalCursor(getCursor(3));
+    let ok = false;
+    try {
+      ok = (await importFamily(this.nb.dir, info).catch((e: unknown) => (console.error("[import]", e), null))) !== null;
+    } finally {
+      winMgr.setGlobalCursor(null);
+    }
+    if (!ok) {
+      if (house !== 0) await this.nb.setZoningType(house, zone);
+      await TSWinMsgBox.show(this.ctx, IMPORT_ERROR_TEXT, IMPORT_ERROR_TITLE, MB_OK);
+    }
+    return ok;
+  }
+
+  /**
+   * cWinNeighborhoodUL::CycleResidentialImports / CycleCommunityImports: each
+   * lot file once: its STR# 2000 name and description, Yes (Return) / No
+   * (Escape) / Delete, its picture (BMP_ 0x200), the STR# 172 title, its lot
+   * (entry 3) outlined and kept clear. Yes replaces Houses/House%02d.iff by
+   * the file, writes the name and description into
+   * Houses\NeighborhoodDesc.iff STR# 2000 + house (when it has one) and
+   * zones the lot. True when a lot was imported.
+   */
+  private async cycleLotImports(paths: readonly string[], zone: Zone): Promise<boolean> {
+    let any = false;
+    for (const path of paths) {
+      const lot = await getLotImportInfo(path);
+      if (!lot) continue;
+      const r = await this.lotImportDialog(lot, zone);
+      if (r === 1) {
+        any = true;
+        await importLotFile(this.nb.dir, lot);
+        await this.setLotDescription(lot.house, lot.name, lot.description);
+        await this.nb.setZoningType(lot.house, zone);
+      } else if (r === 2) {
+        await this.confirmDeleteImport(path);
+      }
+    }
+    return any;
+  }
+
+  private async lotImportDialog(lot: LotImportInfo, zone: Zone): Promise<number> {
+    const s = (i: number): string => this.str(STR_IMPORT_FAMILY, i - 1);
+    const dlg = new WinPictureDialog(this.ctx);
+    dlg.addText(lot.name);
+    dlg.addText(lot.description);
+    dlg.addButton(s(7), 1);
+    dlg.setKey(1, KEY_RETURN);
+    dlg.addButton(s(8), 0);
+    dlg.setKey(0, KEY_ESCAPE);
+    dlg.addButton(this.str(STR_IMPORT_DELETE, 4), 2);
+    if (lot.image) dlg.setImage(lot.image);
+    dlg.setTitle(this.str(STR_IMPORT_LOT, zone === Zone.Community ? 1 : 0));
+    this.hiliteLot(lot.house);
+    const rect = this.lotRect(lot.house);
+    if (rect) dlg.setPositioning(PD_AVOID_RECT, rect);
+    const r = await dlg.run();
+    this.hiliteLot(0);
+    return r;
   }
 
   /** cWinNeighborhoodUL::ShouldAllowRoofDissolve */
@@ -987,7 +1199,12 @@ export class WinNeighborhoodUL extends TSWin implements LotBtnOwner {
   }
 
   /** MoveOut(bulldoze): StringSetMulti 2000 + house of Houses\NeighborhoodDesc.iff, entries 1 and 2 emptied. */
-  private async clearLotDescription(house: number): Promise<void> {
+  private clearLotDescription(house: number): Promise<void> {
+    return this.setLotDescription(house, "", "");
+  }
+
+  /** Houses\NeighborhoodDesc.iff STR# 2000 + house, entries 1 and 2 (left alone when the file or the set is missing). */
+  private async setLotDescription(house: number, name: string, description: string): Promise<void> {
     const path = `${this.nb.dir}/Houses/NeighborhoodDesc.iff`;
     const res = await fetch(`/assets/Sims/${path}`, { cache: "no-store" });
     if (!res.ok) return;
@@ -995,7 +1212,7 @@ export class WinNeighborhoodUL extends TSWin implements LotBtnOwner {
     const id = 2000 + house;
     const c = chunks.find((x): boolean => x.type === "STR#" && x.id === id);
     if (!c) return;
-    c.data = stringSetMultiSave(c.data, LANG_FRENCH, ["", ""]);
+    c.data = stringSetMultiSave(c.data, LANG_FRENCH, [name, description]);
     await writeGameFile(path, buildIff(chunks));
   }
 
@@ -1154,10 +1371,7 @@ export class WinNeighborhoodUL extends TSWin implements LotBtnOwner {
       case BTN_NEXT:
         return this.switchNeighborhood(index === BTN_NEXT ? 1 : -1);
       case BTN_IMPORT:
-        this.callbacks.onUnported(
-          "cWinNeighborhoodUL::CycleThroughImports (Neighborhood::ImportFamily of <neighborhood>/Import/*.FAM, *.rdt, *.cmt with the STR# 143 dialog)",
-        );
-        return;
+        return this.cycleThroughImports();
       case BTN_DOWNTOWN:
         await this.refillNpcs();
         soundPlayer.playBySource(MUSIC.fade, -1);

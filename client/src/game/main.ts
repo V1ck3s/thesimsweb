@@ -307,6 +307,8 @@ class Game {
     view.childAdd(cpanel);
     cpanel.postInit();
     mgr.main.childAdd(view);
+    // cSimsApp: the game view takes the focus once the lot is loaded (the arrows, F1..F5, Space).
+    mgr.offerFocus(view);
     // The original starts collapsed (SetCPMode(1)) during init and opens the
     // panel in the lot; refresh everything once the windows listen.
     state.setMode(state.family.length ? Mode.Live : Mode.Buy, true);

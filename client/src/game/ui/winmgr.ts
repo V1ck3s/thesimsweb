@@ -7,7 +7,7 @@
  * scaled by CSS to fit the browser window with integer-free nearest scaling.
  */
 
-import { TSWin, WF_MODAL, type Rect } from "./tswin.js";
+import { setFocusLostHook, TSWin, WF_MODAL, WF_NO_FOCUS, type Rect } from "./tswin.js";
 import type { DefaultTTWindow } from "./ttwindow.js";
 
 /** Tooltip states (cTSWinMgrW95+0x198). */
@@ -40,8 +40,15 @@ export class WinMgr {
   private buttons = 0;
   /** Keys held (GetKeyState). */
   private readonly keysDown = new Set<string>();
+  /** cTSWinMgrW95+0x34: the window keys go to. */
   private focus: TSWin | null = null;
+  /** cTSWinMgrW95+0x38: the window of the innermost DoModalWin loop. */
+  private modalWin: TSWin | null = null;
   private readonly modal = new Map<TSWin, (result: number) => void>();
+  /** Input held while the screen is frozen (screens/frozen.ts: the original is busy, nothing reacts). */
+  private inputBlocked = 0;
+  /** cTSMainWindowW95::TSOnKeyDown: the main window's keys (the cheat widget shortcut). */
+  mainKeyDown: ((key: string) => boolean) | null = null;
   // Tooltips (cTSWinMgrW95+0x194..0x1c1).
   private ttDefault: DefaultTTWindow | null = null;
   private ttTarget: TSWin | null = null;
@@ -66,9 +73,12 @@ export class WinMgr {
     this.ctx.imageSmoothingEnabled = false;
     this.main = new TSWin();
     this.main.setArea(0, 0, width, height);
+    // cTSMainWindowW95::Init: the main window starts with the focus.
+    this.focus = this.main;
     this.fit();
     window.addEventListener("resize", () => this.fit());
     this.bindInput();
+    setFocusLostHook((w, parent, hidden) => this.focusLost(w, parent, hidden));
   }
 
   setCapture(w: TSWin | null): void {
@@ -97,8 +107,59 @@ export class WinMgr {
     return this.keysDown.has(key);
   }
 
+  /**
+   * cTSWinMgrW95::TSSetFocus: the old focus gets message 0x14, the new one 0x15
+   * (a button or check box hands the focus on to its parent there).
+   */
   setFocus(w: TSWin | null): void {
+    const prev = this.focus;
+    prev?.tsOnKillFocus(w);
     this.focus = w;
+    w?.tsOnSetFocus(prev);
+  }
+
+  /** The window would take the focus (cTSWin::GetAcceptFocus: no 0x2000 flag). */
+  static acceptsFocus(w: TSWin): boolean {
+    return !w.getFlag(WF_NO_FOCUS);
+  }
+
+  /** `setFocus(w)` when it accepts the focus, else nothing (the TSSetFocus / TSGetFocus pairs). */
+  offerFocus(w: TSWin | null): void {
+    if (w && WinMgr.acceptsFocus(w) && this.isAttached(w)) this.setFocus(w);
+  }
+
+  /** In the window tree (cTSWinMgrW95::IsWindowValid: not destroyed). */
+  private isAttached(w: TSWin): boolean {
+    let p: TSWin = w;
+    while (p.parent) p = p.parent;
+    return p === this.main;
+  }
+
+  /**
+   * cTSWin::child_remove_absolute / HideWindow: a removed window holding the
+   * focus gives it to its parent; a hidden one to its parent when it accepts
+   * it (the main window without a parent). A focus inside a removed or hidden
+   * subtree goes the same way (the original leaves it on a destroyed window).
+   */
+  private focusLost(w: TSWin, parent: TSWin | null, hidden: boolean): void {
+    let f = this.focus;
+    while (f && f !== w) f = f.parent;
+    if (!f) return;
+    if (!hidden) {
+      this.setFocus(parent);
+      return;
+    }
+    const to = parent ?? this.main;
+    if (WinMgr.acceptsFocus(to)) this.setFocus(to);
+  }
+
+  /** Holds key input (whileFrozen); balanced by unblockInput. */
+  blockInput(): void {
+    this.inputBlocked++;
+  }
+
+  unblockInput(): void {
+    this.inputBlocked = Math.max(0, this.inputBlocked - 1);
   }
 
   getFocus(): TSWin | null {
@@ -118,12 +179,17 @@ export class WinMgr {
     parent.childAdd(win);
     win.setFlag(WF_MODAL, true);
     if (this.capture && this.capture !== win) this.capture = null;
+    // DoModalWin: the modal window becomes +0x38 and the focus (+0x34, set directly).
     const focus = this.focus;
+    const outer = this.modalWin;
+    this.modalWin = win;
     this.focus = win;
     win.tsBeginModal();
     return new Promise((resolve) => {
       this.modal.set(win, (result) => {
-        this.focus = focus;
+        // The outer loop's window comes back, and the old focus if it still exists.
+        this.modalWin = outer;
+        this.setFocus(focus && this.isAttached(focus) ? focus : outer);
         resolve(result);
       });
     });
@@ -391,6 +457,9 @@ export class WinMgr {
     c.addEventListener("mousedown", (e) => {
       this.buttons = e.buttons;
       const p = this.toLogical(e);
+      // cTSWin::ProcessCursorMessage (and the capture branch of ProcessSystemMessage):
+      // a button press gives the focus to the window under it when it accepts it.
+      if (e.button === 0 || e.button === 2) this.offerFocus(this.route(p.x, p.y)?.win ?? null);
       if (e.button === 0) this.dispatch(p.x, p.y, (w, x, y) => w.tsOnMouseDownL(x, y));
       if (e.button === 2) this.dispatch(p.x, p.y, (w, x, y) => w.tsOnMouseDownR(x, y));
     });
@@ -414,10 +483,15 @@ export class WinMgr {
     window.addEventListener("keyup", (e) => this.keysDown.delete(e.key));
     window.addEventListener("blur", () => this.keysDown.clear());
     window.addEventListener("keydown", (e) => {
-      // Keys go to the capture, else the front-most modal window, else the focus.
-      const modal = this.main.children.find((w) => w.isVisible() && w.getFlag(WF_MODAL));
-      for (let w = this.capture ?? modal ?? this.focus; w; w = w.parent) {
-        if (w.tsOnKeyDown(e.key)) {
+      if (this.inputBlocked) {
+        e.preventDefault();
+        return;
+      }
+      // cTSWinMgrW95::ProcessSystemMessage: key messages (4..6) go to the focus
+      // only; cTSWin::TSOnKeyDown passes what a window leaves to its parent, up
+      // to the main window (cTSMainWindowW95::TSOnKeyDown).
+      for (let w = this.focus; w; w = w.parent) {
+        if (w === this.main ? this.mainKeyDown?.(e.key) : w.tsOnKeyDown(e.key)) {
           e.preventDefault();
           return;
         }

@@ -430,14 +430,23 @@ export class NeighborhoodStore {
     return { guid, neighborId, shortName: base.toLowerCase(), fileName };
   }
 
-  /** Neighborhood::AddNewNeighbor(selector, -1) + Neighbor(short, ObjSelector*). */
-  private addNewNeighbor(guid: number, shortName: string): number {
+  /**
+   * Neighborhood::AddNewNeighbor(selector, id) + Neighbor(short, ObjSelector*):
+   * the slot of `id` when it is free (the vector grows to it), else the last
+   * free slot, else a new one at the end.
+   */
+  private addNewNeighbor(guid: number, shortName: string, id = -1): number {
     const entries = this.nbrs.entries;
     let slot = -1;
+    if (id > 0) {
+      while (entries.length < id) entries.push(null);
+      if (!entries[id - 1]) slot = id - 1;
+    }
     // The game keeps the last free slot it sees.
-    entries.forEach((e, i) => {
-      if (!e) slot = i;
-    });
+    if (slot < 0)
+      entries.forEach((e, i) => {
+        if (!e) slot = i;
+      });
     if (slot < 0) {
       entries.push(null);
       slot = entries.length - 1;
@@ -824,6 +833,180 @@ export class NeighborhoodStore {
     }
   }
 
+  // --- Family import (Neighborhood::ImportFamily, nbhd/imports.ts) -----------------
+
+  /** Neighborhood::AddNewCharacter(kind, id): StubObject::CreateNew of `template` into the next free User%05d.iff. */
+  private async newCharacterFile(template: readonly IffChunk[], neighborId: number): Promise<{ guid: number; neighborId: number; fileName: string }> {
+    const prefix = `sims/${this.dir}/characters/`.toLowerCase();
+    const taken = new Set(
+      (await fetchManifest()).files.map((f) => f.path.toLowerCase()).filter((p) => p.startsWith(prefix)).map((p) => p.slice(prefix.length)),
+    );
+    let base = "";
+    while (this.nextUserFile < 32000) {
+      const candidate = `User${String(this.nextUserFile).padStart(5, "0")}`;
+      this.nextUserFile++;
+      if (!taken.has(`${candidate}.iff`.toLowerCase())) {
+        base = candidate;
+        break;
+      }
+    }
+    if (this.nextUserFile > 31999) this.nextUserFile = 0;
+    if (!base) throw new Error("no free character file name");
+    const fileName = `${base}.iff`;
+    let created = await createCharacterFileFrom(this.dir, fileName, base, template);
+    while (this.neighborByGuid(created.guid)) created = await createCharacterFileFrom(this.dir, fileName, base, template);
+    return { guid: created.guid, neighborId: this.addNewNeighbor(created.guid, base.toLowerCase(), neighborId), fileName };
+  }
+
+  /**
+   * The data part of Neighborhood::ImportFamily(file): `file` is a .FAM (an
+   * exported family, a house file with the family chunks when it had a lot).
+   *  - EXPi 0 (ExpFamilyInfo): the family id and its members' neighbor ids in
+   *    the exporting neighborhood; FAMI <id> (Family::LoadFamily), the name
+   *    from CTSS 1000 entry 1; NBRS 1 (the exporting neighborhood's
+   *    neighbors) and FINV 2 (the members' SimInventories).
+   *  - MakeNewFamily, which takes the file's id when no family has it; name,
+   *    budget and net worth from the file.
+   *  - A house in the file (FAMI +0x110): the family living there (or on
+   *    vacation there) moves out (house 0, budget = net worth, flags bit 3
+   *    off) and the characters of that lot (Neighbor +0xfa) are deleted.
+   *  - Per member (up to 8): uChr <id> body strings, entry 13 picks the
+   *    template ("dog" 1, "cat" 2, else 0: `templateFor`); AddNewCharacter
+   *    with the old neighbor id wished; Family::AddMember; its FINV record
+   *    renumbered into the SimInventory vector (replacing one of that id);
+   *    the catalog name / description from CTSS <id> + 2000 (else CTSS <id>),
+   *    written by the caller with the body strings into the new file.
+   *  - GUIDTranslation pairs old -> new GUID, the RelMatrix arrays between
+   *    members copied, the person data version and the persistent fields.
+   *  - UpdateFamilyNumbers; with a house: the family takes it (flags bits 2 / 3
+   *    off; bit 0 from the file) and Gtab 1 of the file gets the pairs (the
+   *    caller moves the file onto Houses/House%02d.iff).
+   *  - Global 26 (tutorial) of the file's SIMI: Neighborhood +0x12c = house.
+   * Returns null when the file is not a family (the caller's error box).
+   * Not ported: the ObjectTypeAttrBlock reset of the tutorial lot's objects
+   * (OBJD +0xb6 bit 1) and the per-field persistent data versions (all the
+   * version 9 fields are copied).
+   */
+  async importFamily(
+    file: readonly IffChunk[],
+    templateFor: (kind: number) => Promise<readonly IffChunk[] | null>,
+    tutorial: boolean,
+  ): Promise<ImportedFamily | null> {
+    const get = (type: string, id: number): IffChunk | undefined => file.find((c) => c.type === type && c.id === id);
+    const expiChunk = get("EXPi", 0);
+    if (!expiChunk) return null;
+    const expi = new ReconReader(expiChunk.data);
+    expi.i32();
+    expi.i32();
+    expi.tag();
+    const fileFamilyId = expi.i16();
+    const ids = Array.from(expi.i16s(8));
+    const fami = get("FAMI", fileFamilyId);
+    if (!fami) return null;
+    const loaded = parseFamily(fami.data, fileFamilyId, "");
+    const names = get("CTSS", 1000);
+    const famName = names ? pickString(names.data, 0) : "";
+    const nbrsChunk = get("NBRS", 1);
+    if (!nbrsChunk) return null;
+    const source = parseNbrsRaw(nbrsChunk.data);
+    const finv = get("FINV", 2);
+    const records = finv ? parseInventoryRecords(finv.data.subarray(12)) : [];
+
+    const familyId = this.makeNewFamily();
+    const fam = this.familyRaw(familyId)!;
+    if (!this.families.some((f) => f.id === fileFamilyId)) fam.id = fileFamilyId;
+    fam.name = famName || loaded.name;
+    fam.budget = loaded.budget;
+    fam.netWorth = loaded.netWorth;
+    const house = loaded.houseNumber;
+    let displaced = -1;
+    if (house !== 0) {
+      displaced = this.moveOutFamily(house);
+      for (const guid of this.charactersOfHouse(house)) await this.deleteCharacter(guid);
+    }
+
+    const members: ImportedMember[] = [];
+    const newIds: number[] = [];
+    const inventory = parseInventoryRecords(this.ngbh().inventory ?? new Uint8Array(4));
+    for (let i = 0; i < 8 && ids[i] !== 0; i++) {
+      const oldId = ids[i]!;
+      const uChr = get("uChr", oldId);
+      const bodyStrings = uChr ? pickStrings(uChr.data) : [];
+      const skeleton = bodyStrings[12] ?? "";
+      const kind = skeleton.includes("dog") ? 1 : skeleton.includes("cat") ? 2 : 0;
+      const template = await templateFor(kind);
+      if (!template) return null;
+      const made = await this.newCharacterFile(template, oldId);
+      newIds.push(made.neighborId);
+      fam.memberGuids.push(made.guid >>> 0);
+      const record = records[i];
+      if (record) {
+        new DataView(record.buffer, record.byteOffset, record.byteLength).setInt16(0, made.neighborId, true);
+        const at = inventory.findIndex((r) => r && new DataView(r.buffer, r.byteOffset, 2).getInt16(0, true) === made.neighborId);
+        if (at >= 0) inventory[at] = record;
+        else inventory.push(record);
+      }
+      const desc = get("CTSS", oldId + 2000) ?? get("CTSS", oldId);
+      members.push({
+        guid: made.guid >>> 0,
+        fileName: made.fileName,
+        firstName: desc ? pickString(desc.data, 0) : "",
+        bio: desc ? pickString(desc.data, 1) : "",
+        bodyStrings,
+      });
+    }
+    if (records.length || inventory.length) {
+      this.ngbh().inventory = serializeInventoryRecords(inventory);
+      this.touchNgbh();
+    }
+
+    // GUIDTranslation pairs, relationships between the members, person data.
+    const pairs: Array<[number, number]> = [];
+    ids.slice(0, newIds.length).forEach((oldId, i) => {
+      const from = source.entries[oldId - 1];
+      const to = this.nbrs.entries[newIds[i]! - 1];
+      if (!from || !to) return;
+      pairs.push([from.guid >>> 0, to.guid >>> 0]);
+      ids.slice(0, newIds.length).forEach((otherOld, j) => {
+        const arr = from.rels.entries.find((a) => a && a.other === otherOld);
+        const other = newIds[j]!;
+        to.rels.entries = to.rels.entries.filter((a) => !a || a.other !== other);
+        if (arr && arr.values.length) to.rels.entries.push({ present: 1, other, values: [...arr.values] });
+        if (to.rels.count >= 0) to.rels.count = to.rels.entries.length;
+        else to.rels.vecCount = to.rels.entries.length;
+      });
+      to.pdVersion = from.pdVersion;
+      if (from.pdVersion) for (const k of PERSISTENT_DATA_FIELDS) to.personData[k] = from.personData[k] ?? 0;
+    });
+    // UpdateFamilyNumbers
+    for (const g of fam.memberGuids) {
+      const n = this.neighborByGuid(g);
+      if (n) n.personData[PD.familyNumber] = fam.id;
+    }
+
+    let gtab: IffChunk | null = null;
+    if (house !== 0) {
+      if (this.families.some((f) => f !== fam && (f.houseNumber === house || f.unk13c === house))) return null;
+      fam.houseNumber = house;
+      fam.flags &= ~0xc;
+      const old = get("Gtab", 1);
+      gtab = { type: "Gtab", id: 1, flags: old?.flags ?? 0x10, label: old?.label ?? "", data: serializeGtab([...(old ? parseGtab(old.data) : []), ...pairs]) };
+    }
+    if (loaded.flags & 1) fam.flags |= 1;
+    fam.dirty = true;
+    // Neighborhood +0x12c / +0x12e (NGBH shorts 2 / 3): the tutorial lot.
+    const ngbh = this.ngbh();
+    if (tutorial) {
+      ngbh.shorts[2] = house;
+      ngbh.shorts[3] = 0;
+      this.touchNgbh();
+    } else if (ngbh.shorts[2] === house) {
+      ngbh.shorts[2] = 0;
+      this.touchNgbh();
+    }
+    return { familyId: fam.id, displaced, house, members, gtab };
+  }
+
   // --- Townies (Neighborhood::DoFirstTimeTownies / RefillTownies / AddNewTownie, nbhd/townies.ts) ---
 
   /** Parsed NGBH (Neighborhood::DoStream), read on first use. */
@@ -918,6 +1101,96 @@ export class NeighborhoodStore {
     const neighborId = this.addNewNeighbor(created.guid, base.toLowerCase());
     return { guid: created.guid, neighborId, shortName: base.toLowerCase(), fileName };
   }
+}
+
+/** One member made by importFamily (its character file still needs the strings and portraits). */
+export interface ImportedMember {
+  guid: number;
+  fileName: string;
+  firstName: string;
+  bio: string;
+  bodyStrings: string[];
+}
+
+export interface ImportedFamily {
+  familyId: number;
+  /** The family moved out of the imported lot, -1 for none. */
+  displaced: number;
+  house: number;
+  members: ImportedMember[];
+  /** Gtab 1 for the house file (with a house). */
+  gtab: IffChunk | null;
+}
+
+/** Entry `i` of a string set in the current language, else US English (StringSetMulti::GetString). */
+function pickString(data: Uint8Array, i: number): string {
+  const e = decodeStrSet(data);
+  return (e.filter((x) => x.lang === CURRENT_LANG)[i] ?? e.filter((x) => x.lang === 1)[i] ?? e[i])?.value ?? "";
+}
+
+/** Every entry of a string set in one language (StringSetBase::Load: the current one, else US English). */
+function pickStrings(data: Uint8Array): string[] {
+  const e = decodeStrSet(data);
+  const cur = e.filter((x) => x.lang === CURRENT_LANG);
+  const pick = cur.length ? cur : e.filter((x) => x.lang === 1);
+  return (pick.length ? pick : e).map((x) => x.value);
+}
+
+/** A SimInventory pointer vector body (count, then present + id, token count, 10-byte tokens): the records, null where absent. */
+function parseInventoryRecords(b: Uint8Array): Array<Uint8Array | null> {
+  if (b.length < 4) return [];
+  const v = new DataView(b.buffer, b.byteOffset, b.byteLength);
+  const count = v.getInt32(0, true);
+  const out: Array<Uint8Array | null> = [];
+  let p = 4;
+  for (let i = 0; i < count && p + 4 <= b.length; i++) {
+    const present = v.getInt32(p, true);
+    p += 4;
+    if (!present) {
+      out.push(null);
+      continue;
+    }
+    const end = p + 6 + v.getInt32(p + 2, true) * 10;
+    out.push(b.slice(p, end));
+    p = end;
+  }
+  return out;
+}
+
+function serializeInventoryRecords(records: ReadonlyArray<Uint8Array | null>): Uint8Array {
+  const w = new ReconWriter();
+  w.i32(records.length);
+  for (const r of records) {
+    w.i32(r ? 1 : 0);
+    if (r) w.bytes(r);
+  }
+  return w.finish();
+}
+
+/** GUIDTranslation::Load: the pairs of Gtab 1. */
+function parseGtab(b: Uint8Array): Array<[number, number]> {
+  const r = new ReconReader(b);
+  r.i32();
+  r.i32();
+  r.tag();
+  const n = r.i32();
+  const out: Array<[number, number]> = [];
+  for (let i = 0; i < n; i++) out.push([r.u32(), r.u32()]);
+  return out;
+}
+
+/** GUIDTranslation::Save (ReconSaveVector<GUIDPair>, version 0). */
+function serializeGtab(pairs: ReadonlyArray<readonly [number, number]>): Uint8Array {
+  const w = new ReconWriter();
+  w.i32(0);
+  w.i32(0);
+  w.tag("batG");
+  w.i32(pairs.length);
+  for (const [a, b] of pairs) {
+    w.i32(a | 0);
+    w.i32(b | 0);
+  }
+  return w.finish();
 }
 
 /** Neighborhood::Save's NGBH version (Complete Collection). */

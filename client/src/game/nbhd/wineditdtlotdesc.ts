@@ -217,13 +217,6 @@ export class WinEditDTLotDesc extends TSWin {
     if (this.descEdit && !this.descEdit.getFlag(WF_NO_FOCUS)) winMgr.setFocus(this.descEdit);
   }
 
-  /** cWinEditDTLotDesc::TSOnKeyDown -> cTSWin::TSOnKeyDown: keys go to the focused edit. */
-  override tsOnKeyDown(key: string): boolean {
-    const focus = winMgr.getFocus();
-    if (focus && (focus === this.nameEdit || focus === this.descEdit)) return focus.tsOnKeyDown(key);
-    return true;
-  }
-
   /** cWinEditDTLotDesc::TSOnCommand */
   override tsOnCommand(cmd: number, source: TSWin): boolean {
     if (cmd === TE_TAB) {

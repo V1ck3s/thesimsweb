@@ -46,8 +46,18 @@
  *    shared lbl_105BAB68 when Shift is down (GetKeyState(VK_SHIFT) < 0) and
  *    clears it otherwise; TSPaint draws it at lbl_105BC6C8 = (0x291, 0x13).
  *
- * Not ported: the Makin' Magic coins column and its hint
- * (GetRunPAFMagicCount, entries 18 / 19), cPickFamilyList::GetTTPosition.
+ *  - Magic Town move in (+0x141, set by cWinMagicland; copied to the list
+ *    +0xcc and the items +0x1e4): background 0x13b3 instead of
+ *    kPickFamilyBkg (0x13b1); the items show the family's MagiCoins
+ *    (Family::GetMagiCoins: the members' SimInventory tokens of type 7, GUID
+ *    0x99e81bec) as "%d" at lbl_105BC6B0 = (0x289, 0x15), net worth and
+ *    friends move to lbl_105BC6B8 = (0x1ee, 0x15) and lbl_105BC6AC =
+ *    (0x25e, 0x15); the column tips move left by 23 and 25 px and a third one
+ *    (entry 18) sits at (0x2b2, 0x2a); its own hint (lbl_105C14A9, entries 19
+ *    / 20) while GetRunPAFMagicCount() < 6.
+ *
+ * Not ported: cPickFamilyList::GetTTPosition. The Magic Town screen's Move
+ * In (cWinMagicland::MoveInModeLotHandler) does not open the picker yet.
  * The game's run count is not kept: getRunCount() reads a counter nobody
  * increments yet, so the hint shows once per session.
  */
@@ -83,6 +93,9 @@ const S = {
   title: 8,
   hintTitle: 13,
   hintMessage: 14,
+  coinsTip: 17,
+  magicHintTitle: 18,
+  magicHintMessage: 19,
   netWorthTip: 10,
   friendsTip: 11,
   cancelTip: 15,
@@ -111,6 +124,12 @@ const ITEM_MEMBERS = { x: 0x6e, y: 0xe, step: 0x30 };
 const ITEM_NAME = { x: 0x14, y: 0 };
 const ITEM_WORTH = { x: 0x20e, y: 0x15 };
 const ITEM_FRIENDS = { x: 0x26c, y: 0x15 };
+/** lbl_105BC6B8 / lbl_105BC6AC / lbl_105BC6B0: the Magic Town columns. */
+const ITEM_WORTH_MAGIC = { x: 0x1ee, y: 0x15 };
+const ITEM_FRIENDS_MAGIC = { x: 0x25e, y: 0x15 };
+const ITEM_COINS = { x: 0x289, y: 0x15 };
+/** Family::GetMagiCoins: SimInventory::FindToken(7, magicoin GUID). */
+const MAGICOIN_TOKEN = { type: 7, guid: 0x99e81bec };
 const MEMBER_W = 0x2d;
 /** lbl_105BC6C8 */
 const ITEM_SMILEY = { x: 0x291, y: 0x13 };
@@ -124,8 +143,9 @@ const DOUBLE_CLICK_MS = 500;
 const SCROLL = { a: -1.0909091, b: 5.090909, min: 4, max: 60, scale: 0.001, round: 0.5 };
 /** Init: the first-run hint timer. */
 const HINT_DELAY_MS = 500;
-/** lbl_105C14AA: the hint was already scheduled this session. */
+/** lbl_105C14AA: the hint was already scheduled this session; lbl_105C14A9: the Magic Town one. */
 let hintScheduled = false;
+let magicHintScheduled = false;
 
 /** cOptionsMgr::GetRunCount: the number of times the game was started (not kept yet). */
 function getRunCount(): number {
@@ -173,6 +193,8 @@ interface FamilyRow {
   name: string;
   netWorth: number;
   friends: number;
+  /** GetFamilyInfo +0x10: Family::GetMagiCoins. */
+  magicoins: number;
   faces: Array<ImageBitmap | null>;
   /** PersonFinder data of each member, for the tooltip. */
   people: PersonInfoData[];
@@ -193,7 +215,16 @@ async function familyRow(store: NeighborhoodStore, n: NeighborhoodData, id: numb
       return createImageBitmap(new ImageData(img.data, img.width, img.height));
     }),
   );
-  return { id, name: f.name, netWorth: f.budget + f.netWorth, friends: f.friends, faces, people };
+  let magicoins = 0;
+  for (const guid of f.memberGuids) {
+    const nb = n.neighbors.find((x) => x.guid >>> 0 === guid >>> 0);
+    const inv = nb ? n.inventories.find((v) => v.neighborId === nb.id) : undefined;
+    const t = inv?.tokens.find((x) => x.type === MAGICOIN_TOKEN.type && x.guid >>> 0 === MAGICOIN_TOKEN.guid);
+    magicoins += t?.count ?? 0;
+  }
+  // Family::GetMagiCoins adds them as shorts.
+  magicoins = (magicoins << 16) >> 16;
+  return { id, name: f.name, netWorth: f.budget + f.netWorth, friends: f.friends, magicoins, faces, people };
 }
 
 /** cPickFamilyItemMember: a portrait (4 x 3 cells of 45 px), drawn (rowH - 45) / 2 - 5 px down. */
@@ -237,6 +268,8 @@ class PickFamilyItem extends TSWinBtn {
     private readonly template: ImageBitmap,
     private readonly fonts: { f10: FfnFont; f12: FfnFont },
     info: PickFamilyPersonInfo | null,
+    /** +0x1e4: Magic Town move in. */
+    private readonly magic = false,
   ) {
     super(0, bkg, 1, 3);
     this.mode = 1;
@@ -286,10 +319,17 @@ class PickFamilyItem extends TSWinBtn {
     const { f10, f12 } = this.fonts;
     f12.drawText(g.ctx, this.family.name, g.ox + ITEM_NAME.x, g.oy + ITEM_NAME.y, color);
     const worth = makeMoneyString(this.family.netWorth, LANG_FRENCH);
+    const worthAt = this.magic ? ITEM_WORTH_MAGIC : ITEM_WORTH;
+    const friendsAt = this.magic ? ITEM_FRIENDS_MAGIC : ITEM_FRIENDS;
     // Alignment 3: right-aligned on the column position.
-    f10.drawText(g.ctx, worth, g.ox + ITEM_WORTH.x - f10.stringWidth(worth), g.oy + ITEM_WORTH.y, color);
+    f10.drawText(g.ctx, worth, g.ox + worthAt.x - f10.stringWidth(worth), g.oy + worthAt.y, color);
     const friends = String(this.family.friends);
-    f10.drawText(g.ctx, friends, g.ox + ITEM_FRIENDS.x - f10.stringWidth(friends), g.oy + ITEM_FRIENDS.y, color);
+    f10.drawText(g.ctx, friends, g.ox + friendsAt.x - f10.stringWidth(friends), g.oy + friendsAt.y, color);
+    if (this.magic) {
+      // +0x1dc: hidden outside Magic Town.
+      const coins = String(this.family.magicoins);
+      f10.drawText(g.ctx, coins, g.ox + ITEM_COINS.x - f10.stringWidth(coins), g.oy + ITEM_COINS.y, color);
+    }
     if (smiley) g.blit(smiley, ITEM_SMILEY.x, ITEM_SMILEY.y);
   }
 }
@@ -499,6 +539,8 @@ export class WinPickFamily extends TSWinGenDlg {
   private hintTimer = 0;
   /** +0x140: a button is being handled. */
   private busy = false;
+  /** +0x141: Magic Town move in (set before init). */
+  magicTown = false;
 
   constructor(
     ctx: GameContext,
@@ -521,7 +563,7 @@ export class WinPickFamily extends TSWinGenDlg {
     this.store = await NeighborhoodStore.open(this.dir);
     this.fillColor = DLG_FILL;
     const sysImage = await ctx.res.image("kNghDefaultBtn");
-    this.bkg = await ctx.res.image("kPickFamilyBkg");
+    this.bkg = await ctx.res.image(this.magicTown ? 0x13b3 : "kPickFamilyBkg");
     this.offX = this.bkg.width < this.getW() ? (this.getW() - this.bkg.width) >> 1 : 0;
     this.offY = this.bkg.height < this.getH() ? (this.getH() - this.bkg.height) >> 1 : 0;
     await super.init();
@@ -581,9 +623,11 @@ export class WinPickFamily extends TSWinGenDlg {
       this.childAdd(b);
       this.buttons.push(b);
     }
+    const magic = this.magicTown;
     for (const [x, tip] of [
-      [0x24a, S.netWorthTip],
-      [0x296, S.friendsTip],
+      [0x24a - (magic ? 23 : 0), S.netWorthTip],
+      [0x296 - (magic ? 25 : 0), S.friendsTip],
+      ...(magic ? ([[0x2b2, S.coinsTip]] as const) : []),
     ] as const) {
       const w = new TSWin();
       w.setArea(x + ox, 0x2a + oy, x + ox + 0x1a, 0x2a + oy + 0x17);
@@ -592,9 +636,14 @@ export class WinPickFamily extends TSWinGenDlg {
     }
     this.buttons[B.moveIn]!.enabled = false;
     this.buttons[B.delete]!.enabled = false;
-    if (!hintScheduled) {
+    if (!hintScheduled && !magic) {
       hintScheduled = true;
       if (getRunCount() < 2) this.hintTimer = window.setTimeout(() => void this.tsOnTimerMsg(), HINT_DELAY_MS);
+    }
+    // cOptionsMgr::GetRunPAFMagicCount (runs with Makin' Magic): the run count stands for it.
+    if (!magicHintScheduled && magic) {
+      magicHintScheduled = true;
+      if (getRunCount() < 6) this.hintTimer = window.setTimeout(() => void this.tsOnTimerMsg(), HINT_DELAY_MS);
     }
     return true;
   }
@@ -602,7 +651,8 @@ export class WinPickFamily extends TSWinGenDlg {
   /** cWinPickFamily::TSOnTimerMsg: the first-run hint. */
   private async tsOnTimerMsg(): Promise<void> {
     this.hintTimer = 0;
-    await TSWinMsgBox.show(this.ctx, this.str(S.hintMessage), this.str(S.hintTitle), MB_OK);
+    const [text, title] = this.magicTown ? [S.magicHintMessage, S.magicHintTitle] : [S.hintMessage, S.hintTitle];
+    await TSWinMsgBox.show(this.ctx, this.str(text), this.str(title), MB_OK);
   }
 
   override tsEndDialog(result: number): void {
@@ -615,7 +665,7 @@ export class WinPickFamily extends TSWinGenDlg {
   private makeItem(r: FamilyRow): PickFamilyItem {
     // cPickFamilyItem::Init: the smiley only while Shift is held.
     smiley = winMgr.isKeyDown("Shift") ? this.smileyImg : null;
-    return new PickFamilyItem(r, this.itemBkg!, this.template!, this.fonts!, this.personInfo);
+    return new PickFamilyItem(r, this.itemBkg!, this.template!, this.fonts!, this.personInfo, this.magicTown);
   }
 
   /** cWinPickFamily::HandleButton */

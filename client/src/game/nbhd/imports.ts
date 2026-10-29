@@ -1,0 +1,285 @@
+/**
+ * Family and lot imports of the neighborhood screen (NghInterface.cpp:
+ * GetImportInfoForFile, ImportFamily; Neighborhood::ImportFamily is
+ * NeighborhoodStore.importFamily). The screen's dialogs are in
+ * winneighborhoodul.ts (CycleThroughImports, CycleResidentialImports,
+ * CycleCommunityImports).
+ *
+ * The original reads <neighborhood>/Import/ (*.FAM, *.rdt, *.cmt), which the
+ * player fills from the Explorer. A page cannot browse the disk, so:
+ *  - the files come from the server manifest (the game folder plus the
+ *    writable overlay), like every other game file;
+ *  - the families every neighborhood exported (UserData<N>/Export/*.FAM,
+ *    written by Neighborhood::ExportFamily on an eviction) are offered after
+ *    the Import/ ones, standing for the copy into Import/ the player did by
+ *    hand;
+ *  - files from the player's computer are uploaded into the overlay's
+ *    <neighborhood>/Import/ (`uploadImports`, file input or drop).
+ * Only overlay files can be deleted: a family imported from a read-only
+ * Export/ file stays offered.
+ */
+
+import { fetchManifest, readFarEntry } from "../../engine/assets.js";
+import { saveCharacter } from "../data/character.js";
+import { deleteGameFile, writeGameFile } from "../data/files.js";
+import { buildIff, decodeStrSet, parseIff, parseIffMapOrder, type IffChunk } from "../data/iff.js";
+import { NeighborhoodStore } from "../data/nbhdstore.js";
+import { decodeImage } from "../res/bmp.js";
+import { ObjectFolder } from "../world/objectfolder.js";
+import { readSimi } from "./nghinterface.js";
+
+/** cSimsApp::FindDataDirectory + GetStringConstant(0x58): the import folder of a neighborhood. */
+export function importDir(nbhdDir: string): string {
+  return `${nbhdDir}/Import`;
+}
+
+/** The import kinds CycleThroughImports walks: "*.FAM", then "*.rdt" and "*.cmt" (lbl_105BCD5C +0x158 / +0x15e / +0x164). */
+export interface ImportFiles {
+  families: string[];
+  residential: string[];
+  community: string[];
+}
+
+/**
+ * The files of <dir>/Import/ by kind (cTSDirectory with the pattern), then the
+ * exported families of every neighborhood (see the file comment). Paths are
+ * relative to the game folder.
+ */
+export async function listImports(nbhdDir: string): Promise<ImportFiles> {
+  const { files } = await fetchManifest();
+  const prefix = `Sims/${importDir(nbhdDir)}/`.toLowerCase();
+  const out: ImportFiles = { families: [], residential: [], community: [] };
+  const exported: string[] = [];
+  for (const f of files) {
+    const p = f.path.toLowerCase();
+    if (p.startsWith(prefix) && !p.slice(prefix.length).includes("/")) {
+      if (p.endsWith(".fam")) out.families.push(f.path.slice(5));
+      else if (p.endsWith(".rdt")) out.residential.push(f.path.slice(5));
+      else if (p.endsWith(".cmt")) out.community.push(f.path.slice(5));
+    } else if (/^sims\/userdata\d*\/export\/[^/]+\.fam$/.test(p)) {
+      exported.push(f.path.slice(5));
+    }
+  }
+  out.families.push(...exported.sort());
+  return out;
+}
+
+/** cWinNeighborhoodUL::CheckForNewImports: any file to import. */
+export async function hasImports(nbhdDir: string): Promise<boolean> {
+  const l = await listImports(nbhdDir);
+  return l.families.length + l.residential.length + l.community.length > 0;
+}
+
+async function readFile(path: string): Promise<Uint8Array | null> {
+  const res = await fetch(`/assets/Sims/${path.split("/").map(encodeURIComponent).join("/")}`, { cache: "no-store" });
+  return res.ok ? new Uint8Array(await res.arrayBuffer()) : null;
+}
+
+/** IFFResFile2::Open + ValidFile: the file's resources, null when it is not an IFF. */
+export async function readImportFile(path: string): Promise<IffChunk[] | null> {
+  const bytes = await readFile(path);
+  if (!bytes) return null;
+  try {
+    return parseIff(bytes);
+  } catch {
+    return null;
+  }
+}
+
+/** A BMP_ resource with the magenta color key (nsSMResFac::LoadBuffer + SetTransparency). */
+async function bitmapOf(chunks: readonly IffChunk[], ...ids: number[]): Promise<ImageBitmap | null> {
+  for (const id of ids) {
+    const c = chunks.find((x) => x.type === "BMP_" && x.id === id);
+    if (!c) continue;
+    const img = decodeImage(c.data, "import.bmp");
+    const d = img.data;
+    for (let i = 0; i < d.length; i += 4) if (d[i]! >> 3 === 31 && d[i + 1]! >> 3 === 0 && d[i + 2]! >> 3 === 31) d[i + 3] = 0;
+    return createImageBitmap(new ImageData(d, img.width, img.height));
+  }
+  return null;
+}
+
+/** StringSetBase entry `i` (0-based) in US English, the language the imports read. */
+function strEntry(chunks: readonly IffChunk[], type: string, id: number, i: number): string {
+  const c = chunks.find((x) => x.type === type && x.id === id);
+  if (!c) return "";
+  const e = decodeStrSet(c.data);
+  return (e.filter((x) => x.lang === 1)[i] ?? e[i])?.value ?? "";
+}
+
+/** ImportInfo: what the import dialog shows of a family file. */
+export interface ImportInfo {
+  path: string;
+  chunks: IffChunk[];
+  familyName: string;
+  /** The house in the file (FAMI +0x110), 0 for none. */
+  house: number;
+  /** The lot's thumbnail (GetHouseInfo with images: BMP_ 0x400 / 0x464, else 0x200 / 0x264 halved). */
+  image: ImageBitmap | null;
+}
+
+/**
+ * GetImportInfoForFile(path, info, 1): the file must hold EXPi 0 and the
+ * family it names (Family::LoadFamily); name from CTSS 1000, else FAMs.
+ */
+export async function getImportInfoForFile(path: string): Promise<ImportInfo | null> {
+  const chunks = await readImportFile(path);
+  const expi = chunks?.find((c) => c.type === "EXPi" && c.id === 0);
+  if (!chunks || !expi || expi.data.length < 14) return null;
+  const id = new DataView(expi.data.buffer, expi.data.byteOffset, expi.data.byteLength).getInt16(12, true);
+  const fami = chunks.find((c) => c.type === "FAMI" && c.id === id);
+  if (!fami || fami.data.length < 16) return null;
+  const house = new DataView(fami.data.buffer, fami.data.byteOffset, fami.data.byteLength).getInt32(12, true);
+  const familyName = strEntry(chunks, "CTSS", 1000, 0) || strEntry(chunks, "FAMs", id, 0);
+  let image: ImageBitmap | null = null;
+  if (house !== 0) {
+    image = await bitmapOf(chunks, 0x400, 0x464);
+    if (!image) {
+      const big = await bitmapOf(chunks, 0x200, 0x264);
+      if (big) {
+        const c = new OffscreenCanvas(Math.max(1, big.width >> 1), Math.max(1, big.height >> 1));
+        c.getContext("2d")!.drawImage(big, 0, 0, c.width, c.height);
+        image = await createImageBitmap(c);
+      }
+    }
+  }
+  return { path, chunks, familyName, house, image };
+}
+
+/** Neighborhood::AddNewCharacter's templates: 0 TemplatePerson 0x7fd96b54, 1 the dog 0x4a70df92, 2 the cat 0x7bea0977. */
+const CHARACTER_TEMPLATES = [0x7fd96b54, 0x4a70df92, 0x7bea0977] as const;
+
+/** The resources of a template object, in map order (StubObject::CreateNew copies them). */
+async function templateChunks(nbhdDir: string, kind: number): Promise<IffChunk[] | null> {
+  const folder = await ObjectFolder.get(nbhdDir);
+  const sel = await folder.getSelectorByGUID(CHARACTER_TEMPLATES[kind] ?? CHARACTER_TEMPLATES[0]);
+  if (!sel) return null;
+  const key = sel.fileKey;
+  const bar = key.indexOf("|");
+  const bytes = bar < 0 ? await readFile(key) : await readFarEntry(`Sims/${key.slice(0, bar)}`, key.slice(bar + 1));
+  return bytes ? parseIffMapOrder(bytes) : null;
+}
+
+/**
+ * ImportFamily(ImportInfo*, int*): Neighborhood::ImportFamily, then
+ * PersonFinder::GenerateBitmaps(0x1f, save) of every member (here with their
+ * strings: the new character files get the body strings, the catalog name and
+ * description and the portraits) and Neighborhood::ExportFamily of the new
+ * family (unless 4000) and of the family it displaced.
+ *
+ * Neighborhood::ImportFamily's file part: without a house the .FAM is deleted;
+ * with one it becomes Houses/House%02d.iff (MoveFile through ".tmp"), with
+ * the GUID translation saved into it. Then Neighborhood::Save.
+ * Resolves with the house number (0 for none), or null on failure.
+ */
+export async function importFamily(nbhdDir: string, info: ImportInfo): Promise<number | null> {
+  const store = await NeighborhoodStore.open(nbhdDir);
+  const simi = info.chunks.find((c) => c.type === "SIMI");
+  const tutorial = simi ? (readSimi(simi.data).globals[26] ?? 0) !== 0 : false;
+  const done = await store.importFamily(info.chunks, (kind) => templateChunks(nbhdDir, kind), tutorial);
+  if (!done) return null;
+  if (done.house !== 0) {
+    const chunks = info.chunks.filter((c) => !(c.type === "Gtab" && c.id === 1));
+    if (done.gtab) chunks.push(done.gtab);
+    await writeGameFile(`${nbhdDir}/Houses/House${String(done.house).padStart(2, "0")}.iff`, buildIff(chunks));
+  }
+  await deleteGameFile(info.path).catch(() => undefined);
+  await store.save();
+  const { generatePortraits } = await import("../cas/portraits.js");
+  for (const m of done.members) {
+    const bitmaps = await generatePortraits(m.bodyStrings).catch(() => new Map<number, Uint8Array>());
+    await saveCharacter(nbhdDir, m.fileName, { firstName: m.firstName, bio: m.bio, bodyStrings: m.bodyStrings, bitmaps });
+  }
+  if (done.familyId !== 4000) await store.exportFamily(done.familyId);
+  if (done.displaced > 0) await store.exportFamily(done.displaced);
+  return done.house;
+}
+
+/** A lot file (.rdt / .cmt): STR# 2000 entries 1..3 (name, description, house number) and its picture (BMP_ 0x200). */
+export interface LotImportInfo {
+  path: string;
+  bytes: Uint8Array;
+  name: string;
+  description: string;
+  house: number;
+  image: ImageBitmap | null;
+}
+
+export async function getLotImportInfo(path: string): Promise<LotImportInfo | null> {
+  const bytes = await readFile(path);
+  if (!bytes) return null;
+  let chunks: IffChunk[] = [];
+  try {
+    chunks = parseIff(bytes);
+  } catch {
+    // IFFResFile2::Open failed: empty strings, house 0 (atoi of "").
+  }
+  return {
+    path,
+    bytes,
+    name: strEntry(chunks, "STR#", 2000, 0),
+    description: strEntry(chunks, "STR#", 2000, 1),
+    house: Number.parseInt(strEntry(chunks, "STR#", 2000, 2), 10) || 0,
+    image: await bitmapOf(chunks, 0x200),
+  };
+}
+
+/**
+ * The file part of an accepted lot import: IFFResFile2::Delete of the house
+ * file, CopyFile of the lot file onto it, IFFResFile2::Delete of the lot file.
+ */
+export async function importLotFile(nbhdDir: string, lot: LotImportInfo): Promise<void> {
+  await writeGameFile(`${nbhdDir}/Houses/House${String(lot.house).padStart(2, "0")}.iff`, lot.bytes);
+  await deleteGameFile(lot.path).catch(() => undefined);
+}
+
+/**
+ * The web side of the Explorer copy into Import/: files from the player's
+ * computer go to the overlay's <neighborhood>/Import/. .FAM / .MTF, .rdt and
+ * .cmt keep their names; an .iff becomes a family when it holds EXPi 0 (an
+ * exported family), else a residential lot (.rdt). Resolves with the names
+ * written.
+ */
+export async function uploadImports(nbhdDir: string, files: Iterable<File>): Promise<string[]> {
+  const written: string[] = [];
+  for (const f of files) {
+    const bytes = new Uint8Array(await f.arrayBuffer());
+    const dot = f.name.lastIndexOf(".");
+    const base = dot < 0 ? f.name : f.name.slice(0, dot);
+    const ext = dot < 0 ? "" : f.name.slice(dot + 1).toLowerCase();
+    let name: string;
+    if (ext === "fam" || ext === "mtf") name = `${base}.FAM`;
+    else if (ext === "rdt" || ext === "cmt") name = `${base}.${ext}`;
+    else if (ext === "iff") {
+      let family = false;
+      try {
+        family = parseIff(bytes).some((c) => c.type === "EXPi" && c.id === 0);
+      } catch {
+        continue;
+      }
+      name = `${base}.${family ? "FAM" : "rdt"}`;
+    } else continue;
+    await writeGameFile(`${importDir(nbhdDir)}/${name}`, bytes);
+    written.push(name);
+  }
+  return written;
+}
+
+/** Opens the browser's file picker (works in Firefox: no File System Access API) and uploads the choice. */
+export function pickAndUploadImports(nbhdDir: string): Promise<string[]> {
+  return new Promise((resolve) => {
+    const input = document.createElement("input");
+    input.type = "file";
+    input.multiple = true;
+    input.accept = ".fam,.FAM,.mtf,.MTF,.iff,.IFF,.rdt,.cmt";
+    input.style.display = "none";
+    document.body.appendChild(input);
+    const finish = (names: string[]): void => {
+      input.remove();
+      resolve(names);
+    };
+    input.addEventListener("change", () => void uploadImports(nbhdDir, input.files ?? []).then(finish, () => finish([])));
+    input.addEventListener("cancel", () => finish([]));
+    input.click();
+  });
+}

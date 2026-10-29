@@ -199,8 +199,16 @@ export class SimModule {
    * TryKillSounds: QuietBySourceID(source)). Null: the primitives only record.
    */
   soundHooks: { playSound(behavior: Behavior | null, soundId: number, source: number): void; killSounds(source: number): void } | null = null;
-  /** The UI side of prim 34 (UI Effect): Tut_FlashButtonByImageID(image id, on). Null: recorded only. */
-  tutorialHooks: { flashButtonByImageID(id: number, on: boolean): void } | null = null;
+  /**
+   * The UI side of prim 34 (UI Effect): Tut_FlashButtonByImageID(image id, on),
+   * Tut_FlashPersonPanelButton and Tut_FlashRelButton (by the person's GUID,
+   * Neighborhood::FindNeighborByID done here). Null: recorded only.
+   */
+  tutorialHooks: {
+    flashButtonByImageID(id: number, on: boolean): void;
+    flashPersonPanelButton?(guid: number, on: boolean): void;
+    flashRelButton?(guid: number, on: boolean): void;
+  } | null = null;
   /** Called when an object's look changed (cXObject::Dirty) or it was killed. */
   onDirty: ((o: SimObject) => void) | null = null;
   onKill: ((o: SimObject) => void) | null = null;
@@ -1041,6 +1049,21 @@ export class SimModule {
       if (SimModule.areFriends(nb, o)) n += o.personData?.[0x51] ?? 0;
     }
     return n;
+  }
+
+  /**
+   * CPState::GetFamilyFriendCount (the view control's friend count): on a
+   * residential lot the app's current family (global 9), elsewhere the
+   * selected person's family (its person data 0x3d); Family::GetFriendCount
+   * of it, 0 without one.
+   */
+  cpFamilyFriendCount(selectedGuid: number | undefined): number {
+    const g = this.sim.globals;
+    let fn = 0;
+    if (this.getZoningType(g[10]!) === 1) fn = g[9]!;
+    else if (selectedGuid !== undefined) fn = this.persons.find((p) => (p.obj.selector.guid | 0) === (selectedGuid | 0))?.pd[0x3d] ?? 0;
+    const fam = fn === 0 ? undefined : this.nbhd?.families.find((f) => f.chunkId === fn);
+    return fam ? this.familyFriendCount(fam.memberGuids) : 0;
   }
 
   /** Neighborhood::UpdateFamilyFriendsCount for one family (see NghInterface.getFamilyFriendsCount). */

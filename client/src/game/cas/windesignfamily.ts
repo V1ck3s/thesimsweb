@@ -427,8 +427,6 @@ export class WinDesignFamily extends TSWinGenDlg {
   }
 
   override tsOnKeyDown(key: string): boolean {
-    const focus = winMgr.getFocus();
-    if (focus instanceof TSWinTextEdit2 && focus.parent === this && focus.tsOnKeyDown(key)) return true;
     if (key === "Escape") {
       void this.run(() => this.cancel());
       return true;

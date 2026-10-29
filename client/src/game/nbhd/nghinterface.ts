@@ -251,7 +251,7 @@ const FRIEND_THRESHOLD = 25;
 const ARCHITECTURE_VALUE_MULTIPLIER = 0.7;
 
 /** cSimulator fields that Neighborhood::GetHouseFileInfo reads from SIMI. */
-interface SimInfo {
+export interface SimInfo {
   globals: Int16Array;
   /** cSimulator+0x9c / +0xa0 / +0xa4 */
   lotValue: number;
@@ -260,7 +260,7 @@ interface SimInfo {
 }
 
 /** cSimulator::DoStream, up to the three value fields. */
-function readSimi(bytes: Uint8Array): SimInfo {
+export function readSimi(bytes: Uint8Array): SimInfo {
   const r = new ReconReader(bytes);
   r.i32();
   const v = r.i32();

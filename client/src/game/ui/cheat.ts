@@ -56,7 +56,7 @@ import { TSSystemButton } from "./systembutton.js";
 import { TSWinText, WTF_MULTILINE } from "./text.js";
 import { TE_ESCAPE, TE_RETURN, TSWinTextEdit2 } from "./textedit.js";
 import { CMD_LIST_DOUBLE_CLICK, CMD_LIST_SELECT, TSWinTextList } from "./textlist.js";
-import { Gfx, TSWin, WF_MODAL } from "./tswin.js";
+import { Gfx, TSWin } from "./tswin.js";
 import { winMgr } from "./winmgr.js";
 
 /** lbl_105BCE74 strings. */
@@ -347,14 +347,14 @@ export class TSWinCheatHelp extends TSWinGenDlg {
     if (this.list) winMgr.setFocus(this.list);
   }
 
-  /** cTSWinCheatHelp::TSOnKeyDown: Escape = Cancel, Return = OK; the rest is the list's. */
+  /** cTSWinCheatHelp::TSOnKeyDown: Escape = Cancel, Return = OK (the focused list saw the key first). */
   override tsOnKeyDown(key: string): boolean {
     if (key === "Escape" || key === "Enter") {
       const b = key === "Escape" ? this.cancel : this.ok;
       if (b) this.tsOnCommand(1, b);
       return true;
     }
-    return this.list?.tsOnKeyDown(key) ?? false;
+    return super.tsOnKeyDown(key);
   }
 
   /** cTSWinCheatHelp::TSOnCommand */
@@ -436,15 +436,6 @@ class CheatWidget extends TSWin {
     e.hideWindow();
   }
 
-  get isUp(): boolean {
-    return this.edit.isVisible() && winMgr.getFocus() === this.edit;
-  }
-
-  /** The key goes to the edit (it holds the focus). */
-  keyDown(key: string): boolean {
-    return this.edit.tsOnKeyDown(key);
-  }
-
   setText(text: string): void {
     this.edit.setText(text.slice(0, 0xff));
   }
@@ -464,7 +455,8 @@ class CheatWidget extends TSWin {
     if (!e.isVisible()) return;
     e.hideWindow();
     e.setText("");
-    if (winMgr.getFocus() === e) winMgr.setFocus(this.savedFocus);
+    // +0xec: the focus the widget took goes back.
+    winMgr.offerFocus(this.savedFocus);
     this.savedFocus = null;
   }
 
@@ -735,23 +727,12 @@ export async function installCheatConsole(ctx: GameContext, host: CheatAppHost, 
   cheatWidget = widget;
   // cDDDSimsView::Init: SetupHelpList(font table entry 9).
   await mgr.setupHelpList(await ctx.fonts.acquire(9));
-  window.addEventListener(
-    "keydown",
-    (e) => {
-      const modalUp = winMgr.main.children.some((w) => w.isVisible() && w.getFlag(WF_MODAL));
-      if (modalUp) return;
-      // Ctrl+Shift+C (B for app language 0x10; the French build uses C).
-      if (e.ctrlKey && e.shiftKey && (e.key === "c" || e.key === "C")) {
-        widget.show();
-      } else if (widget.isUp) {
-        if (!widget.keyDown(e.key)) return;
-      } else {
-        return;
-      }
-      e.preventDefault();
-      e.stopImmediatePropagation();
-    },
-    { capture: true },
-  );
+  // cTSMainWindowW95::TSOnKeyDown: Ctrl+Shift+C (B for app language 0x10; the French
+  // build uses C) shows the widget; once up, its edit holds the focus and takes the keys.
+  winMgr.mainKeyDown = (key) => {
+    if (!(winMgr.isKeyDown("Control") && winMgr.isKeyDown("Shift") && (key === "c" || key === "C"))) return false;
+    widget.show();
+    return true;
+  };
   return mgr;
 }

@@ -213,6 +213,11 @@ export class TSWinBtn extends TSWin {
     return true;
   }
 
+  /** cTSWinBtn::TSOnSetFocus: the focus goes on to the parent when it accepts it. */
+  override tsOnSetFocus(): void {
+    winMgr.offerFocus(this.parent);
+  }
+
   override tsOnMouseDownL(): boolean {
     if (!this.enabled) {
       this.playUISound(UISOUND_DISABLED);

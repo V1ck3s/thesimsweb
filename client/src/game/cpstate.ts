@@ -345,6 +345,9 @@ export class CPState {
   private motivePulseAccum = 0;
   private motivePulsePeriod = 100;
   private motivePulseLast = 0;
+  /** Second PulseGenerator at +0x200 (period 100 at construction, three times the first one's after UpdateSpeed). */
+  private slowPulseAccum = 0;
+  private slowPulsePeriod = 100;
 
   /**
    * The +0x1f0 part of CPState::UpdateSpeed (dirty 0x40): the simulator's
@@ -357,6 +360,8 @@ export class CPState {
     if (k === undefined) return;
     const tick = Math.trunc(0.5 + 172 - ((Math.trunc(0.5 + 1000 * k) / 1000) * 171));
     this.motivePulsePeriod = Math.trunc(0.5 + (1000 * tick) / 42);
+    // +0x200: trunc(0.5 + 3000 x tick period / 42) (lbl_105BC0B0[5]).
+    this.slowPulsePeriod = Math.trunc(0.5 + (3000 * tick) / 42);
   }
 
   /** CPState::Update: PulseGenerator::AdvanceTime then ShouldPulse sets dirty 1 (the motives). */
@@ -365,10 +370,20 @@ export class CPState {
       // CPState::Init's first UpdateSpeed (everything dirty).
       this.updateMotivePulsePeriod();
       this.motivePulseAccum = this.motivePulsePeriod;
+      this.slowPulseAccum = this.slowPulsePeriod;
     }
-    else this.motivePulseAccum += now - this.motivePulseLast;
+    else {
+      this.motivePulseAccum += now - this.motivePulseLast;
+      this.slowPulseAccum += now - this.motivePulseLast;
+    }
     this.motivePulseLast = now;
     if (this.shouldPulseMotives()) this.touch(1);
+    // CPState::Update, +0x200: ShouldPulse sets dirty |= 0x6078000 (the
+    // panels' periodic refresh bits 0x8000..0x40000, 0x2000000, 0x4000000).
+    if (this.slowPulseAccum >= this.slowPulsePeriod) {
+      this.slowPulseAccum -= this.slowPulsePeriod;
+      this.touch(0x6078000);
+    }
   }
 
   /** PulseGenerator::ShouldPulse on +0x1f0 (cWinPeople pumps the motives once per pulse). */

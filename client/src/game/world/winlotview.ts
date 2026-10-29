@@ -75,7 +75,9 @@ import { WinBudgetDlg } from "../cpanel/budgetdlg.js";
 import { WinViewControl } from "../cpanel/viewcontrol.js";
 import { loadBuildCatalog } from "../data/buildcatalog.js";
 import { holdSimulator } from "../nbhd/transit.js";
-import { tutFlashButtonByImageID } from "../ui/tutorialhighlight.js";
+import { tutFlashButtonByImageID, tutFlashWindow } from "../ui/tutorialhighlight.js";
+import { findPersonPanelButton } from "../cpanel/people.js";
+import { findRelButton } from "../cpanel/live/relationship.js";
 import { moduleOrder } from "./housesave.js";
 import { summarizeHouseStats } from "./housestats.js";
 
@@ -179,9 +181,6 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
   };
   /** CPState listeners registered by init, removed by shutdown. */
   private readonly listeners: Array<(s: CPState) => void> = [];
-  private readonly onKey = (e: KeyboardEvent): void => {
-    if (this.tsOnKeyDown(e.key)) e.preventDefault();
-  };
 
   constructor(
     private readonly ctx: GameContext,
@@ -294,7 +293,6 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
     st.setZoom(v.scale);
     st.setRotation(world.rotation);
     st.setLevel(v.level);
-    window.addEventListener("keydown", this.onKey);
     return true;
   }
 
@@ -1328,8 +1326,12 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
         o.obj.objectData[34] = 1;
         if (this.viewer) this.viewer.dirty = true;
       };
-      // Prim 34 (UI Effect) effect 0: Tut_FlashButtonByImageID.
-      sim.module.tutorialHooks = { flashButtonByImageID: (id, on) => void tutFlashButtonByImageID(this.ctx, id, on) };
+      // Prim 34 (UI Effect): Tut_FlashButtonByImageID, Tut_FlashPersonPanelButton, Tut_FlashRelButton.
+      sim.module.tutorialHooks = {
+        flashButtonByImageID: (id, on) => void tutFlashButtonByImageID(this.ctx, id, on),
+        flashPersonPanelButton: (guid, on) => void tutFlashWindow(this.ctx, findPersonPanelButton(winMgr.main, guid), on),
+        flashRelButton: (guid, on) => void tutFlashWindow(this.ctx, findRelButton(winMgr.main, guid), on),
+      };
       this.sim = sim;
       this.initBudgetSource(sim, lot);
       // cWinPeople::BuildGifts reads the selected sim's SimInventory and the gifts' selectors.
@@ -1459,7 +1461,6 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
 
   override shutdown(): void {
     for (const fn of this.listeners) this.ctx.state.offChange(fn);
-    window.removeEventListener("keydown", this.onKey);
     window.removeEventListener("keydown", this.onModifiers);
     window.removeEventListener("keyup", this.onModifiers);
     window.removeEventListener("pointermove", this.onModifiers);

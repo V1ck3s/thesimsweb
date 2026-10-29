@@ -17,6 +17,7 @@ export async function mount(ctx: GameContext, mgr: WinMgr): Promise<void> {
   view.setArea(0, 0, ctx.width, ctx.height);
   mgr.main.childAdd(view);
   if (!(await view.init())) throw new Error("lot view init failed");
+  mgr.setFocus(view);
   // `&center=x,y` (world tile) scrolls there; `&zoom=1..3`, `&rot=0..3` set the view.
   const q = new URLSearchParams(location.search);
   const v = view.viewer!;

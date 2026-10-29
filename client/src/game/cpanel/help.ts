@@ -183,9 +183,6 @@ export class WinHelp extends TSWinDlg {
 
   /** cWinHelp::TSOnKeyDown: Return and Escape press OK. */
   override tsOnKeyDown(key: string): boolean {
-    // The list has the focus (TSBeginModal): it sees the keys first; the window manager
-    // gives them to the modal window, which hands them down.
-    if (this.list && winMgr.getFocus() === this.list && this.list.tsOnKeyDown(key)) return true;
     if (key === "Enter" || key === "Escape") {
       if (this.ok) this.tsEndDialog(0);
       return true;

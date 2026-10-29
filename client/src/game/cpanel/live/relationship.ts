@@ -16,12 +16,19 @@
  * with the STR# 132 texts of the lifetime level and the other Sim's name,
  * sign and description.
  *
- * Not ported: the delta meter (cWinDeltaMeter, change arrows) and
- * right-click centering the view on the Sim (cXObject::CenterHouseViewOnMe).
+ * Each tile has a delta meter (cWinDeltaMeter(10), +0x1a0) that SetRelationship
+ * resets when the pair changes and pumps with the daily score. The
+ * constructor ignores its argument and leaves the history (+0xe8) null, and
+ * nothing calls SetAverageHistory on these meters (checked in the Mac asm,
+ * __ct__14cWinDeltaMeterFi): PumpSample does nothing, so the arrows never
+ * show on the relationship page, here as in the original.
+ *
+ * Not ported: right-click centering the view on the Sim (cXObject::CenterHouseViewOnMe).
  */
 
 import type { GameContext } from "../../context.js";
 import type { PersonInfo } from "../../cpstate.js";
+import { WinDeltaMeter } from "./deltameter.js";
 import { ALIGN_CENTER, type FfnFont } from "../../res/ffn.js";
 import { BTN_TOGGLE, CMD_ASYNC_EXIT, TSWinBtn } from "../../ui/btn.js";
 import { hiliteColor, rgb } from "../../ui/syscolors.js";
@@ -152,6 +159,19 @@ interface RelIcons {
 }
 let relIcons: Promise<RelIcons> | null = null;
 
+/**
+ * FindRelButton(main window, person): depth first, the first cWinRelationship
+ * tile (dynamic_cast) whose other person is `guid`.
+ */
+export function findRelButton(win: TSWin, guid: number): WinRelationship | null {
+  for (const c of win.children) {
+    if (c instanceof WinRelationship && c.otherGuid() === guid >>> 0) return c;
+    const found = findRelButton(c, guid);
+    if (found) return found;
+  }
+  return null;
+}
+
 export class WinRelationship extends TSWinBtn {
   /** +0x18c: the other person, +0x190: the selected person. */
   private other: PersonInfo | null = null;
@@ -161,6 +181,8 @@ export class WinRelationship extends TSWinBtn {
   private textFont: FfnFont | null = null;
   /** +0x1a4: the tiles' shared popup client. */
   client: WinLivePopupClient | null = null;
+  /** +0x1a0 */
+  private readonly meter = new WinDeltaMeter();
 
   constructor(readonly ctx: GameContext) {
     super();
@@ -181,11 +203,21 @@ export class WinRelationship extends TSWinBtn {
       heartDeep: await res.image("kRelHeartDeep"),
     }))();
     this.icons = await relIcons;
+    // The meter covers the tile; its arrows at lbl_105BC520 (0, 0) + (0, 6) and (0x14, 6).
+    this.meter.setArea(0, 0, this.getW(), this.getH());
+    this.childAdd(this.meter);
+    this.meter.setTopLefts({ x: 0, y: 6 }, { x: 0x14, y: 6 });
     return true;
+  }
+
+  /** +0x18c: the other person's GUID (undefined without one). */
+  otherGuid(): number | undefined {
+    return this.other?.guid === undefined ? undefined : this.other.guid >>> 0;
   }
 
   /** cWinRelationship::SetRelationship(other, selected). */
   setRelationship(other: PersonInfo, selected: PersonInfo): void {
+    if (other !== this.other || selected !== this.selected) this.meter.resetHistory();
     this.other = other;
     this.selected = selected;
     if (other === selected) return;
@@ -193,6 +225,7 @@ export class WinRelationship extends TSWinBtn {
     this.rel = getRelation(selected, other);
     // The open popup follows a changed score.
     if (this.rel.lifetime !== lifetime && this.client?.target === this && this.state !== 0) this.setupClient();
+    this.meter.pumpSample(this.rel.value);
   }
 
   /**

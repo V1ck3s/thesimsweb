@@ -171,6 +171,23 @@ export class WinDeltaMeter extends TSWin {
     for (const f of this.faders) setFader(f, REST, REST, 0, now);
   }
 
+  /** cWinDeltaMeter::ResetHistory: the history reset, the meter off, every fader at rest at once. */
+  resetHistory(): void {
+    this.history?.reset();
+    this.active = false;
+    this.delta = 0;
+    this.fadeOut = false;
+    const now = performance.now();
+    for (const f of this.faders) setFader(f, REST, REST, 0, now);
+  }
+
+  /** cWinDeltaMeter::PumpSample: a sample into the history (none: nothing), then TriggerDeltas while visible. */
+  pumpSample(v: number): void {
+    if (!this.history) return;
+    this.history.addSample(v);
+    if (this.isVisible()) this.triggerDeltas();
+  }
+
   /** cWinDeltaMeter::TriggerDeltas */
   triggerDeltas(): void {
     if (!this.history) return;

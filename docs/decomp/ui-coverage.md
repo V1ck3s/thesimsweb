@@ -21,7 +21,7 @@ or developer-only tools).
 | Class | What it is | Status | Where |
 |---|---|---|---|
 | cTSWin | Window base: area, flags, children, plot, hit testing | ported | `ui/tswin.ts` |
-| cTSWinMgrW95 | Window manager: input routing, capture, modal loop, paint | ported | `ui/winmgr.ts` |
+| cTSWinMgrW95 | Window manager: input routing, capture, modal loop, paint | ported (focus / modal key routing, WF_NO_FOCUS, TSSetFocus kill / set messages) | `ui/winmgr.ts` |
 | cTSWinCtrlMgr | System bitmaps and fonts of the controls | ported | `ui/ctrlmgr.ts`, `ui/syscolors.ts` |
 | cTSWinBtn | Button (frame columns, push / toggle, async timers) | ported | `ui/btn.ts` |
 | cTSWinCheck | Check box | ported | `ui/check.ts` |
@@ -47,19 +47,19 @@ or developer-only tools).
 | Class | What it is | Status | Where |
 |---|---|---|---|
 | cWinCPanel | Control panel container, panel switching | ported | `cpanel/cpanel.ts` |
-| cWinViewControl | Clock, speed, zoom, rotation, levels, funds, help button, friend count dialog (STR# 162) | ported (friend count value not fed) | `cpanel/viewcontrol.ts` |
+| cWinViewControl | Clock, speed, zoom, rotation, levels, funds, help button, friend count dialog (STR# 162) | ported | `cpanel/viewcontrol.ts` |
 | cWinBudgetDlg, cWinBudgetRow | Budget window (funds click on a residential lot): 3-day / today income and expenses by type, funds, net worth, days | ported (object / architecture values recomputed at opening) | `cpanel/budgetdlg.ts` |
 | cWinHelp | Help window (view control "?" button): topic list and text | ported | `cpanel/help.ts` |
 | cWinPeople | Live panel: portraits, mood, page buttons | partial (portrait pie menus, sim tracking, at-work overlays) | `cpanel/people.ts` |
 | cWinMotive | Needs page, with its delta meters | ported | `cpanel/live/motive.ts` |
-| cWinDeltaMeter, cAverageHistory | Up / down change arrows of the needs | ported (needs; the relationship page's meters not wired) | `cpanel/live/deltameter.ts` |
+| cWinDeltaMeter, cAverageHistory | Up / down change arrows of the needs | ported (needs; the relationship page's meter is wired but, as in the original, its history is null so it never draws arrows) | `cpanel/live/deltameter.ts` |
 | cWinPersonality | Personality page | ported | `cpanel/live/personality.ts` |
 | cWinSubpanelJob, cFlashyBtn, cPerformanceBtn | Job page (adult) | ported | `cpanel/live/job.ts` |
 | cWinSubpanelReportCard | Job page of a child: blinking grade ("Bulletin"), school popup | ported | `cpanel/live/reportcard.ts` |
 | cWinSubpanelCatSkills, cWinSubpanelDogSkills | Job page of a cat / dog (pet skills and popups) | ported | `cpanel/live/petskills.ts` |
 | cWinSubpanelFame | Job page of a celebrity (Superstar) | partial (skill panes as catalog objects) | `cpanel/live/fame.ts` |
 | cWinSubpanelHouse | House page | ported | `cpanel/live/house.ts` |
-| cWinRelationship | Relationships page | partial (delta meters not wired) | `cpanel/live/relationship.ts` |
+| cWinRelationship | Relationships page | ported | `cpanel/live/relationship.ts` |
 | cWinInterest (+ BufferCleanup) | Interests page | ported | `cpanel/live/interest.ts` |
 | cWinGift | Gifts / inventory page | ported | `cpanel/live/gifts.ts` |
 | cWinEditBio | Biography editor (Ctrl+click on a portrait), saved into the character's CTSS | ported | `cpanel/live/editbio.ts` |
@@ -86,7 +86,7 @@ or developer-only tools).
 | CWinMagicBook, cPickSpellList, cPickSpellItem | Spell book / cookbook | partial (expansion filters) | `ui/magicbook.ts` |
 | cWinPictureInPicture | Event picture-in-picture | partial (scrapbook auto snapshot) | `world/winpictureinpicture.ts` |
 | cTutorialIcon | Close box of the tutorial dialogs | partial | `ui/picturedialog.ts` |
-| cTSWinTutorialHighlight | Tutorial arrow over a button or lot (neighborhood tutorial lots, prim 34 effect 0) | partial (prim 34 effects 1 / 2, Tut_CheckForEvents) | `ui/tutorialhighlight.ts` |
+| cTSWinTutorialHighlight | Tutorial arrow over a button or lot (neighborhood tutorial lots, prim 34 effect 0) | partial (Tut_CheckForEvents) | `ui/tutorialhighlight.ts` |
 | cActionIcon | Queued action icons | ported | `world/actionicons.ts` |
 | cColorSwatch, cGouraudSwatch, cMapTileSwatch | Terrain tool swatches | ported | `world/terrain*.ts` |
 
@@ -94,13 +94,13 @@ or developer-only tools).
 
 | Class | What it is | Status | Where |
 |---|---|---|---|
-| cWinNeighborhood, cWinNeighborhoodUL | Neighborhood screen (Unleashed layout) and the "Ask for Lot" destination picker (lot type filter toolbar, title, filter icons, residential lot message) | partial (family / lot imports, web pages export, move_lots and nessie cheats) | `nbhd/winneighborhoodul.ts` |
+| cWinNeighborhood, cWinNeighborhoodUL | Neighborhood screen (Unleashed layout) and the "Ask for Lot" destination picker (lot type filter toolbar, title, filter icons, residential lot message) | partial (Tutorial.FAM first-run import, import charset check, ReportMissingTextures, web pages export, move_lots and nessie cheats) | `nbhd/winneighborhoodul.ts` |
 | cWinNeighborhoodVC | Pre-Unleashed neighborhood layout | n/a (only used without Unleashed) | - |
 | cWinLotBtn | Lot button | ported | `nbhd/winlotbtn.ts` |
 | cWinLotPopup (+ CleanupVacationBuffers) | Lot info popup (family / house) | ported | `nbhd/winlotpopup.ts` |
 | cWinDowntown, cWinVacation, cWinStudiotown, cWinMagicland | Town screens of the expansions | partial (lot imports, Magic Town move in) | `nbhd/wintown.ts` |
 | cWinEditDTLotDesc | Town lot name / description editor (save prompt of an empty town lot) | ported (Quit's "No clears dirty" step) | `nbhd/wineditdtlotdesc.ts`, `cpanel/options.ts` |
-| cWinPickFamily, cPickFamilyList, cPickFamilyItem, cPickFamilyItemMember, cPickFamilyPersonInfo | Family bin (with the Shift smiley easter egg) | partial (Magic Town move-in mode: MagiCoins column, hint) | `cas/winpickfamily.ts`, `cas/personinfo.ts` |
+| cWinPickFamily, cPickFamilyList, cPickFamilyItem, cPickFamilyItemMember, cPickFamilyPersonInfo | Family bin (with the Shift smiley easter egg) | ported (Magic Town mode with the MagiCoins column and hints; the Magicland Move In flow that opens it is not) | `cas/winpickfamily.ts`, `cas/personinfo.ts` |
 | cWinDesignFamily, cWinDesignFamPeopleBtn | Create-a-Family | ported | `cas/windesignfamily.ts` |
 | cWinDesignCharacter | Create-a-Sim | ported | `cas/windesigncharacter.ts` |
 | cWinPersonalityWidget | Personality bars of Create-a-Sim | ported | `cas/winpersonalitywidget.ts` |

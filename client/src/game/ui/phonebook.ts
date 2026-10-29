@@ -393,16 +393,14 @@ export class WinPhoneBook extends TSWinDlg {
     this.cancelled = true;
   }
 
-  /** CWinPhoneBook::TSOnKeyDown: Return presses OK, Escape Cancel; other keys go to the focused list. */
+  /** CWinPhoneBook::TSOnKeyDown: Return presses OK, Escape Cancel (the focused list saw the key first). */
   override tsOnKeyDown(key: string): boolean {
     if (key === "Enter" || key === "Escape") {
       const b = key === "Enter" ? this.okBtn : this.cancelBtn;
       if (b) this.tsOnCommand(b.id, b);
       return true;
     }
-    const focus = winMgr.getFocus();
-    if (focus && focus !== this && (focus === this.familyList || focus === this.memberList)) return focus.tsOnKeyDown(key);
-    return false;
+    return super.tsOnKeyDown(key);
   }
 
   /** CWinPhoneBook::TSOnCommand */

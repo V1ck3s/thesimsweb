@@ -552,20 +552,19 @@ export class WinPictureDialog extends TSWinDlg {
   }
 
   /**
-   * cWinPictureDialog::TSOnKeyDown and TSOnCharacter. WinMgr hands keys to the
-   * modal dialog first, so keys the original leaves to the focused edit box
-   * are passed to it here.
+   * cWinPictureDialog::TSOnKeyDown and TSOnCharacter. A focused edit box saw the
+   * key first (its Return comes back as command 0x17).
    */
   override tsOnKeyDown(key: string): boolean {
     const vk = virtualKey(key);
-    const focus = winMgr.getFocus();
-    if ((focus === this || vk === VK_RETURN || vk === VK_ESCAPE) && this.pressKey(vk)) return true;
-    const edit = this.editBox;
-    if (edit && focus === edit) return edit.tsOnKeyDown(key);
+    // With the focus on a child (the edit box), only Return and Escape are looked up; the rest stops here.
+    if (winMgr.getFocus() !== this && vk !== VK_RETURN && vk !== VK_ESCAPE) return true;
+    if (this.pressKey(vk)) return true;
     if (key.length === 1) {
       const k = this.keys.find((e) => e.char !== "" && e.char === key);
       if (k) return this.pressButton(k.id);
     }
+    // No button for the key: it ends here (the original returns 0 without cTSWin::TSOnKeyDown).
     return true;
   }
 

@@ -158,6 +158,15 @@ function findButton(win: TSWin, image: ImageBitmap): TSWinBtn | null {
   return null;
 }
 
+/**
+ * The end of Tut_FlashPersonPanelButton / Tut_FlashRelButton: HiliteForTutorial
+ * on the window the caller found (FindButton on the person's picture buffer,
+ * FindRelButton), nothing when there is none.
+ */
+export async function tutFlashWindow(ctx: GameContext, win: TSWin | null, on: boolean): Promise<void> {
+  if (win) await hiliteForTutorial(ctx, win, on);
+}
+
 /** Tut_FlashButtonByImageID(id, on): the arrow over the main window's button showing bitmap `id`. */
 export async function tutFlashButtonByImageID(ctx: GameContext, id: number, on: boolean): Promise<void> {
   const image = await ctx.res.image(id).catch(() => null);

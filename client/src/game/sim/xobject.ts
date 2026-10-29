@@ -858,13 +858,17 @@ export class SimObject extends TreeSim {
         // UI Effect (cXObject::TryElement): operand 0 the effect, 1 / 2 the
         // value (scope, data), bit 0 of 4 on / off; always true. 0
         // Tut_FlashButtonByImageID; 1 Tut_FlashPersonPanelButton and 2
-        // Tut_FlashRelButton (by neighbor id) are not ported.
+        // Tut_FlashRelButton take a neighbor id (nothing without that neighbor).
         const effect = u8(0);
         const on = (u8(4) & 1) !== 0;
         const value = (this.interpValue(u8(1), s16(2), false) << 16) >> 16;
         this.module.record(this, "uiEffect", effect);
-        if (effect === 0) this.module.tutorialHooks?.flashButtonByImageID(value, on);
-        else if (effect <= 2) this.module.unportedPrim(op, `UI effect ${effect} (Tut_Flash${effect === 1 ? "PersonPanel" : "Rel"}Button)`, PRIM_TRUE);
+        const hooks = this.module.tutorialHooks;
+        if (effect === 0) hooks?.flashButtonByImageID(value, on);
+        else if (effect <= 2) {
+          const nb = this.module.findNeighborByID(value);
+          if (nb) (effect === 1 ? hooks?.flashPersonPanelButton : hooks?.flashRelButton)?.(nb.guid >>> 0, on);
+        }
         return PRIM_TRUE;
       }
       case 35:

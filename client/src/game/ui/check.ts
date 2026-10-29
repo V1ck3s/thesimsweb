@@ -16,6 +16,7 @@ import { BTN_TOGGLE_ON_DOWN, TSWinBtn } from "./btn.js";
 import { SYS_CHECK, type TSWinCtrlMgr } from "./ctrlmgr.js";
 import { UI_FONT_COLOR } from "./syscolors.js";
 import { Gfx, TSWin } from "./tswin.js";
+import { winMgr } from "./winmgr.js";
 
 export const CMD_CHECK_CHANGED = 0x1c;
 
@@ -46,6 +47,11 @@ export class TSWinCheck extends TSWin {
 
   setImage(img: ImageBitmap): void {
     this.image = img;
+  }
+
+  /** cTSWinCheck::TSOnSetFocus: the focus goes on to the parent when it accepts it. */
+  override tsOnSetFocus(): void {
+    winMgr.offerFocus(this.parent);
   }
 
   override async init(): Promise<boolean> {
