@@ -21,6 +21,7 @@
  * layers and damage rectangles.
  */
 
+import { cheatFlags } from "../../cheatflags.js";
 import { resolveRoomID } from "../../sim/routing.js";
 import { OD, type ObjectModule, type XObject } from "../objects.js";
 import { getWall, segIndex, SEG_ROTATION, type TileWalls } from "../tilewalls.js";
@@ -133,8 +134,10 @@ export class Placement {
   error = 0;
   /** lbl_105BA248: the object TestIntersection hit. */
   obstacle: XObject | null = null;
-  /** lbl_105BA244: build/buy anywhere (cheat); off. */
-  anywhere = false;
+  /** lbl_105BA244: build/buy anywhere (the "move_objects" cheat). */
+  get anywhere(): boolean {
+    return cheatFlags.moveObjects;
+  }
   /** WallManager::AsynchronousRefresh after a portal changed a wall style (cXPortal::ApplyWallStyle / Pickup). */
   onWallsChanged: ((level: number) => void) | null = null;
 

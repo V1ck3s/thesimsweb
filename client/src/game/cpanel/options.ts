@@ -25,8 +25,8 @@
  * always hidden (UpdateViewFromCPState / SetMode).
  *
  * Not ported: interface effects fades of the subpanels (AsyncShowHideWin; we
- * switch at once), downtown / vacation / studio / magic town lots (their save
- * dialogs, SaveDowntownDescription, the other "leave" screens), the tutorial
+ * switch at once), downtown / vacation / studio / magic town lots (the other
+ * "leave" screens; SaveDowntownDescription is ported: nbhd/wineditdtlotdesc.ts), the tutorial
  * house's disabled quick tips, UI sounds, cWinPeople::SetQuickTips.
  */
 
@@ -756,20 +756,32 @@ export class WinOptions extends TSWin {
     const hooks = this.ctx.hooks;
     switch (slot) {
       case B.Nbhd:
-        // Downtown, vacation, studio and magic town lots have their own dialogs and
-        // screens here; a residential lot asks to save (cSimsApp::DoSave) when dirty.
+        // Downtown, vacation, studio and magic town lots have their own screens
+        // here. When dirty, a lot visited without sims asks about its description
+        // (SaveDowntownDescription(true): 1 save, 0 don't, -1 cancel); any other
+        // lot asks to save (cSimsApp::DoSave, -2).
         if (!s.isSaveDisabled() && hooks?.isLotDirty?.()) {
-          if (hooks.doSave && !(await hooks.doSave())) return;
+          const r = (await hooks.saveDowntownDescription?.(true)) ?? -2;
+          if (r === -1) return;
+          if (r === 1) await hooks.saveGame?.();
+          if (r === -2 && hooks.doSave && !(await hooks.doSave())) return;
         }
         hooks?.showNeighborhood?.();
         break;
       case B.Save:
-        // SaveDowntownDescription(false) first: downtown lots only.
+        // SaveDowntownDescription(false) first (lots visited without sims only), then SaveGame.
+        await hooks?.saveDowntownDescription?.(false);
         await hooks?.saveGame?.();
         break;
       case B.Quit:
-        // A dirty downtown lot asks about its description first (SaveDowntownDescription);
-        // other lots go straight to the framework's quit request, which asks itself.
+        // A dirty lot visited without sims asks about its description first
+        // (SaveDowntownDescription(true): 1 saves, -1 cancels); then the
+        // framework's quit request (cSimsApp vtable 0xe4), which asks itself.
+        if (hooks?.isLotDirty?.()) {
+          const r = (await hooks.saveDowntownDescription?.(true)) ?? -2;
+          if (r === -1) return;
+          if (r === 1) await hooks.saveGame?.();
+        }
         await hooks?.quit?.();
         break;
       case B.Graphics:

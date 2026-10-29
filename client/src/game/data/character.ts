@@ -170,6 +170,30 @@ export async function saveCharacter(dir: string, fileName: string, c: CharacterS
   await writeGameFile(`${dir}/Characters/${fileName}`, buildIff(chunks));
 }
 
+/**
+ * PersonFinder::SetDescription alone (cWinEditBio's OK): CatalogResource::Save
+ * of the catalog name and the new description into CTSS <OBJD+0x52>, a CATS
+ * chunk of that id removed. The rest of the file is kept.
+ */
+export async function saveCharacterDescription(dir: string, fileName: string, name: string, bio: string): Promise<void> {
+  const chunks = await readCharacterFile(dir, fileName);
+  const objd = chunks.find((x) => x.type === "OBJD");
+  if (!objd) throw new Error(`${fileName}: no OBJD`);
+  const ov = new DataView(objd.data.buffer, objd.data.byteOffset, objd.data.byteLength);
+  const catalogId = ov.getInt16(OBJD_CATALOG_STRINGS_ID, true);
+  const old = chunks.find((x) => x.type === "CTSS" && x.id === catalogId);
+  put(chunks, {
+    type: "CTSS",
+    id: catalogId,
+    flags: old?.flags ?? ADDED_FLAGS,
+    label: old?.label ?? "",
+    data: stringSetMultiSave(old?.data ?? null, CURRENT_LANG, [name, bio]),
+  });
+  const cats = chunks.findIndex((x) => x.type === "CATS" && x.id === catalogId);
+  if (cats >= 0) chunks.splice(cats, 1);
+  await writeGameFile(`${dir}/Characters/${fileName}`, buildIff(chunks));
+}
+
 /** The body strings stored in a character file (STR# <OBJD+0x26>), entry 1 first. */
 export function bodyStringsOf(chunks: IffChunk[]): string[] {
   const objd = chunks.find((x) => x.type === "OBJD");

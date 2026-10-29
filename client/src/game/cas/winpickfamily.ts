@@ -42,7 +42,11 @@
  *    cOptionsMgr::GetRunCount() < 2; TSOnTimerMsg shows MessageDialog(entry
  *    14, title 13) ("Créer une famille ?").
  *
- * Not ported: the Shift smiley, the Makin' Magic coins column and its hint
+ *  - Shift smiley: cPickFamilyItem::Init loads kPickFamilySmiley into the
+ *    shared lbl_105BAB68 when Shift is down (GetKeyState(VK_SHIFT) < 0) and
+ *    clears it otherwise; TSPaint draws it at lbl_105BC6C8 = (0x291, 0x13).
+ *
+ * Not ported: the Makin' Magic coins column and its hint
  * (GetRunPAFMagicCount, entries 18 / 19), cPickFamilyList::GetTTPosition.
  * The game's run count is not kept: getRunCount() reads a counter nobody
  * increments yet, so the hint shows once per session.
@@ -108,6 +112,10 @@ const ITEM_NAME = { x: 0x14, y: 0 };
 const ITEM_WORTH = { x: 0x20e, y: 0x15 };
 const ITEM_FRIENDS = { x: 0x26c, y: 0x15 };
 const MEMBER_W = 0x2d;
+/** lbl_105BC6C8 */
+const ITEM_SMILEY = { x: 0x291, y: 0x13 };
+/** lbl_105BAB68: the smiley, shared by the items (set or cleared by each item's Init). */
+let smiley: ImageBitmap | null = null;
 /** lbl_105BA6F8 / lbl_105BA928 / lbl_105BA954 */
 const TEXT_COLORS = [UI_FONT_COLOR, rgb(0xff, 0xff, 0xff), rgb(0, 0xff, 0xff)];
 const DLG_FILL = rgb(0, 0x32, 0);
@@ -282,6 +290,7 @@ class PickFamilyItem extends TSWinBtn {
     f10.drawText(g.ctx, worth, g.ox + ITEM_WORTH.x - f10.stringWidth(worth), g.oy + ITEM_WORTH.y, color);
     const friends = String(this.family.friends);
     f10.drawText(g.ctx, friends, g.ox + ITEM_FRIENDS.x - f10.stringWidth(friends), g.oy + ITEM_FRIENDS.y, color);
+    if (smiley) g.blit(smiley, ITEM_SMILEY.x, ITEM_SMILEY.y);
   }
 }
 
@@ -481,6 +490,8 @@ export class WinPickFamily extends TSWinGenDlg {
   private readonly buttons: TSWinBtn[] = [];
   private store: NeighborhoodStore | null = null;
   private itemBkg: ImageBitmap | null = null;
+  /** kPickFamilySmiley (0x139d), loaded once; lbl_105BAB68 points to it while Shift is down. */
+  private smileyImg: ImageBitmap | null = null;
   private template: ImageBitmap | null = null;
   private fonts: { f10: FfnFont; f12: FfnFont } | null = null;
   /** lbl_105BAB50: the members' tooltip window. */
@@ -518,6 +529,7 @@ export class WinPickFamily extends TSWinGenDlg {
     const oy = this.offY;
     const mgr = await TSWinCtrlMgr.get(ctx);
     this.itemBkg = await ctx.res.image("kPickFamilyItemBkg");
+    this.smileyImg = await ctx.res.image("kPickFamilySmiley").catch(() => null);
     this.template = await ctx.res.image("kPeopleTemplate");
     this.fonts = { f10: await ctx.fonts.acquire(10), f12: await ctx.fonts.acquire(12) };
     this.personInfo = await PickFamilyPersonInfo.create(ctx).catch(() => null);
@@ -601,6 +613,8 @@ export class WinPickFamily extends TSWinGenDlg {
   }
 
   private makeItem(r: FamilyRow): PickFamilyItem {
+    // cPickFamilyItem::Init: the smiley only while Shift is held.
+    smiley = winMgr.isKeyDown("Shift") ? this.smileyImg : null;
     return new PickFamilyItem(r, this.itemBkg!, this.template!, this.fonts!, this.personInfo);
   }
 

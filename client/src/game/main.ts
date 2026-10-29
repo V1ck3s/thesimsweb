@@ -17,9 +17,10 @@ import { activateFamily } from "./data/family.js";
 import { NeighborhoodStore, setLiveNeighborhood } from "./data/nbhdstore.js";
 import { loadNeighborhood } from "./data/neighborhood.js";
 import { currentNeighborhoodDir, Neighborhood, storeCurrentNeighborhoodDir, Zone } from "./nbhd/nghinterface.js";
+import { saveDowntownDescription } from "./nbhd/wineditdtlotdesc.js";
 import { getOptionsMgr } from "./optionsmgr.js";
 import { NBHD_DOWNTOWN, NBHD_END_NOTES, NBHD_MAGICTOWN, NBHD_STUDIOTOWN, NBHD_VACATION, WinNeighborhoodUL } from "./nbhd/winneighborhoodul.js";
-import { applyLoadGameLocation, arrivalFor, type ChangeLotTrigger, type LotArrival, prepareArrival, Transit } from "./nbhd/transit.js";
+import { applyLoadGameLocation, arrivalFor, type ChangeLotTrigger, holdSimulator, type LotArrival, prepareArrival, Transit } from "./nbhd/transit.js";
 import { objectDialogHooks } from "./world/objectdialogshow.js";
 import { currentTaxiDialog } from "./nbhd/winpicturesplashdialog.js";
 import { Town, WinTown } from "./nbhd/wintown.js";
@@ -35,6 +36,7 @@ import { ObjectFolder } from "./world/objectfolder.js";
 import { WinLotView } from "./world/winlotview.js";
 import { doSave, isLotDirty, markLotClean, saveGame } from "./world/savegame.js";
 import { moveOutHouse } from "./world/moveout.js";
+import { installCheatConsole } from "./ui/cheat.js";
 
 const SCREEN_W = 1024;
 const SCREEN_H = 768;
@@ -109,13 +111,29 @@ class Game {
       });
       if (music) soundPlayer.playBySource(music, -1);
     });
+    const blockReleases: Array<() => void> = [];
     ctx.hooks = {
       isLotDirty: () => isLotDirty(this.lotView),
       saveGame: async () => {
         await saveGame(ctx, this.lotView, this.nbhdDir);
       },
       doSave: () => doSave(ctx, this.lotView, this.nbhdDir),
+      saveDowntownDescription: (prompt) => {
+        const sim = this.lotView?.sim;
+        const house = sim?.globals[G.houseNumber] ?? 0;
+        const zoning = this.nbhd?.getZoningType(house) ?? Zone.None;
+        return saveDowntownDescription(ctx, { visiting: sim?.globals[G.freeFunds] === 1, house, nbhdDir: this.nbhdDir, zoning }, prompt);
+      },
       neighborhoodDir: () => this.nbhdDir,
+      // cDDDSimsView::SetBlockSimulator: nested holds through holdSimulator's reference count.
+      setBlockSimulator: (block) => {
+        if (block) {
+          const sim = this.lotView?.sim;
+          if (sim) blockReleases.push(holdSimulator(sim));
+        } else {
+          blockReleases.pop()?.();
+        }
+      },
       // cSimsApp::ShowNbhdDialog: the lot is unloaded and the neighborhood
       // screen built while the last lot frame stays up (screens/frozen.ts).
       showNeighborhood: () => {
@@ -332,6 +350,9 @@ async function boot(): Promise<void> {
   splash.setSplashMessage("ocns");
   await ObjectFolder.get("UserData");
   const game = new Game(ctx, mgr);
+  // cSimsApp::Init: RegisterCheats and the cheat widget (the shipped builds
+  // restrict the cheats, IsFinalShip; `?devcheats` lifts it for development).
+  await installCheatConsole(ctx, { lotView: () => game.lotView }, !new URLSearchParams(location.search).has("devcheats"));
   // cOptionsMgr run count (registry), read by cWinPickFamily's first-run hint.
   try {
     localStorage.setItem("thesimsweb.runCount", String((Number(localStorage.getItem("thesimsweb.runCount")) || 0) + 1));

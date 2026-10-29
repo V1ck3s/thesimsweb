@@ -199,6 +199,8 @@ export class SimModule {
    * TryKillSounds: QuietBySourceID(source)). Null: the primitives only record.
    */
   soundHooks: { playSound(behavior: Behavior | null, soundId: number, source: number): void; killSounds(source: number): void } | null = null;
+  /** The UI side of prim 34 (UI Effect): Tut_FlashButtonByImageID(image id, on). Null: recorded only. */
+  tutorialHooks: { flashButtonByImageID(id: number, on: boolean): void } | null = null;
   /** Called when an object's look changed (cXObject::Dirty) or it was killed. */
   onDirty: ((o: SimObject) => void) | null = null;
   onKill: ((o: SimObject) => void) | null = null;

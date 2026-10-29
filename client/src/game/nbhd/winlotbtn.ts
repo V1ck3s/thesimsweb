@@ -20,6 +20,8 @@ import { TSWinBtn, UISOUND_DOWN, UISOUND_ENTER } from "../ui/btn.js";
 import { WF_HIT_ALPHA, type Gfx, type Rect } from "../ui/tswin.js";
 import { UI } from "../audio/index.js";
 import { getHouseInfo, type HouseInfo, type Neighborhood, type Thmb } from "./nghinterface.js";
+import type { GameContext } from "../context.js";
+import { hiliteForTutorial } from "../ui/tutorialhighlight.js";
 
 /** RampGenerator::SetupConstantTimeRamp duration used by CalcRowCol. */
 const DISSOLVE_MS = 300;
@@ -57,6 +59,11 @@ export class WinLotBtn extends TSWinBtn {
     // cWinLotBtn::Init: OverrideUISound(rollover, click), sounds on enter and down.
     this.overrideUISound(UI.nhoodRollover, UI.nhoodClick);
     this.uiSoundActions = UISOUND_ENTER | UISOUND_DOWN;
+  }
+
+  /** cWinLotBtn::HiliteForTutorial: cTSWin's arrow, 0x32 lower, with the arrow cursor. */
+  hiliteForTutorial(ctx: GameContext, on: boolean): Promise<void> {
+    return hiliteForTutorial(ctx, this, on, true);
   }
 
   /** cWinLotBtn::LoadHouseInfo */

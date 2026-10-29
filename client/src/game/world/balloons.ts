@@ -37,6 +37,7 @@
  * template.
  */
 
+import { cheatFlags } from "../cheatflags.js";
 import { ObjectIcon } from "../cpanel/buy/objecticon.js";
 import type { Compositor, SpriteTex } from "./compositor.js";
 import type { GameContext } from "../context.js";
@@ -54,8 +55,6 @@ import type { SpriteSlot } from "./slots.js";
 import { PX_NONE, PX_OPAQUE } from "./spr.js";
 import { makeZSpriteLookup } from "./zbuffer.js";
 
-/** lbl_105BA388: cXPerson::DrawIso's RenderParam::DepthTweak around DrawSpriteSlot. */
-const DEPTH_TWEAK = -65;
 
 /** lbl_105BB894: IconGroup base SPR# per group (-1: none; group 0 uses lbl_105BB890). */
 const GROUP_BASE = [-1, 100, 400, 200, 300, 500, 600, -1, 700, 800, 900];
@@ -234,7 +233,7 @@ export class BalloonPainter {
         } else {
           rp.setGridCoords(o.fx, o.fy, o.level);
         }
-        rp.depth += DEPTH_TWEAK;
+        rp.depth += cheatFlags.bubbleTweak;
         this.drawSpriteSlot(comp, rp, slot, scene);
       }
     }

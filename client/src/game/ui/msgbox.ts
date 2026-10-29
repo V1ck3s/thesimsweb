@@ -81,6 +81,11 @@ export class TSWinMsgBox extends TSWinDlg {
     super();
   }
 
+  /** cTSWinMsgBox::GetButtonLabel(id): UIText STR# 152 (OK, Cancel, Yes, No). */
+  static getButtonLabel(ctx: GameContext, id: number): string {
+    return ctx.strings.get("UIText", LABELS_STR, BUTTON_LABEL_ENTRY[id] ?? 0);
+  }
+
   /** Shows a message box modally; resolves with the id of the button pressed. */
   static async show(
     ctx: GameContext,

@@ -111,6 +111,33 @@ Checked after the fixes (screenshots in the local scratch folder):
   0x2c / 0x37 / 0x39 / 0x3c set by hand dress the swimsuit, formal, skeleton, costume trunk, Studio
   Town and Magic Town costumes (heads and hands included); the Transform window shows the costume.
 
+## UI window audit (2026-10-29)
+
+Every UI window class checked against the port (`docs/decomp/ui-coverage.md`); the missing ones a
+player meets were ported and checked in Chrome (screenshots in the local scratch folder):
+
+| Window | Where it shows | Checked |
+|---|---|---|
+| cWinBudgetDlg / cWinBudgetRow (`cpanel/budgetdlg.ts`) | funds button, residential lot | House01: 3-day / today columns per expense type, balance, "Total compte du ménage", "Valeur nette des biens", days; the simulation is held while it is up. The simulator now keeps the SIMI expense blocks (+0xe4 history, +0x184 today) and `spend()` records by type; the midnight shift reproduces the original's copy of day 1 into days 1..4 |
+| cWinHelp (`cpanel/help.ts`) | "?" button | 30 topics, arrow keys, the last topic is remembered |
+| Friend count dialog (STR# 162) | view control smiley | opens; the count itself is not fed (CPState.familyFriendCount) |
+| cWinSubpanelReportCard (`cpanel/live/reportcard.ts`) | job page of a child | House01, Max: "Bulletin 15/20", the "Notes" popup with the school picture. Fixed on the way: CARR ids were read unsigned, so the school career (-1) was never found |
+| cWinSubpanelDogSkills / CatSkills (`cpanel/live/petskills.ts`) | job page of a pet | House69 copy, Luna: "Aptitudes des animaux"; the cat page ("Chasse") by changing the gender in memory |
+| cWinEditBio (`cpanel/live/editbio.ts`) | Ctrl+click on a portrait | Jada's biography saved into her CTSS (throwaway copy) |
+| cWinDeltaMeter (`cpanel/live/deltameter.ts`) | needs page | red / green arrows after a motive change; CPState now has the motive pulse (PulseGenerator +0x1f0) |
+| cWinDisposePopup (`cpanel/disposepopup.ts`) | holding a lot object in Buy mode | "Appuyer sur Suppr ou cliquer ici pour vendre Chaise El Tomayo pour $864", click sells (+$864), Escape restores the catalog |
+| cWinEditDTLotDesc (`nbhd/wineditdtlotdesc.ts`) | saving / leaving an empty town lot | UserData6 copy, lot 22: "Chez Corinne", edited name and description written to DTDesc.iff and read back |
+| cTSWinTutorialHighlight (`ui/tutorialhighlight.ts`) | tutorial lots, prim 34 effect 0 | forced on (no tutorial lot in the test neighborhoods) |
+| Cheat console (`ui/cheat.ts`) | Ctrl+Shift+C | rosebud (+$1000, `rosebud;!;!` +$3000), "No such cheat!", xyzzy, interests, help window with `?devcheats`; the shipped build only registers 27 names (no "help", no "klapaucius" in this exe) |
+| Ask-for-Lot picker filters (`nbhd/winneighborhoodul.ts`) | TryDialog kind 8 | `?test=nbhd&picker=1`: kFilterToolbar with the 7 filters (lodging disabled without a lodging lot), random title, filter icons over the matching community lots, blue outlines; a residential lot shows "Impossible de visiter" (STR# 0x104) |
+| Neighborhood cheats | main neighborhood screen | `show_zones on` outlines the zones, `show_filter 2` the food icons |
+| Shift smiley | family bin opened with Shift held | kPickFamilySmiley on each family row |
+
+Open points: the relationship page's delta meters, prim 34 effects 1 / 2, the Magic Town
+family picker mode (MagiCoins), family / lot imports, the second CPState pulse (+0x200), modal
+windows with edit fields need the key forwarding WinEditBio does (WinMgr sends keys to the modal
+window, not its focused child), arrow keys still scroll the lot behind a modal window.
+
 ## Remaining problems
 
 | Problem | Suspected cause |

@@ -11,8 +11,7 @@
  *
  * Not ported: the undo manager (ObjectUndoable; Esc restores a picked-up
  * object to where it was instead of undoing), object hilites (SetHilite),
- * the flip cursor of portals (+0x7a), the control panel's sell
- * value display (CPState::StartDisposing), build mode modes 3..9 (doors,
+ * the flip cursor of portals (+0x7a), build mode modes 3..9 (doors,
  * windows, stairs, plants, fireplaces, columns, pool equipment) and their
  * ctrl-delete branch.
  */
@@ -28,6 +27,7 @@ import { getFrontDirection, XCursorObject } from "./cursorobject.js";
 import { killObject, makeNewOutOfWorldObject } from "./objectfactory.js";
 import { pointToObjectId, PickMode } from "./picking.js";
 import { Placement, type FPt, type PlacementSpec } from "./placement.js";
+import type { DisposeItem } from "../../cpstate.js";
 
 /** cMoveTool+0x34. */
 export const MoveMode = {
@@ -98,6 +98,9 @@ export interface MoveToolHost {
   /** _GetKeyState(VK_SHIFT / VK_CONTROL). */
   shiftDown(): boolean;
   ctrlDown?(): boolean;
+  /** CPState::StartDisposing / StopDisposing: the control panel's sell page (cWinDisposePopup). */
+  startDisposing?(item: DisposeItem): void;
+  stopDisposing?(): void;
   /** cDDDSimsView::SetToolCursor (ui/cursor.ts ids). */
   setToolCursor?(id: number): void;
   /** The view needs repainting. */
@@ -158,6 +161,8 @@ export class MoveTool {
   private attemptDrop = false;
   private moved = false;
   private justGrabbed = false;
+  /** +0x98: the control panel shows the sell page for the held object. */
+  private disposing = false;
   /** +0x90: price of the held new object. */
   private price = 0;
   /** +0x95 / +0x96: placement valid (feedback). */
@@ -316,6 +321,7 @@ export class MoveTool {
     this.cursor = null;
     this.orig = null;
     this.hiliteId = 0;
+    this.stopDisposing();
     this.host.invalidate();
     this.updateCursor();
   }
@@ -624,7 +630,39 @@ export class MoveTool {
     this.updateSelector(obj.selector);
     this.price = 0;
     this.runningTotal = 0;
+    this.disposing = false;
+    this.startDisposing(obj);
     this.updateCursor();
+  }
+
+  /**
+   * cMoveTool::StartDisposing: a picked-up object (not a new purchase) is
+   * offered for sale on the control panel; refund factor lbl_105BBDE4 +8 (0)
+   * when not refundable, +0xc (1) for buy items, +4 (0.8) for build items.
+   */
+  private startDisposing(obj: XObject): void {
+    if (this.newPurchase || !this.host.startDisposing) return;
+    this.disposing = true;
+    const master = obj.selector.getMasterSelector();
+    const factor = !this.refundable ? 0 : !this.buildItem ? 1 : BUILD_REFUND;
+    this.host.startDisposing({
+      guid: master.guid,
+      res: master.res,
+      objdId: master.objdId,
+      buildModeType: master.objd.i16(0x8a),
+      currentValue: this.p.getCurrentValue(obj),
+      canDelete: this.p.userCanDelete(obj),
+      notNew: !this.newPurchase,
+      refundable: this.refundable,
+      factor,
+    });
+  }
+
+  /** CPState::StopDisposing when the sell page is up (Deselect, DropObject, Release). */
+  private stopDisposing(): void {
+    if (!this.disposing) return;
+    this.disposing = false;
+    this.host.stopDisposing?.();
   }
 
   /** cMoveTool::UpdateSelector for a picked-up object: build items refund 80 %. */
@@ -653,6 +691,7 @@ export class MoveTool {
       return false;
     }
     this.orig = null;
+    this.stopDisposing();
     this.updateCursor();
     return true;
   }

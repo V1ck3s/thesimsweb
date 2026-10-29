@@ -9,19 +9,27 @@
  * fonts from the gFonts table filled by InitSimsColors (gFonts[size] =
  * VariableSans, plain), tooltips from STR# 138 "VCtlTips" of UIText.iff.
  *
- * Not ported (no counterpart yet): the budget dialog (funds click), the friend
- * count dialog (STR# 162), cWinHelp, UI sounds, HouseViewer::SetViewportHeight
- * when the control panel collapses, and BoboVision compositing.
+ * The funds button opens cWinBudgetDlg on a residential lot, the friend count
+ * a cWinPictureDialog (STR# 162 "FriendCountDlg"), the help button cWinHelp;
+ * each runs modally with the simulation blocked (DoSimsModalDialog with
+ * cDDDSimsView::SetBlockSimulator).
+ *
+ * Not ported (no counterpart yet): HouseViewer::SetViewportHeight when the
+ * control panel collapses, and BoboVision compositing.
  */
 
 import { Mode, WallState } from "../cpstate.js";
-import { soundPlayer, speedTransitionSound } from "../audio/index.js";
+import { soundPlayer, speedTransitionSound, UI } from "../audio/index.js";
 import type { GameContext } from "../context.js";
 import type { FfnFont } from "../res/ffn.js";
 import { LANG_FRENCH } from "../res/uires.js";
 import { BTN_PUSH, BTN_TOGGLE, TSWinBtn } from "../ui/btn.js";
+import { WinPictureDialog } from "../ui/picturedialog.js";
 import { Gfx, TSWin } from "../ui/tswin.js";
+import { winMgr } from "../ui/winmgr.js";
+import { WinBudgetDlg } from "./budgetdlg.js";
 import type { WinCPanel } from "./cpanel.js";
+import { WinHelp } from "./help.js";
 
 /** CPState dirty bits tested by UpdateViewFromCPState. */
 const DIRTY_MODE = 0x2;
@@ -109,6 +117,9 @@ const enum SpeedEvent {
   Mode = 3,
 }
 
+/** UIText STR# 162 "FriendCountDlg": title, text, button (GetString 1..3). */
+const STR_FRIEND_COUNT = 0xa2;
+
 /** cWinViewControl::Mode: whether the control panel is shown (0) or collapsed (1). */
 const enum VCMode {
   PanelShown = 0,
@@ -121,7 +132,7 @@ const THOUSAND_SEPARATOR = ["", ",", ",", ".", ".", ".", ".", ".", ".", ".", "",
 const AMPM_LANGUAGES = [1, 2, 0x13];
 
 /** cTSLanguageUtility::MakeMoneyString for the default utility: "$" before the amount, no space. */
-function makeMoneyString(amount: number, lang: number): string {
+export function makeMoneyString(amount: number, lang: number): string {
   const digits = String(Math.abs(amount));
   const sep = THOUSAND_SEPARATOR[lang] ?? ",";
   let out = "";
@@ -197,6 +208,12 @@ export class WinViewControl extends TSWin {
   speedThrottled = false;
   /** cDDDSimsView+0x111 (SetBlockSimulator): a modal dialog holds the simulation. */
   simulatorBlocked = false;
+  /** cDDDSimsView::SetBlockSimulator(1) for the lot's simulator; returns the release (the lot view sets it). */
+  static holdSimulator: (() => () => void) | null = null;
+  /** Global 0x20 of the lot's simulator (visiting without sims): no budget or friend count dialog then. */
+  static simulatorGlobal32: (() => number) | null = null;
+  /** +0x1c0: the help topic selected last time (cWinHelp::GetSelected). */
+  private helpTopic = 0;
   /** +0x1ac: family name copied on simulator sync (0x80000). */
   familyName = "";
 
@@ -624,21 +641,69 @@ export class WinViewControl extends TSWin {
         speedClick(3);
         break;
       case this.funds:
-        // On a residential lot the original opens cWinBudgetDlg (sound: UI_whoosh), then resets the button.
-        this.funds.setState(0);
+        void this.showBudget();
         break;
       case this.friends:
-        // The original opens a cWinPictureDialog with STR# 162 "FriendCountDlg".
-        this.friends.setState(0);
+        void this.showFriendCount();
         break;
       case this.help:
-        // The original opens cWinHelp (modal), then resets the button.
-        this.help.setState(0);
+        void this.showHelp();
         break;
       default:
         return super.tsOnCommand(cmd, src);
     }
     return true;
+  }
+
+  // --- dialogs (cWinViewControl::TSOnCommand) ----------------------------------
+
+  /** DoSimsModalDialog between SetBlockSimulator(1) and (0). */
+  private async runModal(win: TSWin): Promise<void> {
+    const release = WinViewControl.holdSimulator?.() ?? null;
+    this.simulatorBlocked = true;
+    try {
+      await winMgr.doModalWin(win);
+    } finally {
+      this.simulatorBlocked = false;
+      release?.();
+    }
+  }
+
+  /** The funds button: cWinBudgetDlg on a residential lot (global 0x20 clear), centered; the button is reset. */
+  private async showBudget(): Promise<void> {
+    if ((WinViewControl.simulatorGlobal32?.() ?? 0) === 0 && this.ctx.state.zoningType === 1) {
+      soundPlayer.playUISound(UI.whoosh);
+      const dlg = new WinBudgetDlg(this.ctx);
+      if (await dlg.init()) {
+        const main = winMgr.main;
+        dlg.moveTo(Math.trunc((main.getW() - dlg.getW()) / 2), Math.trunc((main.getH() - dlg.getH()) / 2));
+        await this.runModal(dlg);
+      }
+    }
+    this.funds.setState(0);
+  }
+
+  /** The friend count: a cWinPictureDialog with UIText STR# 162 (title, text, button), centered. */
+  private async showFriendCount(): Promise<void> {
+    if ((WinViewControl.simulatorGlobal32?.() ?? 0) === 0) {
+      const str = (i: number): string => this.ctx.strings.get("UIText", STR_FRIEND_COUNT, i - 1);
+      const dlg = new WinPictureDialog(this.ctx);
+      dlg.setTitle(str(1));
+      dlg.addText(str(2));
+      dlg.addButton(str(3), 0);
+      if (await dlg.init()) await this.runModal(dlg);
+    }
+    this.friends.setState(0);
+  }
+
+  /** The help button: cWinHelp (font table entry 12) on the last topic; the topic is kept. */
+  private async showHelp(): Promise<void> {
+    const dlg = new WinHelp(this.ctx);
+    await dlg.init();
+    dlg.setSelected(this.helpTopic);
+    await this.runModal(dlg);
+    this.helpTopic = dlg.getSelected();
+    this.help.setState(0);
   }
 
   // --- painting and hit testing ---------------------------------------------

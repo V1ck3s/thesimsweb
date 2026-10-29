@@ -14,6 +14,12 @@
  *          └ credits button (index 4)        (195, 540) on the map
  *   PostChildDraw: the neighborhood number, centered in the kNghCurrent box.
  *
+ * Destination picker (+0x111 cleared, TryDialog kind 8): the bar is
+ * kFilterToolbar with the seven lot type filters (BuildFilterToolbar), the
+ * credits button stays (disabled), the other twelve are not created; a random
+ * title of UIText STR# 0xd4 is drawn at the top; PostChildDraw outlines every
+ * community lot in blue and draws the filter's icon over the lots of its type.
+ *
  * Buttons (index: resource, UIText STR# 151 tooltip entry):
  *   0 MoveIn  1 Bulldoze  2 Exit  3 Inet  4 Credits  5 Previous  6 Next
  *   7 Import  8 Downtown  9 Sims logo  10 Vacation  11 Rezone  12 Studio Town
@@ -43,6 +49,7 @@ import { writeGameFile } from "../data/files.js";
 import { buildIff, parseIff, stringSetMultiSave } from "../data/iff.js";
 import { makeMoneyString, Zone } from "./nghinterface.js";
 import { WinCredits } from "./wincredits.js";
+import { getCheatCodeManager, type CheatCommandLine } from "../ui/cheat.js";
 import { doFirstTimeTownies, refillTownies, TOWNIE_COUNT } from "./townies.js";
 
 /** cWinNeighborhood::Mode */
@@ -121,6 +128,55 @@ const CURRENT_BOX_Y = 3;
 
 /** UIText STR# 151 "NghbBtnTips" */
 const STR_BTN_TIPS = 151;
+
+/** A lot type filter of the picker's toolbar (BuildFilterToolbar / ProcessFilterToolbar jump tables). */
+interface Filter {
+  /** Button bitmap (kFilter*Button, 4 frame columns). */
+  button: number;
+  /** HouseInfo +0x20 bit (cWinLotBtn +0x1ac). */
+  bit: number;
+  /** 1-based tooltip entry of UIText STR# 0xab. */
+  tip: number;
+  /** SetFilterMode: the icon drawn over the lots (kFilter*BMP, 3 frames side by side). */
+  icon: number;
+}
+
+/** In button order (+0xd4..+0xec); positions lbl_105BCD54: (0xe1 + 0x32 i, 0x14) on the bar. */
+const FILTERS: readonly Filter[] = [
+  { button: 0x13c8, bit: 0x10, tip: 1, icon: 0x1346 }, // kFilterDogCatButton, kFilterPetBMP
+  { button: 0x13c9, bit: 0x20, tip: 2, icon: 0x1347 }, // kFilterSmallAnimalButton, kFilterSmallAnimalBMP
+  { button: 0x13c7, bit: 0x08, tip: 3, icon: 0x1345 }, // kFilterShoppingButton, kFilterShoppingBMP
+  { button: 0x13c6, bit: 0x04, tip: 4, icon: 0x1344 }, // kFilterGardeningButton, kFilterGardeningBMP
+  { button: 0x13c5, bit: 0x02, tip: 5, icon: 0x1343 }, // kFilterFoodButton, kFilterFoodBMP
+  { button: 0x13ca, bit: 0x40, tip: 6, icon: 0x1348 }, // kFilterRecreationButton, kFilterParkBMP
+  { button: 0x13c4, bit: 0x01, tip: 7, icon: 0x1342 }, // kFilterLodgingButton, kFilterLodgingBMP
+];
+const FILTER_X0 = 0xe1;
+const FILTER_DX = 0x32;
+const FILTER_Y = 0x14;
+/** LoadCurrentFilter's value when its file cannot be read. */
+const DEFAULT_FILTER = 2;
+/** UIText STR# 0xab: the filter tooltips. */
+const STR_FILTER_TIPS = 0xab;
+/** UIText STR# 0xd4: the picker's titles (one of the first three at random). */
+const STR_PICKER_TITLES = 0xd4;
+/** UIText STR# 0x104: VisitModeLotHandler's residential lot message (entry 0 title, 1 text). */
+const STR_VISIT_RESIDENTIAL = 0x104;
+/** Init's cheats (main screen), with their usage texts (lbl_105BCD5C strings). */
+const CHEATS: ReadonlyArray<readonly [string, string]> = [
+  ["load", "Usage: load [house num], between 0 and 18"],
+  ["move_lots", "Usage: move_lots to enter lot moving mode. Hit escape to exit it."],
+  ["show_zones", "Usage: show_zones on/off to hide/disable the lot zoning outlines."],
+  ["show_filter", "Usage: show_filter 0 - 7. 0 to hide filters 1-Lodging; 2-Food; 3-Gardening; 4-Shopping; 5-Dog/Cat; 6-Small Animals; 7-Recreation"],
+  ["nessie", "Usage: nessie. Same as SimCity."],
+  ["stream_fps", "Usage: stream_fps [max frames-per-sec of stream anim]"],
+  ["reload_neighborhood", "Usage: reload_neighborhood"],
+];
+/** CheatCallback's show_filter argument -> filter bit (1 lodging ... 7 recreation). */
+const CHEAT_FILTER_BITS = [0, 0x01, 0x02, 0x04, 0x08, 0x10, 0x20, 0x40] as const;
+
+/** DrawFilterAt: the icon frame for each value of +0x1dc (the wave clock modulo 6). */
+const FILTER_FRAMES = [0, 1, 2, 2, 1, 0] as const;
 
 /** Lots past this house number belong to the expansion towns. */
 const FIRST_TOWN_HOUSE = 0x51;
@@ -223,6 +279,15 @@ export class WinNeighborhoodUL extends TSWin implements LotBtnOwner {
   private busy = false;
   /** +0x20c: a handler is running. */
   private handling = false;
+  /** +0xd4..+0xec: the picker's filter buttons. */
+  private readonly filterBtns: TSWinBtn[] = [];
+  /** +0x188: the current filter bit (0: none), +0x184 its icon. */
+  private filterMode = 0;
+  private filterIcon: ImageBitmap | null = null;
+  /** +0x108: the show_zones cheat (HighlightLotsForMode outlines the zones in every mode). */
+  private showZones = false;
+  /** +0xd0: the picker's title. */
+  private title = "";
 
   constructor(
     private readonly ctx: GameContext,
@@ -257,7 +322,7 @@ export class WinNeighborhoodUL extends TSWin implements LotBtnOwner {
       this.waves = await Promise.all(ids.map((id) => res.image(id).catch(() => null)));
     }
     const [creditsId, logoId] = languageImages(lang);
-    const bar = await res.image("kNghBarBkg");
+    const bar = await res.image(this.picker ? 0x13b5 /* kFilterToolbar */ : "kNghBarBkg");
     if (this.getW() > 800) this.largeMask = await res.image("kLargeMask");
     // cTSFontSys acquire(1, 12, 0, 0), color MakeFillColor(255, 255, 255).
     this.font = await ctx.fonts.acquire(12);
@@ -293,11 +358,16 @@ export class WinNeighborhoodUL extends TSWin implements LotBtnOwner {
     waveBtn.childAdd(barBtn);
 
     for (let i = 0; i < BTN_COUNT; i++) {
+      if (this.picker && i !== BTN_CREDITS) {
+        // The picker only creates the credits button (+0x158), disabled; the slots stay empty.
+        this.buttons.push(new TSWinBtn(1, null, 4));
+        continue;
+      }
       const id = i === BTN_CREDITS ? creditsId : i === BTN_LOGO ? logoId : BTN_IMAGES[i]!;
       const btn = new TSWinBtn(1, await res.image(id), i === BTN_LOGO ? 1 : 4);
       // Credits uses entry 9 (1-based); the others take the entries in order.
       const tip = i === BTN_CREDITS ? 8 : i < BTN_CREDITS ? i : i - 1;
-      btn.tooltip = ctx.strings.get("UIText", STR_BTN_TIPS, tip);
+      if (!this.picker) btn.tooltip = ctx.strings.get("UIText", STR_BTN_TIPS, tip);
       const [x, y] = BTN_POS[i]!;
       btn.moveTo(x, y);
       (i === BTN_CREDITS ? waveBtn : barBtn).childAdd(btn);
@@ -316,11 +386,20 @@ export class WinNeighborhoodUL extends TSWin implements LotBtnOwner {
     // Every button of the screen clicks with the neighborhood sound (restored by shutdown).
     TSWinBtn.overrideDefaultUISound(null, UI.nhoodClick);
     if (this.picker) {
-      // Init with +0x111 cleared: SetMode(4). The pet filter toolbar (kFilterPetBMP, BuildFilterToolbar) is not ported.
+      // Init with +0x111 cleared: SetMode(4), then (twice in the original, the
+      // second set over the first) BuildFilterToolbar and ProcessFilterToolbarByType
+      // of the saved filter; a random title of the first three of STR# 0xd4.
+      this.buttons[BTN_CREDITS]!.setEnabled(false);
       this.setMode(NbhdMode.Visit);
+      const titles = ctx.strings.list("UIText", STR_PICKER_TITLES);
+      this.title = titles[Math.floor(Math.random() * 3)] ?? "";
+      this.buildFilterToolbar(barBtn, await Promise.all(FILTERS.map((f) => res.image(f.button))));
+      await this.processFilterToolbarByType(this.loadCurrentFilter());
     } else {
       this.setMode(NbhdMode.Regular);
       soundPlayer.playBySource(MUSIC.hood, -1);
+      const cheats = getCheatCodeManager();
+      for (const [name, usage] of CHEATS) cheats?.registerCheat(name, (cmd) => this.cheatCallback(cmd), 0, usage);
     }
     // The screen takes the keyboard (Escape leaves the modes).
     winMgr.setFocus(this);
@@ -336,7 +415,123 @@ export class WinNeighborhoodUL extends TSWin implements LotBtnOwner {
     return r?.ok ? createImageBitmap(await r.blob()).catch(() => null) : null;
   }
 
+  /**
+   * cWinNeighborhoodUL::BuildFilterToolbar: one 4-column button per filter at
+   * (0xe1 + 0x32 i, 0x14) on the bar, UIText STR# 0xab tooltip, the
+   * neighborhood click sound, enabled when a community lot has that type.
+   */
+  private buildFilterToolbar(bar: TSWinBtn, images: readonly ImageBitmap[]): void {
+    const community = [...this.lots.values()].filter((l) => this.nb.getZoningType(l.houseNumber) === Zone.Community);
+    for (let i = 0; i < FILTERS.length; i++) {
+      const f = FILTERS[i]!;
+      const btn = new TSWinBtn(1, images[i]!, 4);
+      btn.tooltip = this.ctx.strings.get("UIText", STR_FILTER_TIPS, f.tip - 1);
+      btn.moveTo(FILTER_X0 + FILTER_DX * i, FILTER_Y);
+      btn.setEnabled(community.some((l) => ((l.info?.lotTypeFlags ?? 0) & f.bit) !== 0));
+      bar.childAdd(btn);
+      this.filterBtns.push(btn);
+    }
+  }
+
+  /**
+   * cWinNeighborhoodUL::LoadCurrentFilter: entry 3 of STR# 6 in a runtime
+   * file of the neighborhood (GetStringConstant(7) / (10)), 2 (food) when it
+   * cannot be read. The browser keeps the value per neighborhood instead.
+   */
+  private loadCurrentFilter(): number {
+    try {
+      const v = Number(localStorage.getItem(`thesimsweb.nbhdFilter.${this.nb.dir}`));
+      return v > 0 ? v : DEFAULT_FILTER;
+    } catch {
+      return DEFAULT_FILTER;
+    }
+  }
+
+  /** cWinNeighborhoodUL::SaveCurrentFilter (Shutdown, when a filter is set). */
+  private saveCurrentFilter(): void {
+    if (this.filterMode === 0) return;
+    try {
+      localStorage.setItem(`thesimsweb.nbhdFilter.${this.nb.dir}`, String(this.filterMode));
+    } catch {
+      // not kept
+    }
+  }
+
+  /** cWinNeighborhoodUL::ProcessFilterToolbarByType: the button of that bit (the first one otherwise). */
+  private processFilterToolbarByType(bit: number): Promise<void> {
+    const i = FILTERS.findIndex((f) => f.bit === bit);
+    return this.processFilterToolbar(i < 0 ? 0 : i);
+  }
+
+  /** cWinNeighborhoodUL::ProcessFilterToolbar: the old filter's button up, SetFilterMode, the new one down. */
+  private async processFilterToolbar(index: number): Promise<void> {
+    const prev = FILTERS.findIndex((f) => f.bit === this.filterMode);
+    if (prev >= 0) this.filterBtns[prev]?.setState(0);
+    const f = FILTERS[index];
+    if (!f) return;
+    await this.setFilterMode(f.bit);
+    this.filterBtns[index]?.setState(1);
+  }
+
+  /** cWinNeighborhoodUL::SetFilterMode: +0x188 and its icon (+0x184). */
+  private async setFilterMode(bit: number): Promise<void> {
+    this.filterMode = bit;
+    const icon = FILTERS.find((f) => f.bit === bit)?.icon;
+    this.filterIcon = icon ? await this.ctx.res.image(icon).catch(() => null) : null;
+  }
+
+  /**
+   * cWinNeighborhoodUL::CheatCallback. load n (0..18): cSimsApp::LoadGame and
+   * the screen ends with the house; show_zones on/off: +0x108 then
+   * HighlightLotsForMode; show_filter n (0..7): the filter shown over the
+   * community lots. move_lots (SetMode(5), lot dragging), nessie (DoNessie's
+   * sprite), stream_fps and reload_neighborhood are not ported.
+   */
+  private cheatCallback(cmd: CheatCommandLine): boolean {
+    const [name, arg] = cmd.args;
+    switch (name) {
+      case "load": {
+        if (cmd.args.length !== 2) {
+          cmd.errMsg = "Usage: load [house num]";
+          return false;
+        }
+        const house = parseInt(arg!, 10) || 0;
+        if (house < 0 || house >= 0x13) {
+          cmd.errMsg = "house num must be between 0 and 18";
+          return false;
+        }
+        // cSimsApp::LoadGame + TSWinMsgPost(0x10, house): the callback loads the lot and closes the screen.
+        this.callbacks.onEnterLot(house);
+        return true;
+      }
+      case "show_zones":
+        if (cmd.args.length < 2) break;
+        this.showZones = arg === "on";
+        this.highlightLotsForMode();
+        return true;
+      case "show_filter": {
+        const n = cmd.args.length < 2 ? 0 : parseInt(arg!, 10) || 0;
+        if (n < 0 || n > 7) {
+          cmd.errMsg = "Filter number must be between 0 and 7.";
+          void this.setFilterMode(0);
+          return false;
+        }
+        void this.setFilterMode(CHEAT_FILTER_BITS[n]!);
+        return true;
+      }
+      default:
+        break;
+    }
+    console.log(`not ported: neighborhood cheat "${name ?? ""}"`);
+    return false;
+  }
+
   override shutdown(): void {
+    // Shutdown unregisters the cheats (reload_neighborhood stays registered, as in the original).
+    if (!this.picker) {
+      for (const [name] of CHEATS) if (name !== "reload_neighborhood") getCheatCodeManager()?.unregisterCheat(name);
+    }
+    this.saveCurrentFilter();
     TSWinBtn.overrideDefaultUISound();
     winMgr.setGlobalCursor(null);
     super.shutdown();
@@ -435,7 +630,7 @@ export class WinNeighborhoodUL extends TSWin implements LotBtnOwner {
   private highlightLotsForMode(): void {
     for (const lot of this.lots.values()) {
       lot.hiliteForImport(false);
-      if (this.mode !== NbhdMode.Rezone) continue;
+      if (this.mode !== NbhdMode.Rezone && !this.showZones) continue;
       const zone = this.nb.getZoningType(lot.houseNumber);
       if (zone === Zone.Community) lot.hiliteForCommunity(true);
       else if (zone === Zone.Residential) {
@@ -530,6 +725,12 @@ export class WinNeighborhoodUL extends TSWin implements LotBtnOwner {
   override tsOnCommand(cmd: number, source: TSWin): boolean {
     if (this.busy) return false;
     if (cmd !== 1 || this.handling) return false;
+    const f = this.filterBtns.indexOf(source as TSWinBtn);
+    if (f >= 0) {
+      this.handling = true;
+      void this.processFilterToolbar(f).finally(() => (this.handling = false));
+      return true;
+    }
     if (source instanceof WinLotBtn) {
       this.handling = true;
       void this.lotHandler(source.houseNumber).finally(() => (this.handling = false));
@@ -563,15 +764,15 @@ export class WinNeighborhoodUL extends TSWin implements LotBtnOwner {
   /**
    * cWinNeighborhoodUL::VisitModeLotHandler: a community lot ends the
    * picker with its house number (TSWinMsgPost 0x10); a residential lot
-   * shows a message (cSimsApp vtable +0x114 with run-time strings, not
-   * ported: the click is ignored).
+   * shows cSimsApp::MessageDialog (vtable +0x114) with the two strings the
+   * static initializer reads from UIText STR# 0x104 (lbl_105BCD28: text =
+   * entry 1, title = entry 0).
    */
-  private visitModeLotHandler(house: number): Promise<void> {
-    if (!this.lots.has(house)) return Promise.resolve();
+  private async visitModeLotHandler(house: number): Promise<void> {
+    if (!this.lots.has(house)) return;
     const zoning = this.nb.getZoningType(house);
     if (zoning === Zone.Community) winMgr.endDialog(this, house);
-    else if (zoning === Zone.Residential) this.callbacks.onUnported("visit picker: residential lot message");
-    return Promise.resolve();
+    else if (zoning === Zone.Residential) await this.message(STR_VISIT_RESIDENTIAL, 1, 0);
   }
 
   /** The +0x1a4 member pointer: the button handler of the current mode. */
@@ -724,6 +925,7 @@ export class WinNeighborhoodUL extends TSWin implements LotBtnOwner {
     const r = await this.moveInMessage(info.hasHouse ? MOVE_IN.buyHouse : MOVE_IN.buyLot, MB_YESNO);
     if (r !== IDYES) return;
     this.setMode(NbhdMode.Regular);
+    for (const lot of this.lots.values()) void lot.hiliteForTutorial(this.ctx, false);
     await this.refillNpcs();
     soundPlayer.playBySource(MUSIC.fade, -1);
     if (this.callbacks.onMoveIn) this.callbacks.onMoveIn(house, this.moveInFamily, info.value);
@@ -746,6 +948,7 @@ export class WinNeighborhoodUL extends TSWin implements LotBtnOwner {
     const info = this.lots.get(house)?.info;
     if (!info) return;
     soundPlayer.playBySource(MUSIC.fade, -1);
+    for (const lot of this.lots.values()) void lot.hiliteForTutorial(this.ctx, false);
     await this.refillNpcs();
     // A family on vacation (Family +0x13c) is loaded on its vacation lot.
     if (info.familyNumber !== -1) {
@@ -1003,7 +1206,7 @@ export class WinNeighborhoodUL extends TSWin implements LotBtnOwner {
       } else if (this.mode === NbhdMode.Evict || this.mode === NbhdMode.Rezone) {
         this.setMode(NbhdMode.Regular);
       } else if (this.picker) {
-        // Deviation: the picker's own way out (the filter toolbar) is not ported; Escape ends it with 0.
+        // Deviation: the original picker has no way out but a community lot; Escape ends it with 0.
         winMgr.endDialog(this, 0);
       }
       return true;
@@ -1038,6 +1241,13 @@ export class WinNeighborhoodUL extends TSWin implements LotBtnOwner {
       if (this.firstTick) {
         this.firstTick = false;
         if (this.hoveredLot) void this.showPopup(this.hoveredLot);
+        // TSOnTimerMsg's first tick: every lot's tutorial arrow off, then, on the
+        // regular screen (+0x111) while Neighborhood +0x12e (data[3]) is 0, on over
+        // the tutorial lots (cWinLotBtn +0x1a0 == 1).
+        for (const lot of this.lots.values()) void lot.hiliteForTutorial(this.ctx, false);
+        if (!this.picker && this.nb.data.data[3] === 0) {
+          for (const lot of this.lots.values()) if (lot.info?.isTutorial) void lot.hiliteForTutorial(this.ctx, true);
+        }
       }
     }
     // Popup unfurl (lot buttons: cTSWin+0xa0 = 75 ms), growing upward from its bottom edge.
@@ -1064,8 +1274,47 @@ export class WinNeighborhoodUL extends TSWin implements LotBtnOwner {
     }
   }
 
-  /** cWinNeighborhoodUL::PostChildDraw (main screen): the current neighborhood number. */
+  /**
+   * cWinNeighborhoodUL::PostChildDraw. Picker: the title (shadow (30, 30, 30)
+   * centered on (0x192, 0xc), white on (400, 10)). Main screen: the current
+   * neighborhood number. Then, with a filter set, every community lot is
+   * outlined blue (HiliteForCommunity, picker only) and DrawFilterAt puts the
+   * icon at (lot x - 0x18, lot y - 0x46) over the lots of the filter's type.
+   */
   override postChildDraw(g: Gfx): void {
+    if (this.picker) {
+      const font = this.font;
+      if (font && this.title) {
+        const a = font.textArea(this.title);
+        const x = g.ox + this.offX - Math.trunc(a.w / 2);
+        const y = g.oy + this.offY - Math.trunc(a.h / 2);
+        font.drawText(g.ctx, this.title, x + 0x192, y + 0xc, "rgb(30,30,30)");
+        font.drawText(g.ctx, this.title, x + 400, y + 10, "#ffffff");
+      }
+    } else {
+      this.drawNeighborhoodNumber(g);
+    }
+    this.drawFilters(g);
+  }
+
+  /** PostChildDraw's filter loop and cWinNeighborhoodUL::DrawFilterAt (frame from +0x1dc). */
+  private drawFilters(g: Gfx): void {
+    if (this.filterMode === 0) return;
+    const icon = this.filterIcon;
+    const fw = icon ? Math.trunc(icon.width / 3) : 0;
+    const frame = FILTER_FRAMES[Math.max(0, this.waveTick) % 6]!;
+    for (const lot of this.lots.values()) {
+      if (this.nb.getZoningType(lot.houseNumber) !== Zone.Community) continue;
+      if (this.picker) lot.hiliteForCommunity(true);
+      const info = lot.info;
+      if (!icon || !info || (info.lotTypeFlags & this.filterMode) === 0) continue;
+      // cWinLotBtn +0x1f8 / +0x1fc: the HouseInfo lot location (+0x6c / +0x70).
+      g.blitPart(icon, frame * fw, 0, fw, icon.height, this.offX + info.lotX - 0x18, this.offY + info.lotY - 0x46);
+    }
+  }
+
+  /** The main screen's part of PostChildDraw: the current neighborhood number. */
+  private drawNeighborhoodNumber(g: Gfx): void {
     const font = this.font;
     const box = this.currentBox;
     if (!font || !box) return;

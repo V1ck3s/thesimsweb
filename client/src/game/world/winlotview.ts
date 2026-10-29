@@ -71,6 +71,16 @@ import { killObject, makeNewOutOfWorldObject } from "./tools/objectfactory.js";
 import { updateSimObjects } from "./simobjects.js";
 import { PlumbBobs } from "./plumbbobs.js";
 import { GiftsPanel } from "../cpanel/live/gifts.js";
+import { WinBudgetDlg } from "../cpanel/budgetdlg.js";
+import { WinViewControl } from "../cpanel/viewcontrol.js";
+import { loadBuildCatalog } from "../data/buildcatalog.js";
+import { holdSimulator } from "../nbhd/transit.js";
+import { tutFlashButtonByImageID } from "../ui/tutorialhighlight.js";
+import { moduleOrder } from "./housesave.js";
+import { summarizeHouseStats } from "./housestats.js";
+
+/** NeighborhoodConstants "architecture value multiplier" (lbl_105BA1EC, default 0.7). */
+const ARCHITECTURE_VALUE_MULTIPLIER = Math.fround(0.7);
 
 /** HOUS chunk id 0: HouseViewer::DoStream (saved camera). */
 interface SavedView {
@@ -355,6 +365,8 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
         else st.setFunds(st.getFunds() - n);
       },
       shopSoldItem: () => st.shopSoldItem(),
+      startDisposing: (item) => st.startDisposing(item),
+      stopDisposing: () => st.stopDisposing(),
       setTip: (x, y, text) => {
         if (this.tipWin) this.tip = { win: this.tipWin, x, y, text };
       },
@@ -378,6 +390,8 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
     });
     this.placement = p;
     this.buyTool = tool;
+    // CPState::DoDispose: the dispose popup sells through the current tool when it is the buy tool.
+    st.disposeTool = () => tool.doDispose();
     const tools = this.initGameTools(v, lot, p, tool);
     // CPState::UpdateWorldFromCPState: the build panel's sub-tool picked inside CPState::Update.
     st.worldUpdateHook = (bits) => {
@@ -1305,6 +1319,8 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
       sim.state = this.ctx.state;
       // LoadGame dirties the whole CPState: the clock comes from the loaded globals.
       sim.pushClock();
+      // ... and the family's motives and person data (the Live panel samples them before the first tick).
+      sim.pushPeople();
       sim.module.onDirty = (): void => {
         if (this.viewer) this.viewer.dirty = true;
       };
@@ -1312,7 +1328,10 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
         o.obj.objectData[34] = 1;
         if (this.viewer) this.viewer.dirty = true;
       };
+      // Prim 34 (UI Effect) effect 0: Tut_FlashButtonByImageID.
+      sim.module.tutorialHooks = { flashButtonByImageID: (id, on) => void tutFlashButtonByImageID(this.ctx, id, on) };
       this.sim = sim;
+      this.initBudgetSource(sim, lot);
       // cWinPeople::BuildGifts reads the selected sim's SimInventory and the gifts' selectors.
       GiftsPanel.source = {
         inventory: (guid) => {
@@ -1357,6 +1376,41 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
     } catch (e) {
       console.error("[sim] simulator not started", e);
     }
+  }
+
+  /**
+   * What the view control's dialogs read from this lot: cDDDSimsView::SetBlockSimulator,
+   * global 0x20 and cWinBudgetDlg's data. House::PrepareForBudgetWindow recomputes
+   * the object / architecture values only outside Live mode (global 19 set); in Live
+   * mode they are House::EnterLiveMode's, whose stats part is not ported: the port
+   * computes them when the window opens, so values changed since entering Live mode show.
+   * The family flags (+0x138) and global 0x17 of those functions are not applied here.
+   */
+  private initBudgetSource(sim: Simulator, lot: LotObjects): void {
+    WinViewControl.holdSimulator = () => holdSimulator(sim);
+    WinViewControl.simulatorGlobal32 = () => sim.globals[32]!;
+    WinBudgetDlg.source = {
+      prepareForBudgetWindow: async () => {
+        const viewer = this.viewer;
+        const walls = this.wallManager;
+        if (!viewer || !walls) return;
+        const prices = (await loadBuildCatalog(this.ctx)).prices;
+        const objects = new Map(moduleOrder(lot.module).map((o) => [o.objectId, o]));
+        const st = summarizeHouseStats(objects, viewer.world.fixed, walls.gfx, viewer.floors, prices);
+        sim.objectValue = st.simA0;
+        sim.archValue = st.simA4;
+        sim.globals[0x16] = st.lotHasHouse;
+        sim.globals[0x25] = st.transitFilterFlags;
+      },
+      getTodaysExpenses: () => sim.getTodaysExpenses(),
+      getExpensesHistory: () => sim.getExpensesHistory(),
+      getFunds: () => sim.getFunds(),
+      getDaysRunning: () => sim.globals[G.daysRunning]!,
+      // Neighborhood::GetFamilyNetWorth of the family living here: funds + lot value + objects
+      // + architecture x NeighborhoodConstants "architecture value multiplier" (0.7, a float).
+      getNetWorth: () =>
+        (sim.getFunds() + sim.lotValue + sim.objectValue + Math.trunc(Math.fround(Math.fround(sim.archValue) * ARCHITECTURE_VALUE_MULTIPLIER))) | 0,
+    };
   }
 
   /**

@@ -279,7 +279,7 @@ function rootOf(w: TSWin): TSWin {
 }
 
 /** cTSBuffer 9-cell edge blit: corners, tiled edges and center, cells a third of the tiles bitmap. */
-function bltEdge(g: CanvasRenderingContext2D, t: ImageBitmap, w: number, h: number): void {
+export function bltEdge(g: CanvasRenderingContext2D, t: ImageBitmap, w: number, h: number): void {
   const cw = Math.trunc(t.width / 3);
   const ch = Math.trunc(t.height / 3);
   const cell = (col: number, row: number, x: number, y: number, dw: number, dh: number): void => {

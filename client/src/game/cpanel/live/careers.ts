@@ -146,7 +146,8 @@ export function loadCareers(strings: Strings): Promise<Career[]> {
     await strings.load(WORK_IFF);
     const list = chunks
       .filter((c) => c.kind === "CARR")
-      .map((c) => parseCarr(data.subarray(c.dataStart, c.dataStart + c.dataLen), c.id));
+      // Resource ids are signed 16-bit (the school track is CARR -1); the chunk list gives them unsigned.
+      .map((c) => parseCarr(data.subarray(c.dataStart, c.dataStart + c.dataLen), (c.id << 16) >> 16));
     for (const career of list) {
       // The school track (CARR -1) keeps its built-in names.
       if (career.id < 0 || !strings.list(STRINGS, career.id).length) continue;

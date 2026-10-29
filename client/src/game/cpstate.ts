@@ -7,6 +7,8 @@
  * updateViewFromCPState(); the panels clear them after a refresh.
  */
 
+import type { ResFile } from "./world/iffres.js";
+
 export const enum Mode {
   Build = 0,
   Buy = 1,
@@ -231,6 +233,30 @@ export interface HouseViewerHooks {
   centerOnSelected?(): void;
 }
 
+/**
+ * The object of CPState::StartDisposing (cMoveTool::StartDisposing), as
+ * cWinDisposePopup::BuildMyBuffer reads it.
+ */
+export interface DisposeItem {
+  /** ObjSelector::GetMasterSelector: GUID (Catalog::FindProduct), object file and OBJD id (DrawDefaultObjectIcon). */
+  readonly guid: number;
+  readonly res: ResFile;
+  readonly objdId: number;
+  /** The master OBJD +0x8a: non-zero for build mode items (the second half of STR# 0x88). */
+  readonly buildModeType: number;
+  /** cXObject::GetCurrentValue */
+  readonly currentValue: number;
+  /** cXObject::UserCanDelete (vtable +0x78) */
+  readonly canDelete: boolean;
+  /** +0x1e8: not a new purchase; +0x1e9: refundable; +0x1ec: refund factor (0, 0.8 or 1). */
+  readonly notNew: boolean;
+  readonly refundable: boolean;
+  readonly factor: number;
+}
+
+/** cWinViewControl speed buttons (lbl_1059B8D8): the simulator speed is 1000 x k. */
+const MOTIVE_PULSE_SPEED_K = [0.7602, 0.924, 0.99415] as const;
+
 export class CPState {
   dirty = DIRTY_ALL;
   private mode = Mode.Live;
@@ -263,6 +289,7 @@ export class CPState {
   }
 
   update(): void {
+    this.advanceMotivePulse(performance.now());
     if (!this.dirty) return;
     for (const fn of this.listeners) fn(this);
     this.dirty = 0;
@@ -309,6 +336,46 @@ export class CPState {
   setSpeed(speed: number): void {
     this.speed = speed;
     this.touch(DIRTY_SPEED);
+    this.updateMotivePulsePeriod();
+  }
+
+  // --- motive pulse (CPState+0x1f0) --------------------------------------------
+
+  /** PulseGenerator at +0x1f0: accumulated time (+0), period (+4, 100 at construction), last time (+8). */
+  private motivePulseAccum = 0;
+  private motivePulsePeriod = 100;
+  private motivePulseLast = 0;
+
+  /**
+   * The +0x1f0 part of CPState::UpdateSpeed (dirty 0x40): the simulator's
+   * tick period trunc(0.5 + 172 - speed / 1000 x 171) ms (speed = 1000 x the
+   * speed button's k, lbl_1059B8D8), the pulse period trunc(0.5 + 1000 x
+   * tick period / 42) ms (lbl_105BC0B0): one second at speed 1.
+   */
+  private updateMotivePulsePeriod(): void {
+    const k = MOTIVE_PULSE_SPEED_K[this.speed - 1];
+    if (k === undefined) return;
+    const tick = Math.trunc(0.5 + 172 - ((Math.trunc(0.5 + 1000 * k) / 1000) * 171));
+    this.motivePulsePeriod = Math.trunc(0.5 + (1000 * tick) / 42);
+  }
+
+  /** CPState::Update: PulseGenerator::AdvanceTime then ShouldPulse sets dirty 1 (the motives). */
+  private advanceMotivePulse(now: number): void {
+    if (this.motivePulseLast === 0) {
+      // CPState::Init's first UpdateSpeed (everything dirty).
+      this.updateMotivePulsePeriod();
+      this.motivePulseAccum = this.motivePulsePeriod;
+    }
+    else this.motivePulseAccum += now - this.motivePulseLast;
+    this.motivePulseLast = now;
+    if (this.shouldPulseMotives()) this.touch(1);
+  }
+
+  /** PulseGenerator::ShouldPulse on +0x1f0 (cWinPeople pumps the motives once per pulse). */
+  shouldPulseMotives(): boolean {
+    if (this.motivePulseAccum < this.motivePulsePeriod) return false;
+    this.motivePulseAccum -= this.motivePulsePeriod;
+    return true;
   }
 
   isPaused(): boolean {
@@ -618,6 +685,33 @@ export class CPState {
     if (this.mode !== Mode.Buy) return;
     this.shopSetCatalogItem(-1, null);
     this.soldItemHandler?.();
+  }
+
+  // --- disposing (CPState+0x1e4..+0x1ec) ---------------------------------------
+
+  /** +0x1e4: the object held by the buy tool, offered for sale (null when none). */
+  private disposing: DisposeItem | null = null;
+  /** cWinCPanel::EnableDisposePopup / DisableDisposePopup (CPState+0x44 is the control panel). */
+  disposeHandler: { enable(item: DisposeItem): void; disable(): void } | null = null;
+  /** cMoveTool::DoDispose when the current tool (CPState+0x3c) is the buy tool; the lot view installs it. */
+  disposeTool: (() => void) | null = null;
+
+  /** CPState::StartDisposing(obj, notNewPurchase, refundable, refund factor). */
+  startDisposing(item: DisposeItem): void {
+    this.stopDisposing();
+    this.disposing = item;
+    this.disposeHandler?.enable(item);
+  }
+
+  /** CPState::StopDisposing */
+  stopDisposing(): void {
+    this.disposing = null;
+    this.disposeHandler?.disable();
+  }
+
+  /** CPState::DoDispose: the dispose popup was clicked. */
+  doDispose(): void {
+    this.disposeTool?.();
   }
 
   // --- build mode (CPState+0x58..+0x88) ---------------------------------------

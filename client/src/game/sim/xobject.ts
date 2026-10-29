@@ -854,9 +854,19 @@ export class SimObject extends TreeSim {
         return this.tryTestObjectType(v.getUint32(p, true), u8(6), s16(4));
       case 33:
         return this.tryFind5WorstMotives(elem, s16(4), s16(6));
-      case 34: // UI Effect (tutorial button flashes): recorded only.
-        this.module.record(this, "uiEffect", s16(0));
+      case 34: {
+        // UI Effect (cXObject::TryElement): operand 0 the effect, 1 / 2 the
+        // value (scope, data), bit 0 of 4 on / off; always true. 0
+        // Tut_FlashButtonByImageID; 1 Tut_FlashPersonPanelButton and 2
+        // Tut_FlashRelButton (by neighbor id) are not ported.
+        const effect = u8(0);
+        const on = (u8(4) & 1) !== 0;
+        const value = (this.interpValue(u8(1), s16(2), false) << 16) >> 16;
+        this.module.record(this, "uiEffect", effect);
+        if (effect === 0) this.module.tutorialHooks?.flashButtonByImageID(value, on);
+        else if (effect <= 2) this.module.unportedPrim(op, `UI effect ${effect} (Tut_Flash${effect === 1 ? "PersonPanel" : "Rel"}Button)`, PRIM_TRUE);
         return PRIM_TRUE;
+      }
       case 35:
         return this.tryUserEvent(elem, new Uint8Array(v.buffer, v.byteOffset + p, 8));
       case 36:

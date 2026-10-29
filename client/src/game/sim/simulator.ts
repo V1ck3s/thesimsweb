@@ -103,6 +103,15 @@ export class Simulator {
   funds = 0;
   /** +0x98 */
   tickCount = 0;
+  /** +0x9c: the lot value (DoStream's default 0x1194 before version 0x25). */
+  lotValue = 0x1194;
+  /** +0xa0 / +0xa4: the objects' and the architecture's values (House::EnterLiveMode, PrepareForBudgetWindow). */
+  objectValue = 0;
+  archValue = 0;
+  /** +0x184: today's spending per ExpenseType (cSimulator::Spend; income is spent negatively). */
+  readonly expenses = new Int32Array(8);
+  /** +0xe4 + 0x20 * i: the five previous days' ExpenseReports, yesterday first. */
+  readonly expenseHistory: Int32Array[] = Array.from({ length: 5 }, () => new Int32Array(8));
   /** +0xac */
   seed = 0;
   /** +0xbc */
@@ -230,6 +239,20 @@ export class Simulator {
       setSRandSeed(buf.recon32());
     }
     if (v >= 0xf) this.funds += buf.recon32();
+    if (v >= 0x25) {
+      this.lotValue = buf.recon32();
+      this.objectValue = buf.recon32();
+      this.archValue = buf.recon32();
+    }
+    // The ExpenseReports (version 0x26 on): today's, then the five days; each a "has 8" flag
+    // and its ints. Versions before 0x34 had other meanings: cleared after the read.
+    if (v >= 0x26) {
+      for (const block of [this.expenses, ...this.expenseHistory]) {
+        const n = buf.recon32() === 0 ? 7 : 8;
+        for (let i = 0; i < n; i++) block[i] = buf.recon32();
+      }
+      if (v < 0x34) this.clearHistory();
+    }
     this.setFundsGlobals();
     // Versions < 0x15 store the speed button; later ones the speed itself.
     const speed = this.globals[G.speed]!;
@@ -368,12 +391,30 @@ export class Simulator {
     return this.globals[G.freeFunds] === 1 ? 999999 : this.funds;
   }
 
-  /** cSimulator::Spend (the expense history per type is not kept). */
-  spend(_expense: number, amount: number): void {
+  /** cSimulator::Spend: the funds, and today's ExpenseReport entry of the type. */
+  spend(expense: number, amount: number): void {
     if (this.globals[G.freeFunds] === 1) return;
     this.funds -= amount;
+    if (expense >= 0 && expense < 8) this.expenses[expense] = (this.expenses[expense]! + amount) | 0;
     this.setFundsGlobals();
     this.state?.setFunds(this.funds);
+  }
+
+  /** cSimulator::GetTodaysExpenses */
+  getTodaysExpenses(): number[] {
+    return [...this.expenses];
+  }
+
+  /** cSimulator::GetExpensesHistory: today plus the first two history blocks, per type. */
+  getExpensesHistory(): number[] {
+    const [d1, d2] = this.expenseHistory;
+    return [...this.expenses].map((v, i) => (v + d1![i]! + d2![i]!) | 0);
+  }
+
+  /** cSimulator::ClearHistory's ExpenseReport part (also run by DoStream for old versions). */
+  clearHistory(): void {
+    this.expenses.fill(0);
+    for (const b of this.expenseHistory) b.fill(0);
   }
 
   /** cSimulator::SetFunds */
@@ -455,8 +496,14 @@ export class Simulator {
           g[G.minute] = g[G.minute]! - 0x3c;
           g[G.hour] = g[G.hour]! + 1;
           if (g[G.hour]! > 0x17) {
-            // ObjectModule::DayChanged / the expense history / family history are not ported.
+            // ObjectModule::DayChanged / the family history are not ported.
             g[G.daysRunning] = g[G.daysRunning]! + 1;
+            // The ExpenseReports: as the original's code does, blocks 1..4 all get the old block
+            // 0 (not a shift), block 0 gets today's, today starts at 0.
+            const [d1, ...older] = this.expenseHistory;
+            for (const b of older) b.set(d1!);
+            d1!.set(this.expenses);
+            this.expenses.fill(0);
             g[G.hour] = g[G.hour]! - 0x18;
             g[G.day] = g[G.day]! + 1;
             if (g[G.day]! > countDaysInMonth()) {
@@ -484,7 +531,7 @@ export class Simulator {
    * UpdateCPStateFromWorld's people part: the family's motives and person
    * data (the Live panel reads them each pump) come from their cXPerson.
    */
-  private pushPeople(): void {
+  pushPeople(): void {
     const s = this.state;
     if (!s) return;
     for (const info of s.family) {

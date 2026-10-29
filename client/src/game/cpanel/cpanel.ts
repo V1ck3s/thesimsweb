@@ -13,12 +13,13 @@
  */
 
 import { getCursor } from "../ui/cursor.js";
-import { Mode, type CPState } from "../cpstate.js";
+import { Mode, type CPState, type DisposeItem } from "../cpstate.js";
 import type { GameContext } from "../context.js";
 import { Gfx, TSWin } from "../ui/tswin.js";
 import { WinArch } from "./arch.js";
 import { WinCamPanel } from "./campanel.js";
 import { WinCatalog } from "./catalog.js";
+import { WinDisposePopup } from "./disposepopup.js";
 import { WinOptions } from "./options.js";
 import { WinPeople } from "./people.js";
 import { WinViewControl } from "./viewcontrol.js";
@@ -53,7 +54,11 @@ export class WinCPanel extends TSWin {
   arch!: WinArch;
   options!: WinOptions;
   camPanel!: WinCamPanel;
+  /** +0xe8 */
+  disposePopup!: WinDisposePopup;
   private panel = PanelID.People;
+  /** +0xcd: the dispose popup replaces the mode's panel. */
+  private disposeShown = false;
   private background: ImageBitmap | null = null;
 
   private readonly listener = (s: CPState): void => this.updateViewFromCPState(s);
@@ -84,19 +89,28 @@ export class WinCPanel extends TSWin {
     this.catalog = new WinCatalog(ctx);
     this.options = new WinOptions(ctx);
     this.camPanel = new WinCamPanel(ctx);
+    this.disposePopup = new WinDisposePopup(ctx);
     const ok =
       (await place(this.arch, SUBPANEL_ORIGIN.y, 100)) &&
       (await place(this.people, SUBPANEL_ORIGIN.y - 50, 150)) &&
       (await place(this.catalog, SUBPANEL_ORIGIN.y, 100)) &&
       (await place(this.options, SUBPANEL_ORIGIN.y, 100)) &&
-      (await place(this.camPanel, SUBPANEL_ORIGIN.y, 100));
+      (await place(this.camPanel, SUBPANEL_ORIGIN.y, 100)) &&
+      (await place(this.disposePopup, SUBPANEL_ORIGIN.y, 100));
     // Only listen once every subpanel exists (CPState::SetControlPanel).
-    if (ok) ctx.state.onChange(this.listener);
+    if (ok) {
+      ctx.state.onChange(this.listener);
+      ctx.state.disposeHandler = {
+        enable: (item) => this.enableDisposePopup(item),
+        disable: () => this.disableDisposePopup(),
+      };
+    }
     return ok;
   }
 
   override shutdown(): void {
     this.ctx.state.offChange(this.listener);
+    this.ctx.state.disposeHandler = null;
     this.viewControl.parent?.childDelete(this.viewControl);
     super.shutdown();
   }
@@ -123,6 +137,7 @@ export class WinCPanel extends TSWin {
       [PanelID.Arch, this.arch],
       [PanelID.Options, this.options],
       [PanelID.Camera, this.camPanel],
+      [PanelID.Dispose, this.disposePopup],
     ];
     for (const [pid, win] of map) {
       if (pid === id) win.showWindow();
@@ -130,8 +145,26 @@ export class WinCPanel extends TSWin {
     }
   }
 
+  /** cWinCPanel::EnableDisposePopup */
+  enableDisposePopup(item: DisposeItem): void {
+    this.disposePopup.enablePopup(item);
+    this.showDisposePopup(true);
+  }
+
+  /** cWinCPanel::DisableDisposePopup */
+  disableDisposePopup(): void {
+    this.showDisposePopup(false);
+  }
+
+  /** cWinCPanel::ShowDisposePopup: page 4, or back to the mode's page. */
+  showDisposePopup(show: boolean): void {
+    if (show === this.disposeShown) return;
+    this.disposeShown = show;
+    this.setPanel(show ? PanelID.Dispose : PANEL_FOR_MODE[this.ctx.state.getMode()]);
+  }
+
   updateViewFromCPState(state: CPState): void {
-    const want = PANEL_FOR_MODE[state.getMode()];
+    const want = this.disposeShown ? PanelID.Dispose : PANEL_FOR_MODE[state.getMode()];
     if (want !== this.panel || !this.isPanelVisible(want)) this.setPanel(want);
     this.viewControl.updateViewFromCPState();
     switch (state.getMode()) {
@@ -154,7 +187,7 @@ export class WinCPanel extends TSWin {
   }
 
   private isPanelVisible(id: PanelID): boolean {
-    const win = [this.people, this.catalog, this.arch, this.options, null, this.camPanel][id];
+    const win = [this.people, this.catalog, this.arch, this.options, this.disposePopup, this.camPanel][id];
     return win?.isVisible() ?? false;
   }
 

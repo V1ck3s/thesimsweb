@@ -17,8 +17,7 @@
  * game writes. Chunks of the loaded file this save does not produce are kept.
  *
  * Values the port does not model are carried over from the loaded file:
- * SIMI's cursor and the int blocks after the funds (+0x9c, +0x184 / +0xe4
- * tables), HOUS 1, HouseViewer's second cutaway byte, roof pitch and pattern,
+ * SIMI's cursor and +0x9c, HOUS 1, HouseViewer's second cutaway byte, roof pitch and pattern,
  * and in each person record the animator's practices and dressing and the
  * tail (saved routes, interactions, object records); see docs/decomp/save-port.md.
  */
@@ -223,8 +222,10 @@ export function saveSimulator(sim: Simulator, loaded: Uint8Array | null, extra: 
     w.recon32(c.f9c);
     w.recon32(extra.objectValue ?? c.fa0);
     w.recon32(extra.archValue ?? c.fa4);
-    // DoStream writes the "full" flag as 1 (eight ints per block).
-    const blocks = extra.clearHistory ? c.blocks.map(() => ({ full: 1, values: new Array<number>(8).fill(0) })) : c.blocks;
+    // DoStream writes the "full" flag as 1 (eight ints per block): the simulator's ExpenseReports.
+    const blocks = extra.clearHistory
+      ? c.blocks.map(() => ({ full: 1, values: new Array<number>(8).fill(0) }))
+      : [sim.expenses, ...sim.expenseHistory].map((b) => ({ full: 1, values: [...b] }));
     for (const b of blocks) {
       w.recon32(b.full);
       for (let i = 0; i < (b.full === 0 ? 7 : 8); i++) w.recon32(b.values[i]!);

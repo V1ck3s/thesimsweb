@@ -33,6 +33,12 @@ export interface GameHooks {
    * on yes). Resolves false when the player cancels.
    */
   doSave?(): Promise<boolean>;
+  /**
+   * cWinOptions::SaveDowntownDescription(prompt): the lot name / description
+   * editor (cWinEditDTLotDesc) on a lot visited without sims. 1 save the
+   * game, 0 don't, -1 cancelled, -2 not such a lot.
+   */
+  saveDowntownDescription?(prompt: boolean): Promise<number>;
   /** cSimsApp::DoNbhdScreen(false): leave the lot for the neighborhood screen. */
   showNeighborhood?(): void;
   /** The framework's quit request (cSimsApp+0x48, vtable 0x28); resolves false when cancelled. */
@@ -43,4 +49,6 @@ export interface GameHooks {
   showScrapbook?(): Promise<void>;
   /** Neighborhood::GetDirectory: the current neighborhood folder (e.g. "UserData"). */
   neighborhoodDir?(): string;
+  /** cDDDSimsView::SetBlockSimulator: hold / release the simulation while a modal window is up. */
+  setBlockSimulator?(block: boolean): void;
 }

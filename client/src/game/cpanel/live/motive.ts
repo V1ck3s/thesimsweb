@@ -17,9 +17,12 @@
  * The popup client (+0x198) holds the need's name and description; cWinPeople
  * opens it on a click or, with quick tips, on hover.
  *
+ * The delta meter (cWinDeltaMeter, +0x1a8) covers the button; Pump feeds one
+ * cAverageHistory(10, 5) per person in the house (+0x1ac) with the rounded
+ * motive, and SetPerson hands the selected person's to the meter.
+ *
  * Not ported: the popup's object panes (cWinLivePopupClient::SetObject with the
- * lbl_105BC498 GUIDs) and the delta meter arrows (cWinDeltaMeter, fed by the
- * per-person cAverageHistory).
+ * lbl_105BC498 GUIDs).
  */
 
 import type { GameContext } from "../../context.js";
@@ -29,6 +32,7 @@ import { BTN_TOGGLE_ON_DOWN, TSWinBtn } from "../../ui/btn.js";
 import { hiliteColor, rgb } from "../../ui/syscolors.js";
 import type { Gfx } from "../../ui/tswin.js";
 import { WinLivePopupClient } from "../livepopup.js";
+import { AverageHistory, WinDeltaMeter } from "./deltameter.js";
 
 /** lbl_105BC444 (sinit WinMotive.cpp): bar top-left in the window. */
 const BAR_ORIGIN = { x: 20, y: 12 };
@@ -50,6 +54,10 @@ export class WinMotive extends TSWinBtn {
   private captionFont: FfnFont | null = null;
   /** +0x198: the popup client (name, description; this button is its target). */
   readonly client: WinLivePopupClient;
+  /** +0x1a8 */
+  private readonly meter = new WinDeltaMeter();
+  /** +0x1ac: one history per person in the house. */
+  private readonly histories: AverageHistory[] = [];
 
   /**
    * cWinMotive(iter, motive, guid, guid, scale, scale): `name` and `desc` are
@@ -76,12 +84,23 @@ export class WinMotive extends TSWinBtn {
     this.setArea(this.area.left, this.area.top, this.area.left + 100, this.area.top + 0x14);
     this.mode = BTN_TOGGLE_ON_DOWN;
     this.sendOnDown = true;
-    // cWinDeltaMeter(10) at (bar.x - 20, bar.y) / (bar.x + 61, bar.y): not ported.
+    this.meter.setArea(0, 0, this.getW(), this.getH());
+    this.childAdd(this.meter);
+    this.meter.setTopLefts({ x: BAR_ORIGIN.x - 0x14, y: BAR_ORIGIN.y }, { x: BAR_ORIGIN.x + 0x3d, y: BAR_ORIGIN.y });
     return true;
+  }
+
+  /** The histories grow to PersonFinder::CountPeopleInHouse. */
+  private growHistories(): number {
+    const n = this.ctx.state.family.length;
+    while (this.histories.length < n) this.histories.push(new AverageHistory(10, 5));
+    return n;
   }
 
   /** cWinMotive::SetPerson. */
   setPerson(person: number): void {
+    this.growHistories();
+    this.meter.setAverageHistory(person >= 0 ? (this.histories[person] ?? null) : null);
     this.person = person;
   }
 
@@ -90,9 +109,12 @@ export class WinMotive extends TSWinBtn {
    * Renamed: TSWin.pump is the per-frame tick.
    */
   pumpMotive(): void {
+    const round = (v: number): number => (v < 0 ? Math.trunc(v - 0.5) : Math.trunc(v + 0.5));
+    const n = this.growHistories();
+    for (let i = 0; i < n; i++) this.histories[i]!.addSample(round(this.ctx.state.family[i]?.motives[this.motive] ?? 0));
     if (this.person === -1) return;
-    const v = this.ctx.state.family[this.person]?.motives[this.motive] ?? 0;
-    this.setVal(v < 0 ? Math.trunc(v - 0.5) : Math.trunc(v + 0.5));
+    this.setVal(round(this.ctx.state.family[this.person]?.motives[this.motive] ?? 0));
+    this.meter.triggerDeltas();
   }
 
   /** cWinMotive::GetGreenMagnitude. */
