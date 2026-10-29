@@ -169,6 +169,10 @@ export class FixedWorld {
   walls = [new Array2D(14), new Array2D(14)];
   objects = [new Array2D(2), new Array2D(2)];
   flags = [new Array2D(1), new Array2D(1)];
+  /** cFixedWorld+0x80 (CPState::HasBeenTo2ndLevel): level 2 holds a floor, an object or a wall. */
+  beenTo2ndLevel = false;
+  /** cFixedWorld+0x81 (CPState::Is2ndLevelFloorable): some level 2 tile takes a floor (flags bit 0). */
+  secondLevelFloorable = false;
 
   /** cFixedWorld::Load for the arrays present in the house file. */
   static load(res: ResFile, size = ARRAY_SIZE): FixedWorld {

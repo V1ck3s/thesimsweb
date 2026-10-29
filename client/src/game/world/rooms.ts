@@ -263,9 +263,34 @@ export function computeRooms(fixed: FixedWorld, mgr: RoomManager, level = 0): vo
   for (let l = from; l <= to; l++) {
     computeLevelRooms(fixed, mgr, l);
     computeOutside(fixed, l);
+    if (l === 2) computeSecondLevelFlags(fixed);
   }
   // The end of ComputeRooms: cRoofLayer::GenerateRoof for both roof layers.
   generateRoofs(fixed, mgr);
+}
+
+/**
+ * ComputeRooms(2)'s cFixedWorld+0x80 / +0x81: cleared, then +0x80 set by the
+ * first in-grid level 2 tile with a floor, an object or a wall, and +0x81 by
+ * any level 2 tile left floorable (flags bit 0; the floorable pass itself is
+ * not ported, so the bit comes from the house file).
+ */
+function computeSecondLevelFlags(fixed: FixedWorld): void {
+  const size = fixed.size;
+  const floors = fixed.floors[1]!;
+  const objects = fixed.objects[1]!;
+  const walls = fixed.walls[1]!;
+  const flags = fixed.flags[1]!;
+  let been = false;
+  let floorable = false;
+  for (let x = 0; x < size && !(been && floorable); x++) {
+    for (let y = 0; y < size; y++) {
+      if (!been && (floors.u16(x, y) !== 0 || objects.u16(x, y) !== 0 || walls.u8(x, y) !== 0)) been = true;
+      if (!floorable && flags.u8(x, y) & 1) floorable = true;
+    }
+  }
+  fixed.beenTo2ndLevel = been;
+  fixed.secondLevelFloorable = floorable;
 }
 
 function computeLevelRooms(fixed: FixedWorld, mgr: RoomManager, level: number): void {

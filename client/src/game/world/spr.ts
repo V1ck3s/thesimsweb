@@ -99,8 +99,10 @@ export function decodeSpr2Frame(b: Uint8Array, hdr: Spr2Header, frameIndex: numb
   const width = v.getUint16(off, true);
   const height = v.getUint16(off + 2, true);
   const f = newFrame(width, height);
-  const pal = v.getUint16(off + 8, true);
-  f.paletteId = pal === 0xa3a3 ? hdr.defaultPalette : pal;
+  // SpriteListInfo::SpriteListInfo (SPR2 branch) binds the list's palette
+  // (header +8) to every frame: the frame's own palette field (+8, often 0xa3a3
+  // but also stale ids such as 0xfefe or another PALT) is never read.
+  f.paletteId = hdr.defaultPalette;
   f.transparentIndex = v.getUint16(off + 10, true);
   f.yLoc = v.getInt16(off + 12, true);
   f.xLoc = v.getInt16(off + 14, true);
