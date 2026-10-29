@@ -28,6 +28,15 @@ export const UISOUND_UP = 2;
 export const UISOUND_ENTER = 4;
 export const UISOUND_DISABLED = 8;
 
+/** cTSWinBtn::SendButtonCommand ids besides the click: the async timer expired / the cursor left an armed button. */
+export const CMD_ASYNC_TIMEOUT = 0x13;
+export const CMD_ASYNC_EXIT = 0x14;
+
+/** cTSWinBtn+0x14c: what arms the async timer (enter, press, release). */
+export const ASYNC_ON_ENTER = 1;
+export const ASYNC_ON_DOWN = 2;
+export const ASYNC_ON_UP = 4;
+
 /** Defaults of cTSWinBtn::OverrideDefaultUISound(0, 0, 0, 0) (lbl_105BB350..5C). */
 const DEFAULT_UI_SOUNDS = { enter: "", down: "UI_click", up: "", disabled: "UI_error" };
 
@@ -78,6 +87,18 @@ export class TSWinBtn extends TSWin {
   textAlignment = 1;
   onClick: ((btn: TSWinBtn) => void) | null = null;
   private changedOnDown = false;
+  /**
+   * The async timer (+0x14c flags, +0x150 timeout, +0x154 start, +0x164
+   * armed): entering (ASYNC_ON_ENTER), pressing (ON_DOWN | ON_UP) or
+   * releasing (ON_UP) arms it; once `asyncTimeout` ms have passed the button
+   * sends CMD_ASYNC_TIMEOUT to its parent (cTSWinBtn::TSPaint), and leaving
+   * it sends CMD_ASYNC_EXIT (TSOnMouseExit). The panels' SetQuickTips set it
+   * from the quick tips option (cTSWinBtn::GetDefaultAsyncTimeout).
+   */
+  asyncFlags = 0;
+  asyncTimeout = 0;
+  private asyncTimerArmed = false;
+  private asyncTimerStart = 0;
 
   constructor(id = 0, image: ImageBitmap | null = null, cols = 1, rows = 1) {
     super();
@@ -108,6 +129,18 @@ export class TSWinBtn extends TSWin {
     if (!key) return;
     const name = this.uiSounds[key] ?? TSWinBtn.defaultUISounds[key];
     if (name) TSWinBtn.uiSoundHook?.(name);
+  }
+
+  /** The panels' SetQuickTips pattern: flags only when a timeout is set; the timer is disarmed. */
+  setAsync(flags: number, timeout: number): void {
+    this.asyncFlags = timeout === 0 ? 0 : flags;
+    this.asyncTimeout = timeout;
+    this.asyncTimerArmed = false;
+  }
+
+  private armAsyncTimer(): void {
+    this.asyncTimerArmed = true;
+    this.asyncTimerStart = performance.now();
   }
 
   setState(s: number): void {
@@ -164,10 +197,15 @@ export class TSWinBtn extends TSWin {
   override tsOnMouseEnter(): void {
     this.entered = true;
     if (this.enabled) this.playUISound(UISOUND_ENTER);
+    if (this.asyncFlags & ASYNC_ON_ENTER && !this.asyncTimerArmed) this.armAsyncTimer();
   }
 
   override tsOnMouseExit(): void {
     this.entered = false;
+    if (this.asyncTimerArmed || this.asyncFlags & ASYNC_ON_ENTER) {
+      this.asyncTimerArmed = false;
+      this.parent?.tsOnCommand(CMD_ASYNC_EXIT, this);
+    }
   }
 
   override tsOnMouseMove(x: number, y: number): boolean {
@@ -187,10 +225,14 @@ export class TSWinBtn extends TSWin {
     else if (this.mode === BTN_PUSH || this.mode === BTN_TOGGLE) this.state = 1;
     this.changedOnDown = before !== this.state;
     if (this.sendOnDown) this.fire();
+    if (this.asyncFlags & (ASYNC_ON_DOWN | ASYNC_ON_UP)) this.armAsyncTimer();
+    else this.asyncTimerArmed = false;
     return true;
   }
 
   override tsOnMouseUpL(x: number, y: number): boolean {
+    if (this.asyncFlags & ASYNC_ON_UP) this.armAsyncTimer();
+    else this.asyncTimerArmed = false;
     if (winMgr.getCapture() !== this) return true;
     winMgr.releaseCapture(this);
     this.entered = this.isPointInWindowWindowCoordinates(x, y);
@@ -207,6 +249,15 @@ export class TSWinBtn extends TSWin {
       this.playUISound(UISOUND_UP);
     }
     return true;
+  }
+
+  /** The async part of cTSWinBtn::TSPaint (only while the button is shown). */
+  override pump(nowMs: number): void {
+    super.pump(nowMs);
+    if (this.asyncTimerArmed && nowMs - this.asyncTimerStart > this.asyncTimeout && this.isVisibleAndAllParentsVisible()) {
+      this.asyncTimerArmed = false;
+      this.parent?.tsOnCommand(CMD_ASYNC_TIMEOUT, this);
+    }
   }
 
   private fire(): void {

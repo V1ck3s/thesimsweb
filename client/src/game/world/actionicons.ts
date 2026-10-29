@@ -6,13 +6,15 @@
  * frames the object's thumbnail); its tooltip is the interaction name, a
  * click cancels it (cXPerson::RemoveAction).
  *
- * Simplifications: the icons do not slide (StartAnimating / AnimateIcon), a
- * cancelled action is drawn dimmed rather than with the original's cross,
- * and people targets show a plain frame (no head picture).
+ * Simplifications: the icons do not slide (StartAnimating / AnimateIcon) and
+ * a cancelled action is drawn dimmed rather than with the original's cross.
+ * People icons are their head picture (PersonFinder::GetPictureBuffer,
+ * through `personPicture`).
  */
 
 import { ObjectIcon } from "../cpanel/buy/objecticon.js";
 import type { Interaction, PersonSim } from "../sim/person.js";
+import type { SimObject } from "../sim/xobject.js";
 import type { Gfx } from "../ui/tswin.js";
 import type { ObjSelector } from "./objselector.js";
 
@@ -33,6 +35,8 @@ export class ActionIcons {
    */
   private readonly boxed = new Map<ObjectIcon, HTMLCanvasElement>();
   private readonly pending = new Set<ObjSelector>();
+  /** A person's head picture (PersonFinder::GetPictureBuffer), null until known. */
+  personPicture: ((o: SimObject) => CanvasImageSource | null) | null = null;
   /** Asks for a repaint once an icon picture is ready. */
   onReady: (() => void) | null = null;
 
@@ -66,7 +70,9 @@ export class ActionIcons {
       ctx.fillRect(x, y, SIZE, SIZE);
       const o = p.module.getObject(a.icon) ?? p.module.getObject(a.target);
       const ic = o && !o.isPerson ? this.icon(o.obj.selector) : null;
-      if (ic && !(a.flags & 0x100)) {
+      const head = o?.isPerson ? (this.personPicture?.(o) ?? null) : null;
+      if (head) ctx.drawImage(head, x + 2, y + 2, SIZE - 4, SIZE - 4);
+      else if (ic && !(a.flags & 0x100)) {
         // Over the opaque box the picture is always the same pixels.
         ctx.drawImage(this.boxedIcon(ic), x + 2, y + 2);
       } else if (ic) {

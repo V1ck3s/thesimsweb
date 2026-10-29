@@ -156,7 +156,7 @@ export class PoolTool extends Tool {
   private anchor = { fx: 0, fy: 0 };
   /** lbl_105BA4C8 (pool) / lbl_105BA5C4 (water): price of a tile. */
   price: number;
-  /** cDDDSimsView::SetToolCursor's last id (the view's cursor is not ported). */
+  /** cDDDSimsView::SetToolCursor's last id. */
   toolCursor = CURSOR_NORMAL;
   /** The last mouse event (cTSWinMgrW95::PumpMouseMoveMsg replays it). */
   private lastEvent: ToolEvent | null = null;
@@ -219,6 +219,8 @@ export class PoolTool extends Tool {
     this.setViewerLayer(this.preview);
     this.host.invalidate();
     this.active = true;
+    // cWaterTool::Select shows the water cursor.
+    if (this.water) this.showCursor(0x26);
   }
 
   /** cPoolTool::Deselect */
@@ -229,6 +231,7 @@ export class PoolTool extends Tool {
     this.worldLayer.data.set(this.preview.data);
     this.host.invalidate();
     this.active = false;
+    if (this.water) this.showCursor(0);
     // GlobalDispatch(0x91): rooms (pool rooms), cutaway and lighting.
     this.host.dirty.walls(1);
   }
@@ -465,6 +468,7 @@ export class PoolTool extends Tool {
   private setMode(mode: number): void {
     this.mode = mode;
     this.toolCursor = mode === 1 ? CURSOR_DELETE : CURSOR_NORMAL;
+    this.showCursor(this.toolCursor);
   }
 
   /** cTSWinMgrW95::PumpMouseMoveMsg: the last mouse move again. */

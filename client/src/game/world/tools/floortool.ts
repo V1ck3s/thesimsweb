@@ -101,7 +101,7 @@ export class NewFloorTool extends Tool implements FloorUndoTool {
   private anchor: FPt = { fx: 0, fy: 0 };
   /** lbl_105BA4B8 */
   floorsChanged = false;
-  /** cDDDSimsView::SetToolCursor's last id (the view's mouse cursor is not ported). */
+  /** cDDDSimsView::SetToolCursor's last id. */
   toolCursor = CURSOR_NORMAL;
 
   constructor(host: ToolHost) {
@@ -325,6 +325,7 @@ export class NewFloorTool extends Tool implements FloorUndoTool {
   /** cDDDSimsView::SetToolCursor */
   private setToolCursor(id: number): void {
     this.toolCursor = id;
+    this.showCursor(id);
   }
 
   /** GViewer::DirtyFloor */

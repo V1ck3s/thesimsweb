@@ -11,26 +11,37 @@
  * Panels (cWinPeople::Panel): 0 none, 1 mood (needs), 2 personality, 3 job,
  * 4 house, 5 relationships, 6 interests, 7 gifts.
  *
- * Not ported (no simulation yet or out of scope): hover popups
- * (cWinLivePopup), pie menus (cTSPieMenu, kPieFaceBkg), sounds, Ctrl+click
- * biography editor, sim tracking (kTrackingTarget foreground, command 0x1b),
- * at-work / frog portrait overlays (UpdateAtWorkStatus), the pet skills,
- * fame and report card job pages and the gift page.
+ * The description popup (cWinLivePopup, +0x150) opens on a click on a need,
+ * a trait, the zodiac sign, a relationship, an interest, a gift or a job /
+ * house label, or after the quick tips delay over one (SetQuickTips arms the
+ * buttons' async timer; TSOnCommand 0x13 is handled as a click). It closes
+ * when the mouse leaves the page (TSOnMouseMove / TSOnMouseExit) or the page
+ * changes (SetPanel), which releases the button it belongs to.
+ *
+ * Not ported (no simulation yet or out of scope): pie menus (cTSPieMenu,
+ * kPieFaceBkg), sounds, Ctrl+click biography editor, sim tracking
+ * (kTrackingTarget foreground, command 0x1b), the family portrait popup
+ * (command 0x13 on a portrait), at-work / frog portrait overlays
+ * (UpdateAtWorkStatus), the pet skills, fame and report card job pages.
  */
 
 import type { GameContext } from "../context.js";
 import { soundPlayer, UI } from "../audio/index.js";
 import { personGender, type CPState, type PersonInfo } from "../cpstate.js";
-import { BTN_TOGGLE, TSWinBtn } from "../ui/btn.js";
+import { getOptionsMgr } from "../optionsmgr.js";
+import { ASYNC_ON_DOWN, ASYNC_ON_ENTER, BTN_TOGGLE, CMD_ASYNC_EXIT, CMD_ASYNC_TIMEOUT, TSWinBtn } from "../ui/btn.js";
+import { winMgr } from "../ui/winmgr.js";
 import { TSWinText, WTF_MULTILINE } from "../ui/text.js";
 import { Gfx, TSWin, type Rect } from "../ui/tswin.js";
 import { WinSubpanelHouse } from "./live/house.js";
 import { InterestsPanel } from "./live/interest.js";
 import { WinMotive } from "./live/motive.js";
 import { buildPersonBtn } from "./live/peoplebuttons.js";
-import { WinPersonality, type TraitStrings } from "./live/personality.js";
+import { computeZodiacSign, WinPersonality, type TraitStrings } from "./live/personality.js";
 import { RelationshipsPanel } from "./live/relationship.js";
 import { WinSubpanelJob } from "./live/job.js";
+import { GiftsPanel } from "./live/gifts.js";
+import { popupClick, WinLivePopup, WinLivePopupClient } from "./livepopup.js";
 
 export const enum LivePanel {
   None = 0,
@@ -99,6 +110,16 @@ const STR_PET_PERSONALITY = 0xaa;
 const STR_PET_MOTIVES = 0xb4;
 const STR_MISC = 0x9a;
 const STR_SIGNS = 0xa4;
+/** UIText STR# 0xa5: name and description of each sign (cWinPeople::Init, +0x1c4 / +0x1f4). */
+const STR_SIGN_TEXTS = 0xa5;
+
+/**
+ * GetCompatibleSigns / GetIncompatibleSigns: two signs each (lbl_105BBD7C /
+ * lbl_105BBD84, 1-based), after the UIText STR# 0x9a entries 6 / 7 and
+ * joined by ", " (lbl_105BBD80).
+ */
+const COMPATIBLE_SIGNS = [3, 2, 1, 7, 12, 6, 2, 8, 9, 4, 11, 9, 6, 4, 12, 5, 12, 10, 11, 2, 10, 9, 8, 3];
+const INCOMPATIBLE_SIGNS = [4, 7, 6, 4, 10, 1, 3, 1, 10, 3, 5, 2, 12, 8, 7, 11, 7, 8, 5, 3, 8, 6, 5, 1];
 
 /** CPState dirty bits cWinPeople reacts to (UpdateViewFromCPState / SetPanel). */
 const DIRTY_FAMILY = 0x20080000;
@@ -120,32 +141,6 @@ const PANEL_DIRTY: Record<LivePanel, number> = {
 /** Portrait row by mood (lbl_105BC4C8 + 0xc / + 0x10): 0 normal, 1 happy, 2 sad. */
 const MOOD_LOW = -25;
 const MOOD_HIGH = 25;
-
-/** ComputeZodiacSign: personality profile of each sign (outgoing, nice, playful, neat, active). */
-const ZODIAC_TRAITS = [6, 2, 5, 7, 3];
-const ZODIAC_PROFILES = [
-  [8, 3, 3, 5, 6], [5, 4, 8, 5, 3], [7, 3, 3, 4, 8], [3, 6, 4, 6, 6],
-  [10, 3, 4, 4, 4], [2, 5, 3, 9, 6], [8, 7, 6, 2, 2], [5, 3, 3, 6, 8],
-  [3, 4, 7, 2, 9], [4, 5, 8, 7, 1], [4, 6, 7, 4, 4], [3, 7, 3, 5, 7],
-];
-
-/** ComputeZodiacSign: the sign whose profile is closest to the person's traits. */
-function computeZodiacSign(data: Int16Array): number {
-  let best = -1;
-  let bestDist = 1e38;
-  ZODIAC_PROFILES.forEach((profile, i) => {
-    let d = 0;
-    profile.forEach((v, k) => {
-      const t = 0.01 * (data[ZODIAC_TRAITS[k]!] ?? 0) - v;
-      d += t * t;
-    });
-    if (d < bestDist) {
-      best = i + 1;
-      bestDist = d;
-    }
-  });
-  return best < 1 || best > 12 ? 1 : best;
-}
 
 function isChild(p: PersonInfo): boolean {
   const age = p.personData?.[PD_AGE];
@@ -195,6 +190,13 @@ export class WinPeople extends TSWin {
   private house!: WinSubpanelHouse;
   private relationships!: RelationshipsPanel;
   private interests!: InterestsPanel;
+  private gifts!: GiftsPanel;
+  /** +0x150: the description popup, in the lot view. */
+  private popup!: WinLivePopup;
+  /** +0x1c0: the zodiac sign's popup client; +0x1c4 / +0x1f4 the signs' names and descriptions. */
+  private readonly zodiacClient = new WinLivePopupClient();
+  private readonly signNames: string[] = [];
+  private readonly signDescs: string[] = [];
 
   constructor(readonly ctx: GameContext) {
     super();
@@ -250,11 +252,14 @@ export class WinPeople extends TSWin {
     this.relationships = new RelationshipsPanel(ctx);
     this.interests = new InterestsPanel(ctx);
     this.house = new WinSubpanelHouse(ctx);
+    // cWinPeople+0x348: the gift popup client.
+    this.gifts = new GiftsPanel(ctx, new WinLivePopupClient());
     if (
       !(await placePage(this.job, true)) ||
-      // The relationships and interests windows set the page area themselves (and build their lists).
+      // The relationships, interests and gifts windows set the page area themselves (and build their lists).
       !(await placePage(this.relationships, false)) ||
       !(await placePage(this.interests, false)) ||
+      !(await placePage(this.gifts, false)) ||
       !(await placePage(this.house, true))
     ) {
       return false;
@@ -267,6 +272,8 @@ export class WinPeople extends TSWin {
     ] as const) {
       for (const [i, motive] of MOTIVES.entries()) {
         const m = new WinMotive(ctx, str(id, 1 + 2 * i), str(id, 2 + 2 * i), motive);
+        // The social need's popup shows kSocialPopupIcon in its left pane.
+        if (i === 5) m.client.setBitmap(0, await res.image("kSocialPopupIcon"));
         if (await m.init()) win.childAdd(m);
         set.push(m);
       }
@@ -283,6 +290,10 @@ export class WinPeople extends TSWin {
     const personalityTitle = str(STR_PERSONALITY, 0);
     for (const [t, trait] of TRAITS.entries()) {
       const w = new WinPersonality(ctx, traitStrings(STR_PERSONALITY, t), traitStrings(STR_PET_PERSONALITY, t), trait);
+      w.pictureOf = (i) => {
+        const p = this.personAt(i);
+        return p ? this.pictureBuffer(p) : null;
+      };
       await w.init();
       this.personalities.push(w);
     }
@@ -301,6 +312,17 @@ export class WinPeople extends TSWin {
     this.zodiacBtn.font = await fonts.acquire(12);
     this.zodiacBtn.cols = 4;
     this.personalityWin.childAdd(this.zodiacBtn);
+    // The signs' popup texts: name, then description + compatible and incompatible signs.
+    await strings.load("GameData/UIText.iff");
+    const signTexts = strings.list("UIText", STR_SIGN_TEXTS);
+    const signName = (n: number): string => strings.get("UIText", STR_SIGNS, n - 1);
+    for (let i = 0; i < 12; i++) {
+      this.signNames.push(signTexts[2 * i] ?? "");
+      const pair = (table: number[], prefix: number): string =>
+        strings.get("UIText", STR_MISC, prefix) + signName(table[2 * i]!) + ", " + signName(table[2 * i + 1]!);
+      this.signDescs.push(`${signTexts[2 * i + 1] ?? ""}\n${pair(COMPATIBLE_SIGNS, 6)}\n${pair(INCOMPATIBLE_SIGNS, 7)}`);
+    }
+    this.zodiacClient.target = this.zodiacBtn;
 
     this.interests.buildInterests();
 
@@ -332,9 +354,34 @@ export class WinPeople extends TSWin {
       w.tooltip = strings.get("UIText", STR_MISC, 15);
     }
 
+    // The popup lives in the lot view (cSimsApp+0x80); the pages share it.
+    this.popup = new WinLivePopup(ctx);
+    if (!(await this.popup.init())) return false;
+    for (const page of [this.job, this.house, this.relationships, this.interests]) page.livePopup = this.popup;
+
     this.setPerson(-1);
     this.setPanel(LivePanel.Mood);
+    const options = getOptionsMgr();
+    this.setQuickTips(options.getQuickTips());
+    options.onChange((o) => this.setQuickTips(o.getQuickTips()));
     return true;
+  }
+
+  /**
+   * cWinPeople::SetQuickTips: the needs, traits, relationships, interests
+   * and zodiac sign open their popup on hover after the default async
+   * timeout (flag 1) when quick tips are on; holding a portrait (flag 2)
+   * opens the person's popup either way.
+   */
+  setQuickTips(on: boolean): void {
+    const timeout = getOptionsMgr().getDefaultAsyncTimeout();
+    const hover = on ? ASYNC_ON_ENTER : 0;
+    for (const b of [...this.motives, ...this.petMotives, ...this.personalities, ...this.relationships.tiles, ...this.interests.tiles, this.zodiacBtn]) {
+      b.setAsync(hover, timeout);
+    }
+    for (const b of this.familyBtns) b.setAsync(ASYNC_ON_DOWN, timeout);
+    this.job.setQuickTips(on);
+    this.house.setQuickTips(on);
   }
 
   // --- pages -----------------------------------------------------------------
@@ -349,6 +396,7 @@ export class WinPeople extends TSWin {
       this.relationships,
       this.house,
       this.interests,
+      this.gifts,
     ];
   }
 
@@ -369,7 +417,7 @@ export class WinPeople extends TSWin {
 
   /** cWinPeople::SetPanel. */
   setPanel(panel: LivePanel): void {
-    // A page switch closes the hover popup (cWinLivePopup::DisablePopup): not ported.
+    if (panel !== this.panel) this.popup?.disablePopup();
     const prev = PAGE_BUTTONS.findIndex((d) => d.panel === this.panel);
     if (prev >= 0) this.pageBtns[prev]!.setState(0);
     if (panel === LivePanel.House && this.ctx.state.zoningType !== 1) panel = LivePanel.None;
@@ -405,7 +453,8 @@ export class WinPeople extends TSWin {
         this.interests.showWindow();
         break;
       case LivePanel.Gifts:
-        // Gift page (cWinPeople+0x328): not ported.
+        this.gifts.showWindow();
+        this.gifts.buildGifts(sel);
         break;
     }
     this.ctx.state.setDirty(PANEL_DIRTY[panel]);
@@ -442,7 +491,8 @@ export class WinPeople extends TSWin {
       for (const m of [...this.motives, ...this.petMotives]) m.setPerson(person);
     }
     this.familyBtns.forEach((b, i) => b.setState(i === this.personSlot ? 1 : 0));
-    // Relationship / interest popups follow the person (SetupClient): not ported.
+    // The open popup follows the person (UpdateClient).
+    if (this.panel === LivePanel.Personality) for (const w of this.personalities) w.setPerson(person);
     if (this.panel === LivePanel.Job && p) {
       if (!isChild(p) && personGender(p) < 2) this.job.showWindow();
       else this.job.hideWindow();
@@ -502,6 +552,7 @@ export class WinPeople extends TSWin {
       if (dirty & DIRTY_LISTS) {
         if (this.panel === LivePanel.Relationships) void this.relationships.buildRelationships();
         else if (this.panel === LivePanel.Interests) this.interests.buildInterests();
+        else if (this.panel === LivePanel.Gifts) this.gifts.buildGifts(sel);
       }
       if (dirty & DIRTY_SELECTED) this.setPerson(sel);
     }
@@ -542,9 +593,16 @@ export class WinPeople extends TSWin {
 
   // --- input -----------------------------------------------------------------
 
-  /** cWinPeople::TSOnCommand, command 1 (button pressed). */
+  /**
+   * cWinPeople::TSOnCommand: command 1 (button pressed); 0x13 (async
+   * timeout) is a click for everything but the portraits, whose person
+   * popup is not ported; 0x14 is ignored.
+   */
   override tsOnCommand(cmd: number, source: TSWin): boolean {
+    if (cmd === CMD_ASYNC_EXIT) return true;
     const slot = this.familyBtns.indexOf(source as TSWinBtn);
+    if (cmd === CMD_ASYNC_TIMEOUT && slot >= 0) return true;
+    if (this.popupCommand(source)) return true;
     if (slot >= 0) {
       // Ctrl+click opens the biography editor (cWinEditBio): not ported.
       this.personSlot = slot;
@@ -564,6 +622,72 @@ export class WinPeople extends TSWin {
       return true;
     }
     return super.tsOnCommand(cmd, source);
+  }
+
+  /** The Panel 1 / 2 / 7 part of TSOnCommand: the needs, traits, zodiac sign and gifts open their popup. */
+  private popupCommand(source: TSWin): boolean {
+    const popup = this.popup;
+    if (this.panel === LivePanel.Mood) {
+      const m = [...this.motives, ...this.petMotives].find((x) => x === source);
+      if (m) popupClick(popup, m.client, this, m);
+      return !!m;
+    }
+    if (this.panel === LivePanel.Personality) {
+      const w = this.personalities.find((x) => x === source);
+      if (w) {
+        popupClick(popup, w.client, this, w, () => w.updateClient());
+        return true;
+      }
+      if (source === this.zodiacBtn) {
+        // GetSignFromName on the button's caption.
+        const sign = Array.from({ length: 12 }, (_, i) => this.ctx.strings.get("UIText", STR_SIGNS, i)).indexOf(this.zodiacBtn.caption) + 1;
+        if (sign > 0) {
+          const c = this.zodiacClient;
+          popupClick(popup, c, this, this.zodiacBtn, () => {
+            c.setName(this.signNames[sign - 1] ?? "");
+            c.setDesc(this.signDescs[sign - 1] ?? "");
+          });
+        }
+        return true;
+      }
+      return false;
+    }
+    if (this.panel === LivePanel.Gifts) {
+      const sel = this.selected();
+      const g = this.gifts.gifts.find((x) => x === source);
+      if (g) {
+        popupClick(popup, g.client, this, g, () => g.setupClient());
+        return true;
+      }
+      if (source === this.gifts.prevPage) this.gifts.prev(sel);
+      else if (source === this.gifts.nextPage) this.gifts.next(sel);
+      else if (this.gifts.sortPressed(source, sel)) this.ctx.state.setDirty(PANEL_DIRTY[LivePanel.Gifts]);
+      else return false;
+      return true;
+    }
+    return false;
+  }
+
+  /**
+   * cWinPeople::TSOnMouseMove / TSOnMouseExit(Child): the popup closes once
+   * the mouse leaves the panel, or the page area (300, 50)-(page right, 150)
+   * for a page's popup.
+   */
+  override pump(nowMs: number): void {
+    super.pump(nowMs);
+    const popup = this.popup;
+    if (!popup?.isEnabled() || !this.isVisibleAndAllParentsVisible()) return;
+    const { x, y } = winMgr.cursorPosition();
+    let root: TSWin = this;
+    while (root.parent) root = root.parent;
+    let inside = false;
+    for (let w = root.windowFromPoint(x, y); w; w = w.parent) if (w === this) inside = true;
+    const o = this.absOrigin();
+    const lx = x - o.x;
+    const ly = y - o.y;
+    const right = PAGE_ORIGIN.x + PAGE_AREA.right + (this.ctx.width === 0x400 ? WIDE_SCREEN_EXTRA : 0);
+    const inPage = lx >= PAGE_ORIGIN.x && ly >= PAGE_AREA.top && lx < right && ly < PAGE_AREA.bottom;
+    if (!inside || !inPage) popup.disablePopup();
   }
 
   /** cWinPeople::IsPointInWindowWindowCoordinates: the top 50 px let clicks through. */

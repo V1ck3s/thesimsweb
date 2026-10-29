@@ -14,8 +14,12 @@
  *    equal ends, so the color switches at once;
  *  - a 1 px black divider ends the green part when the red part is wider than 1 px.
  *
- * Not ported: the hover popup (cWinLivePopupClient, the need's description) and
- * the delta meter arrows (cWinDeltaMeter, fed by the per-person cAverageHistory).
+ * The popup client (+0x198) holds the need's name and description; cWinPeople
+ * opens it on a click or, with quick tips, on hover.
+ *
+ * Not ported: the popup's object panes (cWinLivePopupClient::SetObject with the
+ * lbl_105BC498 GUIDs) and the delta meter arrows (cWinDeltaMeter, fed by the
+ * per-person cAverageHistory).
  */
 
 import type { GameContext } from "../../context.js";
@@ -24,6 +28,7 @@ import { ALIGN_CENTER } from "../../res/ffn.js";
 import { BTN_TOGGLE_ON_DOWN, TSWinBtn } from "../../ui/btn.js";
 import { hiliteColor, rgb } from "../../ui/syscolors.js";
 import type { Gfx } from "../../ui/tswin.js";
+import { WinLivePopupClient } from "../livepopup.js";
 
 /** lbl_105BC444 (sinit WinMotive.cpp): bar top-left in the window. */
 const BAR_ORIGIN = { x: 20, y: 12 };
@@ -43,6 +48,8 @@ export class WinMotive extends TSWinBtn {
   private green = "";
   private red = "";
   private captionFont: FfnFont | null = null;
+  /** +0x198: the popup client (name, description; this button is its target). */
+  readonly client: WinLivePopupClient;
 
   /**
    * cWinMotive(iter, motive, guid, guid, scale, scale): `name` and `desc` are
@@ -57,6 +64,8 @@ export class WinMotive extends TSWinBtn {
   ) {
     super();
     this.caption = name;
+    this.client = new WinLivePopupClient(name, desc);
+    this.client.target = this;
     this.resetHistory();
   }
 

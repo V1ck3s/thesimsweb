@@ -43,6 +43,7 @@ export async function personFromNeighbor(n: NeighborhoodData, nb: Neighbor, last
     face: await bitmap(c?.bitmaps.get(2002)),
     relFace: await bitmap(c?.bitmaps.get(2003)),
     relationships: nb.relationships,
+    bio: c?.bio ?? "",
   };
 }
 

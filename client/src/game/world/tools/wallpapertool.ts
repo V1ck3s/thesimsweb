@@ -118,7 +118,7 @@ export class NewWallpaperTool extends Tool implements WallpaperUndoTool {
   private inWorld = false;
   /** +0x5c: the tip shown (cMoveTool::ShowPlacementTip code). */
   private tipCode = 0;
-  /** cDDDSimsView::SetToolCursor's last id (the view's mouse cursor is not ported). */
+  /** cDDDSimsView::SetToolCursor's last id. */
   toolCursor = CURSOR_NORMAL;
   private cursorSel: ObjSelector | null = null;
   private cursorRenderer: Renderer | null = null;
@@ -418,6 +418,7 @@ export class NewWallpaperTool extends Tool implements WallpaperUndoTool {
     const m = this.mode;
     if (m === WallpaperMode.Paint || m === WallpaperMode.Room) this.toolCursor = CURSOR_NORMAL;
     else if (m === WallpaperMode.Delete || m === WallpaperMode.DeleteRoom) this.toolCursor = CURSOR_DELETE;
+    this.showCursor(this.toolCursor);
   }
 
   /** cMoveTool::ShowPlacementTip(code, amount): next to the mouse, 0 takes it away. */

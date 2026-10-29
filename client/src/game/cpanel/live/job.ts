@@ -21,17 +21,39 @@ import { personGender, type PersonInfo } from "../../cpstate.js";
 import type { GameContext } from "../../context.js";
 import type { FfnFont } from "../../res/ffn.js";
 import { LANG_FRENCH } from "../../res/uires.js";
-import { BTN_TOGGLE } from "../../ui/btn.js";
+import { getOptionsMgr } from "../../optionsmgr.js";
+import { ASYNC_ON_ENTER, BTN_TOGGLE, CMD_ASYNC_EXIT } from "../../ui/btn.js";
 import { rgb, UI_FONT_COLOR } from "../../ui/syscolors.js";
 import { Gfx, TSWin } from "../../ui/tswin.js";
 import { CaptionBtn } from "./captionbtn.js";
-import { careerById, JobReq, jobShortName, loadCareers, type Career, type Job } from "./careers.js";
+import { careerById, JobReq, jobName, jobShortName, loadCareers, type Career, type Job } from "./careers.js";
+import { popupClick, type WinLivePopup, WinLivePopupClient } from "../livepopup.js";
 
 /** cSimsApp language (+100); the client runs the French install. */
 const UI_LANGUAGE = LANG_FRENCH;
 
 const LIVE = "Live";
 const STR_LABELS = 0x88;
+/**
+ * STR# 137 (cWinSubpanelJob::Init): (name, description) of the six skills
+ * (+0xf4 / +0x100) and of the four summary lines (+0x10c / +0x118), then
+ * the performance texts (+0x140, +0x144, +0x150 jobless), the job template
+ * (+0x134, "$Start", "$End", "$CarTime"), the jobless salary text (+0x154),
+ * +0x148, +0x14c and the top-of-the-career performance texts (+0x158..+0x168).
+ */
+const STR_POPUP = 0x89;
+const POPUP = {
+  perf1: 20,
+  perf2: 21,
+  perfJobless: 22,
+  jobTemplate: 23,
+  salaryJobless: 24,
+  perf3: 25,
+  perf4: 26,
+  topPerf: [27, 28, 29, 30, 31],
+} as const;
+/** lbl_105C0E78..: performance steps of the popup text. */
+const POPUP_PERF_STEPS = [-60, -30, 30, 60];
 const WORK = "work";
 /** STR# 0x1000 of work.iff, loaded by LoadCareers (cJob::GetPerformance). */
 const STR_PERFORMANCE = 0x1000;
@@ -174,6 +196,12 @@ export class WinSubpanelJob extends TSWin {
   private noSalary = "";
   private noPerformance = "";
   private friendsFormat = "";
+  /** cWinPeople+0x150: the Live panel's popup (set by WinPeople); +0x124 this page's client. */
+  livePopup: WinLivePopup | null = null;
+  private readonly client = new WinLivePopupClient();
+  private popupTexts: string[] = [];
+  /** +0x16c: kJobPopupComposite, 22 career pictures stacked. */
+  private jobComposite: ImageBitmap | null = null;
 
   constructor(readonly ctx: GameContext) {
     super();
@@ -218,7 +246,8 @@ export class WinSubpanelJob extends TSWin {
     this.noSalary = labels[8] ?? "";
     this.noPerformance = labels[9] ?? "";
     this.friendsFormat = labels[10] ?? "";
-    // STR# 137 holds the popup names and texts of the skills and summary lines.
+    this.popupTexts = ctx.strings.list(LIVE, STR_POPUP);
+    this.jobComposite = await ctx.res.image("kJobPopupComposite");
 
     for (let i = 0; i < 4; i++) {
       const btn = i === 2 ? new PerformanceBtn(font7) : new FlashyBtn();
@@ -258,7 +287,8 @@ export class WinSubpanelJob extends TSWin {
       this.childAdd(btn);
       this.summaryBtns.push(btn);
     }
-    // popup: cWinLivePopupClient for the skills and summary lines (+0x124), "perf" help id.
+    this.client.setName(this.popupTexts[0] ?? "");
+    this.client.setDesc(this.popupTexts[1] ?? "");
     return super.init();
   }
 
@@ -267,18 +297,92 @@ export class WinSubpanelJob extends TSWin {
     this.updateSummary(this.ctx.state.personGetSelected());
   }
 
-  /** cWinSubpanelJob::TSOnCommand: one skill label (or summary line) at a time shows its popup. */
+  /** cWinSubpanelJob::SetQuickTips: the skill labels and summary lines open their popup on hover. */
+  setQuickTips(on: boolean): void {
+    const timeout = getOptionsMgr().getDefaultAsyncTimeout();
+    for (const b of [...this.skillBtns, ...this.summaryBtns]) b.setAsync(on ? ASYNC_ON_ENTER : 0, timeout);
+  }
+
+  /**
+   * cWinSubpanelJob::TSOnCommand: one skill label (or summary line) at a
+   * time shows its popup (0x13, the async timeout, is a click); the second
+   * click on the open item closes it, which releases the button.
+   */
   override tsOnCommand(cmd: number, source: TSWin): boolean {
-    for (const group of [this.skillBtns, this.summaryBtns]) {
-      const index = group.indexOf(source as FlashyBtn);
-      if (index < 0) continue;
-      // The second click on the open item closes its popup, which releases the button.
-      const closing = (source as FlashyBtn).state === 0;
-      for (const b of [...this.skillBtns, ...this.summaryBtns]) b.setState(b === source && !closing ? 1 : 0);
-      // popup: EnablePopup / SetClient (SetupSummaryClient for the summary lines).
+    if (cmd === CMD_ASYNC_EXIT) return true;
+    const popup = this.livePopup;
+    const skill = this.skillBtns.indexOf(source as FlashyBtn);
+    if (skill >= 0) {
+      this.skillBtns.forEach((b, i) => b.setState(i === skill ? 1 : 0));
+      if (popup) {
+        popupClick(popup, this.client, this, this.skillBtns[skill]!, () => {
+          this.client.setName(this.popupTexts[2 * skill] ?? "");
+          this.client.setDesc(this.popupTexts[2 * skill + 1] ?? "");
+          // The skills' object panes (lbl_105BC5C0 GUIDs) are all empty.
+          this.client.setBitmap(0, null);
+        });
+      }
+      return true;
+    }
+    const line = this.summaryBtns.indexOf(source as FlashyBtn);
+    if (line >= 0) {
+      if (popup) popupClick(popup, this.client, this, this.summaryBtns[line]!, () => this.setupSummaryClient(line));
       return true;
     }
     return super.tsOnCommand(cmd, source);
+  }
+
+  /** cWinSubpanelJob::SetupSummaryClient: job, salary, performance or friends line. */
+  private setupSummaryClient(line: number): void {
+    const p = this.ctx.state.personGetSelected();
+    if (!p) return;
+    const c = this.client;
+    const t = (i: number): string => this.popupTexts[i] ?? "";
+    const name = (i: number): string => t(12 + 2 * i);
+    const desc = (i: number): string => t(13 + 2 * i);
+    const job = this.getJob(p);
+    c.setBitmap(1, null);
+    if (line === 0) {
+      // The career's picture: one of the 22 rows of kJobPopupComposite (row 0 when jobless).
+      const comp = this.jobComposite;
+      const rowH = comp ? Math.trunc(comp.height / JOB_ICON_ROWS) : 0;
+      let row = 0;
+      if (!job) {
+        c.setName(name(0));
+        c.setDesc(desc(0));
+      } else {
+        const hour = (h: number): string => `${h}:00`;
+        const start = job.startHour;
+        // cTSLanguageManager::MakeTimeString(hour, 0) of the start, end and carpool ((start + 23) % 24) hours.
+        const text = t(POPUP.jobTemplate)
+          .replace("$Start", hour(start))
+          .replace("$End", hour(job.endHour))
+          .replace("$CarTime", hour((start + 23) % 24));
+        c.setName(jobName(job, personGender(p) === 1));
+        c.setDesc(`${text}\n${job.description}`);
+        const id = this.getCareer(p)?.id ?? 0;
+        row = id === -1 ? 0xb : id;
+      }
+      if (comp && row >= 0 && row <= 0x15) c.setBitmap(0, comp, { left: 0, top: row * rowH, right: comp.width, bottom: (row + 1) * rowH });
+      else c.setBitmap(0, null);
+      return;
+    }
+    c.setName(name(line));
+    c.setBitmap(0, null);
+    if (line === 2) {
+      if (!job) {
+        c.setDesc(t(POPUP.perfJobless));
+        return;
+      }
+      const perf = this.data(p, PD_JOB_PERFORMANCE);
+      const step = POPUP_PERF_STEPS.filter((x) => perf >= x).length;
+      const top = this.getNextJob(p) === null;
+      const texts = [desc(2), t(POPUP.perf1), t(POPUP.perf2), t(POPUP.perf3), t(POPUP.perf4)];
+      c.setDesc(top ? t(POPUP.topPerf[step]!) : texts[step]!);
+      return;
+    }
+    if (line === 1 && !job) c.setDesc(t(POPUP.salaryJobless));
+    else c.setDesc(desc(line));
   }
 
   // --- PersonFinder job queries ---------------------------------------------

@@ -155,6 +155,8 @@ export class GameTools {
     if (this.current === t) return;
     this.current?.deselect();
     this.current = t;
+    // cTool::Select: the arrow, before the tool's own cursor.
+    this.host.setToolCursor?.(0);
     t?.select();
     if (t && this.mouseInWorld) t.onEnterWorld();
     this.host.invalidate();

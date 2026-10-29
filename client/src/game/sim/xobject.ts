@@ -30,7 +30,8 @@ import { tryLotChangeCall } from "./lotcalls.js";
 import { PRIM_CONTINUE, PRIM_FALSE, PRIM_TRUE, PRIM_WAIT, TreeSim, simThrow, treeSimGlobals } from "./treesim.js";
 import type { ParamSource, StackElem } from "./treestack.js";
 import { DIR_VEC, rotateOffset } from "./routing.js";
-import { getBehCareerData, offerDialogText, simJobName, type SimCareer } from "./careers.js";
+import { getBehCareerData, getGrade, offerDialogText, simJobName, type SimCareer } from "./careers.js";
+import { getTitleFromLevel } from "./fametrack.js";
 import { balloonSpriteCount, balloonSpriteID, iconSpriteID } from "../world/balloons.js";
 import { tickSpriteSlot } from "../world/slots.js";
 import { EditPerson } from "../cas/editperson.js";
@@ -1784,12 +1785,15 @@ export class SimObject extends TreeSim {
    * its id), $Me / $Object (catalog names of this / the stack object, whose
    * selector goes to `out`), $Local:n, $Attrib:n (stack object attribute),
    * $NameAttrib:n / $NameLocal:n (catalog name of the object whose id is
-   * there), $NeighborLocal:n (that neighbor's full name), $Neighbor (the
-   * neighbor whose id is the stack object; `vars[0]` becomes it),
-   * $CatalogLocal:n (catalog description), $TimeLocal:n (an hour), then
-   * $JobOffer / $JobDesc / $Job (career and level from locals a / b, from
-   * this person's job person data otherwise). $TokenNameLocal,
-   * $FameTitleLocal and $Grade are not ported (left as they are).
+   * there), $TokenNameLocal:n (catalog name of this person's SimInventory
+   * token at the index in local n; error 0x1c for a non-person),
+   * $NeighborLocal:n (that neighbor's full name), $Neighbor (the neighbor
+   * whose id is the stack object; `vars[0]` becomes it), $CatalogLocal:n
+   * (catalog description), $FameTitleLocal:n (cFameTrack::
+   * GetTitleFromLevel of local n, "" without a fame track), $Grade:n
+   * (cJob::GetGrade(n): the number itself, not a local, must name a local),
+   * $TimeLocal:n (an hour), then $JobOffer / $JobDesc / $Job (career and
+   * level from locals a / b, from this person's job person data otherwise).
    */
   parseUIString(text: string, elem: StackElem | null, vars: Int16Array | null, out?: { selector: ObjSelector | null }): string {
     const m = this.module;
@@ -1860,6 +1864,14 @@ export class SimObject extends TreeSim {
       const v = local(a);
       return v === null ? null : objName(v);
     });
+    each("$TokenNameLocal", (a) => {
+      const v = local(a);
+      if (v === null) return null;
+      if (!this.person) simThrow(0x1c);
+      const inv = m.getInventoryByNeighbourID(this.person.personData[PD_NEIGHBOR_ID]!);
+      const token = v >= 0 && v < inv.tokens.length ? inv.tokens[v]! : { guid: 0 };
+      return this.obj.selector.folder.selectorByGUID?.(token.guid)?.getCatalogName() ?? null;
+    });
     each("$NeighborLocal", (a) => {
       const v = local(a);
       return v === null ? null : this.neighborFullName(v);
@@ -1877,6 +1889,12 @@ export class SimObject extends TreeSim {
       const o = v === null ? null : this.obj_(v);
       return o ? o.obj.selector.getCatalogDescription() : null;
     });
+    each("$FameTitleLocal", (a) => {
+      const v = local(a);
+      if (v === null) return null;
+      return m.fameTitles ? getTitleFromLevel(m.fameTitles, v) : "";
+    });
+    each("$Grade", (a) => (local(a) === null ? null : getGrade(m.jobGrades, a)));
     each("$TimeLocal", (a) => {
       const v = local(a);
       return v !== null && v >= 0 && v < 24 ? `${v}:00` : null;

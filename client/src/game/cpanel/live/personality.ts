@@ -17,7 +17,9 @@
  *    (slotX, slotY - 1); text drawn with DrawTextPara style 2 (right aligned)
  *    in the button's hilite color.
  *
- * Not ported: the hover popup (level name, description and portrait).
+ * The popup client (+0x194, UpdateClient) shows the level name and
+ * description of the person's value (below 3, below 8, else the top level)
+ * and the person's portrait.
  */
 
 import type { GameContext } from "../../context.js";
@@ -26,6 +28,33 @@ import { ALIGN_RIGHT, type FfnFont } from "../../res/ffn.js";
 import { BTN_TOGGLE_ON_DOWN, TSWinBtn } from "../../ui/btn.js";
 import { hiliteColor } from "../../ui/syscolors.js";
 import type { Gfx, Rect } from "../../ui/tswin.js";
+import { WinLivePopupClient } from "../livepopup.js";
+
+/** ComputeZodiacSign: personality profile of each sign (outgoing, nice, playful, neat, active). */
+const ZODIAC_TRAITS = [6, 2, 5, 7, 3];
+const ZODIAC_PROFILES = [
+  [8, 3, 3, 5, 6], [5, 4, 8, 5, 3], [7, 3, 3, 4, 8], [3, 6, 4, 6, 6],
+  [10, 3, 4, 4, 4], [2, 5, 3, 9, 6], [8, 7, 6, 2, 2], [5, 3, 3, 6, 8],
+  [3, 4, 7, 2, 9], [4, 5, 8, 7, 1], [4, 6, 7, 4, 4], [3, 7, 3, 5, 7],
+];
+
+/** ComputeZodiacSign: the sign whose profile is closest to the person's traits. */
+export function computeZodiacSign(data: Int16Array): number {
+  let best = -1;
+  let bestDist = 1e38;
+  ZODIAC_PROFILES.forEach((profile, i) => {
+    let d = 0;
+    profile.forEach((v, k) => {
+      const t = 0.01 * (data[ZODIAC_TRAITS[k]!] ?? 0) - v;
+      d += t * t;
+    });
+    if (d < bestDist) {
+      best = i + 1;
+      bestDist = d;
+    }
+  });
+  return best < 1 || best > 12 ? 1 : best;
+}
 
 /** Strings a trait takes from one STR# (constructor order). */
 export interface TraitStrings {
@@ -48,6 +77,10 @@ export class WinPersonality extends TSWinBtn {
   private data: ArrayLike<number> | null = null;
   /** cTSWinBtn::SetCol: the hilite column forced by the owner, -1 = from the state. */
   fixedCol = -1;
+  /** +0x194: the popup client (this button is its target). */
+  readonly client = new WinLivePopupClient();
+  /** PersonFinder::GetPictureBuffer for the popup's portrait pane (set by the owner). */
+  pictureOf: ((person: number) => ImageBitmap | null) | null = null;
 
   constructor(
     readonly ctx: GameContext,
@@ -58,6 +91,7 @@ export class WinPersonality extends TSWinBtn {
   ) {
     super();
     this.caption = sim.name;
+    this.client.target = this;
   }
 
   override async init(): Promise<boolean> {
@@ -85,7 +119,20 @@ export class WinPersonality extends TSWinBtn {
     const p = this.ctx.state.family[person];
     const isPet = p !== undefined && personGender(p) > 1;
     this.caption = isPet ? this.pet.name : this.sim.name;
-    // UpdateClient (popup name/description/portrait): not ported.
+    this.updateClient();
+  }
+
+  /** cWinPersonality::UpdateClient: the level's name and description, then the portrait (45 x 45). */
+  updateClient(): void {
+    if (this.person === -1) return;
+    const p = this.ctx.state.family[this.person];
+    const value = Math.trunc((p?.personData?.[this.trait] ?? 0) / 100);
+    const set = !p || personGender(p) > 1 ? this.pet : this.sim;
+    const level = value < 3 ? 0 : value < 8 ? 1 : 2;
+    this.client.setName(set.levels[level]);
+    this.client.setDesc(set.descs[level]);
+    const pic = this.pictureOf?.(this.person) ?? null;
+    if (pic) this.client.setBitmap(0, pic, { left: 0, top: 0, right: 0x2d, bottom: 0x2d });
   }
 
   /** cWinPersonality::SetPerson with a neighbor (cPickFamilyPersonInfo): data read directly. */

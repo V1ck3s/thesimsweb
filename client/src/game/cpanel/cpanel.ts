@@ -12,6 +12,7 @@
  *    (cWinCPanel::PostInit).
  */
 
+import { getCursor } from "../ui/cursor.js";
 import { Mode, type CPState } from "../cpstate.js";
 import type { GameContext } from "../context.js";
 import { Gfx, TSWin } from "../ui/tswin.js";
@@ -64,6 +65,8 @@ export class WinCPanel extends TSWin {
   override async init(): Promise<boolean> {
     const { ctx } = this;
     this.background = await ctx.res.image("kUniversalCPBkg");
+    // cWinCPanel::Init: SetCursor(GetCursor(0)), so that the lot view's tool cursor stops at the panel.
+    this.winCursor = getCursor(0);
     const width = this.getW();
 
     this.viewControl = new WinViewControl(ctx);

@@ -187,6 +187,8 @@ export interface PersonInfo {
   relFace?: ImageBitmap | null;
   /** Relationship matrix row: other neighbor id -> [daily, flags, lifetime, ...]. */
   relationships?: Array<{ other: number; values: number[] }>;
+  /** PersonFinder::GetDescription: the character's catalog description (CTSS string 1). */
+  bio?: string;
 }
 
 /**
@@ -225,6 +227,8 @@ export interface HouseViewerHooks {
   setRotation(rotation: number): void;
   setLevel(level: number): void;
   setWallState(state: WallState): void;
+  /** cXObject::CenterHouseViewOnMe(selected person, smooth). */
+  centerOnSelected?(): void;
 }
 
 export class CPState {
@@ -412,8 +416,17 @@ export class CPState {
     return this.selected;
   }
 
+  /**
+   * CPState::SetSelectedPerson: selecting the person already selected
+   * centers the house view on them (cXObject::CenterHouseViewOnMe(p, 1),
+   * smooth; its click sound is not played).
+   */
   setSelectedPerson(index: number): void {
     if (index < 0 || index >= this.family.length) return;
+    if (index === this.selected) {
+      this.viewer?.centerOnSelected?.();
+      return;
+    }
     this.selected = index;
     this.touch(DIRTY_PERSON | DIRTY_SELECTED_PERSON);
   }

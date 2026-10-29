@@ -172,6 +172,8 @@ const SHADOW_VALID = (() => {
 export interface SelectorFolder {
   getMasterSelector(sel: ObjSelector): ObjSelector | null;
   getSubTileSelector(sel: ObjSelector, x: number, y: number, level: number): ObjSelector | null;
+  /** ObjectFolder::GetSelectorByGUID for a selector already opened (ObjectFolder.selectorByGUID). */
+  selectorByGUID?(guid: number): ObjSelector | null;
 }
 
 export class ObjSelector {

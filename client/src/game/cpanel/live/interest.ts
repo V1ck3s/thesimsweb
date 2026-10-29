@@ -11,15 +11,17 @@
  * cWinPeople::BuildInterests (paging, adult / child lists) and the clicks
  * cWinPeople::TSOnCommand handles for Panel 6.
  *
- * Not ported: the hover popup (cWinLivePopupClient with the STR# 142
- * description).
+ * The tiles share one popup client (cWinInterest +0x194): SetupClient puts
+ * the interest's name (STR# 140 entry index + 1) and description (STR# 142
+ * entry index + 1) in it.
  */
 
 import type { GameContext } from "../../context.js";
 import type { PersonInfo } from "../../cpstate.js";
-import { BTN_TOGGLE, TSWinBtn } from "../../ui/btn.js";
+import { BTN_TOGGLE, CMD_ASYNC_EXIT, TSWinBtn } from "../../ui/btn.js";
 import { TSWinText, WTF_MULTILINE } from "../../ui/text.js";
 import { type Gfx, TSWin } from "../../ui/tswin.js";
+import { popupClick, type WinLivePopup, WinLivePopupClient } from "../livepopup.js";
 
 /**
  * cWinInterest::SetInterest: person data index of each interest (cXPerson+0x58c
@@ -59,6 +61,8 @@ export class WinInterest extends TSWinBtn {
 
   constructor(
     readonly ctx: GameContext,
+    /** +0x194: the interests' shared popup client. */
+    readonly client: WinLivePopupClient,
     /** +0x18c: interest number, 0..18. */
     readonly index: number,
   ) {
@@ -83,6 +87,12 @@ export class WinInterest extends TSWinBtn {
     return true;
   }
 
+  /** cWinInterest::SetupClient: name STR# 0x8c, description STR# 0x8e (entry index + 1). */
+  setupClient(): void {
+    this.client.setName(this.ctx.strings.get("Live", 0x8c, this.index + 1));
+    this.client.setDesc(this.ctx.strings.get("Live", 0x8e, this.index + 1));
+  }
+
   /** cWinInterest::SetInterest. */
   setInterest(p: PersonInfo): void {
     this.value = Math.min(10, Math.trunc((p.personData?.[INTEREST_DATA[this.index]!] ?? 0) / 100));
@@ -103,7 +113,10 @@ export class InterestsPanel extends TSWin {
   private prevPage!: TSWinBtn;
   private nextPage!: TSWinBtn;
   /** cWinPeople+0x274: one tile per interest. */
-  private readonly tiles: WinInterest[] = [];
+  readonly tiles: WinInterest[] = [];
+  /** cWinPeople+0x150: the Live panel's popup (set by WinPeople); +0x26c its client for the tiles. */
+  livePopup: WinLivePopup | null = null;
+  private readonly client = new WinLivePopupClient();
   /** cWinPeople+0x260 / +0x264: top-left of the tile grid. */
   private gridLeft = 0;
   private gridTop = 0;
@@ -113,8 +126,6 @@ export class InterestsPanel extends TSWin {
   /** cWinPeople+0x320 / +0x324: current page and page count. */
   private page = 0;
   private pages = 0;
-  /** Tile whose popup is open (cWinLivePopupClient+0x14): it stays pressed. */
-  private current: WinInterest | null = null;
 
   constructor(readonly ctx: GameContext) {
     super();
@@ -160,7 +171,7 @@ export class InterestsPanel extends TSWin {
     this.nextPage.tooltip = strings.get("UIText", 0x9a, 1);
 
     for (let i = 0; i < INTEREST_COUNT; i++) {
-      const tile = new WinInterest(ctx, i);
+      const tile = new WinInterest(ctx, this.client, i);
       if (!(await tile.init())) return false;
       this.childAdd(tile);
       tile.hideWindow();
@@ -203,16 +214,13 @@ export class InterestsPanel extends TSWin {
     }
   }
 
-  /** cWinPeople::TSOnCommand, Panel 6 part. */
+  /** cWinPeople::TSOnCommand, Panel 6 part (0x13, the async timeout, is a click). */
   override tsOnCommand(cmd: number, source: TSWin): boolean {
+    if (cmd === CMD_ASYNC_EXIT) return true;
     const tile = this.tiles.find((t) => t === source);
     if (tile) {
       // The popup follows the clicked tile; clicking it again closes it.
-      if (this.current === tile) this.current = null;
-      else {
-        this.current?.setState(0);
-        this.current = tile;
-      }
+      if (this.livePopup) popupClick(this.livePopup, this.client, this.parent ?? this, tile, () => tile.setupClient());
       return true;
     }
     if (source === this.prevPage) {

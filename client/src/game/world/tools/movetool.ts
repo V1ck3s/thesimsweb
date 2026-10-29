@@ -11,7 +11,7 @@
  *
  * Not ported: the undo manager (ObjectUndoable; Esc restores a picked-up
  * object to where it was instead of undoing), object hilites (SetHilite),
- * the tool cursors (UpdateCursor / SetToolCursor), the control panel's sell
+ * the flip cursor of portals (+0x7a), the control panel's sell
  * value display (CPState::StartDisposing), build mode modes 3..9 (doors,
  * windows, stairs, plants, fireplaces, columns, pool equipment) and their
  * ctrl-delete branch.
@@ -69,6 +69,9 @@ export const ToolSound = {
   move: "UI_object_move",
 } as const;
 
+/** lbl_105BBDB8: UpdateCursor's rotate cursor by drag quadrant (+0x7c): NE, -, SE, -, SW, -, NW. */
+const ROTATE_CURSORS = [0xe, 0xc, 0x10, 0xc, 0xf, 0xc, 0xd];
+
 /** lbl_105BBDE4: refund = trunc(0.8 * value + 0.5) for build items. */
 const BUILD_REFUND = Math.fround(0.8);
 
@@ -94,6 +97,9 @@ export interface MoveToolHost {
   playSound?(event: string): void;
   /** _GetKeyState(VK_SHIFT / VK_CONTROL). */
   shiftDown(): boolean;
+  ctrlDown?(): boolean;
+  /** cDDDSimsView::SetToolCursor (ui/cursor.ts ids). */
+  setToolCursor?(id: number): void;
   /** The view needs repainting. */
   invalidate(): void;
 }
@@ -273,6 +279,25 @@ export class MoveTool {
     this.validFeedback = false;
     this.lastValidFeedback = false;
     this.host.invalidate();
+    this.updateCursor();
+  }
+
+  /**
+   * cMoveTool::UpdateCursor: Ctrl over a door or window (build item) is the
+   * delete cursor; else rotate while +0x80, the hand (SimsMove) with nothing
+   * held, the drag-rotation arrows, or the place cursor.
+   */
+  private updateCursor(): void {
+    const set = this.host.setToolCursor;
+    if (!set) return;
+    const ctrlDelete = !!this.host.ctrlDown?.() && (this.mode === MoveMode.Door || this.mode === MoveMode.Window);
+    let id: number;
+    if (this.buildItem && ctrlDelete) id = 6;
+    else if (this.cantGrab) id = 0xc;
+    else if (!this.cursor) id = 10;
+    else if (this.mouseRotate) id = ROTATE_CURSORS[this.rotateDir] ?? 0xc;
+    else id = 0xb;
+    set.call(this.host, id);
   }
 
   /**
@@ -292,6 +317,7 @@ export class MoveTool {
     this.orig = null;
     this.hiliteId = 0;
     this.host.invalidate();
+    this.updateCursor();
   }
 
   /** cMoveTool::Cancel (Esc): a picked-up object goes back where it was (UndoLastCommand). */
@@ -418,6 +444,14 @@ export class MoveTool {
 
   /** cMoveTool::Float (and Drag, which is Float with the button down). */
   float(px: number, py: number): void {
+    try {
+      this.floatTool(px, py);
+    } finally {
+      this.updateCursor();
+    }
+  }
+
+  private floatTool(px: number, py: number): void {
     this.mouseX = px;
     this.mouseY = py;
     const c = this.cursor;
@@ -564,6 +598,7 @@ export class MoveTool {
       }
     }
     this.host.invalidate();
+    this.updateCursor();
   }
 
   /** cMoveTool::Drag. */
@@ -589,6 +624,7 @@ export class MoveTool {
     this.updateSelector(obj.selector);
     this.price = 0;
     this.runningTotal = 0;
+    this.updateCursor();
   }
 
   /** cMoveTool::UpdateSelector for a picked-up object: build items refund 80 %. */
@@ -612,8 +648,12 @@ export class MoveTool {
     const c = this.cursor;
     const f = c?.anchor ?? null;
     if (f) this.frontDir = f.dir;
-    if (!c || !f || !c.dropObject()) return false;
+    if (!c || !f || !c.dropObject()) {
+      this.updateCursor();
+      return false;
+    }
     this.orig = null;
+    this.updateCursor();
     return true;
   }
 

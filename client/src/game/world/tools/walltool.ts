@@ -125,6 +125,11 @@ export class NewWallTool extends Tool {
     this.setCursorVertex({ x: 0, y: 0, level: this.currentLevel() });
   }
 
+  /** cNewWallTool::SetCursor(mode): the delete cursor while Ctrl deletes walls, else the arrow. */
+  private setCursor(mode: number): void {
+    this.showCursor(mode === WallMode.Delete ? 6 : 0);
+  }
+
   /** cNewWallTool::Deselect: the cursor object is killed. */
   override deselect(): void {
     this.cursorShown = false;
@@ -225,6 +230,7 @@ export class NewWallTool extends Tool {
   override float(e: ToolEvent): void {
     this.last = e;
     this.mode = NewWallTool.modeOf(e);
+    this.setCursor(this.mode);
     const v = this.vertexOf(e);
     if (this.undoable.legalWallTile(v, 0)) this.setCursorVertex(v);
   }
@@ -241,6 +247,7 @@ export class NewWallTool extends Tool {
     this.last = e;
     const v = this.vertexOf(e);
     this.mode = NewWallTool.modeOf(e);
+    this.setCursor(this.mode);
     const w = this.host.world;
     const u = this.undoable;
     const denyFloor = (): void => {
@@ -298,6 +305,7 @@ export class NewWallTool extends Tool {
       if (!force && this.last && e.fx === this.last.fx && e.fy === this.last.fy) return;
     } else {
       this.mode = mode;
+      this.setCursor(mode);
       const o = { ...u.origin };
       u.resetAll();
       u.mode = mode;

@@ -27,92 +27,23 @@ import { getOptionsMgr } from "../optionsmgr.js";
 import { ALIGN_LEFT, type FfnFont } from "../res/ffn.js";
 import { SYS_POPUP_TILES, TSWinCtrlMgr } from "../ui/ctrlmgr.js";
 import { bltEdge } from "../ui/dlg.js";
-import type { TSWinBtn } from "../ui/btn.js";
+import { ASYNC_ON_DOWN, ASYNC_ON_ENTER, ASYNC_ON_UP, CMD_ASYNC_EXIT, CMD_ASYNC_TIMEOUT, type TSWinBtn } from "../ui/btn.js";
 import { UI_FONT_COLOR } from "../ui/syscolors.js";
-import { Gfx, TSWin } from "../ui/tswin.js";
+import { Gfx, TSWin, type Rect } from "../ui/tswin.js";
 import { CaptionBtn } from "./live/captionbtn.js";
 
 /** cTSWinBtn::SendButtonCommand ids. */
 export const CMD_CLICK = 1;
-/** The async timer expired (hover / press held for the timeout). */
-export const CMD_ASYNC_TIMEOUT = 0x13;
-/** The cursor left a button whose async timer was armed. */
-export const CMD_ASYNC_EXIT = 0x14;
+export { ASYNC_ON_DOWN, ASYNC_ON_ENTER, ASYNC_ON_UP, CMD_ASYNC_EXIT, CMD_ASYNC_TIMEOUT };
 
-/** cTSWinBtn+0x14c bits. */
-export const ASYNC_ON_ENTER = 1;
-export const ASYNC_ON_DOWN = 2;
-export const ASYNC_ON_UP = 4;
+/** A captioned/bitmap button with cTSWinBtn's async timer (TSWinBtn.setAsync). */
+export class AsyncBtn extends CaptionBtn {}
 
-/**
- * A captioned/bitmap button with cTSWinBtn's async timer (+0x14c flags,
- * +0x150 timeout, +0x154 start, +0x164 armed): entering (flag 1), pressing
- * (flags 2|4) or releasing (flag 4) arms it; after `asyncTimeout` ms the
- * button sends CMD_ASYNC_TIMEOUT to its parent (TSPaint), and leaving it
- * sends CMD_ASYNC_EXIT.
- */
-export class AsyncBtn extends CaptionBtn {
-  asyncFlags = 0;
-  asyncTimeout = 0;
-  private asyncArmed = false;
-  private asyncStart = 0;
-
-  /** The SetQuickTips pattern: flags only when a timeout is set; the timer is disarmed. */
-  setAsync(flags: number, timeout: number): void {
-    this.asyncFlags = timeout === 0 ? 0 : flags;
-    this.asyncTimeout = timeout;
-    this.asyncArmed = false;
-  }
-
-  private arm(): void {
-    this.asyncArmed = true;
-    this.asyncStart = performance.now();
-  }
-
-  override tsOnMouseEnter(): void {
-    super.tsOnMouseEnter();
-    if (this.asyncFlags & ASYNC_ON_ENTER && !this.asyncArmed) this.arm();
-  }
-
-  override tsOnMouseExit(): void {
-    super.tsOnMouseExit();
-    if (this.asyncArmed || this.asyncFlags & ASYNC_ON_ENTER) {
-      this.parent?.tsOnCommand(CMD_ASYNC_EXIT, this);
-      this.asyncArmed = false;
-    }
-  }
-
-  override tsOnMouseDownL(): boolean {
-    if (!this.enabled) return true;
-    super.tsOnMouseDownL();
-    if (this.asyncFlags & (ASYNC_ON_DOWN | ASYNC_ON_UP)) this.arm();
-    else this.asyncArmed = false;
-    return true;
-  }
-
-  override tsOnMouseUpL(x: number, y: number): boolean {
-    super.tsOnMouseUpL(x, y);
-    if (this.asyncFlags & ASYNC_ON_UP) this.arm();
-    else this.asyncArmed = false;
-    return true;
-  }
-
-  override pump(nowMs: number): void {
-    super.pump(nowMs);
-    if (
-      this.asyncArmed &&
-      this.isVisibleAndAllParentsVisible() &&
-      nowMs - this.asyncStart > this.asyncTimeout
-    ) {
-      this.asyncArmed = false;
-      this.parent?.tsOnCommand(CMD_ASYNC_TIMEOUT, this);
-    }
-  }
-}
-
-/** One of the two panes (cWinLivePopupClient+0x2c, 0x28 bytes each): a bitmap here. */
+/** One of the two panes (cWinLivePopupClient+0x2c, 0x28 bytes each): a bitmap, or a part of one. */
 interface Pane {
   bitmap: ImageBitmap | null;
+  /** SetBitmap(int, cTSBuffer*, cTSRect*): the part of the bitmap shown, null = all of it. */
+  rect: Rect | null;
 }
 
 /** cWinLivePopupClient: what a popup shows and which button opened it. */
@@ -128,7 +59,10 @@ export class WinLivePopupClient {
   resetTargetOnClose = true;
   /** +0x7c */
   popup: WinLivePopup | null = null;
-  readonly panes: [Pane, Pane] = [{ bitmap: null }, { bitmap: null }];
+  readonly panes: [Pane, Pane] = [
+    { bitmap: null, rect: null },
+    { bitmap: null, rect: null },
+  ];
 
   constructor(name = "", desc = "") {
     this.name = name;
@@ -151,9 +85,10 @@ export class WinLivePopupClient {
     this.popup?.rebuildBuffer();
   }
 
-  /** cWinLivePopupClient::SetBitmap(int, cTSBuffer*): null clears the pane. */
-  setBitmap(pane: 0 | 1, bitmap: ImageBitmap | null): void {
+  /** cWinLivePopupClient::SetBitmap(int, cTSBuffer*[, cTSRect*]): null clears the pane. */
+  setBitmap(pane: 0 | 1, bitmap: ImageBitmap | null, rect: Rect | null = null): void {
     this.panes[pane].bitmap = bitmap;
+    this.panes[pane].rect = rect;
     this.popup?.rebuildBuffer();
   }
 
@@ -301,14 +236,17 @@ export class WinLivePopup extends TSWin {
           r.top -= d;
           r.bottom += d;
         }
-        const bmp = c.panes[i]!.bitmap;
+        const { bitmap: bmp, rect: src } = c.panes[i]!;
         if (!bmp) return;
         // cWinLivePopupClient::DrawPane: centered when smaller than the pane.
+        const s = src ?? { left: 0, top: 0, right: bmp.width, bottom: bmp.height };
+        const bw = s.right - s.left;
+        const bh = s.bottom - s.top;
         let x = r.left;
         let y = r.top;
-        if (bmp.width < r.right - r.left) x += Math.trunc((r.right - r.left - bmp.width) / 2);
-        if (bmp.height < r.bottom - r.top) y += Math.trunc((r.bottom - r.top - bmp.height) / 2);
-        g.blit(bmp, x, y);
+        if (bw < r.right - r.left) x += Math.trunc((r.right - r.left - bw) / 2);
+        if (bh < r.bottom - r.top) y += Math.trunc((r.bottom - r.top - bh) / 2);
+        g.blitPart(bmp, s.left, s.top, bw, bh, x, y);
       });
       const titleRect = {
         left: textLeft + 10,
@@ -387,6 +325,34 @@ export class WinLivePopup extends TSWin {
     } else {
       g.blit(buf, 0, 0);
     }
+  }
+}
+
+/**
+ * The click pattern of cWinPeople::TSOnCommand and its subpanels for a
+ * button with a popup: open the popup on `client` for `owner` (EnablePopup),
+ * close it when it already shows `target` (DisablePopup), else move it to
+ * `target` (the previous target pops up, SetupClient, SetClient). `setup`
+ * fills the client for its new target (SetupClient / UpdateClient).
+ */
+export function popupClick(
+  popup: WinLivePopup,
+  client: WinLivePopupClient,
+  owner: TSWin,
+  target: TSWinBtn,
+  setup?: () => void,
+): void {
+  if (!popup.isEnabled()) {
+    client.target = target;
+    setup?.();
+    popup.enablePopup(client, owner);
+  } else if (popup.getClient()?.target === target) {
+    popup.disablePopup();
+  } else {
+    if (client.target && client.target !== target) client.target.setState(0);
+    client.target = target;
+    setup?.();
+    popup.setClient(client);
   }
 }
 

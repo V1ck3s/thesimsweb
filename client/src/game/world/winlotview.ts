@@ -9,10 +9,12 @@
  * centers the view on the clicked tile (CenterView).
  */
 
+import { computeCameraFrame, drawCameraFrame, takeCameraSnapshot } from "../cpanel/camsnapshot.js";
+import { modeKeyDown } from "../cpanel/modekeys.js";
 import type { GameContext } from "../context.js";
 import { soundPlayer, UI_SOURCE } from "../audio/index.js";
 import { getOptionsMgr } from "../optionsmgr.js";
-import { DIRTY_ARCH_SUBTOOL, DIRTY_ARCH_TOOL, DIRTY_ARCH_UNDO, DIRTY_SHOP_ITEM, Mode, type CPState, type HouseViewerHooks, type WallState } from "../cpstate.js";
+import { DIRTY_ARCH_SUBTOOL, DIRTY_ARCH_TOOL, DIRTY_ARCH_UNDO, DIRTY_LEVEL, DIRTY_SHOP_ITEM, Mode, type CPState, type HouseViewerHooks, type WallState } from "../cpstate.js";
 import { DefaultTTWindow } from "../ui/ttwindow.js";
 import { Gfx, TSWin } from "../ui/tswin.js";
 import { Compositor } from "./compositor.js";
@@ -45,6 +47,7 @@ import { animSoundEnv } from "../sim/animsound.js";
 import type { WorldHooks } from "../sim/simmodule.js";
 import { SimObject } from "../sim/xobject.js";
 import type { MenuItem, PersonSim } from "../sim/person.js";
+import { PDX } from "../sim/person.js";
 import { buildPersonBtn } from "../cpanel/live/peoplebuttons.js";
 import { CMD_PIE_CANCEL, CMD_PIE_CHAR, CMD_PIE_HILITE, CMD_PIE_PICK, TSPieMenu } from "../ui/piemenu.js";
 import {
@@ -59,11 +62,14 @@ import {
   stopPopupHeadSubmenu,
 } from "../sims/popuphead.js";
 import { winMgr } from "../ui/winmgr.js";
+import { getCursor } from "../ui/cursor.js";
 import { pointToObjectId, PickMode } from "./tools/picking.js";
 import { ActionIcons } from "./actionicons.js";
 import { BalloonPainter, loadBalloonSprites } from "./balloons.js";
+import { WinPictureInPicture } from "./winpictureinpicture.js";
 import { killObject, makeNewOutOfWorldObject } from "./tools/objectfactory.js";
 import { updateSimObjects } from "./simobjects.js";
+import { GiftsPanel } from "../cpanel/live/gifts.js";
 
 /** HOUS chunk id 0: HouseViewer::DoStream (saved camera). */
 interface SavedView {
@@ -226,6 +232,15 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
       v.objects = this.lotObjects.drawer;
       this.people = await LotPeople.load(comp, this.housePath.split("/")[0] ?? "UserData", this.lotObjects.objects.values());
       v.people = this.people;
+      // cXPerson::DrawIso's sprite slots (balloons, headlines), drawn into the world after the people.
+      v.spriteSlots = {
+        draw: (viewer, comp) => {
+          if (!this.sim || !this.people) return;
+          const sel = this.selectedPerson()?.obj ?? null;
+          this.balloons ??= new BalloonPainter(this.ctx);
+          this.balloons.draw(comp, { viewer, people: this.people, module: this.sim.module, isSelected: (o) => o === sel });
+        },
+      };
       this.lotObjects.drawer.placeHeld = (d, rp) => this.placeHeld(d, rp);
       await loadBalloonSprites();
       // `?nosim` keeps the lot static (debug comparison).
@@ -269,6 +284,7 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
     computeRooms(fixed, rooms);
     rooms.computeCutaway(v, 0);
     const st = this.ctx.state;
+    this.syncSecondLevel(st);
     const cut = new DynamicCutaway(v, walls, rooms, {
       mode: () => st.getMode(),
       selectedPerson: () => {
@@ -341,6 +357,8 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
         soundPlayer.playBySource(event);
       },
       shiftDown: () => this.shift,
+      ctrlDown: () => this.ctrl,
+      setToolCursor: (id) => this.setToolCursor(id),
       invalidate: () => {
         v.dirty = true;
         const c = tool.cursor;
@@ -467,6 +485,7 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
       getString: (file, id, index) => this.ctx.strings.get(file, id, index),
       keys: () => ({ shift: this.shift, ctrl: this.ctrl }),
       mouse: () => this.cursor ?? { x: 0, y: 0 },
+      setToolCursor: (id) => this.setToolCursor(id),
       invalidate: () => {
         v.dirty = true;
       },
@@ -494,6 +513,19 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
   }
 
   /**
+   * CPState::HasBeenTo2ndLevel / Is2ndLevelFloorable read cFixedWorld+0x80 /
+   * +0x81 (set by ComputeRooms); cWinViewControl enables the level 2 button from them.
+   */
+  private syncSecondLevel(st: CPState): void {
+    const fixed = this.viewer?.world.fixed;
+    if (!fixed) return;
+    if (st.beenTo2ndLevel === fixed.beenTo2ndLevel && st.secondLevelFloorable === fixed.secondLevelFloorable) return;
+    st.beenTo2ndLevel = fixed.beenTo2ndLevel;
+    st.secondLevelFloorable = fixed.secondLevelFloorable;
+    st.setDirty(DIRTY_LEVEL);
+  }
+
+  /**
    * Walls changed on a level (WallManager::AsynchronousRebuild, then the
    * rooms (cFixedWorld::ComputeRooms), their cutaway and lighting).
    */
@@ -505,6 +537,7 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
       computeRooms(v.world.fixed, this.rooms, level);
       this.rooms.computeCutaway(v, level);
       this.cutaway?.onRoomsChanged();
+      this.syncSecondLevel(this.ctx.state);
     }
     if (this.lighting) this.lighting.compute(this.lighting.phase);
     v.dirty = true;
@@ -768,10 +801,25 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
   arrivalOutOfWorld = false;
 
   /** The selected sim's action icons (Live mode). */
-  private readonly actionIcons = new ActionIcons();
+  private readonly actionIcons = Object.assign(new ActionIcons(), { personPicture: (o: SimObject) => this.personPicture(o) });
 
   /** The sprite slots' balloons and headlines (cXObject::DrawSpriteSlot). */
   private balloons: BalloonPainter | null = null;
+  /** cDDDSimsView +0x11ac: the user event window (prim 35), made on first use. */
+  private pip: (WinPictureInPicture & { ready: Promise<boolean> }) | null = null;
+
+  private pictureInPicture(): WinPictureInPicture & { ready: Promise<boolean> } {
+    if (this.pip) return this.pip;
+    const pip = new WinPictureInPicture(this.ctx, {
+      viewer: () => this.viewer,
+      groupOf: (o) => (this.sim?.module.objects ?? []).flatMap((s) => (s && o.mtLeadId !== 0 && s.obj.mtLeadId === o.mtLeadId ? [s.obj] : [])),
+      cpMode: () => this.ctx.state.getCPMode(),
+      livePIP: () => getOptionsMgr().getLivePIP(),
+    });
+    this.childAdd(pip);
+    this.pip = Object.assign(pip, { ready: pip.init() });
+    return this.pip;
+  }
 
   /** The Live mode pie menu (cWinPeople's cTSPieMenu), made on first use. */
   private pie: TSPieMenu | null = null;
@@ -799,16 +847,80 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
     if (!sim || !v || !p || !lot || !person) return;
     const people = this.people;
     const id = pointToObjectId(v, p, (r) => lot.renderer(r), x, y, v.level || 1, PickMode.Any, people ? (o) => people.screenRect(o, v) : null);
-    const target = id ? sim.module.getObject(id) : null;
-    if (!target) return;
-    // DoMenu ends with -2 when Space advanced the selection: the menu is
-    // made again for the newly selected person on the same object.
-    for (let who: PersonSim | null = person; who; who = this.selectedPerson()) {
-      const p = who;
-      const entries = p.menuItemsFor(target);
-      if (!entries.length) return;
-      if (!(await this.doMenu(p, entries, this.area.left + x, this.area.top + y, (e) => p.addAction(p.makeInteraction(target, e.entry, 50, e))))) return;
+    let target = id ? sim.module.getObject(id) : null;
+    /** +0xb4: the Go Here helper was made and placed for this click (killed unless used). */
+    let helper: SimObject | null = null;
+    if (!target) {
+      helper = this.makeGoHereHelper(x, y);
+      if (!helper) return;
+      target = helper;
     }
+    const t = target;
+    let picked = false;
+    try {
+      // DoMenu ends with -2 when Space advanced the selection: the menu is
+    // made again for the newly selected person on the same object.
+      for (let who: PersonSim | null = person; who; who = this.selectedPerson()) {
+        const p = who;
+        const entries = p.menuItemsFor(t);
+        if (!entries.length) return; // cTool::DoDeniedSound
+        const ok = await this.doMenu(p, entries, this.area.left + x, this.area.top + y, (e) => {
+          const done = p.addAction(p.makeInteraction(t, e.entry, 50, e));
+          picked ||= done;
+          return done;
+        });
+        if (!ok) return;
+      }
+    } finally {
+      if (helper && !picked && sim.module.getObject(helper.id) === helper) sim.module.killObject(helper);
+    }
+  }
+
+  /**
+   * cObjPickerTool::TryClick on no object: the "Destination - For Go Here &
+   * Shoo" object (GUID 0x7c4) is made out of the world
+   * (MakeNewOutOfWorldObject) and placed at the clicked point (rotated to
+   * world coordinates) or the closest good location (FindGoodLocation; the
+   * tile's center when there is none), so that its menu offers Go Here.
+   * Killed when it cannot be placed. (The original's grass check for lot
+   * type 99 is not ported.)
+   */
+  private makeGoHereHelper(x: number, y: number): SimObject | null {
+    const sim = this.sim;
+    const v = this.viewer;
+    const h = sim?.module.worldHooks;
+    const sel = h?.selector(0x7c4);
+    if (!sim || !v || !h || !sel) return null;
+    const level = v.level || 1;
+    const t = v.pointToWholeTile(x, y, level);
+    // GViewer::PointToTile(pt, true): the fraction inside the tile.
+    const o = v.tileToPoint(t.x, t.y, level);
+    const ax = v.tileToPoint(t.x + 1, t.y, level);
+    const ay = v.tileToPoint(t.x, t.y + 1, level);
+    const a = ax.h - o.h;
+    const b = ay.h - o.h;
+    const c = ax.v - o.v;
+    const d = ay.v - o.v;
+    const det = a * d - b * c;
+    let u = 0.5;
+    let w = 0.5;
+    if (det !== 0) {
+      u = ((x - o.h) * d - b * (y - o.v)) / det;
+      w = (a * (y - o.v) - c * (x - o.h)) / det;
+    }
+    const clamp = (f: number): number => Math.min(15, Math.max(0, Math.trunc(f * 16)));
+    const [fx, fy] = RotatableWorld.rotateCoords((t.x << 4) + clamp(u), (t.y << 4) + clamp(w), (4 - v.world.rotation) & 3, 0x400);
+    const xo = h.make(sel);
+    if (!xo) return null;
+    const obj = sim.module.getObject(xo.objectId);
+    if (!obj) return null;
+    const pos = h.findGoodLocation(xo, { fx, fy }, level, { emptyTile: true, buildable: false, random: null }) ?? { fx: (fx & ~0xf) | 8, fy: (fy & ~0xf) | 8 };
+    if (!h.canPlace(xo, pos, level, null, -1)) {
+      sim.module.killObject(obj);
+      return null;
+    }
+    h.place(xo, pos, level, null, -1);
+    return obj;
   }
 
   /**
@@ -850,6 +962,47 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
    * face) under the first half of kIconFrame. Null when the neighbor's face
    * is not known (only the family and the people it knows are loaded).
    */
+  /** The action icons' head pictures, by person GUID (null: face not known). */
+  private readonly personPics = new Map<number, ImageBitmap | null>();
+  private picPartsLoading = false;
+
+  /**
+   * kPeopleTemplate and kIconFrame. The frame (two 45 x 45 halves: plain,
+   * and the yellow selected ring) is blitted over the picture with its pure
+   * blue as the transparent color (cActionIcon::MakeActionBitmap), so that
+   * color is keyed out here.
+   */
+  private async loadPicParts(): Promise<void> {
+    if (this.picParts) return;
+    const [template, raw] = await Promise.all([this.ctx.res.image("kPeopleTemplate"), this.ctx.res.image("kIconFrame")]);
+    const c = new OffscreenCanvas(raw.width, raw.height);
+    const g = c.getContext("2d", { willReadFrequently: true })!;
+    g.drawImage(raw, 0, 0);
+    const img = g.getImageData(0, 0, c.width, c.height);
+    const d = img.data;
+    for (let i = 0; i < d.length; i += 4) if (d[i] === 0 && d[i + 1] === 0 && d[i + 2] === 255) d[i + 3] = 0;
+    g.putImageData(img, 0, 0);
+    this.picParts ??= { template, frame: c.transferToImageBitmap() };
+  }
+
+  /** ActionIcons.personPicture: the neighbor picture of a person object on the lot. */
+  private personPicture(o: SimObject): ImageBitmap | null {
+    const guid = o.obj.selector.guid | 0;
+    if (this.personPics.has(guid)) return this.personPics.get(guid)!;
+    if (!this.picParts) {
+      if (!this.picPartsLoading) {
+        this.picPartsLoading = true;
+        void this.loadPicParts().then(() => this.actionIcons.onReady?.());
+      }
+      return null;
+    }
+    const st = this.ctx.state;
+    const info = [...st.family, ...st.neighbors].find((q) => q.guid !== undefined && (q.guid | 0) === guid);
+    const pic = info?.neighborId !== undefined ? this.neighborPicture(info.neighborId) : null;
+    this.personPics.set(guid, pic);
+    return pic;
+  }
+
   private neighborPicture(neighborId: number): ImageBitmap | null {
     const st = this.ctx.state;
     const info = [...st.family, ...st.neighbors].find((q) => q.neighborId === neighborId);
@@ -903,10 +1056,7 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
     const pie = (this.pie ??= await TSPieMenu.forLiveMode(this.ctx));
     const sub = (this.subPie ??= await TSPieMenu.forLiveMode(this.ctx));
     this.subPieBkg ??= sub.background;
-    if (!this.picParts) {
-      const [template, frame] = await Promise.all([this.ctx.res.image("kPeopleTemplate"), this.ctx.res.image("kIconFrame")]);
-      this.picParts = { template, frame };
-    }
+    await this.loadPicParts();
     const downX = x;
     const downY = y;
     /** +0x5c / +0x60: in the sub menu `subIndex` of `top`; +0x64: first entry shown. */
@@ -1046,6 +1196,20 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
     }
   }
 
+  /** cDDDSimsView+0x164: the tool cursor id. */
+  private toolCursor = -1;
+
+  /**
+   * cDDDSimsView::SetToolCursor: the view's mouse cursor (cTSCursorManager::
+   * GetCursor(id)); 5 keeps the current one.
+   */
+  setToolCursor(id: number): void {
+    if (id === 5 || id === this.toolCursor) return;
+    this.toolCursor = id;
+    this.winCursor = getCursor(id);
+    winMgr.applyCursor();
+  }
+
   /** XViewer routes the mouse to cGameTools' current tool in buy and build modes. */
   private activeTools(): GameTools | null {
     const m = this.ctx.state.getMode();
@@ -1064,7 +1228,24 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
     t.win.plot(g.ctx, g.ox, g.oy);
   }
 
+  /**
+   * Is (x, y) over one of this window's children (the control panel, the
+   * PIP window...)? Their unhandled mouse events bubble up to this window
+   * (TSWin dispatch); the original's 3D view only gets the clicks that land
+   * on the world, so those are swallowed here.
+   */
+  private overChild(x: number, y: number): boolean {
+    return this.children.some((c) => c.windowFromPoint(x - c.area.left, y - c.area.top) !== null);
+  }
+
   override tsOnMouseDownL(x: number, y: number): boolean {
+    if (this.overChild(x, y)) return true;
+    if (this.viewer && this.ctx.state.getMode() === Mode.Camera) {
+      // cDDDSimsView::TSOnMouseDownL (camera mode): HouseViewer::TakeAsyncSnapshot of the camera frame.
+      const v = this.viewer;
+      void takeCameraSnapshot(this.ctx, v.comp.canvas, computeCameraFrame(this.ctx, x, y, v.viewW, v.viewH));
+      return true;
+    }
     const tools = this.activeTools();
     if (!tools && this.viewer && this.ctx.state.getMode() === Mode.Live && this.sim) {
       const p = this.selectedPerson();
@@ -1113,6 +1294,14 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
         if (this.viewer) this.viewer.dirty = true;
       };
       this.sim = sim;
+      // cWinPeople::BuildGifts reads the selected sim's SimInventory and the gifts' selectors.
+      GiftsPanel.source = {
+        inventory: (guid) => {
+          const nb = sim.module.findNeighborByGUID(guid);
+          return nb ? sim.module.getInventoryByNeighbourID(nb.id) : null;
+        },
+        selector: (guid) => lot.folder.getSelectorByGUID(guid),
+      };
       sim.module.worldHooks = this.createObjectHooks();
       // Neighborhood::GetNumCharacters for ObjectModule::AddObject's primitive limit.
       sim.module.numCharacters = (sim.module.nbhd?.neighbors ?? []).filter((n) => lot.folder.sourceOfGUID(n.guid) === 1).length;
@@ -1122,8 +1311,10 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
         livePIP: () => getOptionsMgr().getLivePIP(),
         pictureInPicture: (o, a) => {
           if (a.window) {
-            // cWinPictureInPicture::Open / Close (the event's camera window) is not ported.
-            sim.module.unportedPrim(35, "user event window (cWinPictureInPicture)", 0);
+            // cDDDSimsView::DoPictureInPicture: cWinPictureInPicture::Open / Close (+0x11ac).
+            const pip = this.pictureInPicture();
+            if (!a.open) pip.close(o.obj);
+            else void pip.ready.then(() => pip.open(o.obj, true, a.ms, a.arg3, a.arg2, a.flag4, a.snapshot && getOptionsMgr().getAutoSnapshots(), a.caption));
             return;
           }
           // cDDDSimsView::DoPictureInPicture without a window: CenterHouseViewOnMe with the
@@ -1189,7 +1380,13 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
     v.scrollToTile(fx, fy, o.level, false);
   }
 
-  centerOnPerson(guid: number | undefined): void {
+  /** HouseViewerHooks: CPState::SetSelectedPerson re-selecting the selected person. */
+  centerOnSelected(): void {
+    const guid = this.ctx.state.personGetSelected()?.guid;
+    if (guid !== undefined) this.centerOnPerson(guid, true);
+  }
+
+  centerOnPerson(guid: number | undefined, smooth = false): void {
     const v = this.viewer;
     const objs = this.lotObjects?.objects;
     if (!v || !objs) return;
@@ -1197,7 +1394,7 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
     const o = people.find((p) => p.guid === guid) ?? people[0];
     if (!o) return;
     const [fx, fy] = RotatableWorld.rotateCoords(o.fx, o.fy, v.world.rotation, 0x400);
-    v.scrollToTile(fx, fy, o.level, false);
+    v.scrollToTile(fx, fy, o.level, smooth);
   }
 
   // --- HouseViewerHooks ---------------------------------------------------------
@@ -1258,23 +1455,22 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
       }
       g.ctx.drawImage(this.frame, g.ox, g.oy);
     }
-    if (this.sim && this.people) {
-      const sel = this.selectedPerson()?.obj ?? null;
-      this.balloons ??= new BalloonPainter(this.ctx);
-      this.balloons.paint(g.ctx, g.ox, g.oy, this.getW(), this.getH(), { viewer: v, people: this.people, module: this.sim.module, isSelected: (o) => o === sel });
-    }
     // HouseViewer::UpdateStaticDynamic: the pie's round shadow, then the
     // popup head over the 3D pass (SAnimator::GetPopupHeadLocation / RenderPopupHead).
     const clip = { left: g.ox, top: g.oy, right: g.ox + this.getW(), bottom: g.oy + this.getH() };
     const loc = getPopupHeadLocation();
     if (loc) renderRoundShadow(g.ctx, clip, loc.x, loc.y, loc.z);
     renderPopupHead(g.ctx, clip);
+    // HouseViewer::UpdateWorld: the camera frame on the cursor in camera mode.
+    if (this.cursor && this.ctx.state.getMode() === Mode.Camera) drawCameraFrame(g, computeCameraFrame(this.ctx, this.cursor.x, this.cursor.y, v.viewW, v.viewH));
   }
 
   /** EdgeDetectScroller::OnKeyDown: arrows scroll (VK_LEFT 0x25 .. VK_DOWN 0x28). */
   override tsOnKeyDown(key: string): boolean {
     const v = this.viewer;
     if (!v) return false;
+    // cDDDSimsView::TSOnKeyDown: F1..F5 switch the control panel mode.
+    if (modeKeyDown(this.ctx.state, key)) return true;
     if (this.activeTools()?.keyDown(key)) return true;
     // cObjPickerTool::OnChar (Live mode): Space advances the selected person
     // and centers the view on them (CenterHouseViewOnMe), N only advances.
@@ -1307,6 +1503,7 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
   override tsOnMouseUpR(x: number, y: number): boolean {
     const v = this.viewer;
     if (!v) return false;
+    if (this.overChild(x, y)) return true;
     const w = v.world;
     const t = v.pointToWholeTile(x, y, v.level);
     const n = w.size - 2;
@@ -1321,11 +1518,74 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
     this.cursor = { x, y };
     this.cutaway?.mouseTrack(x, y);
     this.activeTools()?.mouseTrack(x, y);
+    if (this.ctx.state.getMode() === Mode.Live) {
+      if (this.overChild(x, y)) this.tip = null;
+      else this.liveFloat(x, y);
+    }
     return this.viewer !== null;
+  }
+
+  /** cObjPickerTool +0x2e: the hilited object, and whether the selected person has interactions on it (hilite 1 / 8). */
+  private liveHilite = 0;
+  private liveHiliteAvail = false;
+
+  /**
+   * cObjPickerTool::Float (Live mode): the object under the mouse
+   * (HouseViewer::PointToObjectID, on the current level) becomes the hilite
+   * (SetHiliteObject builds its interaction list for the selected person);
+   * the cursor and tip follow it: a person shows its first name
+   * (cTool::SetToolTip) with LivePerson (LivePet for pets but the GUID
+   * 0xFC697613), an object LiveObjectAvail when the selected person has
+   * interactions on it, else LiveObjectUnavail; nothing is LiveNothing
+   * (LiveNothingPet with a pet selected), or LiveObjectUnavail off the lot's
+   * edge. The hilite drawing (cXObject::SetHilite) is not ported.
+   */
+  private liveFloat(x: number, y: number): void {
+    const sim = this.sim;
+    const v = this.viewer;
+    const p = this.placement;
+    const lot = this.lotObjects;
+    if (!sim || !v || !p || !lot) return;
+    const person = this.selectedPerson();
+    const people = this.people;
+    const id = person ? pointToObjectId(v, p, (r) => lot.renderer(r), x, y, v.level || 1, PickMode.Any, people ? (o) => people.screenRect(o, v) : null) : 0;
+    const target = id ? sim.module.getObject(id) : null;
+    if ((target?.id ?? 0) !== this.liveHilite) {
+      this.liveHilite = target?.id ?? 0;
+      this.liveHiliteAvail = !!(person && target && person.menuItemsFor(target).length > 0);
+    }
+    if (!target) {
+      this.tip = null;
+      const t = v.pointToWholeTile(x, y, v.level || 1);
+      const w = v.world;
+      const outside = t.x < w.minX + 1 || t.x > w.maxX - 1 || t.y < w.minY + 1 || t.y > w.maxY - 1;
+      const pet = !!person && ((person.pd[PDX.gender] ?? 0) & 6) !== 0;
+      this.setToolCursor(outside ? 0x1f : pet ? 0x2b : 0x1c);
+      return;
+    }
+    const sel = target.obj.selector;
+    if (target.person) {
+      if (sel.objd.i16(0xb6) & 4) {
+        this.tip = null;
+        this.setToolCursor(0x1f);
+        return;
+      }
+      const guid = sel.guid | 0;
+      const st = this.ctx.state;
+      const info = [...st.family, ...st.neighbors].find((q) => q.guid !== undefined && (q.guid | 0) === guid);
+      const pet = ((target as PersonSim).pd[PDX.gender] ?? 0) & 6;
+      if (info?.firstName && this.tipWin) this.tip = { win: this.tipWin, x: x + 0x11, y: y - 5, text: info.firstName };
+      else this.tip = null;
+      this.setToolCursor(pet && (guid >>> 0) !== 0xfc697613 ? 0x2a : 0x1d);
+      return;
+    }
+    this.tip = null;
+    this.setToolCursor(this.liveHiliteAvail ? 0x1e : 0x1f);
   }
 
   override tsOnMouseExit(): void {
     this.edge?.stop();
+    if (this.ctx.state.getMode() === Mode.Live) this.tip = null;
     this.cursor = null;
     this.buttonDown = false;
     this.activeTools()?.exitWorld();

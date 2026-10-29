@@ -12,18 +12,23 @@
  * (cWinPeople::BuildRelationships) and the clicks on them
  * (cWinPeople::TSOnCommand, Panel 5).
  *
- * Not ported: the hover popup (cWinLivePopup / cWinLivePopupClient with the
- * STR# 132 texts), the delta meter (cWinDeltaMeter, change arrows) and
+ * The tiles share one popup client (cWinPeople+0x228); SetupClient fills it
+ * with the STR# 132 texts of the lifetime level and the other Sim's name,
+ * sign and description.
+ *
+ * Not ported: the delta meter (cWinDeltaMeter, change arrows) and
  * right-click centering the view on the Sim (cXObject::CenterHouseViewOnMe).
  */
 
 import type { GameContext } from "../../context.js";
 import type { PersonInfo } from "../../cpstate.js";
 import { ALIGN_CENTER, type FfnFont } from "../../res/ffn.js";
-import { BTN_TOGGLE, TSWinBtn } from "../../ui/btn.js";
+import { BTN_TOGGLE, CMD_ASYNC_EXIT, TSWinBtn } from "../../ui/btn.js";
 import { hiliteColor, rgb } from "../../ui/syscolors.js";
 import { TSWinText, WTF_MULTILINE } from "../../ui/text.js";
 import { type Gfx, TSWin } from "../../ui/tswin.js";
+import { popupClick, type WinLivePopup, WinLivePopupClient } from "../livepopup.js";
+import { computeZodiacSign } from "./personality.js";
 
 /** "friendship threshold" (GameData/Global/Global.far, AutonomyConstants; 25 in code). */
 const FRIENDSHIP_THRESHOLD = 50;
@@ -95,6 +100,39 @@ export function getRelation(from: PersonInfo, to: PersonInfo): PersonRelation {
   return rel;
 }
 
+/** Person data 70: zodiac sign (1..12, 0 = not computed yet). */
+const PD_ZODIAC = 70;
+
+/**
+ * cWinRelationship statics, read by the first constructor from STR# 132
+ * after the caption: (name, description) of the five lifetime levels
+ * (lbl_105BAAD8 / lbl_105BAADC), then the friends and crush texts
+ * (lbl_105BAAE0..lbl_105BAAEC).
+ */
+interface RelTexts {
+  names: string[];
+  descs: string[];
+  friendName: string;
+  friendDesc: string;
+  crushName: string;
+  crushDesc: string;
+}
+
+function relTexts(ctx: GameContext): RelTexts {
+  const s = (i: number): string => ctx.strings.get("Live", 0x84, i);
+  return {
+    names: [0, 1, 2, 3, 4].map((i) => s(1 + 2 * i)),
+    descs: [0, 1, 2, 3, 4].map((i) => s(2 + 2 * i)),
+    friendName: s(11),
+    friendDesc: s(12),
+    crushName: s(13),
+    crushDesc: s(14),
+  };
+}
+
+/** lbl_105BC524: the text of each lifetime step (-60, -20, 20, 60, 100). */
+const LEVEL_TEXT = [0, 3, 1, 4, 2];
+
 /** PersonFinder::GetFullName. */
 function fullName(p: PersonInfo): string {
   return p.lastName ? `${p.firstName} ${p.lastName}` : p.firstName;
@@ -121,6 +159,8 @@ export class WinRelationship extends TSWinBtn {
   private rel: PersonRelation = NO_RELATION;
   private icons: RelIcons | null = null;
   private textFont: FfnFont | null = null;
+  /** +0x1a4: the tiles' shared popup client. */
+  client: WinLivePopupClient | null = null;
 
   constructor(readonly ctx: GameContext) {
     super();
@@ -148,7 +188,51 @@ export class WinRelationship extends TSWinBtn {
   setRelationship(other: PersonInfo, selected: PersonInfo): void {
     this.other = other;
     this.selected = selected;
-    if (other !== selected) this.rel = getRelation(selected, other);
+    if (other === selected) return;
+    const lifetime = this.rel.lifetime;
+    this.rel = getRelation(selected, other);
+    // The open popup follows a changed score.
+    if (this.rel.lifetime !== lifetime && this.client?.target === this && this.state !== 0) this.setupClient();
+  }
+
+  /**
+   * cWinRelationship::SetupClient: the first lifetime step (i + 1) * 40 - 100
+   * at or above the lifetime score picks the texts; the middle one becomes
+   * the crush or friends text. The description ends with "Name (Sign) -- "
+   * and the other Sim's description.
+   */
+  setupClient(): void {
+    const c = this.client;
+    const other = this.other;
+    if (!c || !other) return;
+    const t = relTexts(this.ctx);
+    const lifetime = this.rel.lifetime;
+    for (let i = 0; i < 5; i++) {
+      if (lifetime > Math.trunc(0.5 + ((i + 1) * 40 - 100))) continue;
+      let who = other.firstName ? fullName(other) : "";
+      if (who) {
+        const data = other.personData;
+        let sign = data?.[PD_ZODIAC] ?? 0;
+        if (data && sign === 0) {
+          sign = computeZodiacSign(data);
+          data[PD_ZODIAC] = sign;
+        }
+        if (sign > 0) who += ` (${this.ctx.strings.get("UIText", 0xa4, Math.min(12, sign) - 1)})`;
+        who += " -- ";
+      }
+      who += other.bio ?? "";
+      const level = LEVEL_TEXT[i]!;
+      let name = t.names[level] ?? "";
+      let desc = t.descs[level] ?? "";
+      if (level === 2) {
+        if (this.rel.crush) [name, desc] = [t.crushName, t.crushDesc];
+        else if (this.rel.friends) [name, desc] = [t.friendName, t.friendDesc];
+      }
+      if (desc) desc += "\n\n";
+      c.setName(name);
+      c.setDesc(desc + who);
+      return;
+    }
   }
 
   override tsPaint(g: Gfx): void {
@@ -215,7 +299,10 @@ export class RelationshipsPanel extends TSWin {
   private sortFamous!: TSWinBtn;
   private sortAll!: TSWinBtn;
   /** cWinPeople+0x144: the tiles. */
-  private readonly tiles: WinRelationship[] = [];
+  readonly tiles: WinRelationship[] = [];
+  /** cWinPeople+0x150: the Live panel's popup (set by WinPeople); +0x228 the tiles' client. */
+  livePopup: WinLivePopup | null = null;
+  private readonly client = new WinLivePopupClient();
   /** cWinPeople+0x1b0: people listed (PersonFinder::GetRelatedPeople). */
   private related: PersonInfo[] = [];
   /** cWinPeople+0x188: current page. */
@@ -226,8 +313,6 @@ export class RelationshipsPanel extends TSWin {
   private caption = "";
   /** Small font of the global table (lbl_105BA2E8 + 0x18). */
   private smallFont!: FfnFont;
-  /** Tile whose popup is open (cWinLivePopupClient+0x14): it stays pressed. */
-  private current: WinRelationship | null = null;
 
   constructor(readonly ctx: GameContext) {
     super();
@@ -332,6 +417,7 @@ export class RelationshipsPanel extends TSWin {
         this.caption = ctx.strings.get("Live", 0x84, 0);
       }
       const tile = new WinRelationship(ctx);
+      tile.client = this.client;
       if (!(await tile.init())) return;
       tile.hideWindow();
       this.childAdd(tile);
@@ -408,19 +494,18 @@ export class RelationshipsPanel extends TSWin {
     else this.nextPage.hideWindow();
   }
 
-  /** cWinPeople::TSOnCommand, Panel 5 part. */
+  /** cWinPeople::TSOnCommand, Panel 5 part (0x13, the async timeout, is a click). */
   override tsOnCommand(cmd: number, source: TSWin): boolean {
+    if (cmd === CMD_ASYNC_EXIT) return true;
     const tile = this.tiles.find((t) => t === source);
     if (tile) {
       // The popup follows the clicked tile; clicking it again closes it.
-      if (this.current === tile) this.current = null;
-      else {
-        this.current?.setState(0);
-        this.current = tile;
-      }
+      if (this.livePopup) popupClick(this.livePopup, this.client, this.parent ?? this, tile, () => tile.setupClient());
       return true;
     }
     if (source === this.prevPage || source === this.nextPage) {
+      // The page buttons close the popup (DisablePopup) before the page changes.
+      this.livePopup?.disablePopup();
       this.page += source === this.prevPage ? -1 : 1;
       this.layoutRelationships();
       return true;

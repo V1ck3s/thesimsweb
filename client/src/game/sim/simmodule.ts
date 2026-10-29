@@ -162,6 +162,10 @@ export class SimModule {
   private readonly sessionInventories: SimInventory[] = [];
   /** GetCareers: the careers in LoadCareers' order (sim/careers.ts); set by the Simulator. */
   careers: SimCareer[] = [];
+  /** lbl_105BB7F0: cJob::GetGrade's strings (work.iff STR# 0x1001); set by the Simulator. */
+  jobGrades: string[] = [];
+  /** GetFameTrackData: the fame titles by level (sim/fametrack.ts), null without a fame track; set by the Simulator. */
+  fameTitles: string[] | null = null;
   /**
    * Neighborhood +0x11c: the other house numbers, sorted by distance to the
    * current one (Neighborhood::LoadHouse, compareHouses). LoadHouse adds the

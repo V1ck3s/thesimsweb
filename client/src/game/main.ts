@@ -8,7 +8,7 @@
  * instead (each exports `mount(ctx, mgr)`).
  */
 
-import { MUSIC, soundPlayer, UI_SOURCE } from "./audio/index.js";
+import { modeMusicEvent, soundPlayer, UI_SOURCE } from "./audio/index.js";
 import { installLotAudio } from "./audio/lotaudio.js";
 import { CPState, DIRTY_ALL, Mode } from "./cpstate.js";
 import type { GameContext } from "./context.js";
@@ -16,7 +16,7 @@ import { CPANEL_HEIGHT, WinCPanel } from "./cpanel/cpanel.js";
 import { activateFamily } from "./data/family.js";
 import { NeighborhoodStore } from "./data/nbhdstore.js";
 import { loadNeighborhood } from "./data/neighborhood.js";
-import { currentNeighborhoodDir, Neighborhood, storeCurrentNeighborhoodDir } from "./nbhd/nghinterface.js";
+import { currentNeighborhoodDir, Neighborhood, storeCurrentNeighborhoodDir, Zone } from "./nbhd/nghinterface.js";
 import { getOptionsMgr } from "./optionsmgr.js";
 import { NBHD_DOWNTOWN, NBHD_END_NOTES, NBHD_MAGICTOWN, NBHD_STUDIOTOWN, NBHD_VACATION, WinNeighborhoodUL } from "./nbhd/winneighborhoodul.js";
 import { applyLoadGameLocation, arrivalFor, type ChangeLotTrigger, type LotArrival, prepareArrival, Transit } from "./nbhd/transit.js";
@@ -27,6 +27,7 @@ import { Fonts } from "./res/fonts.js";
 import { Strings } from "./res/strings.js";
 import { UIRes } from "./res/uires.js";
 import { whileFrozen } from "./screens/frozen.js";
+import { G } from "./sim/simulator.js";
 import { TSWinSplashScreen } from "./screens/splash.js";
 import { DefaultTTWindow } from "./ui/ttwindow.js";
 import { WinMgr } from "./ui/winmgr.js";
@@ -37,14 +38,6 @@ import { moveOutHouse } from "./world/moveout.js";
 
 const SCREEN_W = 1024;
 const SCREEN_H = 768;
-
-const MODE_MUSIC: Record<Mode, string> = {
-  [Mode.Build]: MUSIC.build,
-  [Mode.Buy]: MUSIC.buy,
-  [Mode.Live]: MUSIC.live,
-  [Mode.Options]: MUSIC.options,
-  [Mode.Camera]: MUSIC.camera,
-};
 
 /**
  * cSimsApp::LoadGame's PlaySoundA after a successful load: the outdoor
@@ -108,7 +101,13 @@ class Game {
       soundPlayer.notifyViewChange();
       this.musicMode = st.getMode();
       soundPlayer.quietBySourceID(-1);
-      soundPlayer.playBySource(MODE_MUSIC[this.musicMode], -1);
+      const house = this.lotView.sim?.globals[G.houseNumber] ?? 0;
+      const music = modeMusicEvent(this.musicMode, {
+        house,
+        visiting: this.lotView.sim?.globals[G.freeFunds] === 1,
+        community: this.nbhd?.getZoningType(house) === Zone.Community,
+      });
+      if (music) soundPlayer.playBySource(music, -1);
     });
     ctx.hooks = {
       isLotDirty: () => isLotDirty(this.lotView),
@@ -116,6 +115,7 @@ class Game {
         await saveGame(ctx, this.lotView, this.nbhdDir);
       },
       doSave: () => doSave(ctx, this.lotView, this.nbhdDir),
+      neighborhoodDir: () => this.nbhdDir,
       // cSimsApp::ShowNbhdDialog: the lot is unloaded and the neighborhood
       // screen built while the last lot frame stays up (screens/frozen.ts).
       showNeighborhood: () => {
@@ -276,6 +276,7 @@ class Game {
       view.sim.module.dialogHooks = objectDialogHooks(ctx, view.sim);
     }
     await applyLoadGameLocation(ctx, view, this.nbhd, house, arrival);
+    state.houseNumber = house;
     this.lotAudioOff = installLotAudio(view);
     soundPlayer.playBySource(lotAmbience(house), UI_SOURCE);
     this.lotView = view;

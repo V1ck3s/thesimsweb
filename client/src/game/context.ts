@@ -41,4 +41,6 @@ export interface GameHooks {
   resetTutorial?(): void;
   /** cWinScrapbook run modally (Camera > View Photo Album). */
   showScrapbook?(): Promise<void>;
+  /** Neighborhood::GetDirectory: the current neighborhood folder (e.g. "UserData"). */
+  neighborhoodDir?(): string;
 }

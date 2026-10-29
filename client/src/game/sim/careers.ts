@@ -134,3 +134,17 @@ export function getBehCareerData(career: SimCareer, level: number, field: number
   if (field === 22) return job.strings[1] ? 1 : 0;
   return null;
 }
+
+/**
+ * LoadCareers' grade strings (lbl_105BB7F0: STR# 0x1001 of work.iff,
+ * StringSetBase::Load with the UI language), read by cJob::GetGrade.
+ */
+export async function loadJobGrades(): Promise<string[]> {
+  const work = await ResFile.open("ExpansionShared/work.iff").catch(() => null);
+  return (work && loadUIStringSet(work, 0x1001)) ?? [];
+}
+
+/** cJob::GetGrade(n): grade string n (StringSetBase entry n + 1), "" past the end. */
+export function getGrade(grades: readonly string[], n: number): string {
+  return n >= 0 && n < grades.length ? grades[n]! : "";
+}

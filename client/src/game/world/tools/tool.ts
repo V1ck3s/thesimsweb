@@ -83,6 +83,8 @@ export interface ToolHost {
   keys(): { shift: boolean; ctrl: boolean };
   /** The last mouse position over the view (cTSWinMgrW95::GetCursorScreenPosition). */
   mouse(): { x: number; y: number };
+  /** cDDDSimsView::SetToolCursor: the view's mouse cursor (ui/cursor.ts ids). */
+  setToolCursor?(id: number): void;
   /** The view needs repainting. */
   invalidate(): void;
 }
@@ -161,6 +163,11 @@ export abstract class Tool {
   drawOverlay?(viewer: HouseViewer, comp: Compositor, rp: RenderParam): void;
 
   // --- cTool helpers -----------------------------------------------------------
+
+  /** cTool::SetCursor (cDDDSimsView::SetToolCursor). */
+  protected showCursor(id: number): void {
+    this.host.setToolCursor?.(id);
+  }
 
   /** cTool::GetCurrentLevel */
   protected currentLevel(): number {

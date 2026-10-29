@@ -19,10 +19,12 @@ import type { HouseStats } from "../../cpstate.js";
 import type { GameContext } from "../../context.js";
 import type { FfnFont } from "../../res/ffn.js";
 import { LANG_FRENCH } from "../../res/uires.js";
-import { BTN_TOGGLE } from "../../ui/btn.js";
+import { getOptionsMgr } from "../../optionsmgr.js";
+import { ASYNC_ON_ENTER, BTN_TOGGLE, CMD_ASYNC_EXIT } from "../../ui/btn.js";
 import { UI_FONT_COLOR } from "../../ui/syscolors.js";
 import { Gfx, TSWin } from "../../ui/tswin.js";
 import { CaptionBtn } from "./captionbtn.js";
+import { popupClick, type WinLivePopup, WinLivePopupClient } from "../livepopup.js";
 
 /** cSimsApp language (+100); the client runs the French install. */
 const UI_LANGUAGE = LANG_FRENCH;
@@ -58,6 +60,9 @@ export class WinSubpanelHouse extends TSWin {
   private readonly buttons: CaptionBtn[] = [];
   /** Format strings of the four info lines (+0x114..+0x120). */
   private readonly formats: string[] = [];
+  /** cWinPeople+0x150: the Live panel's popup (set by WinPeople); +0x10c this page's client. */
+  livePopup: WinLivePopup | null = null;
+  private readonly client = new WinLivePopupClient();
   /** Popup texts (+0xe8 names, +0xf4 descriptions) for the hover popups. */
   private readonly popupNames: string[] = [];
   private readonly popupDescs: string[] = [];
@@ -114,7 +119,8 @@ export class WinSubpanelHouse extends TSWin {
       this.popupDescs.push(popup[i + 1]!);
     }
     this.lotSizes.push(...ctx.strings.list(LIVE, STR_LOT_SIZES));
-    // popup: cWinLivePopupClient(popupNames[0], popupDescs[0]) with the "house" help id.
+    this.client.setName(this.popupNames[0] ?? "");
+    this.client.setDesc(this.popupDescs[0] ?? "");
     return super.init();
   }
 
@@ -123,14 +129,28 @@ export class WinSubpanelHouse extends TSWin {
     this.updateCaptions(this.ctx.state.houseStats);
   }
 
-  /** cWinSubpanelHouse::TSOnCommand: one label at a time shows its popup. */
+  /** cWinSubpanelHouse::SetQuickTips: every label opens its popup on hover. */
+  setQuickTips(on: boolean): void {
+    const timeout = getOptionsMgr().getDefaultAsyncTimeout();
+    for (const b of this.buttons) b.setAsync(on ? ASYNC_ON_ENTER : 0, timeout);
+  }
+
+  /**
+   * cWinSubpanelHouse::TSOnCommand: one label at a time shows its popup
+   * (0x13, the async timeout, is a click). The second click on the open
+   * label closes it, which releases the label.
+   */
   override tsOnCommand(cmd: number, source: TSWin): boolean {
+    if (cmd === CMD_ASYNC_EXIT) return true;
     const index = this.buttons.indexOf(source as CaptionBtn);
     if (index < 0) return super.tsOnCommand(cmd, source);
-    // The second click on the open label closes its popup, which releases the label.
-    const closing = (source as CaptionBtn).state === 0;
-    this.buttons.forEach((b, i) => b.setState(i === index && !closing ? 1 : 0));
-    // popup: EnablePopup / SetClient with popupNames[index], popupDescs[index].
+    this.buttons.forEach((b, i) => b.setState(i === index ? 1 : 0));
+    if (this.livePopup) {
+      popupClick(this.livePopup, this.client, this, this.buttons[index]!, () => {
+        this.client.setName(this.popupNames[index] ?? "");
+        this.client.setDesc(this.popupDescs[index] ?? "");
+      });
+    }
     return true;
   }
 
