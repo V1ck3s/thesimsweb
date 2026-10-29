@@ -39,8 +39,21 @@ const FARS = [
   "Sims/Deluxe/Deluxe.far",
 ];
 
-/** Loose folders searched before the archives (user skins live there). */
-const LOOSE_DIRS = ["Sims/GameData/Skins/", "Sims/GameData/Animation/", "Sims/ExpansionShared/SkinsBuy/"];
+/**
+ * Loose folders searched before the archives (user skins live there): the
+ * game's own, then the skin folders Sims.exe names ("Skins/",
+ * "ExpansionShared/SkinsBuy/", "ExpansionShared/Skins/", "Deluxe/Skins/",
+ * "ExpansionPack2..7/Skins/"; House Party's costume trunk textures are only
+ * in ExpansionPack2/Skins).
+ */
+const LOOSE_DIRS = [
+  "Sims/GameData/Skins/",
+  "Sims/GameData/Animation/",
+  "Sims/ExpansionShared/SkinsBuy/",
+  "Sims/ExpansionShared/Skins/",
+  "Sims/Deluxe/Skins/",
+  ...[2, 3, 4, 5, 6, 7].map((n) => `Sims/ExpansionPack${n}/Skins/`),
+];
 
 const EXTS = new Set(["bcf", "cmx", "bmf", "skn", "cfp", "bin", "bmp", "ndx"]);
 

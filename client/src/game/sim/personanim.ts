@@ -9,8 +9,9 @@
  * crossed during a tick are handled like SAnimator::HandleVitaBoyAnimEvent:
  * "xevt" queues an event, "interruptable"/"interruptible" set the
  * practice's interruptible flag, "lefthand"/"righthand"/"censor" set person
- * data 0x16/0x17/0x1e, "discontinuity" stops the carry practice; sounds and
- * dress/undress are recorded / ignored.
+ * data 0x16/0x17/0x1e, "discontinuity" stops the carry practice, sounds go
+ * to sim/animsound.ts, "dress" / "undress" put an accessory on or off
+ * (SAnimator::Dress / Undress: the lot renderer dresses `accessories`).
  *
  * Skills load asynchronously here (the original's VBAnimMgr loads them
  * synchronously): a skill not loaded yet keeps the primitive waiting.
@@ -323,8 +324,21 @@ export class PersonAnimator {
   mainName = "";
   /** Called after the pose changed (the renderer redeforms). */
   onPose: (() => void) | null = null;
+  /** +0x26c: the accessories "dress" props put on (suit name -> texture spec, always empty). */
+  readonly accessories = new Map<string, string>();
 
   constructor(readonly host: AnimatorHost) {}
+
+  /**
+   * SAnimator::ResetSuits' simulation part: the hand gestures open
+   * (person data 0x16 / 0x17 := 0) and the accessories cleared
+   * (ClearAccessories); the renderer redresses from the body strings.
+   */
+  resetSuits(): void {
+    this.host.setPersonData(0x16, 0);
+    this.host.setPersonData(0x17, 0);
+    this.accessories.clear();
+  }
 
   /** Uses `skeleton` (shared with the renderer's VitaBoy). */
   attach(skeleton: Skeleton): void {
@@ -400,6 +414,14 @@ export class PersonAnimator {
           break;
         case "discontinuity":
           if (this.carry) this.carry = null;
+          break;
+        case "dress":
+          // SAnimator::Dress(suit, ""): Undress(suit), then a new record.
+          this.accessories.delete(value.toLowerCase());
+          this.accessories.set(value.toLowerCase(), "");
+          break;
+        case "undress":
+          this.accessories.delete(value.toLowerCase());
           break;
         case "sound":
         case "selectedsound":

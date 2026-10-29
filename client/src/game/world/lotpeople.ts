@@ -10,7 +10,7 @@
  */
 
 import { loadNeighborhood, neighborByGuid } from "../data/neighborhood.js";
-import { loadPerson, rootTransform, SAnimator, SimRenderer, type SimView } from "../sims/index.js";
+import { loadPerson, personLooks, rootTransform, SAnimator, SimRenderer, type SimView } from "../sims/index.js";
 import { loadStringSet } from "../sim/behavior.js";
 import { quatRotate, transformPoint, type Vec3 } from "../sims/math3d.js";
 import type { Skeleton } from "../sims/skeleton.js";
@@ -134,7 +134,12 @@ export class LotPeople {
 
   update(nowMs: number): void {
     // Sim-driven people have no practices here: this only deforms their meshes.
-    for (const p of this.people) p.anim.update(nowMs);
+    for (const p of this.people) {
+      // SAnimator::Render -> UpdateOutfitAndHands(false): redressed when the outfit, gestures or accessories changed.
+      const look = personLooks.get(p.obj);
+      if (look) void p.anim.updateOutfitAndHands(look);
+      p.anim.update(nowMs);
+    }
   }
 
   private static viewOf(viewer: HouseViewer): SimView {

@@ -816,6 +816,83 @@ export class EditPerson {
     if (this.has(E.color)) pd[60] = SKIN_INDEX[this.get(E.color).toLowerCase()] ?? 0;
   }
 
+  // --- escape character names (SAnimator::UpdateOutfitAndHands' costumes) ---------
+
+  /**
+   * EditPerson::BuildEscapeCharExpr: the literal runs of `pattern` are
+   * required; "$b" requires the body type (characters 6..8 of the body
+   * suit), "$g" is an option between the gender letter ("m", "f" for
+   * women) and "u", "$c" requires the skin color (entry 15, "???" when
+   * missing). Any other escaped character is dropped.
+   */
+  private buildEscapeCharExpr(pattern: string): RegExpTree {
+    const t = new RegExpTree();
+    const n = pattern.length;
+    for (let i = 0; i < n; i++) {
+      let next = pattern.indexOf("$", i);
+      if (next < 0) next = n;
+      if (i < next) {
+        t.addRequired(pattern.slice(i, next));
+        i = next - 1;
+      } else if (i + 1 < n) {
+        i++;
+        const c = pattern[i]!;
+        if (c === "b" || c === "B") t.addRequired(this.suitTex(E.body).suit.slice(6, 9));
+        else if (c === "g" || c === "G") t.addOption(this.getGender() === PERSON_GENDER_FEMALE ? "f" : "m", "u");
+        else if (c === "c" || c === "C") t.addRequired(this.has(E.color) ? this.get(E.color) : S.unknownColor);
+      }
+    }
+    return t;
+  }
+
+  /** EditPerson::SelectEscapeCharSuit / SelectEscapeHeadSuit: the first suit (GetSuit order) the expression matches, "" when none. */
+  selectEscapeCharSuit(pattern: string): string {
+    const t = this.buildEscapeCharExpr(pattern);
+    return this.cat.suits.find((s) => t.getMatchingLength(s) !== 0) ?? "";
+  }
+
+  selectEscapeHeadSuit(pattern: string): string {
+    return this.selectEscapeCharSuit(pattern);
+  }
+
+  /**
+   * EditPerson::SelectEscapeCharTexture (entry 2, "BODY=") and
+   * SelectEscapeHeadTexture (entry 3, "HEAD-HEAD="): the expression
+   * followed by an option between the person's own texture variant (its
+   * texture past the key length of "BODY=" + 12, for both) and nothing,
+   * best fit over the texture names; "" when nothing fits.
+   */
+  private selectEscapeTexture(pattern: string, entry: number, key: string): string {
+    const t = this.buildEscapeCharExpr(pattern);
+    t.addOption(this.suitTex(entry).tex.slice(BODY_KEY.length + 0xc), S.empty);
+    const fit = new RegExpBestFit(t);
+    for (const s of this.cat.textures) fit.testString(s);
+    return fit.best === "" ? "" : key + fit.best;
+  }
+
+  selectEscapeCharTexture(pattern: string): string {
+    return this.selectEscapeTexture(pattern, E.body, BODY_KEY);
+  }
+
+  selectEscapeHeadTexture(pattern: string): string {
+    return this.selectEscapeTexture(pattern, E.head, HEAD_KEY);
+  }
+
+  /**
+   * EditPerson::SelectEscapeHandTexture(state, s): "$h" becomes the hand
+   * pose letter (lbl_105BDEF8 "OPC": open, pointing, closed), "$g" the
+   * gender letter ("f" for women, "m" otherwise), prefixed with "HAND=".
+   * The "$g" position is the one found before the "$h" replacement.
+   */
+  selectEscapeHandTexture(state: number, pattern: string): string {
+    const h = pattern.indexOf("$h");
+    const g = pattern.indexOf("$g");
+    const letter = "OPC"[state] ?? "";
+    let s = (g === -1 ? HAND_KEY : "") + (h < 0 ? pattern : pattern.slice(0, h) + letter + pattern.slice(h + 2));
+    if (g !== -1) s = HAND_KEY + s.slice(0, g) + (this.getGender() === PERSON_GENDER_FEMALE ? "f" : "m") + s.slice(g + 2);
+    return s;
+  }
+
   /** PersonFinder::SetupNewHDSkins (on Done for adults): all outfits picked anew by best fit. */
   setupNewHDSkins(): void {
     if (this.isAdult()) {

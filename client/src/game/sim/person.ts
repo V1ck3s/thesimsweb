@@ -32,6 +32,7 @@ import { EP } from "./objfntable.js";
 import { RotatableWorld } from "../world/world.js";
 import type { TreeTableEntry } from "./treetable.js";
 import { fc, type FloatConstants } from "./floatconstants.js";
+import { personLooks } from "../sims/personlook.js";
 
 /** Person data indexes used by the person code (Behavior.iff STR# 200). */
 export const PDX = {
@@ -236,6 +237,18 @@ export class PersonSim extends SimObject {
       setLocation: (fx, fy) => this.setLocation(fx, fy),
       animSound: (key, value, forward) => handleAnimSound(this, key, value, forward),
     });
+    // What the lot renderer dresses (SAnimator::UpdateOutfitAndHands from SAnimator::Render).
+    const personData = (): Int16Array => this.pd;
+    personLooks.set(obj, { get pd() { return personData(); }, accessories: this.animator.accessories, job: (child) => this.jobSuit(child) });
+  }
+
+  /** cXPerson::GetJobSuitTex's cJob (GetCareerByID(person data 56), level 57, 0 for a child): suits, texture, accessory. */
+  private jobSuit(child: boolean): { suit: string; femaleSuit: string; texture: string; accessory: string } | null {
+    const career = this.module.careers.find((c) => c.id === this.pd[56]);
+    const job = career?.jobs[child ? 0 : this.pd[57]!];
+    if (!job) return null;
+    const s = job.strings;
+    return { suit: s[1] ?? "", femaleSuit: s[2] ?? "", texture: s[3] ?? "", accessory: s[4] ?? "" };
   }
 
   get pd(): Int16Array {
@@ -398,7 +411,8 @@ export class PersonSim extends SimObject {
             o.cleanup();
           }
         }
-        // SAnimator::SetPixelated(0) and the animator's vtable +0x14 / +0x1c
+        // SAnimator::SetPixelated(0) and the animator's vtable +0x14 / +0x1c (ResetSuits)
+        this.animator.resetSuits();
         this.animator.stop("main");
         this.animator.stop("carry");
         this.animator.stop("background");
@@ -551,7 +565,7 @@ export class PersonSim extends SimObject {
       case 3:
         return this.tryFindBestAction(elem);
       case 6:
-        return this.tryChangeSuit(u8(0), u8(1), s16(2));
+        return this.tryChangeSuit(elem, u8(0), u8(1), s16(2));
       case 22:
         return this.tryLookTowards(elem, s16(0));
       case 27:
@@ -880,7 +894,9 @@ export class PersonSim extends SimObject {
    * Global.iff STR# 150..160, entry idx + 1): swimming people (person data
    * 64) use the pool tables (158 / 159 by gender for adults, 160 for
    * children); others the child (151) or male / female (152 / 153) table,
-   * then the adult one (150). (The OBJD custom walk table is not ported.)
+   * then the adult one (150). First of all, ObjSelector::GetCustomWalkAnimTable:
+   * STR# 150 of the person's own object file (the pets' character files
+   * carry their "d2o-" / "k2o-" walk, turn and stand skills there).
    */
   stdSkillName(idx: number): string | null {
     const g = this.module.res.glob;
@@ -894,7 +910,8 @@ export class PersonSim extends SimObject {
     };
     const age = pd[PDX.personAge]!;
     const gender = pd[PDX.gender]! & 1;
-    let name: string | null = null;
+    const custom = loadStringSet(this.obj.selector.res, 150)?.[idx];
+    let name: string | null = custom ? custom.toLowerCase() : null;
     if (pd[64] !== 0) name = get(age >= 0x12 ? 158 + gender : 160);
     if (!name) {
       name = age < 0x12 ? get(151) : get(152 + gender);
@@ -1666,9 +1683,46 @@ export class PersonSim extends SimObject {
     return PRIM_TRUE;
   }
 
-  /** cXPerson::TryChangeSuit: recorded (the outfit change is not applied to the 3D model yet). */
-  protected tryChangeSuit(scope: number, kind: number, data: number): number {
-    this.module.record(this, "changeSuit", `${scope}:${kind}:${data}`);
+  /**
+   * cXPerson::TryChangeSuit (primitive 6). Operands: suit index, scope,
+   * flags. Scope 1 (outfit): person data 8 := index (flag 1: nothing); a
+   * costume trunk outfit (>= 8) draws its variant into person data 21 (a
+   * child: 0 / 1, toggled when the outfit stays; an adult: 0..9, another one
+   * when it stays), other outfits clear it; SAnimator::UpdateOutfitAndHands
+   * dresses it at the next render. Scope 0 (global file) / 2 (private
+   * file): STR# 0x130 entry index + 1, lowercased, is an accessory put on
+   * (SAnimator::Dress) or, flag 1, taken off (Undress). Errors 0x2f (bad
+   * scope, no file), 0x30 (no suit name).
+   */
+  protected tryChangeSuit(elem: StackElem, index: number, scope: number, flags: number): number {
+    const pd = this.pd;
+    if (scope === 1) {
+      if (flags & 1) return PRIM_TRUE;
+      if (index < 8) pd[21] = 0;
+      else {
+        const cur = pd[21]!;
+        const rnd = (): number => this.module.sim.random();
+        let v: number;
+        if (index === pd[8]) {
+          if (this.isChild) v = cur === 0 ? 1 : 0;
+          else
+            do v = rnd() % 10;
+            while (v === cur);
+        } else v = this.isChild ? rnd() & 1 : rnd() % 10;
+        pd[21] = v;
+      }
+      pd[8] = index;
+      return PRIM_TRUE;
+    }
+    const beh = elem.behavior;
+    const file = scope === 0 ? beh?.glob : scope === 2 ? beh?.priv : null;
+    if (!file) simThrow(0x2f);
+    const name = loadStringSet(file, 0x130)?.[index];
+    if (!name) simThrow(0x30);
+    const suit = name.toLowerCase();
+    const acc = this.animator.accessories;
+    acc.delete(suit);
+    if (!(flags & 1)) acc.set(suit, "");
     return PRIM_TRUE;
   }
 

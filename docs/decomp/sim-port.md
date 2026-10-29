@@ -571,9 +571,8 @@ not caught in TickAllObjects (none in the original either).
   still pets), camera zoom 2. **CWinMagicBook** (`ui/magicbook.ts`): magic.iff strings,
   spell / kid charm / recipe lists (4 per page, Back / Next, page label), title and
   description gated by "Magic - Has Made Spell/Recipe?", mode picture.
-  Deviations: the costume outfits (>= 0x13: job, Magic Town, Studio Town) show the body
-  suit; the previews stand idle (no animation lists); spell items show their title instead
-  of the ingredient pictures.
+  Deviation: spell items show their title instead of the ingredient pictures (costumes and
+  preview animations: see "Pets and outfits" below).
 - **GenericSimCall 24** (set suit, `trySetSuitCall`): EditPerson on the person's body
   strings, the suit of list temp 0 := temp 1 (temp 1 := the previous one), EditPerson::End;
   the edited strings are kept by GUID (`SimModule.bodyStringEdits`) and the lot view dresses
@@ -581,6 +580,43 @@ not caught in TickAllObjects (none in the original either).
 - **ObjectDialog pictures "rel" and "job"**: "rel" = the first person the selected sim has a
   relationship with (family first, then daily value), its character BMP_ 2003 portrait;
   "job n" = row n of kJobPopupComposite (-1 → 0xb).
+
+### Pets and outfits (2026-10-29)
+
+- **GetStdSkill(cXPerson)** (`PersonSim.stdSkillName`): ObjSelector::GetCustomWalkAnimTable
+  first, STR# 150 of the person's own object file (pets' character files carry their
+  "d2o-" / "k2o-" stand, turn, walk and run skills there; humans have none), then the swimming
+  tables (they override it), then child / gender / adult tables. This was bug U2 (pets used
+  a2o-walking-loop). The walk engine's pet branches (turn, adjust, snap, walking scale) were
+  already ported.
+- **cXPerson::TryChangeSuit** (primitive 6, was a stub): scope 1 sets person data 8 (costume
+  trunk outfits >= 8 draw their variant into person data 21: child 0 / 1, adult 0..9, another one
+  when the outfit stays; other outfits clear it; flag 1 does nothing); scopes 0 / 2 take STR#
+  0x130 entry index + 1 of the global / private file as an accessory to Dress (Undress with flag
+  1). Errors 0x2f / 0x30.
+- **SAnimator::UpdateOutfitAndHands** (`sims/outfit.ts`, `sims/sanimator.ts`; the switch cases are
+  only in the asm, jump table lbl_105BC880, strings at lbl_105BC8AC + 0x73f.. and
+  lbl_105BBB7C): head 3, hands 0x12 / 0x13 + 2 * gesture (person data 22 / 23; 3 = "nohandl" /
+  "nohandr"), pets forced to outfit 0; 0 day, 1 naked (16), 2 swimwear (0x20 or 17), 3 job
+  (GetJobSuitTex: cJob::GetSuit by gender, texture +0x31c, accessory +0x368 on the accessory
+  record, child level 0), 4 formal (0x1f, or 0x1c + gloves 0x1d / 0x1e), 5 night wear (0x21 or
+  GetPajamasSuitTex), 6 / 7 skeleton, 8..0x10 costume trunk ("ct-<name>-$gAFit-NN"), 0x11 / 0x12
+  winter / fashion, 0x13..0x3c Studio Town / Magic Town costumes with EditPerson::SelectEscape*
+  (body, head, hand textures; the mummy's variants by person data 21; the donkey's head only).
+  Empty body suit → day clothes. Run by the lot renderer each frame (as SAnimator::Render does)
+  through `personLooks` (sims/personlook.ts, set by PersonSim): redressed when person data
+  8 / 21 / 22 / 23 or the accessories change. "dress" / "undress" animation props and primitive 6
+  fill `PersonAnimator.accessories`; Cleanup's ResetSuits clears them and the gestures.
+- VBAnimMgr also scans the loose skin folders Sims.exe names (ExpansionShared/Skins, Deluxe/Skins,
+  ExpansionPack2..7/Skins): House Party's costume trunk textures are only in ExpansionPack2/Skins.
+- **cWinVitaBtnSolo**: the outfit is UpdateOutfitAndHands on the copy's person data (costumes in
+  the Transform window); Build{Adult,Child,Cat,Dog}AnimationList (lbl_105BC78C) and AnimatePet:
+  the list's skills played once each in turn (a cat starts at 8), people and pets.
+- Not ported: UpdateOutfitAndHands' OBJD flag 8 branch (objects with body strings: outfit + 1
+  only), SAnimator::Reset → ResetSuits on the next skill (only Cleanup clears), the background
+  practice restarted each tick for pets (their stand loop is still). The accessory record is
+  undressed when the job accessory is empty (the original's Redress with an empty name is
+  probably a no-op).
 
 ## Open questions / deviations
 

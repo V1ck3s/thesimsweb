@@ -35,6 +35,7 @@ export { BodyStrings, BS } from "./bodystrings.js";
 export { LoopMode, Practice } from "./practice.js";
 export { DEFAULT_DEPTH, SimRenderer, type DepthMapping, type RenderSimOptions } from "./renderer.js";
 export { SAnimator } from "./sanimator.js";
+export { personLooks, type PersonLook } from "./personlook.js";
 export { VBAnimMgr } from "./vbanimmgr.js";
 export { VitaBoy } from "./vitaboy.js";
 

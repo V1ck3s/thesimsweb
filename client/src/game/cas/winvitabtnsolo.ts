@@ -21,16 +21,18 @@
  *    32767 back in world space); pets are not turned and stand at
  *    (center - 0x14, bottom - 0x32);
  *  - TSPaint: the camera at zoom 2, rotation 0 (cAnimDeviceSub::
- *    SetCameraPosition(2, 0, 0, 0)), ambient light white.
+ *    SetCameraPosition(2, 0, 0, 0)), ambient light white, AnimatePet;
+ *  - BuildAdult / Child / Cat / DogAnimationList (lbl_105BC78C): the skills
+ *    the preview plays one after the other (+0x218, 0x104 bytes each; +0x214
+ *    the last index); AnimatePet starts at the first one (a cat at index 8)
+ *    on the first paint, then, when the practice is done (+0x3c), plays the
+ *    next one (wrapping), once each (+0x40 looping := 0).
  *
- * Simplifications: the animation lists (BuildAdultAnimationList ...,
- * AnimatePet) are replaced by the skeleton's standing idle; the costumes of
- * SAnimator::UpdateOutfitAndHands' outfits 6.. (job, skeleton, Magic Town
- * and Studio Town costumes built from cXPerson / string tables) are not
- * ported: those outfits show the body suit.
+ * The outfit itself is SAnimator::UpdateOutfitAndHands (sims/outfit.ts) on
+ * the copy's person data, costumes included.
  */
 
-import { BodyStrings, BS, SAnimator, SimRenderer, type SimView } from "../sims/index.js";
+import { LoopMode, SAnimator, SimRenderer, type SimView } from "../sims/index.js";
 import { mat4Mul, rotationTf, translationTf, type Mat4, type Vec3 } from "../sims/math3d.js";
 import { Gfx, TSWin } from "../ui/tswin.js";
 import { EditPerson, type OutfitKind } from "./editperson.js";
@@ -40,18 +42,91 @@ const TURN = 0.25;
 const DEPTH = 32767;
 const PERIOD_MS = 10000;
 
-/** SAnimator::Outfit -> the EditPerson list and body string entry (UpdateOutfitAndHands' jump table lbl_105BC880). */
-const OUTFITS: ReadonlyMap<number, { kind: OutfitKind; entry: number }> = new Map([
-  [0, { kind: "body", entry: BS.body }],
-  [2, { kind: "swimwear", entry: 0x20 }],
-  [4, { kind: "formal", entry: 0x1f }],
-  [5, { kind: "lingerie", entry: 0x21 }],
-  [0x11, { kind: "winter", entry: 0x22 }],
-  [0x12, { kind: "fashion", entry: 0x23 }],
+/** SAnimator::Outfit -> the EditPerson list NextSuit / PreviousSuit / GetCurrentSuitIndex step (jump tables lbl_105BC780..788). */
+const OUTFITS: ReadonlyMap<number, OutfitKind> = new Map([
+  [0, "body"],
+  [2, "swimwear"],
+  [4, "formal"],
+  [5, "lingerie"],
+  [0x11, "winter"],
+  [0x12, "fashion"],
 ]);
 
-/** Person data 65 (cXPerson +0x60e): bit 2 dog, bit 4 cat. */
+/** Person data 65 (cXPerson +0x60e): bit 2 dog, bit 4 cat; 58 (+0x600) the age; 8 (+0x59c) the outfit. */
 const PD_GENDER = 65;
+const PD_AGE = 58;
+const PD_OUTFIT = 8;
+
+/** The preview animation lists (lbl_105BC78C). */
+const ADULT_ANIMS = (male: boolean): string[] => [
+  "a2o-heyyou1",
+  "a2o-idle-armsdown-breathe",
+  "a2o-mirror-admire-self-start",
+  male ? "a2o-mirror-admire-self-loop2" : "a2o-mirror-admire-self-loop1",
+  "a2o-mirror-admire-self-approve",
+  "a2o-idle-armsdown-breathe",
+  "a2o-idle-armsdown-breathe",
+  "a2o-celebrate-short",
+  "a2o-idle-armsdown-breathe",
+  "a2o-idle-armsdown-breathe",
+];
+const CHILD_ANIMS = [
+  "c2o-heyyou1",
+  "c2o-idle-armsdown-breathe",
+  "c2o-idle-armsdown-breathe",
+  "c2o-mirror-admire-self-start",
+  "c2o-mirror-admire-self-loop2",
+  "c2o-mirror-admire-self-approve",
+  "c2o-idle-armsdown-breathe",
+  "c2o-idle-armsdown-breathe",
+  "c2o-happy-clap",
+  "c2o-idle-armsdown-breathe",
+  "c2o-idle-armsdown-breathe",
+  "c2o-idle-armsdown-breathe",
+];
+const CAT_ANIMS = [
+  "k2o-stand-tailswish-loop-fast",
+  "k2o-hiss-start",
+  "k2o-hiss-loop",
+  "k2o-hiss-sizing-up",
+  "k2o-hiss-rhow-angry-one",
+  "k2o-hiss-rhow-angry-long-low",
+  "k2o-hiss-rhow-angry-long-high",
+  "k2o-hiss-stop",
+  "k2o-napfloor-stand-trans-sit",
+  "k2o-sit-chase-tail-start",
+  "k2o-sit-chase-tail-slow-loop",
+  "k2o-sit-chase-tail-stop",
+  "k2o-cleanself-start",
+  "k2o-cleanself-fidget",
+  "k2o-cleanself-cleanself-r-start",
+  "k2o-cleanself-cleanself-r-pawlickslow",
+  "k2o-cleanself-cleanself-r-pawlickchew",
+  "k2o-cleanself-cleanself-r-flickear",
+  "k2o-cleanself-cleanself-r-scratchnose",
+  "k2o-cleanself-cleanself-r-stop",
+  "k2o-napfloor-sit-trans-stand",
+];
+const DOG_ANIMS = [
+  "d2o-sit-wag",
+  "d2o-sit-wag-loop-slow",
+  "d2o-sit-wag-stop",
+  "d2o-sit-bark-start",
+  "d2o-sit-bark",
+  "d2o-sit-bark-stop",
+  "d2o-napfloor-sit-trans-stand",
+  "d2o-circle-start",
+  "d2o-circle-fascinated",
+  "d2o-circle-stop",
+  "d2o-napfloor-stand-trans-sit",
+  "d2o-sit-chase-tail-start",
+  "d2o-sit-chase-tail-slow-loop",
+  "d2o-sit-chase-tail-stop",
+  "d2o-sit-scratchears-l-start",
+  "d2o-sit-scratchears-l-loop-fast",
+  "d2o-sit-scratchears-l-loop-flick",
+  "d2o-sit-scratchears-l-stop",
+];
 
 function scaleTf(s: number): Mat4 {
   const m = new Float32Array(16);
@@ -71,6 +146,14 @@ export class WinVitaBtnSolo extends TSWin {
   /** +0x208 dog, +0x209 cat, +0x20a adult, +0x20b child. */
   private dog = false;
   private cat = false;
+  /** The copy's person data (MakeNewOutOfWorldObject's person). */
+  private pd = new Int16Array(0x100);
+  /** +0x218.. the animation list (+0x214: its last index), +0x210 the one playing (-1: none yet), +0x18c first paint. */
+  private anims: readonly string[] = [];
+  private animIndex = -1;
+  private animFirst = false;
+  /** A skill of the list is loading (VBAnimMgr::FindSkill is synchronous in the original). */
+  private animLoading = false;
   private canvas: HTMLCanvasElement | null = null;
   private renderer: SimRenderer | null = null;
   private start = 0;
@@ -92,49 +175,37 @@ export class WinVitaBtnSolo extends TSWin {
 
   /** cWinVitaBtnSolo::SetPerson: the person's body strings and person data (copied), in `outfit`. */
   async setPerson(bodyStrings: readonly string[], personData: Int16Array, outfit: number): Promise<void> {
-    const gender = personData[PD_GENDER]! & 0xffff;
+    this.pd = personData.slice();
+    const gender = this.pd[PD_GENDER]! & 0xffff;
     this.dog = (gender & 2) !== 0;
     this.cat = !this.dog && (gender & 4) !== 0;
-    this.editPerson = await EditPerson.begin(bodyStrings, personData.slice());
+    this.outfit = outfit;
+    this.pd[PD_OUTFIT] = outfit;
+    this.editPerson = await EditPerson.begin(bodyStrings, this.pd.slice());
     this.person = await SAnimator.fromBodyStrings(this.editPerson.bodyStrings());
     if (!this.person) return;
-    await this.person.startIdle();
-    await this.setOutfit(outfit);
+    await this.person.updateOutfitAndHands({ pd: this.pd }, true);
+    const age = this.pd[PD_AGE]!;
+    if (this.dog) this.anims = DOG_ANIMS;
+    else if (this.cat) this.anims = CAT_ANIMS;
+    else if (age !== 0 && age < 0x12) this.anims = CHILD_ANIMS;
+    else this.anims = ADULT_ANIMS(gender === 0);
+    this.animIndex = -1;
+    this.animFirst = true;
   }
 
   /** cWinVitaBtnSolo::SetOutfit: person data 8 := outfit, then UpdateOutfitAndHands. */
   async setOutfit(outfit: number): Promise<void> {
     this.outfit = outfit;
-    await this.redress();
-  }
-
-  /** SAnimator::UpdateOutfitAndHands with the edited body strings. */
-  private async redress(): Promise<void> {
-    const p = this.person;
-    const ep = this.editPerson;
-    if (!p || !ep) return;
-    const bs = new BodyStrings(ep.bodyStrings());
-    const entry = OUTFITS.get(this.outfit)?.entry ?? BS.body;
-    const slots: Array<[string, number]> = [
-      ["head", BS.head],
-      ["body", entry],
-      ["lhand", BS.leftHandOpen],
-      ["rhand", BS.rightHandOpen],
-    ];
-    await Promise.all(
-      slots.map(([slot, index]) => {
-        let { suit, texture } = bs.getSuitAndTexture(index);
-        if (slot === "body" && (!suit || suit === "added")) ({ suit, texture } = bs.getSuitAndTexture(BS.body));
-        return suit && suit !== "none" ? p.vitaboy.dress(slot, suit, texture) : Promise.resolve(false);
-      }),
-    );
+    this.pd[PD_OUTFIT] = outfit;
+    await this.person?.updateOutfitAndHands({ pd: this.pd });
   }
 
   /** cWinVitaBtnSolo::GetCurrentSuitIndex */
   getCurrentSuitIndex(): number {
-    const o = OUTFITS.get(this.outfit);
-    if (!this.editPerson || !o) return -1;
-    return this.editPerson.getOutfitSuit(o.kind);
+    const kind = OUTFITS.get(this.outfit);
+    if (!this.editPerson || !kind) return -1;
+    return this.editPerson.getOutfitSuit(kind);
   }
 
   /** cWinVitaBtnSolo::NextSuit */
@@ -147,11 +218,31 @@ export class WinVitaBtnSolo extends TSWin {
     this.stepSuit(false);
   }
 
+  /** EditPerson::SetToNext / PreviousValid<Kind>SuitForBodyType, then the person dressed from the edited strings. */
   private stepSuit(forward: boolean): void {
-    const o = OUTFITS.get(this.outfit);
-    if (!this.editPerson) return;
-    if (o) this.editPerson.setToNextValidSuitForBodyType(o.kind, forward, true);
-    void this.redress();
+    const kind = OUTFITS.get(this.outfit);
+    const ep = this.editPerson;
+    if (!ep || !kind) return;
+    ep.setToNextValidSuitForBodyType(kind, forward, true);
+    void this.person?.setBodyStrings(ep.bodyStrings());
+  }
+
+  /** cWinVitaBtnSolo::AnimatePet (people and pets alike): the list's skills one after the other. */
+  private animatePet(): void {
+    const p = this.person;
+    if (!p || this.animLoading || this.anims.length === 0) return;
+    if (this.animFirst) {
+      this.animFirst = false;
+      if (this.animIndex === -1) this.animIndex = this.cat ? 8 : 0;
+    } else {
+      const cur = p.vitaboy.practices[0];
+      if (this.animIndex === -1 || (cur && !cur.finished)) return;
+      this.animIndex = this.animIndex + 1 > this.anims.length - 1 ? 0 : this.animIndex + 1;
+    }
+    this.animLoading = true;
+    void p.startSkill(this.anims[this.animIndex]!, LoopMode.Hold).finally(() => {
+      this.animLoading = false;
+    });
   }
 
   private view(): SimView {
@@ -190,6 +281,7 @@ export class WinVitaBtnSolo extends TSWin {
       canvas.height = h;
     }
     const now = performance.now();
+    this.animatePet();
     person.update(now);
     const gl = r.gl;
     gl.viewport(0, 0, w, h);
