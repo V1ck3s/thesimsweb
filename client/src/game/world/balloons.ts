@@ -24,14 +24,21 @@
  * + 4000 large) or the person's (PersonFinder::GetSpeechIcon: character
  * BMP_ 2005 / 2006).
  *
- * Deviations: the icons are painted over the finished frame (the original
- * draws them luminous into the world with RenderParam::DepthTweak, so a
- * wall in front could hide one); when an object has no speech images,
- * Product::RenderSpeechShot is replaced by its catalog icon on the
- * kSpeechMediumBmp / kSpeechLargeBmp template.
+ * The icons are drawn into the world, luminous (RenderParam::SetLuminous),
+ * at the registration point's depth brought forward by RenderParam::
+ * DepthTweak(lbl_105BA388 = -65) around DrawSpriteSlot (cXPerson::DrawIso),
+ * so a wall in front of the head hides them. They use the world's depth
+ * test as z-sprites with every pixel at z 0 (the SPR# frames have no z
+ * channel). The lot view draws them after the people (HouseViewer.
+ * spriteSlots), each rendered frame, so they follow the head.
+ *
+ * Deviation: when an object has no speech images, Product::RenderSpeechShot
+ * is replaced by its catalog icon on the kSpeechMediumBmp / kSpeechLargeBmp
+ * template.
  */
 
 import { ObjectIcon } from "../cpanel/buy/objecticon.js";
+import type { Compositor, SpriteTex } from "./compositor.js";
 import type { GameContext } from "../context.js";
 import { loadCharacter } from "../data/neighborhood.js";
 import { decodeImage } from "../res/bmp.js";
@@ -44,7 +51,11 @@ import type { ObjSelector } from "./objselector.js";
 import { Renderer } from "./renderer.js";
 import { RenderParam } from "./renderparam.js";
 import type { SpriteSlot } from "./slots.js";
-import { PX_NONE } from "./spr.js";
+import { PX_NONE, PX_OPAQUE } from "./spr.js";
+import { makeZSpriteLookup } from "./zbuffer.js";
+
+/** lbl_105BA388: cXPerson::DrawIso's RenderParam::DepthTweak around DrawSpriteSlot. */
+const DEPTH_TWEAK = -65;
 
 /** lbl_105BB894: IconGroup base SPR# per group (-1: none; group 0 uses lbl_105BB890). */
 const GROUP_BASE = [-1, 100, 400, 200, 300, 500, 600, -1, 700, 800, 900];
@@ -110,11 +121,67 @@ function frameCanvas(id: number, i: number): HTMLCanvasElement | null {
   return c;
 }
 
-/** cRenderer::DrawShape of an SPR# frame standing on (x, y) (GetShapeBounds' bottom). */
-function drawShape(ctx: CanvasRenderingContext2D, id: number, i: number, x: number, y: number): void {
+/**
+ * A compositor texture of a picture: its opaque pixels at sprite z 0 (the
+ * z-sprite blit then puts every pixel at the base depth). Kept per
+ * compositor and source.
+ */
+const textures = new WeakMap<Compositor, WeakMap<object, SpriteTex | null>>();
+function zeroZTexture(comp: Compositor, src: HTMLCanvasElement | ImageBitmap): SpriteTex | null {
+  let m = textures.get(comp);
+  if (!m) {
+    m = new WeakMap();
+    textures.set(comp, m);
+  }
+  const hit = m.get(src);
+  if (hit !== undefined) return hit;
+  const w = src.width;
+  const h = src.height;
+  let tex: SpriteTex | null = null;
+  if (w > 0 && h > 0) {
+    const c = document.createElement("canvas");
+    c.width = w;
+    c.height = h;
+    const cx = c.getContext("2d", { willReadFrequently: true })!;
+    cx.drawImage(src, 0, 0);
+    const rgba = cx.getImageData(0, 0, w, h).data;
+    const zm = new Uint8Array(w * h * 2);
+    for (let p = 0; p < w * h; p++) {
+      const on = rgba[p * 4 + 3]! !== 0;
+      rgba[p * 4 + 3] = on ? 255 : 0;
+      zm[p * 2 + 1] = on ? PX_OPAQUE * 64 : 0;
+    }
+    const gl = comp.gl;
+    const upload = (format: number, internal: number, data: Uint8Array): WebGLTexture => {
+      const t = gl.createTexture()!;
+      gl.bindTexture(gl.TEXTURE_2D, t);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+      gl.texImage2D(gl.TEXTURE_2D, 0, internal, w, h, 0, format, gl.UNSIGNED_BYTE, data);
+      return t;
+    };
+    const color = upload(gl.RGBA, gl.RGBA8, new Uint8Array(rgba.buffer, rgba.byteOffset, rgba.byteLength));
+    const zmode = upload(gl.RG, gl.RG8, zm);
+    tex = { width: w, height: h, color, zmode, hasOpaque: true, hasAlpha: false };
+  }
+  m.set(src, tex);
+  return tex;
+}
+
+/** cRenderer::DrawShape: a picture standing on (x, y) (GetShapeBounds' bottom) at the slot's depth. */
+function blitAt(comp: Compositor, rp: RenderParam, src: HTMLCanvasElement | ImageBitmap, x: number, y: number): void {
+  const tex = zeroZTexture(comp, src);
+  if (!tex) return;
+  const base = rp.depth + rp.zbuf.verticalAt(rp.scale, 8 << rp.scale);
+  comp.drawZSprite(tex, x, y, false, base, rp.zLookupIndex);
+}
+
+function drawShape(comp: Compositor, rp: RenderParam, id: number, i: number, x: number, y: number): void {
   if (i < 0 || i >= balloonSpriteCount(id)) return;
   const c = frameCanvas(id, i);
-  if (c) ctx.drawImage(c, x, y - c.height);
+  if (c) blitAt(comp, rp, c, x, y - c.height);
 }
 
 /** What the lot view needs to place and picture the icons. */
@@ -133,23 +200,27 @@ export class BalloonPainter {
 
   /**
    * cXObject::DrawIso / cXPerson::DrawIso's sprite slot pass for every
-   * object of the lot with an active slot. Persons draw theirs at the head
-   * registration when the slot is "always shown" or the person is selected.
+   * object of the lot with an active slot, into the view's compositor.
+   * Persons draw theirs at the head registration when the slot is "always
+   * shown" or the person is selected.
    */
-  paint(g: CanvasRenderingContext2D, ox: number, oy: number, w: number, h: number, scene: BalloonScene): void {
+  draw(comp: Compositor, scene: BalloonScene): void {
     const v = scene.viewer;
     if (v.scale === 1 || !sprites) return;
-    g.save();
-    g.beginPath();
-    g.rect(ox, oy, w, h);
-    g.clip();
+    // The view's ZSpriteLookup table (registered by the HouseViewer under this key).
+    const zLookup = comp.table1D("zsprite", makeZSpriteLookup());
+    const ambient = comp.ambient;
+    const light = comp.light;
+    // RenderParam::SetLuminous(1): full light.
+    comp.ambient = 1;
+    comp.light = null;
     for (const so of scene.module.objects) {
       if (!so) continue;
       const o = so.obj;
       if (o.level > v.level || o.fx < 0 || o.fy < 0) continue;
       for (const slot of o.spriteSlots) {
         if (slot.activeTicks === 0) continue;
-        const rp = new RenderParam(v, 0);
+        const rp = new RenderParam(v, zLookup);
         if (so.isPerson) {
           if (!slot.always && !scene.isSelected(o)) continue;
           // SAnimator::PrepReg(rp, 2): the head's "Top", then RenderLoc::SetWorldCoord.
@@ -163,30 +234,32 @@ export class BalloonPainter {
         } else {
           rp.setGridCoords(o.fx, o.fy, o.level);
         }
-        this.drawSpriteSlot(g, ox, oy, rp, slot, scene);
+        rp.depth += DEPTH_TWEAK;
+        this.drawSpriteSlot(comp, rp, slot, scene);
       }
     }
-    g.restore();
+    comp.ambient = ambient;
+    comp.light = light;
   }
 
   /** cXObject::DrawSpriteSlot */
-  private drawSpriteSlot(g: CanvasRenderingContext2D, ox: number, oy: number, rp: RenderParam, slot: SpriteSlot, scene: BalloonScene): void {
+  private drawSpriteSlot(comp: Compositor, rp: RenderParam, slot: SpriteSlot, scene: BalloonScene): void {
     const s = rp.scale;
     const zoom = 3 - s;
-    const x = ox + Math.trunc(rp.sx) - ((8 << s) >> 1);
-    const y = oy + Math.trunc(rp.sy) - Math.trunc(slot.z * (2 << s)) + (4 << s);
-    if (slot.balloon !== 0) drawShape(g, slot.balloon, zoom, x, y);
+    const x = Math.trunc(rp.sx) - ((8 << s) >> 1);
+    const y = Math.trunc(rp.sy) - Math.trunc(slot.z * (2 << s)) + (4 << s);
+    if (slot.balloon !== 0) drawShape(comp, rp, slot.balloon, zoom, x, y);
     if (slot.spriteId !== -1) {
-      if (slot.spriteId !== 0) drawShape(g, slot.spriteId, zoom + slot.frame * 3, x, y);
+      if (slot.spriteId !== 0) drawShape(comp, rp, slot.spriteId, zoom + slot.frame * 3, x, y);
     } else if (slot.selector) {
       const img = this.speechImage(slot.selector as ObjSelector, s, scene.module);
       if (img) {
         const dx = s === 2 ? 0x10 : 0x20;
         const dy = s === 2 ? -0x12 : -0x24;
-        g.drawImage(img, dx - Math.trunc(img.width / 2) + x, dy - Math.trunc(img.height / 2) + y);
+        blitAt(comp, rp, img, dx - Math.trunc(img.width / 2) + x, dy - Math.trunc(img.height / 2) + y);
       }
     }
-    if (slot.overlay !== 0) drawShape(g, slot.overlay, zoom, x, y);
+    if (slot.overlay !== 0) drawShape(comp, rp, slot.overlay, zoom, x, y);
   }
 
   /** Product::GetSpeechImage / PersonFinder::GetSpeechIcon at scale 2 (medium) or 3 (large). */

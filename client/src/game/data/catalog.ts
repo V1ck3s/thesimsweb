@@ -21,9 +21,9 @@
  *    chunk name (ObjSelector::GetCatalogName).
  *  - The thumbnail (Product::GenerateGraphics) is the object file's BMP_
  *    resource with the catalog strings id when it is 74x37 (normal and
- *    highlighted 37x37 icons side by side), else a render of the object that
- *    the game writes back into the file; the shipped files all carry it.
- *    Without one the product shows kItemUnknown.
+ *    highlighted 37x37 icons side by side), else a render of the object
+ *    (RenderCatalogShot, cpanel/buy/objecticon.ts) that the game writes back
+ *    into the file. Without graphics the product shows kItemUnknown.
  *
  * OBJD offsets above are the game's in-memory record (version u32, then u16
  * fields): field index = (offset - 4) / 2.
@@ -200,6 +200,16 @@ export class Product {
   icon(): Promise<ImageBitmap | null> {
     this.iconPromise ??= loadIcon(this.rec);
     return this.iconPromise;
+  }
+
+  /** ObjSelector::GetHasGraphics */
+  hasGraphics(): boolean {
+    return this.field(OBJD.masterId) !== 0 || this.field(OBJD.numGraphics) !== 0;
+  }
+
+  /** The object product whose picture RenderCatalogShot renders (the product itself). */
+  catalogObject(): Product {
+    return this;
   }
 
   /** The whole object file (sprites for DrawDefaultObjectIcon, TTAB). */

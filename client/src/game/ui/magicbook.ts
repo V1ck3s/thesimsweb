@@ -8,8 +8,10 @@
  *    spells, 9 otherwise;
  *  - strings of GameData/magic.iff: STR# 1 (1 "%s family spell book", 2
  *    "%s cookbook", 3 Back, 4 Next, 5 "Page %d of %d"), 0xc / 8 spell
- *    titles / descriptions, 0xd / 9 kid charms, 0xe / 10 recipes; STR# 0xf
- *    and 0x10 the spell and kid charm ids in list order;
+ *    titles / descriptions, 0xd / 9 kid charms, 0xe / 10 recipes;
+ *  - strings of the Magic Controller's file (LoadMagicStrings, GUID
+ *    0xb6c90029, LoadOnlyEnglish): STR# 0xf and 0x10 the spell and kid
+ *    charm ids in list order, 3 / 4 / 5 the ingredients, 7 their GUIDs;
  *  - Init: 600 x 0x17e, centered on the main window raised by 100 px; Close
  *    (DefaultPushBtn, cTSWinMsgBox::GetButtonLabel(1)) at (W - w - 20,
  *    H - 1.5 h); Back at (0x31, same), Next at (3 w, same), the page label
@@ -32,13 +34,26 @@
  *    H - 0x96);
  *  - TSOnKeyDown: Escape closes; a 400 s timer closes the book.
  *
- * Simplifications: cPickSpellItem's ingredient pictures (catalog icons by
- * GUID) are replaced by the entry's title on the item background; the
- * cookbook's two "Has Made" filters (recipes 9 and 4) are not applied; the
- * expansion flags of the spell list (ids 0x16 and 10) are taken as set.
+ *  - cPickSpellItem (one per row, kPickSpellItemBkg, 3 frames stacked):
+ *    SetSpellID reads the entry's three ingredients ("%d,%d,%d", entry id + 1
+ *    of STR# 3 spells / 4 kid charms / 5 recipes of the Magic Controller's
+ *    file, GUID 0xb6c90029, LoadMagicStrings / LoadOnlyEnglish) and each
+ *    ingredient's GUID (STR# 7, "%x"); each ingredient is a 45-wide button
+ *    (Init: at x = 0, 0x44, 0x88, image offset (0, (row height - 0x2d) / 2 -
+ *    5)) showing Product::ComposeBtnImage of the ingredient's product, or
+ *    kCatalogTemplate1Frame without one, with the catalog name as tooltip
+ *    ("ingredient ?" when the GUID is unknown). The ingredient buttons do not
+ *    select their row (cPickSpellItem::TSOnCommand only forwards 0x1a).
+ *
+ * Simplifications: the cookbook's two "Has Made" filters (recipes 9 and 4)
+ * are not applied; the expansion flags of the spell list (ids 0x16 and 10)
+ * are taken as set.
  */
 
+import { composeBtnImage, generateGraphics } from "../cpanel/buy/objecticon.js";
 import type { GameContext } from "../context.js";
+import { loadStringSet } from "../sim/behavior.js";
+import { ObjectFolder } from "../world/objectfolder.js";
 import type { FfnFont } from "../res/ffn.js";
 import type { Simulator } from "../sim/simulator.js";
 import type { SimObject } from "../sim/xobject.js";
@@ -58,8 +73,6 @@ const STR_COOK_DESC = 10;
 const STR_SPELL_TITLE = 0xc;
 const STR_KID_TITLE = 0xd;
 const STR_COOK_TITLE = 0xe;
-const STR_SPELL_IDS = 0xf;
-const STR_KID_IDS = 0x10;
 /** UIText STR# 152: cSimsApp's button labels (GetButtonLabel(1): entry 1). */
 const LABELS_STR = 152;
 const CLOSE_LABEL_ENTRY = 1;
@@ -68,6 +81,20 @@ const PER_PAGE = 4;
 const TIMEOUT_MS = 400000;
 /** Pictures by UpdateDescription's index: kid, charm, spell, oven, nectar. */
 const PICTURES = ["kMagicBookKid", "kMagicBookCharm", "kMagicBookSpell", "kMagicBookOven", "kMagicBookNectar"];
+/** LoadMagicStrings: the Magic Controller (MagicMasterSpells.iff) holds the ingredient tables. */
+const GUID_MAGIC_CONTROLLER = 0xb6c90029;
+const STR_SPELL_INGREDIENTS = 3;
+const STR_KID_INGREDIENTS = 4;
+const STR_COOK_INGREDIENTS = 5;
+const STR_INGREDIENT_GUIDS = 7;
+const STR_SPELL_IDS = 0xf;
+const STR_KID_IDS = 0x10;
+/** lbl_105BD268: the tooltip of an unknown ingredient. */
+const UNKNOWN_INGREDIENT = "ingredient ?";
+/** cPickSpellItem::Init: ingredient button width and step. */
+const INGREDIENT_W = 0x2d;
+const INGREDIENT_STEP = 0x44;
+const INGREDIENTS = 3;
 const ID_CLOSE = 1;
 const ID_BACK = 2;
 const ID_NEXT = 3;
@@ -94,10 +121,17 @@ export class CWinMagicBook extends TSWinDlg {
   private entryTitle: TSWinText | null = null;
   private description: TSWinText | null = null;
   private items: TSWinBtn[] = [];
+  /** The ingredient buttons of each item (cPickSpellItem +0x18c). */
+  private ingredientBtns: IngredientBtn[] = [];
+  /** cPickSpellItem +0x1b8 / +0x224 / +0x290 / +0x2fc and cPickSpellList +0x118 / +0x184: STR# 3, 4, 5, 7, 0xf and 0x10 of the Magic Controller. */
+  private magicStrings = new Map<number, string[]>();
+  /** Ingredient GUID -> [ComposeBtnImage or kCatalogTemplate1Frame, tooltip]. */
+  private readonly ingredientCache = new Map<number, Promise<[ImageBitmap | null, string]>>();
+  private template: ImageBitmap | null = null;
+  private template1: ImageBitmap | null = null;
   private frame: ImageBitmap | null = null;
   private pictures: Array<ImageBitmap | null> = [];
   private itemBkg: ImageBitmap | null = null;
-  private itemFont: FfnFont | null = null;
   private timer = 0;
 
   constructor(
@@ -132,17 +166,21 @@ export class CWinMagicBook extends TSWinDlg {
   override async init(): Promise<boolean> {
     const ctx = this.ctx;
     await ctx.strings.load("GameData/magic.iff");
-    const [mgr, frame, itemBkg, titleFont, descFont, ...pictures] = await Promise.all([
+    const [mgr, frame, itemBkg, titleFont, descFont, template, template1, ...pictures] = await Promise.all([
       TSWinCtrlMgr.get(ctx),
       ctx.res.image("kCatalogPopupBackTiles"),
       ctx.res.image("kPickSpellItemBkg").catch(() => null),
       ctx.fonts.acquire(12),
       ctx.fonts.acquire(8),
+      ctx.res.image("kCatalogTemplate").catch(() => null),
+      ctx.res.image("kCatalogTemplate1Frame").catch(() => null),
       ...PICTURES.map((p) => ctx.res.image(p).catch(() => null)),
     ]);
+    this.template = template;
+    this.template1 = template1;
+    await this.loadMagicStrings();
     this.frame = frame;
     this.itemBkg = itemBkg;
-    this.itemFont = descFont;
     this.pictures = pictures;
     const main = winMgr.main.area;
     this.setArea(0, 0, 600, 0x17e);
@@ -198,14 +236,19 @@ export class CWinMagicBook extends TSWinDlg {
     const count = this.mode === Mode.Spells ? 0x16 : 9;
     for (let i = 1; i <= count; i++) {
       if (this.mode === Mode.Spells) {
-        if (i !== 0xc) out.push(Number.parseInt(this.str(STR_SPELL_IDS, i + 1), 10) || 0);
+        if (i !== 0xc) out.push(this.magicId(STR_SPELL_IDS, i));
       } else if (this.mode === Mode.Kid) {
-        out.push(Number.parseInt(this.str(STR_KID_IDS, i + 1), 10) || 0);
+        out.push(this.magicId(STR_KID_IDS, i));
       } else {
         out.push(i);
       }
     }
     return out;
+  }
+
+  /** atoi of GetString(set, i + 1) on the Magic Controller's strings. */
+  private magicId(set: number, i: number): number {
+    return Number.parseInt(this.magicStrings.get(set)?.[i] ?? "", 10) || 0;
   }
 
   private get pages(): number {
@@ -263,20 +306,80 @@ export class CWinMagicBook extends TSWinDlg {
     this.items.forEach((b, i) => b.setState(i === this.selected ? 1 : 0));
   }
 
+  /** LoadMagicStrings(3, 4, 5, 7, 0xf, 0x10): StringSetBase::LoadOnlyEnglish on the Magic Controller's file. */
+  private async loadMagicStrings(): Promise<void> {
+    const folder = this.person.obj.selector.folder;
+    const sel = folder instanceof ObjectFolder ? await folder.getSelectorByGUID(GUID_MAGIC_CONTROLLER).catch(() => null) : null;
+    if (!sel) return;
+    for (const id of [STR_SPELL_INGREDIENTS, STR_KID_INGREDIENTS, STR_COOK_INGREDIENTS, STR_INGREDIENT_GUIDS, STR_SPELL_IDS, STR_KID_IDS]) {
+      this.magicStrings.set(id, loadStringSet(sel.res, id) ?? []);
+    }
+  }
+
+  /** GetSpellIngredients / GetKidIngredients / GetCookingIngredients: "%d,%d,%d" of entry id + 1. */
+  private ingredients(id: number): number[] {
+    const set = this.mode === Mode.Spells ? STR_SPELL_INGREDIENTS : this.mode === Mode.Kid ? STR_KID_INGREDIENTS : STR_COOK_INGREDIENTS;
+    const s = this.magicStrings.get(set)?.[id] ?? "";
+    return s.split(",", INGREDIENTS).map((v) => Number.parseInt(v, 10) || 0);
+  }
+
+  /** cPickSpellItem::GetIngredientGuid: "%x" of STR# 7 entry n + 1. */
+  private ingredientGuid(n: number): number {
+    return Number.parseInt(this.magicStrings.get(STR_INGREDIENT_GUIDS)?.[n] ?? "", 16) >>> 0 || 0;
+  }
+
+  /**
+   * SetSpellID's picture and GetCatalogName's tooltip of one ingredient:
+   * ObjectFolder::GetSelectorByGUID, then the selector's Product
+   * (ComposeBtnImage, which runs GenerateGraphics) or kCatalogTemplate1Frame.
+   */
+  private ingredient(guid: number): Promise<[ImageBitmap | null, string]> {
+    let p = this.ingredientCache.get(guid);
+    if (!p) {
+      p = (async (): Promise<[ImageBitmap | null, string]> => {
+        const folder = this.person.obj.selector.folder;
+        const sel = guid !== 0 && folder instanceof ObjectFolder ? await folder.getSelectorByGUID(guid).catch(() => null) : null;
+        if (!sel) return [this.template1, UNKNOWN_INGREDIENT];
+        // Catalog::Init makes a Product for every selector that is not a multi-tile part or a person.
+        const hasProduct = !sel.getIsMultiTileSubObject() && !sel.getIsPerson();
+        if (!hasProduct || !this.template) return [this.template1, sel.getCatalogName()];
+        const picture = await generateGraphics(sel.res, sel.objdId, sel.objd.i16(0x52), sel.getHasGraphics(), this.template);
+        // ComposeBtnImage fails without a product picture: SetSpellID then shows kCatalogTemplate1Frame.
+        return [picture ? await composeBtnImage(this.template, picture) : this.template1, sel.getCatalogName()];
+      })();
+      this.ingredientCache.set(guid, p);
+    }
+    return p;
+  }
+
   /** cPickSpellList::RefreshList: the page's items, tiled down the list area. */
   private refreshList(): void {
     for (const b of this.items) this.childDelete(b);
     this.items = [];
+    this.ingredientBtns = [];
     const img = this.itemBkg;
     const rowH = img ? Math.trunc(img.height / 3) : 0x43;
     const ids = this.ids.slice(this.page * PER_PAGE, (this.page + 1) * PER_PAGE);
     ids.forEach((id, i) => {
       const b = new TSWinBtn(0x100 + i, img, 1, 3);
-      b.caption = this.entryText(id, false);
-      if (this.itemFont) b.font = this.itemFont;
       b.moveTo(0x31, 0x36 + i * rowH);
       this.childAdd(b);
       this.items.push(b);
+      this.setSpellID(b, id, rowH);
+    });
+  }
+
+  /** cPickSpellItem::Init's ingredient buttons + SetSpellID's pictures. */
+  private setSpellID(item: TSWinBtn, id: number, rowH: number): void {
+    this.ingredients(id).forEach((n, k) => {
+      const btn = new IngredientBtn(Math.trunc((rowH - INGREDIENT_W) / 2) - 5);
+      btn.setArea(k * INGREDIENT_STEP, 0, k * INGREDIENT_STEP + INGREDIENT_W, rowH);
+      item.childAdd(btn);
+      this.ingredientBtns.push(btn);
+      void this.ingredient(this.ingredientGuid(n)).then(([pic, tip]) => {
+        btn.picture = pic;
+        btn.tooltip = tip;
+      });
     });
   }
 
@@ -314,6 +417,8 @@ export class CWinMagicBook extends TSWinDlg {
       this.tabDown();
       return true;
     }
+    // cPickSpellItem::TSOnCommand: the ingredient buttons' commands go no further.
+    if (this.ingredientBtns.includes(source as IngredientBtn)) return true;
     const i = this.items.indexOf(source as TSWinBtn);
     if (i >= 0) {
       this.selected = i;
@@ -340,5 +445,20 @@ export class CWinMagicBook extends TSWinDlg {
     if (f) bltEdge(g, f, Math.trunc(f.width / 3), Math.trunc(f.height / 3), W, H, true);
     const pic = this.pictures[this.picture];
     if (pic) g.blit(pic, W - 0xb4, H - 0x96);
+  }
+}
+
+/** An ingredient button of cPickSpellItem: a cTSWinBtn whose image is drawn at (+0x13c, +0x140). */
+class IngredientBtn extends TSWinBtn {
+  picture: ImageBitmap | null = null;
+
+  constructor(private readonly imageY: number) {
+    super();
+  }
+
+  /** cTSWinBtn::DefaultPaint with the image offset. */
+  override tsPaint(g: Gfx): void {
+    const p = this.picture;
+    if (p) g.blitPart(p, 0, 0, Math.min(p.width, INGREDIENT_W), p.height, 0, this.imageY);
   }
 }

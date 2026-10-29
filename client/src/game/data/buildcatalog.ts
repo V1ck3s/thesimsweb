@@ -209,6 +209,11 @@ export class BuildProduct implements ArchProduct {
     return true;
   }
 
+  /** The object product whose picture RenderCatalogShot renders (object products only). */
+  catalogObject(): Product | null {
+    return this.kind === ProductKind.Object ? this.object : null;
+  }
+
   /** Product::GenerateGraphics: the 74x37 button picture (null: kItemUnknown; tool products have none). */
   icon(): Promise<ImageBitmap | null> {
     this.iconPromise ??= this.generateGraphics();

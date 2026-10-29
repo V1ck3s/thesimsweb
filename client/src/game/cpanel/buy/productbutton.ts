@@ -15,6 +15,7 @@
  */
 
 import type { Product } from "../../data/catalog.js";
+import { renderCatalogShot } from "./objecticon.js";
 import { makeMoneyString } from "../../nbhd/nghinterface.js";
 import { LANG_FRENCH } from "../../res/uires.js";
 import { BTN_TOGGLE, TSWinBtn } from "../../ui/btn.js";
@@ -30,6 +31,23 @@ export interface ButtonProduct {
   getPrice(): number;
   /** Product::GenerateGraphics: the 74x37 picture, null when there is none. */
   icon(): Promise<ImageBitmap | null>;
+  /** The object product to render when the file has no picture (RenderCatalogShot). */
+  catalogObject?(): Product | null;
+}
+
+/** Product +0x1c once RenderCatalogShot made it (the game writes it back into the object file). */
+const renderedShots = new WeakMap<Product, Promise<ImageBitmap | null>>();
+
+/** Product::GenerateGraphics' render path: RenderCatalogShot on the catalog template (lbl_105BA780). */
+function renderedShot(p: Product, template: ImageBitmap): Promise<ImageBitmap | null> {
+  let shot = renderedShots.get(p);
+  if (!shot) {
+    shot = p.hasGraphics()
+      ? p.openFile().then((f) => renderCatalogShot(f, p.rec.objdId, template)).catch(() => null)
+      : Promise.resolve(null);
+    renderedShots.set(p, shot);
+  }
+  return shot;
 }
 
 export class ProductButton<P extends ButtonProduct = Product> extends TSWinBtn {
@@ -49,10 +67,16 @@ export class ProductButton<P extends ButtonProduct = Product> extends TSWinBtn {
     void product.icon().then((img) => (this.icon = img));
   }
 
-  /** Product::GenerateGraphics falls back to kItemUnknown when the file has no icon. */
-  setFallbackIcon(img: ImageBitmap): void {
-    void this.product.icon().then((icon) => {
-      if (!icon) this.icon = img;
+  /**
+   * Product::GenerateGraphics without a picture in the file: an object with
+   * graphics is rendered (RenderCatalogShot on `template`, the 4-frame
+   * kCatalogTemplate), anything else shows kItemUnknown.
+   */
+  setFallbackIcon(img: ImageBitmap, template: ImageBitmap | null): void {
+    void this.product.icon().then(async (icon) => {
+      if (icon) return;
+      const obj = this.product.catalogObject?.() ?? null;
+      this.icon = (obj && template ? await renderedShot(obj, template) : null) ?? img;
     });
   }
 

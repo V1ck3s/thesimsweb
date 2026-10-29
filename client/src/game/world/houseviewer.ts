@@ -162,6 +162,8 @@ export class HouseViewer {
   cutawayCtl: { onScale(): void; onRotation(): void; onLevel(old: number): void } | null = null;
   /** People (3D meshes), drawn after the dynamic objects with the shared depth buffer. */
   people: { draw(viewer: HouseViewer): void } | null = null;
+  /** cXPerson::DrawIso's sprite slot pass (balloons.ts): balloons and headlines, drawn after the people. */
+  spriteSlots: { draw(viewer: HouseViewer, comp: Compositor): void } | null = null;
   /** HouseViewer::RenderCursorObject: the buy / build tool's cursor object, drawn after the dynamic objects. */
   cursor: { draw(viewer: HouseViewer, comp: Compositor, rp: RenderParam): void } | null = null;
   /** cRoofLayer::RenderRoofPolys (created with the first roof drawn). */
@@ -587,6 +589,7 @@ export class HouseViewer {
     comp.ambient = 1;
     this.cursor?.draw(this, comp, rp);
     this.people?.draw(this);
+    this.spriteSlots?.draw(this, comp);
     this.dirty = false;
   }
 
