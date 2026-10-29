@@ -729,6 +729,30 @@ export class SimModule {
     treeSimGlobals.maxPrimitives = this.count * 0xf + 10000 + n * n * 0xf;
   }
 
+  /**
+   * ObjectModule::ResetForVacation (cSimsApp::LoadGame on vacation, community
+   * and Magic Town lots, before the arrivals come in): every person on the
+   * lot is killed (KillOutOfWorldObject), objects whose OBJD +0xc4 is 2 go
+   * to the kill queue, those with 1 are reset (vtable +0x48: Init runs, e.g.
+   * the vacation NPC controller's "CT - Lot Reset" makes the mascot,
+   * janitor, maid and director when global 0x20 is 0). `keep`: people made
+   * before the call that the original makes after it (the arriving family).
+   * The house +0x3c reset and GlobalDispatch(0x108) are not ported.
+   */
+  resetForVacation(keep: (o: SimObject) => boolean): void {
+    for (const o of [...this.list]) {
+      if (o.killed) continue;
+      const objd = o.obj.selector.objd;
+      if (objd.objectType === 2) {
+        if (!keep(o)) this.killObject(o);
+        continue;
+      }
+      const action = objd.i16(0xc4);
+      if (action === 2) this.addToKillQueue(o.id, 0);
+      else if (action === 1) o.reset(false);
+    }
+  }
+
   /** ObjectModule::AddToKillQueue. */
   addToKillQueue(id: number, flag: number): void {
     if (!this.killQueue.some((k) => k.id === id)) this.killQueue.push({ id, flag });

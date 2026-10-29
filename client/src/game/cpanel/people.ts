@@ -39,6 +39,7 @@ import { WinMotive } from "./live/motive.js";
 import { buildPersonBtn } from "./live/peoplebuttons.js";
 import { computeZodiacSign, WinPersonality, type TraitStrings } from "./live/personality.js";
 import { RelationshipsPanel } from "./live/relationship.js";
+import { WinSubpanelFame } from "./live/fame.js";
 import { WinSubpanelJob } from "./live/job.js";
 import { GiftsPanel } from "./live/gifts.js";
 import { popupClick, WinLivePopup, WinLivePopupClient } from "./livepopup.js";
@@ -142,6 +143,14 @@ const PANEL_DIRTY: Record<LivePanel, number> = {
 const MOOD_LOW = -25;
 const MOOD_HIGH = 25;
 
+/**
+ * CPState::GetShowFameUIPanel: with Superstar, a jobless person (career 0,
+ * person data 56) with star points (person data 0x50) gets the fame page.
+ */
+function showFameUIPanel(p: PersonInfo): boolean {
+  return (p.personData?.[56] ?? 0) === 0 && (p.personData?.[0x50] ?? 0) > 0;
+}
+
 function isChild(p: PersonInfo): boolean {
   const age = p.personData?.[PD_AGE];
   return age === undefined ? p.isChild : age !== 0 && age < 18;
@@ -187,6 +196,8 @@ export class WinPeople extends TSWin {
   private readonly personalities: WinPersonality[] = [];
   private readonly zodiacBtn = new TSWinBtn();
   private job!: WinSubpanelJob;
+  /** +0x114: the celebrity job page (cWinSubpanelFame). */
+  private fame!: WinSubpanelFame;
   private house!: WinSubpanelHouse;
   private relationships!: RelationshipsPanel;
   private interests!: InterestsPanel;
@@ -249,6 +260,7 @@ export class WinPeople extends TSWin {
       return true;
     };
     this.job = new WinSubpanelJob(ctx);
+    this.fame = new WinSubpanelFame(ctx);
     this.relationships = new RelationshipsPanel(ctx);
     this.interests = new InterestsPanel(ctx);
     this.house = new WinSubpanelHouse(ctx);
@@ -256,6 +268,7 @@ export class WinPeople extends TSWin {
     this.gifts = new GiftsPanel(ctx, new WinLivePopupClient());
     if (
       !(await placePage(this.job, true)) ||
+      !(await placePage(this.fame, true)) ||
       // The relationships, interests and gifts windows set the page area themselves (and build their lists).
       !(await placePage(this.relationships, false)) ||
       !(await placePage(this.interests, false)) ||
@@ -357,7 +370,7 @@ export class WinPeople extends TSWin {
     // The popup lives in the lot view (cSimsApp+0x80); the pages share it.
     this.popup = new WinLivePopup(ctx);
     if (!(await this.popup.init())) return false;
-    for (const page of [this.job, this.house, this.relationships, this.interests]) page.livePopup = this.popup;
+    for (const page of [this.job, this.fame, this.house, this.relationships, this.interests]) page.livePopup = this.popup;
 
     this.setPerson(-1);
     this.setPanel(LivePanel.Mood);
@@ -381,6 +394,7 @@ export class WinPeople extends TSWin {
     }
     for (const b of this.familyBtns) b.setAsync(ASYNC_ON_DOWN, timeout);
     this.job.setQuickTips(on);
+    this.fame.setQuickTips(on);
     this.house.setQuickTips(on);
   }
 
@@ -393,6 +407,7 @@ export class WinPeople extends TSWin {
       this.personalityWin,
       this.zodiacBtn,
       this.job,
+      this.fame,
       this.relationships,
       this.house,
       this.interests,
@@ -403,6 +418,11 @@ export class WinPeople extends TSWin {
   /** Family index of the selected person (PersonFinder::GetSelected), -1 = none. */
   private selected(): number {
     return this.ctx.state.personGetSelected() ? this.ctx.state.selectedIndex() : -1;
+  }
+
+  /** The job page of `p`: cWinSubpanelFame when CPState::GetShowFameUIPanel, else cWinSubpanelJob. */
+  private jobPage(p: PersonInfo): TSWin {
+    return showFameUIPanel(p) ? this.fame : this.job;
   }
 
   private personAt(i: number): PersonInfo | null {
@@ -438,9 +458,9 @@ export class WinPeople extends TSWin {
         break;
       case LivePanel.Job: {
         const p = this.personAt(sel);
-        // Children get the report card, dogs and cats their skills, celebrities
-        // the fame page: those pages are not ported, so only Sims get a page.
-        if (p && !isChild(p) && personGender(p) < 2) this.job.showWindow();
+        // Children get the report card, dogs and cats their skills (not
+        // ported), celebrities the fame page (CPState::GetShowFameUIPanel).
+        if (p && !isChild(p) && personGender(p) < 2) this.jobPage(p).showWindow();
         break;
       }
       case LivePanel.House:
@@ -494,8 +514,9 @@ export class WinPeople extends TSWin {
     // The open popup follows the person (UpdateClient).
     if (this.panel === LivePanel.Personality) for (const w of this.personalities) w.setPerson(person);
     if (this.panel === LivePanel.Job && p) {
-      if (!isChild(p) && personGender(p) < 2) this.job.showWindow();
-      else this.job.hideWindow();
+      this.job.hideWindow();
+      this.fame.hideWindow();
+      if (!isChild(p) && personGender(p) < 2) this.jobPage(p).showWindow();
     }
     if (p) this.setZodiac(p);
     if (p && personGender(p) >= 2 && (this.panel === LivePanel.Interests || this.panel === LivePanel.Gifts)) {
@@ -564,6 +585,15 @@ export class WinPeople extends TSWin {
       b.row = mood < MOOD_LOW ? 2 : mood <= MOOD_HIGH ? 0 : 1;
     });
     this.job.updateViewFromCPState();
+    this.fame.updateViewFromCPState();
+    // cWinPeople::UpdateViewFromCPState: the job page follows GetShowFameUIPanel.
+    const shown = this.panel === LivePanel.Job ? this.ctx.state.personGetSelected() : null;
+    if (shown && !isChild(shown) && personGender(shown) < 2) {
+      const page = this.jobPage(shown);
+      const other = page === this.fame ? this.job : this.fame;
+      if (other.isVisible()) other.hideWindow();
+      if (!page.isVisible()) page.showWindow();
+    }
     this.house.updateViewFromCPState();
   }
 

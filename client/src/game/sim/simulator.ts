@@ -153,10 +153,12 @@ export class Simulator {
 
   /**
    * Builds the simulator of a loaded lot: cSimulator::DoStream of the house's
-   * SIMI chunk, then ObjectModule::PostLoad's tree part. `gameEdition` is
-   * the installed-pack mask (app +0x66, ObjectFolder.packs).
+   * SIMI chunk, then ObjectModule::PostLoad's tree part (unless
+   * `deferPostLoad`: the caller runs `postLoad` once its world hooks are
+   * set). `gameEdition` is the installed-pack mask (app +0x66,
+   * ObjectFolder.packs).
    */
-  static async create(house: ResFile, objects: Iterable<XObject>, gameEdition = 0): Promise<Simulator> {
+  static async create(house: ResFile, objects: Iterable<XObject>, gameEdition = 0, deferPostLoad = false): Promise<Simulator> {
     const sim = new Simulator();
     sim.readSimi(house);
     // House::LoadFile: the game edition (global 0x14, set by cSimulator::Init
@@ -191,7 +193,10 @@ export class Simulator {
     // SAnimator::Initialize: a skeleton per person (the lot view attaches its VitaBoy's instead).
     for (const p of sim.module.persons) await Simulator.attachSkeleton(p);
     sim.module.onPersonMade = (p) => void Simulator.attachSkeleton(p);
-    sim.postLoad();
+    // Neighborhood::LoadHouse runs ObjectModule::PostLoad once House::LoadFile has built the
+    // world and placed the objects: a lot view defers it until its world hooks exist (the
+    // Load / Init trees may create objects in the world, e.g. the vacation NPC controller).
+    if (!deferPostLoad) sim.postLoad();
     return sim;
   }
 
@@ -231,8 +236,11 @@ export class Simulator {
     this.setSpeed(speed > 0 ? speed : Math.trunc(0.5 + SPEED_SCALE * SPEED_BUTTONS[0]));
   }
 
-  /** ObjectModule::PostLoad -> cXObject::PostLoad for every object (the tree part). */
-  private postLoad(): void {
+  /**
+   * ObjectModule::PostLoad -> cXObject::PostLoad for every object (the tree
+   * part). Run by `create`, or by the caller when it deferred it.
+   */
+  postLoad(): void {
     const m = this.module;
     m.updatePrimitiveLimit();
     for (const o of m.list) {

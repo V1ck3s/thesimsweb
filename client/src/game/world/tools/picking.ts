@@ -11,8 +11,12 @@
  *
  * The walk starts at the tile of the surface visible at the point
  * (HouseViewer::PointToTile, z-buffer unprojected), not the floor under it.
- * Not ported: the mode 1 fallback's extra test when the app's +0x1c / +0x36
- * short is 0 (the object definition's +0xb6 bit 0).
+ * The mode 1 fallback (an object of the first tile whose rectangle misses the
+ * point) takes any object without the 0x4000 / 0x8000 flags outside Live
+ * mode; in Live mode (House +0x36, global 19 = 0) only an object whose
+ * definition has +0xb6 bit 0. So the invisible parts of a big multi-tile
+ * object (the Studio Town movie set draws from its 0,0 / 1,0 tiles) are not
+ * picked: the walk goes on to the part drawn at the point.
  */
 
 import type { HouseViewer } from "../houseviewer.js";
@@ -83,6 +87,8 @@ export function pointToObjectId(
   level: number,
   mode: number,
   personRect: ((o: XObject) => [number, number, number, number] | null) | null = null,
+  /** Global 19 (the mode: 0 Live, 1 Build, 2 Buy). */
+  modeFreeze = 1,
 ): number {
   const w = viewer.world;
   // The walk starts at PointToTile's tile: the surface drawn at the point
@@ -107,7 +113,7 @@ export function pointToObjectId(
         if (accepts) hit = o;
       } else if (i === 0) {
         if (mode === PickMode.Any) {
-          if (!(f & 0x4000) && !(f & 0x8000)) fallback = o;
+          if (!(f & 0x4000) && !(f & 0x8000) && (modeFreeze !== 0 || o.selector.objd.i16(0xb6) & 1)) fallback = o;
         } else if (accepts) {
           fallback = o;
         }

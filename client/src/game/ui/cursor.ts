@@ -54,6 +54,9 @@ const CURSOR_FILES: Record<number, string> = {
   0x28: "Rezone2.cur",
   0x29: "trolleybus.cur",
   0x2c: "limo.cur",
+  0x2d: "tram.cur",
+  0x2e: "hole.cur",
+  0x2f: "balloon.cur",
 };
 
 /** Standard cursors (cTSCursor::StandardCursor): 3 = wait, 4 = arrow. */

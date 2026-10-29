@@ -680,10 +680,11 @@ export class PersonSim extends SimObject {
       if (skill === undefined) return PRIM_WAIT;
       a.events.length = 0;
       a.stop("main");
-      if (skill) {
-        const t = a.start("main", skill, backwards);
-        if (t) t.interruptible = (flags & 8) !== 0;
-      }
+      // A skill that does not start (missing: e.g. SocialChild.iff's adult table entry 73,
+      // "Listen normal apathetic", lacks its "a2a-" name) runs the person's "missing
+      // animation tree" and plays StdAnimIdx 0x25 instead (SAnimator::TryAnimate).
+      const t = skill ? a.start("main", skill, backwards) : this.startMissingAnimation(a);
+      if (t) t.interruptible = (flags & 8) !== 0;
       if (slot === "carry3") a.stop("carry");
       a.animating = true;
       a.eventCount = 0;
@@ -714,6 +715,19 @@ export class PersonSim extends SimObject {
     }
     store(ev);
     return PRIM_FALSE;
+  }
+
+  /**
+   * SAnimator::TryAnimate when StartSkill fails on the main practice: the
+   * person's "missing animation tree" runs (cXObject::RunTree, no stack
+   * object), then GetSkill(0x25) is started instead (none while it loads).
+   */
+  private startMissingAnimation(a: PersonAnimator): ReturnType<PersonAnimator["start"]> {
+    const tree = this.behavior.getTreeID("missing animation tree");
+    if (tree !== 0) this.runCheckTree(this.behavior, 0, tree, null);
+    const name = this.stdSkillName(0x25);
+    const skill = name ? requestSkill(name) : null;
+    return skill ? a.start("main", skill, false) : null;
   }
 
   /** The animator state after an animation: person data 0 (sitting?) 1 -> 1, 2 -> 2, 0 -> 3. */
@@ -2133,7 +2147,7 @@ export class PersonSim extends SimObject {
    * unless an interaction is waiting; then, when allowed (`interruptible`),
    * the head of the queue is tested and its action tree pushed with the
    * interaction's object as stack object (the frame's state 1 marks it).
-   * A failed test drops it (the object's entry point 4 is not run).
+   * A failed test drops it (the object's entry point 4 runs).
    */
   protected tryIdleForInput(elem: StackElem, param: number, interruptible: number): number {
     if (param < 0 || param >= elem.numParams) simThrow(XERR.paramRange);
@@ -2155,10 +2169,14 @@ export class PersonSim extends SimObject {
     this.module.onQueueChanged?.(this);
     const o = this.module.getObject(i.target);
     if (!o) return PRIM_WAIT;
-    // ObjTestSim::TestInteraction (not autonomous): a failed test drops it.
+    // ObjTestSim::TestInteraction (not autonomous): a failed test, a missing action tree or a
+    // failed push drops it, and its object's entry point 4 ("queue skipped") check tree runs.
     const e = this.module.treeTableOf(o.obj.selector)?.entries.find((x) => x.stringIndex === i.ttabIndex) ?? null;
-    if (!e || !this.testInteraction(o, e, false) || i.actionTree === 0) return PRIM_WAIT;
-    if (!this.gosubObjectTree(o, { src: Array.from(i.args), at: 0 }, i.actionTree)) return PRIM_WAIT;
+    if (!e || !this.testInteraction(o, e, false) || i.actionTree === 0 || !this.gosubObjectTree(o, { src: Array.from(i.args), at: 0 }, i.actionTree)) {
+      const skipped = o.fnTable.getTreeID(4);
+      if (skipped !== 0) o.runCheckTree(o.behavior, this.id, skipped, null);
+      return PRIM_WAIT;
+    }
     this.setCurrentAction(i);
     mem[at] = 0;
     elem.state = 1;

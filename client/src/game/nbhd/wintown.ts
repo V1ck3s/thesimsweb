@@ -154,6 +154,12 @@ interface TownDef {
   credits: string;
   /** RegularModeBtnHandler(logo): the music played again after the credits. */
   music: string;
+  /**
+   * SetMode's picker cursor: [vehicle flag clear, set]. The flag is
+   * cWinStudiotown +0xd0 (a star asks: limo 0x2c, else tram 0x2d) and
+   * cWinMagicland +0xdc (balloon 0x2f, else hole 0x2e).
+   */
+  pickerCursor: readonly [number, number];
 }
 
 const BAR_POS_5: ReadonlyArray<readonly [number, number]> = [
@@ -186,6 +192,7 @@ export const TOWNS: Readonly<Record<Town, TownDef>> = {
     lotSound: null,
     credits: MUSIC.credits,
     music: "station_dtnhood",
+    pickerCursor: [0x25, 0x25],
   },
   [Town.Vacation]: {
     cls: "cWinVacation",
@@ -212,6 +219,7 @@ export const TOWNS: Readonly<Record<Town, TownDef>> = {
     lotSound: null,
     credits: MUSIC.credits,
     music: "station_vacation",
+    pickerCursor: [0x27, 0x27],
   },
   [Town.Studiotown]: {
     cls: "cWinStudiotown",
@@ -248,6 +256,7 @@ export const TOWNS: Readonly<Record<Town, TownDef>> = {
     lotSound: MUSIC.fade,
     credits: MUSIC.credits,
     music: "station_superstar",
+    pickerCursor: [0x2d, 0x2c],
   },
   [Town.Magictown]: {
     cls: "cWinMagicland",
@@ -282,6 +291,7 @@ export const TOWNS: Readonly<Record<Town, TownDef>> = {
     lotSound: MUSIC.fade,
     credits: "music_magictown_credits",
     music: "music_magictown",
+    pickerCursor: [0x2e, 0x2f],
   },
 };
 
@@ -427,6 +437,11 @@ export class WinTown extends TSWin implements LotBtnOwner {
     /** +0x118: the main screen (true) or the destination picker (false). */
     readonly mainScreen: boolean,
     private readonly callbacks: TownCallbacks,
+    /**
+     * cWinStudiotown +0xd0 / cWinMagicland +0xdc, set by ObjectModule::PostSim
+     * before the picker shows: the picker cursor (see TownDef.pickerCursor).
+     */
+    readonly vehicleFlag = false,
   ) {
     super();
     this.def = TOWNS[town];
@@ -635,9 +650,9 @@ export class WinTown extends TSWin implements LotBtnOwner {
    * back in mode 0, "UI_Nhood_bdoze_cancel". Regular: Exit and the logo
    * enabled, Inet disabled, Import enabled when <data>/<town import dir>
    * holds a lot (not ported: disabled); the standard arrow on the main
-   * screen, cursor 0x25 in the picker. Bulldoze: every bar button but
-   * Bulldoze disabled, cursor 0x22, Bulldoze down, lots in mode 1,
-   * "UI_Nhood_bdoze".
+   * screen, the town's picker cursor (TownDef.pickerCursor) in the picker.
+   * Bulldoze: every bar button but Bulldoze disabled, cursor 0x22,
+   * Bulldoze down, lots in mode 1, "UI_Nhood_bdoze".
    */
   private setMode(mode: TownMode): void {
     if (this.mode === TownMode.Evict) {
@@ -661,7 +676,7 @@ export class WinTown extends TSWin implements LotBtnOwner {
         this.buttons[BTN_IMPORT]?.setEnabled(false);
         this.buttons[BTN_MOVE_IN]?.setEnabled(true);
       }
-      cursor = this.mainScreen ? getStandardCursor(4) : getCursor(0x25);
+      cursor = this.mainScreen ? getStandardCursor(4) : getCursor(this.def.pickerCursor[this.vehicleFlag ? 1 : 0]);
     }
     if (cursor) this.setCursor(cursor);
   }

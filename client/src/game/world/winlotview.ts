@@ -42,7 +42,7 @@ import { Placement, type ObjectBehaviorHooks } from "./tools/placement.js";
 import { FixedWorld, RotatableWorld } from "./world.js";
 import type { XObject } from "./objects.js";
 import type { ObjSelector } from "./objselector.js";
-import { Simulator } from "../sim/simulator.js";
+import { G, Simulator } from "../sim/simulator.js";
 import { animSoundEnv } from "../sim/animsound.js";
 import type { WorldHooks } from "../sim/simmodule.js";
 import { SimObject } from "../sim/xobject.js";
@@ -264,6 +264,13 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
     this.viewer = v;
     if (this.wallManager) this.initCutaway(v, this.wallManager);
     if (this.lotObjects) await this.initBuyTool(v, this.lotObjects);
+    // Neighborhood::LoadHouse: ObjectModule::PostLoad (Load / Init trees) runs in the built
+    // world, so objects made there (the vacation NPC controller's staff) are placed.
+    try {
+      this.sim?.postLoad();
+    } catch (e) {
+      console.error("[sim] post load failed", e);
+    }
     // ObjectModule::Load -> UpdateSimObjects: the controllers / phone plugins every lot holds.
     if (this.lotObjects && this.sim && this.placement) await updateSimObjects(this.placement, this.lotObjects.folder, this.sim.module);
     if (this.lotObjects && this.sim) await this.bringInFamily(v, this.lotObjects);
@@ -846,7 +853,7 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
     const person = this.selectedPerson();
     if (!sim || !v || !p || !lot || !person) return;
     const people = this.people;
-    const id = pointToObjectId(v, p, (r) => lot.renderer(r), x, y, v.level || 1, PickMode.Any, people ? (o) => people.screenRect(o, v) : null);
+    const id = pointToObjectId(v, p, (r) => lot.renderer(r), x, y, v.level || 1, PickMode.Any, people ? (o) => people.screenRect(o, v) : null, sim.globals[G.modeFreeze]);
     let target = id ? sim.module.getObject(id) : null;
     /** +0xb4: the Go Here helper was made and placed for this click (killed unless used). */
     let helper: SimObject | null = null;
@@ -855,7 +862,9 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
       if (!helper) return;
       target = helper;
     }
-    const t = target;
+    // ObjTestSim(person, object) tests cXObject::GetInteractionLeader(object);
+    // SetHiliteObject then moves the hilite onto the first entry's object.
+    const t = target.getInteractionLeader();
     let picked = false;
     try {
       // DoMenu ends with -2 when Space advanced the selection: the menu is
@@ -1280,7 +1289,8 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
    */
   private async initSimulator(house: ResFile, lot: LotObjects, fixed?: FixedWorld): Promise<void> {
     try {
-      const sim = await Simulator.create(house, lot.objects.values() as Iterable<XObject>, lot.folder.packs);
+      // PostLoad waits for the world hooks (the placement): see init.
+      const sim = await Simulator.create(house, lot.objects.values() as Iterable<XObject>, lot.folder.packs, true);
       // The simulation works on the viewer's fixed world (the router reads its rooms, walls and tile objects).
       if (fixed) sim.world = fixed;
       sim.state = this.ctx.state;
@@ -1548,11 +1558,11 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
     if (!sim || !v || !p || !lot) return;
     const person = this.selectedPerson();
     const people = this.people;
-    const id = person ? pointToObjectId(v, p, (r) => lot.renderer(r), x, y, v.level || 1, PickMode.Any, people ? (o) => people.screenRect(o, v) : null) : 0;
+    const id = person ? pointToObjectId(v, p, (r) => lot.renderer(r), x, y, v.level || 1, PickMode.Any, people ? (o) => people.screenRect(o, v) : null, sim.globals[G.modeFreeze]) : 0;
     const target = id ? sim.module.getObject(id) : null;
     if ((target?.id ?? 0) !== this.liveHilite) {
       this.liveHilite = target?.id ?? 0;
-      this.liveHiliteAvail = !!(person && target && person.menuItemsFor(target).length > 0);
+      this.liveHiliteAvail = !!(person && target && person.menuItemsFor(target.getInteractionLeader()).length > 0);
     }
     if (!target) {
       this.tip = null;

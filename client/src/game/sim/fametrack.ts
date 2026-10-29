@@ -86,3 +86,16 @@ export function promoteIfNeeded(t: FameScoring, pd: Int16Array, famousFriends: n
   if (highest < level + 1) pd[0x52] = level + 1;
   return true;
 }
+
+/**
+ * cFameTrack::DemoteIfNeeded(person): one fame level less when the person
+ * is above level 0 and its star points (person data 0x50) fell below the
+ * points of the level under it. Returns whether it was demoted.
+ */
+export function demoteIfNeeded(t: FameScoring, pd: Int16Array): boolean {
+  const level = pd[0x51]!;
+  if (level <= 0) return false;
+  if (pd[0x50]! >= (t.points[level - 1] ?? 0)) return false;
+  pd[0x51] = level - 1;
+  return true;
+}

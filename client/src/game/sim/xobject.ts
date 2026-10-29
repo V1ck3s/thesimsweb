@@ -31,7 +31,7 @@ import { PRIM_CONTINUE, PRIM_FALSE, PRIM_TRUE, PRIM_WAIT, TreeSim, simThrow, tre
 import type { ParamSource, StackElem } from "./treestack.js";
 import { DIR_VEC, rotateOffset } from "./routing.js";
 import { getBehCareerData, getGrade, offerDialogText, simJobName, type SimCareer } from "./careers.js";
-import { getTitleFromLevel, promoteIfNeeded } from "./fametrack.js";
+import { demoteIfNeeded, getTitleFromLevel, promoteIfNeeded } from "./fametrack.js";
 import { balloonSpriteCount, balloonSpriteID, iconSpriteID } from "../world/balloons.js";
 import { tickSpriteSlot } from "../world/slots.js";
 import { EditPerson } from "../cas/editperson.js";
@@ -276,6 +276,23 @@ export class SimObject extends TreeSim {
   }
 
   /**
+   * cXObject::GetInteractionLeader: a multi-tile part (OBJD +0x14 master id)
+   * with a positive interaction group (OBJD +0x10) hands its interactions to
+   * the part of its group (the lead +0x190, then +0x18c) whose group is the
+   * negative one; itself otherwise. ObjTestSim's constructor and
+   * SetStackObject test the leader's tree table, so a click on any tile of
+   * the Studio Town movie set offers the menu of its invisible 0,0 tile.
+   */
+  getInteractionLeader(): SimObject {
+    const objd = this.obj.selector.objd;
+    const group = objd.i16(0x10);
+    if (objd.masterId === 0 || group <= 0) return this;
+    const lead = this.obj.mtLeadId !== 0 ? this.obj.mtLeadId : this.id;
+    const owner = this.module.list.find((x) => (x.id === lead || x.obj.mtLeadId === lead) && x.obj.selector.objd.i16(0x10) === -group);
+    return owner ?? this;
+  }
+
+  /**
    * cXObject::CanChooseAutonomously (sim flag 8: Find Best Interaction looks
    * at the object): a multi-tile part with a positive interaction group (OBJD
    * +0x10) defers to the part of the group whose group is its negative; then
@@ -283,13 +300,7 @@ export class SimObject extends TreeSim {
    * that is not a debug entry (flag 0x80).
    */
   canChooseAutonomously(): boolean {
-    const objd = this.obj.selector.objd;
-    const group = objd.i16(0x10);
-    if (objd.masterId !== 0 && group > 0) {
-      const lead = this.obj.mtLeadId !== 0 ? this.obj.mtLeadId : this.id;
-      const owner = this.module.list.find((x) => (x.id === lead || x.obj.mtLeadId === lead) && x.obj.selector.objd.i16(0x10) === -group);
-      if (owner && owner !== this) return false;
-    }
+    if (this.getInteractionLeader() !== this) return false;
     const tt = this.module.treeTableOf(this.obj.selector);
     return !!tt && tt.entries.some((e) => e.autonomyThreshold < 100 && !(e.flags & 0x80));
   }
@@ -1226,6 +1237,15 @@ export class SimObject extends TreeSim {
         const t = m.fameScoring;
         if (!t) return PRIM_FALSE;
         return promoteIfNeeded(t, o.person.personData, m.famousFriendCount(o.obj.selector.guid >>> 0)) ? PRIM_TRUE : PRIM_FALSE;
+      }
+      case 36: {
+        // The stack object (a person, error 0x1c): cFameTrack::DemoteIfNeeded, then
+        // ObjectModule::OnStarPowerChange (not ported, see call 34). True when demoted.
+        const o = this.obj_(elem.stackObj);
+        if (!o?.person) simThrow(XERR.notPerson);
+        const t = m.fameScoring;
+        if (!t) return PRIM_FALSE;
+        return demoteIfNeeded(t, o.person.personData) ? PRIM_TRUE : PRIM_FALSE;
       }
       case 41:
         // Jumps straight to the common exit (lbl_100EB28C): nothing, true.

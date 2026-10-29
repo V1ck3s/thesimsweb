@@ -44,7 +44,7 @@
  * 7 vacation (cWinVacation, 0x28..0x30, taxi 2 from a residential lot, else 1),
  * 8 a community lot of the neighborhood (cWinNeighborhoodUL picker, zoning 2,
  * taxi 3), 0xb Studio Town (0x51..0x59, taxi 5 for a star, else 4), 0xd
- * Magic Town (0x5a..0x62, taxi 6 or 7).
+ * Magic Town (0x5a..0x62, taxi 6 when global 34 is set, else 7).
  *
  * Port: the ObjectModule fields live here (one Transit per loaded lot), the
  * modal picker is awaited while the simulator is held, the trigger is
@@ -76,6 +76,8 @@ import { WinNeighborhoodUL } from "./winneighborhoodul.js";
 const G_VISIT = G.freeFunds;
 /** Simulator global 9: the family number of the lot. */
 const G_FAMILY = 9;
+/** Global 34, "Lot Transit Info" (Behavior.iff global labels): cSimulator +0x54. */
+const G_LOT_TRANSIT_INFO = 34;
 
 /** CPState dirty bits of LoadGame's tail. */
 const DIRTY_LIVE_DISABLED = 0x8000000;
@@ -184,10 +186,21 @@ export class Transit implements TransitHooks {
     const town = kind === 5 ? Town.Downtown : kind === 7 ? Town.Vacation : kind === 0xb ? Town.Studiotown : Town.Magictown;
     soundPlayer.playBySource(MUSIC.fade, UI_SOURCE);
     soundPlayer.playBySource("kill_all_objectsounds", UI_SOURCE);
+    // The picker's vehicle flag, set by PostSim before the screen shows:
+    // - cWinStudiotown +0xd0: the asking person (ObjectModule +0x110, generic call 35) is a star,
+    //   person data 0x50 (+0x62c, star points) > 0 and 0x38 (+0x5fc, job) 0;
+    // - cWinMagicland +0xdc: cSimulator +0x54, global 34 ("Lot Transit Info"), not 0.
+    let vehicle = false;
+    if (town === Town.Studiotown) {
+      const caller = this.sim.module.studioCaller?.person?.personData;
+      vehicle = !!caller && caller[0x50]! > 0 && caller[0x38] === 0;
+    } else if (town === Town.Magictown) {
+      vehicle = this.sim.globals[G_LOT_TRANSIT_INFO] !== 0;
+    }
     const release = holdSimulator(this.sim);
     let house = 0;
     try {
-      house = await runTownPicker(this.host.ctx, nb, town, view);
+      house = await runTownPicker(this.host.ctx, nb, town, view, vehicle);
     } finally {
       release();
     }
@@ -208,14 +221,12 @@ export class Transit implements TransitHooks {
       const here = this.sim.globals[G.houseNumber]!;
       screen = nb.getZoningType(here) === Zone.Residential ? TransitScreen.Vacation2 : TransitScreen.Vacation;
     } else if (town === Town.Studiotown) {
-      // Taxi 5 when the asking person (ObjectModule +0x110, generic call 35) is a
-      // star: person data 0x50 (+0x62c, fame points) > 0 and 0x38 (+0x5fc, job) 0.
-      const caller = this.sim.module.studioCaller?.person?.personData;
-      screen = caller && caller[0x50]! > 0 && caller[0x38] === 0 ? TransitScreen.Studiotown : TransitScreen.StudiotownFan;
+      // Taxi 5 (the limo) for a star, else 4; +0x110 is cleared.
+      screen = vehicle ? TransitScreen.Studiotown : TransitScreen.StudiotownFan;
       this.sim.module.studioCaller = null;
     } else if (town === Town.Magictown) {
-      // Taxi 7 when the picker's +0xdc flag (the view's +0x54) was set: not tracked.
-      screen = TransitScreen.Magictown;
+      // Taxi 6 (the balloon) with the flag, else 7 (the hole).
+      screen = vehicle ? TransitScreen.Magictown : TransitScreen.MagictownHole;
     }
     await createTaxiDialog(this.host.ctx, view, screen);
   }
@@ -394,12 +405,12 @@ export async function runNeighborhoodPicker(ctx: GameContext, nb: Neighborhood, 
 }
 
 /** The town screen as a destination picker over `view`; resolves with the picked house. */
-export async function runTownPicker(ctx: GameContext, nb: Neighborhood, town: Town, view: WinLotView): Promise<number> {
+export async function runTownPicker(ctx: GameContext, nb: Neighborhood, town: Town, view: WinLotView, vehicle = false): Promise<number> {
   return new Promise<number>((resolve) => {
     const screen: WinTown = new WinTown(ctx, nb, town, false, {
       onEnd: (result) => winMgr.endDialog(screen, result),
       onUnported: (what) => console.log(`not ported: ${what}`),
-    });
+    }, vehicle);
     screen.setArea(0, 0, view.getW(), view.getH());
     void screen.init().then(async (ok) => {
       if (!ok) {
@@ -468,6 +479,12 @@ export async function applyLoadGameLocation(ctx: GameContext, view: WinLotView, 
     if (house === 99) sim?.setCurrentHour(0xc, 0);
     state.setDirty(DIRTY_FUNDS);
   };
+  // ObjectModule::ResetForVacation; the arriving family (made by the lot view before this,
+  // after it in the original: PersonFinder::CreateDowntownSim) is spared.
+  const resetForVacation = (): void => {
+    const arriving = new Set(state.family.map((f) => (f.guid ?? 0) | 0));
+    sim?.module.resetForVacation((o) => arriving.has(o.obj.selector.guid | 0));
+  };
   // Global 9 as Neighborhood::LoadHouse leaves it: the family living in the house (0 for none).
   const familyNumber = house > 0 ? (nb.getFamilyInHouse(house)?.chunkId ?? 0) : 0;
   // Neighborhood::LoadHouse: SetGlobal(9, the family's id, Family +0x10c) and SetGlobal(10, house).
@@ -485,8 +502,8 @@ export async function applyLoadGameLocation(ctx: GameContext, view: WinLotView, 
         if (arrival?.studioMember) arrive();
         else visit();
       } else if ((house > 0x27 && house < 0x32) || zoning === Zone.Community || (house > 0x5c && house < 100)) {
-        // ObjectModule::ResetForVacation is not ported.
         if (arrival?.member || arrival?.family) {
+          resetForVacation();
           arrive();
           // The family trip: the family becomes the lot's (global 9).
           if (arrival.family && sim) sim.globals[G_FAMILY] = arrival.family;
@@ -500,11 +517,15 @@ export async function applyLoadGameLocation(ctx: GameContext, view: WinLotView, 
           }
         } else {
           visit();
-          if (house > 0x27 && house < 0x32) sim?.setCurrentHour(10, 0);
+          if (house > 0x27 && house < 0x32) {
+            resetForVacation();
+            sim?.setCurrentHour(10, 0);
+          }
         }
       }
     } else {
       visit();
+      resetForVacation();
       sim?.setCurrentHour(10, 0);
     }
   } else if (zoning === Zone.Residential) {

@@ -45,6 +45,10 @@ DoNbhdScreen, and a house number loads that lot.
   - The bar is kFilterToolbar 0x13b5 (Studio Town uses 0x13b6) with the kDTDlgBkg2 frame.
   - The filters come from STR# 171 and are enabled by the lot type (SIMI global 37, `lotTypeFlags`).
   - The title is a random pick from STR# 212 (213 for Vacation).
+  - The picker cursor is the taxi 0x25 (Downtown), the van 0x27 (Vacation), the limo 0x2c / tram
+    0x2d (Studio Town, cWinStudiotown +0xd0: a star asks) or the balloon 0x2f / hole 0x2e (Magic
+    Town, cWinMagicland +0xdc: global 34 "Lot Transit Info" != 0). PostSim sets the flag and
+    picks the taxi splash 5 / 4 and 6 / 7 the same way.
   - The filter is saved in localStorage `thesimsweb.townFilter.<town>`. The original keeps it in
     the registry.
 - Lot popup: the address comes from `<dir>/Downtown.iff` (or Vacation.iff) STR# 128, or else from
@@ -104,9 +108,6 @@ like any lot.
 - The SimInventory tokens are read back on arrival (generic calls 19 / 20 / 21 / 23,
   `sim/lotcalls.ts`) but not written back to the neighborhood file (Neighborhood::Save after
   19 / 20). The mode 0 companion (the date) is not taken.
-- Taxi choice:
-  - Studio Town's 4 / 5 needs the asking person's star data (ObjectModule +0x110); 4 is used.
-  - Magic Town's 6 / 7 needs the picker's +0xdc flag; 6 is used.
 - Arrivals: as PersonFinder::CreateDowntownSim, the arriving sims are made out of the world
   (`WinLotView.arrivalOutOfWorld`); the ped marker ("main - middle ped marker": generic 18, cab,
   generic 3) brings them in. Generic sim call 12 (distance to the camera, car sounds) and 26
