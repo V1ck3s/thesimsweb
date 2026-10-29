@@ -124,3 +124,22 @@ Checked after the fixes (screenshots in the local scratch folder):
   the phone book is still up, because the web dialog is asynchronous.
 - Automated tests that load a lot with "Help System" objects (House01) must dismiss the
   dialogs (Enter), otherwise the simulation stays paused, as in the original.
+
+## User-reported bugs (2026-10-29)
+
+Reported by the user after playing. Each is assigned to an agent; mark fixed ones here.
+
+| # | Bug | Status |
+|---|---|---|
+| U1 | Second floor (level 2) missing on lots | open |
+| U2 | Pets walk like humans | open |
+| U3 | Camera mode (F4) screenshot does not work | open |
+| U4 | Some objects are grey (probably a color / palette problem) | open |
+| U5 | No free move: clicking the ground should offer "go here" | open |
+| U6 | Inventory menu (gift icon) is empty | open |
+| U7 | Studio Town and Magic Town neighborhood music missing | open |
+| U8 | Switching Buy mode → Build mode does not change the music (they have different music) | open |
+| U9 | Hover popups (objects, motives, traits, anything) never open | open |
+| U10 | Double-clicking the selected sim should center the camera on it | open |
+| U11 | Clicking an item in menus/lists (trait, object...) turns it light blue for good; the original does not | open |
+| U12 | The cursor does not change during actions (e.g. picking up an object in Buy mode) | open |
