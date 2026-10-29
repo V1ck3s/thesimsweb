@@ -1773,6 +1773,9 @@ export class PersonSim extends SimObject {
    */
   testInteraction(target: SimObject, e: TreeTableEntry, auto: boolean, wantAds = false): boolean {
     const pd = this.pd;
+    // The person's object data 50 (+0xae) is cleared first; a check tree that
+    // sets it hides the entry from the pie menu (interaction flag 0x10).
+    this.obj.objectData[50] = 0;
     const visitor = pd[PDX.personType] !== 0;
     if (target.obj.objectData[8]! & 0x200) return false;
     if (auto && target.obj.objectData[25]! >= 1) return false;
@@ -2019,7 +2022,8 @@ export class PersonSim extends SimObject {
    * While a check tree runs the menu is "in progress": its Add / Change
    * Action String primitives add items (MakeNewMenuItem, e.g. the phone's
    * "$Family/Call $Neighbor" for each friend) and then the entry itself
-   * is not added.
+   * is not added. Entries whose check tree sets the person's object data
+   * 50 are hidden (hiddenFromMenu).
    */
   menuItemsFor(target: SimObject): MenuItem[] {
     const g = this.pd[PDX.gender]!;
@@ -2034,7 +2038,7 @@ export class PersonSim extends SimObject {
         m.menuInProgress = { items, entry: e };
         const n = items.length;
         // an entry whose check tree made items of its own is not added itself
-        if (this.testInteraction(target, e, false) && items.length === n) items.push({ entry: e, name: e.name, args: null });
+        if (this.testInteraction(target, e, false) && items.length === n && !this.hiddenFromMenu()) items.push({ entry: e, name: e.name, args: null });
       }
     } finally {
       m.menuInProgress = null;
@@ -2054,9 +2058,19 @@ export class PersonSim extends SimObject {
     const out: TreeTableEntry[] = [];
     for (const e of tt.entries) {
       if (e.flags & 0x80) continue;
-      if (this.testInteraction(target, e, false)) out.push(e);
+      if (this.testInteraction(target, e, false) && !this.hiddenFromMenu()) out.push(e);
     }
     return out;
+  }
+
+  /**
+   * TestInteraction's interaction flag 0x10: the check tree left the person's
+   * object data 50 non-zero ("hide from the menu"; e.g. the Go Here object's
+   * pet commands for a person who is not a pet). AppendInteractionsForMenu
+   * only keeps entries with flag 8 (test passed) and without 0x10.
+   */
+  private hiddenFromMenu(): boolean {
+    return this.obj.objectData[50] !== 0;
   }
 
   /**

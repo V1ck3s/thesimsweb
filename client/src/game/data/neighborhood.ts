@@ -17,6 +17,7 @@
 import { readStandaloneIff, type IffChunkInfo } from "../../engine/assets.js";
 import { engine } from "../../engine/wasm.js";
 import { LANG_FRENCH } from "../res/uires.js";
+import { decodeBmp } from "../res/bmp.js";
 import { ReconBuffer } from "../world/reconbuffer.js";
 import { ReconReader } from "./recon.js";
 
@@ -277,7 +278,65 @@ export async function loadCharacter(dir: string, shortName: string, lang = LANG_
   const strings = ctss ? await localizedStrings(payload(data, ctss), lang) : [];
   const bitmaps = new Map<number, Uint8Array>();
   for (const c of chunks) if (c.kind === "BMP_") bitmaps.set(c.id, payload(data, c));
+  const faces = bitmaps.get(2002);
+  if (faces && hasBlankFace(faces)) {
+    const key = `${dir}/${file}`;
+    let fixed = regeneratedFaces.get(key);
+    if (!fixed) {
+      fixed = regenerateFaces(dir, shortName);
+      regeneratedFaces.set(key, fixed);
+    }
+    const bytes = await fixed;
+    if (bytes) bitmaps.set(2002, bytes);
+  }
   return { firstName: strings[0] ?? shortName, bio: strings[1] ?? "", bitmaps };
+}
+
+/**
+ * Faces (BMP_ 2002) regenerated in memory, by character file. MakePersonBtnImage
+ * does not clear its 105 x 41 buffer, so a head whose MakePersonHeadImage failed
+ * is saved as a solid black 35 x 41 third (UserData's User00109..User00174 have a
+ * black middle, "happy", head). The original only re-renders the faces when the
+ * person's thumbnails are dirty (PersonFinder::DirtyThumbnails, then
+ * GetPictureBuffer -> GenerateBitmaps(i, 1, 0): rendered, not saved); this
+ * port treats a blank third as such a dirty face so the portrait is not black.
+ */
+const regeneratedFaces = new Map<string, Promise<Uint8Array | null>>();
+
+async function regenerateFaces(dir: string, shortName: string): Promise<Uint8Array | null> {
+  try {
+    const bodyStrings = await loadBodyStrings(dir, shortName);
+    const { generatePortraits } = await import("../cas/portraits.js");
+    return (await generatePortraits(bodyStrings)).get(2002) ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/** A 2002 faces bitmap with a 35-pixel third that is all 0x000000. */
+function hasBlankFace(bytes: Uint8Array): boolean {
+  let img;
+  try {
+    img = decodeBmp(bytes);
+  } catch {
+    return false;
+  }
+  const third = Math.trunc(img.width / 3);
+  if (third <= 0) return false;
+  for (let i = 0; i < 3; i++) {
+    let blank = true;
+    for (let y = 0; y < img.height && blank; y++) {
+      for (let x = i * third; x < (i + 1) * third; x++) {
+        const o = (y * img.width + x) * 4;
+        if (img.data[o] !== 0 || img.data[o + 1] !== 0 || img.data[o + 2] !== 0) {
+          blank = false;
+          break;
+        }
+      }
+    }
+    if (blank) return true;
+  }
+  return false;
 }
 
 export function familyInHouse(n: NeighborhoodData, houseNumber: number): Family | undefined {

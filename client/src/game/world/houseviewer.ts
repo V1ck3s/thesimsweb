@@ -24,6 +24,16 @@ import { RoofRenderer } from "./roofrender.js";
 import { getViewWall } from "./tools/wallworld.js";
 import { DIRS, RotatableWorld } from "./world.js";
 import { LEVEL_PX, makeZSpriteLookup, ZBufferLookup } from "./zbuffer.js";
+import { AnimDeviceCamera, unproject } from "../sims/camera.js";
+import { rotationTf, transformDir, type Vec3 } from "../sims/math3d.js";
+
+/** HouseViewer+0x150: a level's height in 3D world units (the y of ZBufferLookup+0x94). */
+const LEVEL_HEIGHT_3D = Math.fround(9.3 + 0.0005111772335393302);
+
+/** The (float) world -> fixed rounding of PointToTile / WorldToLevel: floor(v + 0.5), or ceil(v - 0.5) below 0. */
+function roundAway(v: number): number {
+  return v >= 0 ? Math.floor(v + 0.5) : Math.ceil(v - 0.5);
+}
 
 /** Software target the terrain swatches draw into (see terrain.ts). */
 export interface TerrainTarget {
@@ -162,6 +172,9 @@ export class HouseViewer {
   cutawayCtl: { onScale(): void; onRotation(): void; onLevel(old: number): void } | null = null;
   /** People (3D meshes), drawn after the dynamic objects with the shared depth buffer. */
   people: { draw(viewer: HouseViewer): void } | null = null;
+  /** pointToTile's 3D camera (cAnimDeviceSub), rebuilt when the view moves. */
+  private pickCamera: AnimDeviceCamera | null = null;
+  private pickCameraKey = "";
   /** cXPerson::DrawIso's sprite slot pass (balloons.ts): balloons and headlines, drawn after the people. */
   spriteSlots: { draw(viewer: HouseViewer, comp: Compositor): void } | null = null;
   /** HouseViewer::RenderCursorObject: the buy / build tool's cursor object, drawn after the dynamic objects. */
@@ -350,6 +363,63 @@ export class HouseViewer {
       this.floorIndex.set(s, base);
     }
     return base + this.zbuf.floorBase.get(s)! + row - this.originY;
+  }
+
+  /**
+   * HouseViewer::WorldToLevel: the level a 3D world point lies on, from its
+   * height above the tile's mean altitude (4 corners x 3 / 4 x 1 / (2 sqrt 6))
+   * against the level height (HouseViewer+0x150, the y of the per-level vector).
+   */
+  worldToLevel(p: Vec3): number {
+    const f = this.world.fixed;
+    const tx = roundAway(p[2] * (16 / 3)) >> 4;
+    const ty = roundAway(p[0] * (16 / 3)) >> 4;
+    let alt = 0;
+    if (tx > 0 && tx < f.size - 1 && ty > 0 && ty < f.size - 1) {
+      const o = f.alt.offset(tx, ty);
+      const a = f.alt.data;
+      const sum = a[o]! + a[o + 1]! + a[o + 2]! + a[o + 3]!;
+      alt = 3 * 0.25 * sum * (1 / (2 * Math.sqrt(6)));
+    }
+    const h = p[1] - alt;
+    if (h < 2 * LEVEL_HEIGHT_3D) return h < LEVEL_HEIGHT_3D ? 1 : 2;
+    return 3;
+  }
+
+  /**
+   * HouseViewer::PointToTile(pt, false): the view fixed-point position under a
+   * screen point. Where something was drawn, the z-buffer value there is
+   * unprojected through the 3D camera (cAnimDeviceSub+0xa4) and, when it lies
+   * on the viewed level and inside the lot, that surface's position is the
+   * answer (so a person standing in front of a sofa gives the person's tile);
+   * otherwise the floor under the point (PointToWholeTile).
+   */
+  pointToTile(px: number, py: number): { x: number; y: number } {
+    const z = this.comp.readDepth(px, py);
+    if (z !== null) {
+      const view = { zoom: this.scale, rotation: this.world.rotation, originX: this.originX, originY: this.originY, width: this.viewW, height: this.viewH };
+      const key = `${view.zoom}|${view.rotation}|${view.originX}|${view.originY}`;
+      if (this.pickCameraKey !== key || !this.pickCamera) {
+        this.pickCamera = new AnimDeviceCamera(view);
+        this.pickCameraKey = key;
+      }
+      const p = unproject(this.pickCamera, px, py, z);
+      const level = this.worldToLevel(p);
+      if (level === 2) {
+        // The level offset (0.5, 0, 0.5) turned by -90 degrees x rotation (SAnimator::UpdateRootPos's).
+        const d = transformDir([0.5, 0, 0.5], rotationTf(1, 0.5 * -(this.world.rotation & 3) * Math.PI));
+        p[0] -= d[0];
+        p[2] -= d[2];
+      }
+      const fx = roundAway(p[2] * (16 / 3));
+      const fy = roundAway(p[0] * (16 / 3));
+      const n = this.world.size - 1;
+      if (level === this.level && fx >> 4 >= 1 && fx >> 4 < n && fy >> 4 >= 1 && fy >> 4 < n) {
+        const [vx, vy] = RotatableWorld.rotateCoords(fx, fy, this.world.rotation, 0x400);
+        return { x: vx >> 4, y: vy >> 4 };
+      }
+    }
+    return this.pointToWholeTile(px, py, this.level);
   }
 
   /** HouseViewer::PointToWholeTile: view tile under a screen point. */
@@ -590,6 +660,7 @@ export class HouseViewer {
     this.cursor?.draw(this, comp, rp);
     this.people?.draw(this);
     this.spriteSlots?.draw(this, comp);
+    comp.present();
     this.dirty = false;
   }
 

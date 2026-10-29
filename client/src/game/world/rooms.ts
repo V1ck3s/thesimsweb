@@ -29,6 +29,21 @@ const ROOM_HALF_D = 0xfffd;
 /** lbl_105BBCE8: the neighbor's wall bit facing back toward us, per DIRS[0..3]. */
 const NEIGHBOR_WALL = [8, 2, 4, 1] as const;
 
+/** lbl_105BEFA8: the flag bits ComputeRooms keeps (bit 0, floorable, is recomputed). */
+const FLAGS_KEEP = 0x28;
+
+/** lbl_105BBCE4 / lbl_105BBCE0 (lbl_105BA4C0 = 4 entries): the four edge neighbors (dx, dy). */
+const FLOOR_NEAR_DX = [0, -1, 1, 0] as const;
+const FLOOR_NEAR_DY = [-1, 0, 0, 1] as const;
+/**
+ * lbl_105BBCDC / lbl_105BBCD8 / lbl_105BBCD4 (lbl_105BA4BC = 24 entries): the
+ * 5 x 5 square around a tile (dx, dy) and whether a lower tile flagged 0x08
+ * there counts as a support (the inner ring, except the center).
+ */
+const SUPPORT_DX = [-2, -1, 0, 1, 2, -2, -1, 0, 1, 2, -2, -1, 1, 2, -2, -1, 0, 1, 2, -2, -1, 0, 1, 2] as const;
+const SUPPORT_DY = [-2, -2, -2, -2, -2, -1, -1, -1, -1, -1, 0, 0, 0, 0, 1, 1, 1, 1, 1, 2, 2, 2, 2, 2] as const;
+const SUPPORT_LOWER8 = [0, 0, 0, 0, 0, 0, 1, 1, 1, 0, 0, 1, 1, 0, 0, 1, 1, 1, 0, 0, 0, 0, 0, 0] as const;
+
 /** IsFenceStyle. */
 function isFenceStyle(s: number): boolean {
   return s === 2 || s === 0xc || s === 0xd || s === 0xe;
@@ -253,8 +268,8 @@ const SIDE_DISABLE: Record<number, readonly number[]> = { 1: [0, 3], 2: [2, 0], 
  * cFixedWorld::ComputeRooms(level) (0 = both levels): flood-fill each level
  * into rooms (walls, floor / no floor on upper levels and pool / no pool
  * separate rooms; diagonal walls split tiles in halves), then flood the
- * outside flag from the corner. The flat-terrain pass (flags bit 0) is not
- * ported: the bit loaded from the house file is kept.
+ * outside flag from the corner, then mark the floorable tiles (flags bit 0,
+ * computeFloorable).
  */
 export function computeRooms(fixed: FixedWorld, mgr: RoomManager, level = 0): void {
   mgr.resetRooms(level);
@@ -263,6 +278,7 @@ export function computeRooms(fixed: FixedWorld, mgr: RoomManager, level = 0): vo
   for (let l = from; l <= to; l++) {
     computeLevelRooms(fixed, mgr, l);
     computeOutside(fixed, l);
+    computeFloorable(fixed, l);
     if (l === 2) computeSecondLevelFlags(fixed);
   }
   // The end of ComputeRooms: cRoofLayer::GenerateRoof for both roof layers.
@@ -272,8 +288,9 @@ export function computeRooms(fixed: FixedWorld, mgr: RoomManager, level = 0): vo
 /**
  * ComputeRooms(2)'s cFixedWorld+0x80 / +0x81: cleared, then +0x80 set by the
  * first in-grid level 2 tile with a floor, an object or a wall, and +0x81 by
- * any level 2 tile left floorable (flags bit 0; the floorable pass itself is
- * not ported, so the bit comes from the house file).
+ * any level 2 tile left floorable (flags bit 0, set by computeFloorable).
+ * The original sets +0x81 inside the floorable pass; reading the bits back
+ * afterwards gives the same result.
  */
 function computeSecondLevelFlags(fixed: FixedWorld): void {
   const size = fixed.size;
@@ -293,6 +310,65 @@ function computeSecondLevelFlags(fixed: FixedWorld): void {
   fixed.secondLevelFloorable = floorable;
 }
 
+/**
+ * ComputeRooms' last pass (per level): flags |= 1 on the interior tiles that
+ * take a floor. The tile's four corner altitudes (cFixedWorld+0x14) must be
+ * equal. On level 1 that is enough. On upper levels the tile below must be
+ * inside (flags bit 2 clear) or flagged 0x08; otherwise the tile still takes
+ * a floor when one of its four edge neighbors has a floor and, in the 5 x 5
+ * square around it, a tile below is inside (or flagged 0x08 in the inner
+ * ring): floors may overhang outside by up to two tiles. The original also
+ * dirties each floorable tile (XViewer::IssueDirtyTile); the lot view redraws
+ * after ComputeRooms anyway.
+ */
+function computeFloorable(fixed: FixedWorld, level: number): void {
+  const size = fixed.size;
+  const flags = fixed.flags[level - 1]!;
+  const lower = fixed.flags[level === 1 ? 0 : level - 2]!;
+  const floors = fixed.floors[level - 1]!;
+  const alt = fixed.alt;
+  const inGrid = (v: number): boolean => v >= 0 && v <= size - 1;
+  const setFloorable = (x: number, y: number): void => {
+    flags.data[flags.offset(x, y)] = flags.u8(x, y) | 1;
+  };
+  for (let x = 1; x < size - 1; x++) {
+    for (let y = 1; y < size - 1; y++) {
+      const o = alt.offset(x, y);
+      const a = alt.data;
+      if (a[o] !== a[o + 1] || a[o] !== a[o + 2] || a[o] !== a[o + 3]) continue;
+      if (level === 1) {
+        setFloorable(x, y);
+        continue;
+      }
+      const below = lower.u8(x, y);
+      if ((below & 4) === 0 || (below & 8) !== 0) {
+        setFloorable(x, y);
+        continue;
+      }
+      let nearFloor = false;
+      for (let i = 0; i < FLOOR_NEAR_DX.length; i++) {
+        const nx = x + FLOOR_NEAR_DX[i]!;
+        const ny = y + FLOOR_NEAR_DY[i]!;
+        if (inGrid(nx) && inGrid(ny) && floors.u16(nx, ny) !== 0) {
+          nearFloor = true;
+          break;
+        }
+      }
+      if (!nearFloor) continue;
+      for (let i = 0; i < SUPPORT_DX.length; i++) {
+        const nx = x + SUPPORT_DX[i]!;
+        const ny = y + SUPPORT_DY[i]!;
+        if (!inGrid(nx) || !inGrid(ny)) continue;
+        const f = lower.u8(nx, ny);
+        if ((f & 4) === 0 || ((f & 8) !== 0 && SUPPORT_LOWER8[i] !== 0)) {
+          setFloorable(x, y);
+          break;
+        }
+      }
+    }
+  }
+}
+
 function computeLevelRooms(fixed: FixedWorld, mgr: RoomManager, level: number): void {
   const size = fixed.size;
   const rooms = fixed.rooms[level - 1]!;
@@ -300,7 +376,7 @@ function computeLevelRooms(fixed: FixedWorld, mgr: RoomManager, level: number): 
   const floors = fixed.floors[level - 1]!;
   const rd = rooms.data;
   rd.fill(0xff);
-  for (let i = 0; i < flags.data.length; i++) flags.data[i] = flags.data[i]! & 0x29;
+  for (let i = 0; i < flags.data.length; i++) flags.data[i] = flags.data[i]! & FLAGS_KEEP;
   const getR = (x: number, y: number): number => rooms.u16(x, y);
   const setR = (x: number, y: number, v: number): void => {
     const o = rooms.offset(x, y);

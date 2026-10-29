@@ -44,7 +44,7 @@ import { UIRes } from "../res/uires.js";
 import { BodyStrings, BS } from "../sims/bodystrings.js";
 import { VERTEX_FLOATS, type SkeletonBinding } from "../sims/deformablemesh.js";
 import { mat4Mul, rotationTf, translationTf, type Mat4, type Vec3 } from "../sims/math3d.js";
-import { AnimDeviceCamera, type SimView } from "../sims/camera.js";
+import { AnimDeviceCamera, unproject, type SimView } from "../sims/camera.js";
 import { SimRenderer } from "../sims/renderer.js";
 import { VBAnimMgr } from "../sims/vbanimmgr.js";
 import { VitaBoy, type DressingMesh } from "../sims/vitaboy.js";
@@ -210,36 +210,7 @@ export async function headPerson(bodyStrings: readonly string[]): Promise<VitaBo
   return vb;
 }
 
-/** Row-vector 4x4 inverse (general). */
-function invert(m: Mat4): Mat4 {
-  const a = Array.from(m);
-  const inv = new Float32Array(16);
-  const r = Array.from({ length: 4 }, (_, i) => [...a.slice(i * 4, i * 4 + 4), ...[0, 1, 2, 3].map((j) => (i === j ? 1 : 0))]);
-  for (let c = 0; c < 4; c++) {
-    let p = c;
-    for (let i = c + 1; i < 4; i++) if (Math.abs(r[i]![c]!) > Math.abs(r[p]![c]!)) p = i;
-    [r[c], r[p]] = [r[p]!, r[c]!];
-    const piv = r[c]![c]!;
-    for (let j = 0; j < 8; j++) r[c]![j]! /= piv;
-    for (let i = 0; i < 4; i++) {
-      if (i === c) continue;
-      const f = r[i]![c]!;
-      for (let j = 0; j < 8; j++) r[i]![j]! -= f * r[c]![j]!;
-    }
-  }
-  for (let i = 0; i < 4; i++) for (let j = 0; j < 4; j++) inv[i * 4 + j] = r[i]![j + 4]!;
-  return inv;
-}
-
-/** Screen point at a z-buffer depth back to world space (cAnimDeviceSub+0xa4). */
-export function unproject(cam: AnimDeviceCamera, x: number, y: number, depth: number): Vec3 {
-  const w = cam.projection[15]!;
-  const clip = [((2 * x) / cam.v.width - 1) * w, (1 - (2 * y) / cam.v.height) * w, (depth / 65535) * w, w];
-  const inv = invert(cam.viewProjection);
-  const o = [0, 0, 0, 0];
-  for (let j = 0; j < 4; j++) for (let i = 0; i < 4; i++) o[j]! += clip[i]! * inv[i * 4 + j]!;
-  return [o[0]! / o[3]!, o[1]! / o[3]!, o[2]! / o[3]!];
-}
+export { unproject } from "../sims/camera.js";
 
 export function scaleTf(s: number): Mat4 {
   const m = new Float32Array(16);
@@ -411,7 +382,8 @@ export async function generatePortraits(bodyStrings: readonly string[], res?: UI
   const save = (id: number, p: Pixels): void => void out.set(id, encodeBmp(p.data, p.w, p.h, 24));
 
   // MakePersonBtnImage
-  const faces = solid(FACE.w * 3, FACE.h, 0xf81f);
+  // MakePersonBtnImage does not clear the buffer: a head that fails to render stays black.
+  const faces = solid(FACE.w * 3, FACE.h, 0);
   for (let i = 0; i < 3; i++) {
     const head = cam.headImage(vb, FACE_YAWS[i]! * DEG, FACE_TURNS[i]! * DEG, FACE.w, FACE.h, NO_MARGINS, FACES_BG, HEAD_CROP);
     blit(faces, head, i * FACE.w, 0);

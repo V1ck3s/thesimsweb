@@ -8,6 +8,11 @@
  * sprites (objectdraw.ts). People stand in the tile links too; their
  * rectangle (the 3D mesh's, cXPerson::Draw3D) comes from `personRect`
  * (without it they are skipped).
+ *
+ * The walk starts at the tile of the surface visible at the point
+ * (HouseViewer::PointToTile, z-buffer unprojected), not the floor under it.
+ * Not ported: the mode 1 fallback's extra test when the app's +0x1c / +0x36
+ * short is 0 (the object definition's +0xb6 bit 0).
  */
 
 import type { HouseViewer } from "../houseviewer.js";
@@ -80,7 +85,9 @@ export function pointToObjectId(
   personRect: ((o: XObject) => [number, number, number, number] | null) | null = null,
 ): number {
   const w = viewer.world;
-  const t = viewer.pointToWholeTile(px, py, level);
+  // The walk starts at PointToTile's tile: the surface drawn at the point
+  // (z-buffer), so a person in front of furniture is reached before it.
+  const t = viewer.pointToTile(px, py);
   let vx = t.x;
   let vy = t.y;
   const outside = (x: number, y: number): boolean => x < w.minX + 1 || x > w.maxX - 1 || y < w.minY + 1 || y > w.maxY - 1;

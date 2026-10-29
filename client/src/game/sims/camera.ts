@@ -196,3 +196,34 @@ export function rootTransform(p: SimPlacement, rotation: number): Mat4 {
   const angle = fr((45 * (4 + 2 + p.direction) * Math.PI) / 180);
   return mat4Mul(rotationTf(1, angle), translationTf(pos));
 }
+
+/** Row-vector 4x4 inverse (general). */
+function invert(m: Mat4): Mat4 {
+  const a = Array.from(m);
+  const inv = new Float32Array(16);
+  const r = Array.from({ length: 4 }, (_, i) => [...a.slice(i * 4, i * 4 + 4), ...[0, 1, 2, 3].map((j) => (i === j ? 1 : 0))]);
+  for (let c = 0; c < 4; c++) {
+    let p = c;
+    for (let i = c + 1; i < 4; i++) if (Math.abs(r[i]![c]!) > Math.abs(r[p]![c]!)) p = i;
+    [r[c], r[p]] = [r[p]!, r[c]!];
+    const piv = r[c]![c]!;
+    for (let j = 0; j < 8; j++) r[c]![j]! /= piv;
+    for (let i = 0; i < 4; i++) {
+      if (i === c) continue;
+      const f = r[i]![c]!;
+      for (let j = 0; j < 8; j++) r[i]![j]! -= f * r[c]![j]!;
+    }
+  }
+  for (let i = 0; i < 4; i++) for (let j = 0; j < 4; j++) inv[i * 4 + j] = r[i]![j + 4]!;
+  return inv;
+}
+
+/** Screen point at a z-buffer depth back to world space (cAnimDeviceSub+0xa4). */
+export function unproject(cam: AnimDeviceCamera, x: number, y: number, depth: number): Vec3 {
+  const w = cam.projection[15]!;
+  const clip = [((2 * x) / cam.v.width - 1) * w, (1 - (2 * y) / cam.v.height) * w, (depth / 65535) * w, w];
+  const inv = invert(cam.viewProjection);
+  const o = [0, 0, 0, 0];
+  for (let j = 0; j < 4; j++) for (let i = 0; i < 4; i++) o[j]! += clip[i]! * inv[i * 4 + j]!;
+  return [o[0]! / o[3]!, o[1]! / o[3]!, o[2]! / o[3]!];
+}

@@ -164,6 +164,26 @@ export interface LitMap {
   y: number;
 }
 
+/** readDepth's pass: one fragment, the depth texel packed into 24 bits of RGB. */
+const DEPTH_VS = `#version 300 es
+void main() {
+  vec2 p = vec2(float((gl_VertexID & 1) << 2) - 1.0, float((gl_VertexID & 2) << 1) - 1.0);
+  gl_Position = vec4(p, 0.0, 1.0);
+}`;
+const DEPTH_FS = `#version 300 es
+precision highp float;
+precision highp sampler2D;
+uniform sampler2D uDepth;
+uniform ivec2 uAt;
+out vec4 outColor;
+void main() {
+  float v = floor(texelFetch(uDepth, uAt, 0).r * 16777215.0 + 0.5);
+  float hi = floor(v / 65536.0);
+  float mid = floor((v - hi * 65536.0) / 256.0);
+  float lo = v - hi * 65536.0 - mid * 256.0;
+  outColor = vec4(hi, mid, lo, 255.0) / 255.0;
+}`;
+
 export class Compositor {
   readonly canvas: HTMLCanvasElement;
   readonly gl: WebGL2RenderingContext;
@@ -195,6 +215,11 @@ export class Compositor {
   /** drawWallSprite's uniform arrays (rewritten every call). */
   private readonly wallColIdx = new Int32Array(8);
   private readonly wallZoneOff = new Float32Array(8);
+  /** Render target (color + depth texture) and the depth readback pass. */
+  private readonly target: WebGLFramebuffer;
+  private readonly depthTex: WebGLTexture;
+  private depthProg: WebGLProgram | null = null;
+  private depthOut: WebGLFramebuffer | null = null;
 
   constructor(
     readonly width: number,
@@ -232,6 +257,71 @@ export class Compositor {
     gl.depthFunc(gl.LEQUAL);
     gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
     gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+    // The render target: a color buffer and a depth texture, so the z-buffer
+    // can be read back (HouseViewer::PointToTile locks the z surface); the
+    // default framebuffer's depth cannot be read in WebGL. present() copies
+    // the color to the canvas.
+    this.target = gl.createFramebuffer();
+    gl.bindFramebuffer(gl.FRAMEBUFFER, this.target);
+    const color = gl.createRenderbuffer();
+    gl.bindRenderbuffer(gl.RENDERBUFFER, color);
+    gl.renderbufferStorage(gl.RENDERBUFFER, gl.RGBA8, width, height);
+    gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.RENDERBUFFER, color);
+    this.depthTex = this.texture();
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.DEPTH_COMPONENT32F, width, height, 0, gl.DEPTH_COMPONENT, gl.FLOAT, null);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.TEXTURE_2D, this.depthTex, 0);
+  }
+
+  /** The frame is finished: copy the target's color to the canvas. */
+  present(): void {
+    const gl = this.gl;
+    gl.disable(gl.SCISSOR_TEST);
+    gl.bindFramebuffer(gl.READ_FRAMEBUFFER, this.target);
+    gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, null);
+    gl.blitFramebuffer(0, 0, this.width, this.height, 0, 0, this.width, this.height, gl.COLOR_BUFFER_BIT, gl.NEAREST);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, this.target);
+  }
+
+  /**
+   * The z-buffer value at a target pixel (ZBufferLookup units), or null where
+   * nothing was drawn (Z_CLEAR). The depth texture is sampled by a one-pixel
+   * pass that packs it into RGBA8, which is read back.
+   */
+  readDepth(px: number, py: number): number | null {
+    const gl = this.gl;
+    const x = Math.trunc(px);
+    const y = this.height - 1 - Math.trunc(py);
+    if (x < 0 || y < 0 || x >= this.width || y >= this.height) return null;
+    if (!this.depthProg) {
+      this.depthProg = this.link(DEPTH_VS, DEPTH_FS);
+      this.depthOut = gl.createFramebuffer();
+      gl.bindFramebuffer(gl.FRAMEBUFFER, this.depthOut);
+      const rb = gl.createRenderbuffer();
+      gl.bindRenderbuffer(gl.RENDERBUFFER, rb);
+      gl.renderbufferStorage(gl.RENDERBUFFER, gl.RGBA8, 1, 1);
+      gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.RENDERBUFFER, rb);
+    }
+    gl.bindFramebuffer(gl.FRAMEBUFFER, this.depthOut);
+    gl.viewport(0, 0, 1, 1);
+    gl.disable(gl.DEPTH_TEST);
+    gl.disable(gl.BLEND);
+    gl.disable(gl.SCISSOR_TEST);
+    gl.useProgram(this.depthProg);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, this.depthTex);
+    gl.uniform2i(gl.getUniformLocation(this.depthProg, "uAt"), x, y);
+    gl.bindVertexArray(this.quad);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+    const px4 = new Uint8Array(4);
+    gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px4);
+    // Not left on a unit while it is the target's depth (feedback loop).
+    gl.bindTexture(gl.TEXTURE_2D, null);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, this.target);
+    gl.viewport(0, 0, this.width, this.height);
+    gl.enable(gl.DEPTH_TEST);
+    const d = (px4[0]! * 65536 + px4[1]! * 256 + px4[2]!) / 16777215;
+    const z = Math.round(d * DEPTH_RANGE + DEPTH_MIN);
+    return z >= Z_CLEAR ? null : z;
   }
 
   private link(vs: string, fs: string): WebGLProgram {
