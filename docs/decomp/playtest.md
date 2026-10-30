@@ -248,7 +248,7 @@ the routing problem below).
 | "NPC - Vacation - Controller" made the mascot / janitor / maid / director before the world hooks existed | Fixed (see the fixes above) |
 | A family member (Jada) once appeared downtown as a townie while living at home | Investigated 2026-10-30 (see "Magic Town move in, town imports, tutorial"): probably faithful. The walk-by filter of VisitGenerator.iff ("make walk by" 4116 -> "can this person visit?" 4102 -> "test - person at work?" 4119) only refuses a neighbor living on the current lot (neighbor data 6 == global 10), on the tutorial lot (neighborhood data 2), at work, or some children; nothing tests the travelling family, so a member left at home is a valid walk-by on a community lot. The port's GetNeighborData 6 / scope 34 match. Not fixed |
 | Downtown "Have A Meal" from the expensive fridge repeats ($10 each) | Not compared with the original yet (possibly faithful: each meal is a new autonomous choice while hungry) |
-| "missing skill listen normal apathetic" once after the agent contract | Faithful data bug: SocialChild.iff (ExpansionShared.far) STR# 129 (adult animations) entry 73 is "Listen normal apathetic" (the child / mixed tables 130..132 have "C2C-listen-normal-apathetic" etc.); VBAnimMgr::FindSkill finds nothing in the original either. SAnimator::TryAnimate then runs the person's "missing animation tree" and starts GetSkill(0x25) on the main practice: now ported (`sim/person.ts` startMissingAnimation) |
+| "missing skill listen normal apathetic" once after the agent contract | Not faithful after all (2026-10-30, see "Door deadlocks, autonomy filter, partner cleanup, anim tables"): the port read STR# 129 where GetObjectSkill picks 0x83 / 0x84 for an adult / child pair. Earlier note: Faithful data bug: SocialChild.iff (ExpansionShared.far) STR# 129 (adult animations) entry 73 is "Listen normal apathetic" (the child / mixed tables 130..132 have "C2C-listen-normal-apathetic" etc.); VBAnimMgr::FindSkill finds nothing in the original either. SAnimator::TryAnimate then runs the person's "missing animation tree" and starts GetSkill(0x25) on the main practice: now ported (`sim/person.ts` startMissingAnimation) |
 | Magic Town clouds and balloons (cMagiclandSprites::DoClouds / DoBalloons), Studio Town cars | Fixed (see the fixes above) |
 
 ## Soak test (2026-10-30)
@@ -355,7 +355,8 @@ pushed through the fridge entries as a click would.
 - **Route-failure tick spikes** of 20..50 ms (`goto door and face thru`, `move from filled tile`,
   `goto nearby`), 5..40 per 4 sim days; over 100 ms only with the visitor flood (fixed).
 - Unported animation names ("missing skill tease a", "giggle start/loop/stop", "scare b",
-  "listen normal apathetic"): skeleton animations missing from the loaded sets.
+  "listen normal apathetic"): skeleton animations missing from the loaded sets. Fixed in the
+  next section (wrong anim table: a port bug, not the data).
 
 ## Magic Town move in, town imports, tutorial (2026-10-30)
 
@@ -414,3 +415,22 @@ Throwaway copy of the game's UserData (`?nbhd=UserData21`, overlay, deleted afte
 - Not ported: cTutorialIcon (the tutorial dialog's icon / close animation, SetupDialog's +0x3c
   positioning), generic sim call 6 (Neighborhood::RemoveFromFamily of a neighbor, run at the
   tutorial's start) and 4 (logged).
+
+## User-reported bugs, round 2 (2026-10-30)
+
+| # | Bug | Status |
+|---|---|---|
+| U15 | Chachat family: Gina is invisible (also her head in the pie menu / when clicking something) | open |
+| U16 | 7 avenue des Sims: a second, invisible sim (the original has only one sim there) | open |
+| U17 | Same lot: the radio that should be on the table is invisible | open |
+| U18 | Clicking something with no action (grey cursor) should play a sound | open |
+| U19 | Action queue icons (top left): not as pretty as the original, sometimes broken with invisible objects, no cancel cross | open |
+| U20 | Clicking the Live mode button a second time: black background where the panel was, instead of the game (the game runs under the panel) | open |
+| U21 | Many sounds of very bad quality: audio decoding/playback problem? | open |
+| U22 | Lots of bird sounds: check against the original's ambience | open |
+| U23 | The mailwoman's whistle differs (loops, odd quality) | open |
+| U24 | Objects on other objects (bird cage, phone, anything on a table) are placed inside instead of on top: wrong slot position (Charmant family, probably everywhere) | open |
+| U25 | House panel (Habitation): no information filled in | open |
+| U26 | Charmant: walls turn black when switching from Buy/Live to Build mode | open |
+| U27 | Build mode on level 2: the buildable-floor grid is missing | open |
+| U28 | Mode music: switching between non-Live modes (Buy, Build, Camera, Options) cuts the music; only Live <-> others should change it, with a fade | open |
