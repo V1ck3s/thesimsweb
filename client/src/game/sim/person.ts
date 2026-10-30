@@ -388,8 +388,7 @@ export class PersonSim extends SimObject {
    * removed by the pedestrian portal with operand flag 2: the Studio Town
    * car whose interaction the visitor was running keeps going instead of
    * restarting Main and spawning three more visitors).
-   * The interactions' +0xc object and the
-   * container part of PlacementSpec (the person in a slot) are not kept.
+   * The container part of PlacementSpec (the person in a slot) is not kept.
    */
   override cleanupFor(obj: SimObject | null): void {
     if (this.inCleanup) return;
@@ -399,7 +398,7 @@ export class PersonSim extends SimObject {
       // The record objects are cleaned up unless the object cleaned up for (or this person, for
       // its own cleanup) was queued for death with AddToKillQueue(id, false): bit 0x1000.
       const cleanRecords = !(obj ?? this).keepRecordObjects;
-      const all = obj === null || this.objectRecords.some((r) => r.id === obj.id);
+      const all = obj === null || this.objectRecords.some((r) => r.id === obj.id) || this.currentAction?.icon === obj.id;
       if (all) {
         while (this.objectRecords.length) {
           const r = this.objectRecords[this.objectRecords.length - 1]!;
@@ -446,13 +445,16 @@ export class PersonSim extends SimObject {
         for (const i of this.queue.splice(0)) skipped(i);
       } else {
         const keep: Interaction[] = [];
+        // Interactions on the object or whose icon (+0xc) it is are dropped.
         for (const i of this.queue.splice(0)) {
-          if (i.target === obj.id) skipped(i);
+          if (i.target === obj.id || i.icon === obj.id) skipped(i);
           else keep.push(i);
         }
         this.queue.push(...keep.slice(0, 8));
         if (this.lastAction?.target === obj.id) this.lastAction = null;
+        else if (this.lastAction?.icon === obj.id) this.lastAction.icon = 0;
         if (this.currentAction?.target === obj.id) this.setCurrentAction(null);
+        else if (this.currentAction?.icon === obj.id) this.currentAction.icon = 0;
         if (obj.isPerson) {
           for (const r of this.routes) {
             if (r.askedPerson === obj) {
@@ -612,8 +614,12 @@ export class PersonSim extends SimObject {
 
   /**
    * SAnimator::ResolveSkillForPrimitive: the skill name. Source 0: the anim
-   * table (STR# 0x81 adult / 0x82 child) of the object whose tree runs (or,
-   * with flag 4, of the stack object); 1: Global.iff STR# 0x80; 2: the person
+   * table of the object whose tree runs (or, with flag 4, of the stack
+   * object), GetObjectSkill(object, person, index, other): STR# 0x81 adult,
+   * 0x82 child, 0x83 adult to child, 0x84 child to adult; the other side's
+   * age is the person's own, or (main practice only: neither flag 1 nor
+   * 0x10) that of the current interaction's icon person (+0xa14) when the
+   * interaction is on that object; 1: Global.iff STR# 0x80; 2: the person
    * stock table (Global.iff 0x82); 3: misc (0x9c adult / 0x9d child).
    * Error 0x17 when the object is missing.
    */
@@ -626,7 +632,14 @@ export class PersonSim extends SimObject {
       if (flags & 4) sel = m.getObject(elem.stackObj)?.obj.selector ?? null;
       else sel = m.selectorOfBehavior(elem.behavior) ?? this.obj.selector;
       if (!sel) simThrow(0x17);
-      table = loadStringSet(sel.res, this.isChild ? 0x82 : 0x81);
+      const child = this.isChild;
+      let otherChild = child;
+      const cur = this.currentAction;
+      if (!(flags & 0x11) && cur && m.getObject(cur.target)?.obj.selector === sel) {
+        const other = m.getObject(cur.icon);
+        if (other instanceof PersonSim) otherChild = other.isChild;
+      }
+      table = loadStringSet(sel.res, child ? (otherChild ? 0x82 : 0x84) : otherChild ? 0x83 : 0x81);
     } else if (source === 1) {
       table = g ? loadStringSet(g, 0x80) : null;
     } else if (source === 2) {
@@ -1864,14 +1877,21 @@ export class PersonSim extends SimObject {
     const minScore = visitor ? k.minVisitors : k.minFamily;
     const scored: Array<{ o: SimObject; e: TreeTableEntry; score: number }> = [];
     const autonomy = this.pd[0x24]!;
+    // The objects looked at rotate with the tick (cSimulator +0x98) and the person's id:
+    // 0 all of them, 1 those within 7 tiles (lbl_105BBB78 +0x1c), 2 even ids, 3 odd ids;
+    // all of them on a lot whose zoning type is not residential.
+    let filter = (m.sim.tickCount + this.id) & 3;
+    if (m.getZoningType(m.sim.globals[10]!) !== 0) filter = 0;
     for (const o of m.list) {
       if (o.obj.selector.objd.i16(0xe) === 0) continue;
       if (!(m.getSimFlags(o.id) & 0x80000)) continue;
-      if (o === this || o.obj.hidden !== 0) continue;
+      // The person itself only for pets (person data 0x41 >= 2).
+      if ((o === this && this.pd[0x41]! < 2) || o.obj.hidden !== 0) continue;
       if (o.obj.objectData[25]! >= 1) continue;
+      const dist = this.distanceTo(o);
+      if (filter === 1 ? dist > 7 : filter === 2 ? (o.id & 1) !== 0 : filter === 3 && (o.id & 1) === 0) continue;
       const tt = m.treeTableOf(o.obj.selector);
       if (!tt) continue;
-      const dist = this.distanceTo(o);
       for (let i = tt.entries.length - 1; i >= 0; i--) {
         const e = tt.entries[i]!;
         if (e.autonomyThreshold <= 0 || e.autonomyThreshold > autonomy || e.flags & 0x80) continue;
