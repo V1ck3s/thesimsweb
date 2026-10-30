@@ -383,7 +383,12 @@ export class PersonSim extends SimObject {
    * person as parameter); the last and current actions with `obj` are
    * forgotten; when `obj` is a person, the routes asking it to move forget
    * it (marked as asked).
-   * The 0x1000 flags of +0x114, the interactions' +0xc object and the
+   * The record objects are not cleaned up when the person (own cleanup) or
+   * `obj` has +0x114 bit 0x1000 (AddToKillQueue(id, false), e.g. a visitor
+   * removed by the pedestrian portal with operand flag 2: the Studio Town
+   * car whose interaction the visitor was running keeps going instead of
+   * restarting Main and spawning three more visitors).
+   * The interactions' +0xc object and the
    * container part of PlacementSpec (the person in a slot) are not kept.
    */
   override cleanupFor(obj: SimObject | null): void {
@@ -391,6 +396,9 @@ export class PersonSim extends SimObject {
     this.inCleanup = true;
     try {
       const m = this.module;
+      // The record objects are cleaned up unless the object cleaned up for (or this person, for
+      // its own cleanup) was queued for death with AddToKillQueue(id, false): bit 0x1000.
+      const cleanRecords = !(obj ?? this).keepRecordObjects;
       const all = obj === null || this.objectRecords.some((r) => r.id === obj.id);
       if (all) {
         while (this.objectRecords.length) {
@@ -406,7 +414,7 @@ export class PersonSim extends SimObject {
             this.objectRecords.pop();
           }
           const o = m.getObject(r.id);
-          if (o && o !== this) {
+          if (cleanRecords && o && o !== this) {
             m.cleanupPeople(o);
             o.cleanup();
           }

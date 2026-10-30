@@ -42,13 +42,17 @@ import type { FfnFont } from "../res/ffn.js";
 import { LANG_FRENCH } from "../res/uires.js";
 import { BTN_TOGGLE, TSWinBtn } from "../ui/btn.js";
 import { getCursor, getStandardCursor } from "../ui/cursor.js";
-import { IDYES, MB_YESNO, TSWinMsgBox } from "../ui/msgbox.js";
+import { WinPickFamily } from "../cas/winpickfamily.js";
+import { IDOK, IDYES, MB_OK, MB_YESNO, TSWinMsgBox } from "../ui/msgbox.js";
+import { PD_AVOID_RECT, WinPictureDialog } from "../ui/picturedialog.js";
+import { deleteGameFile } from "../data/files.js";
+import { getImportInfoForFile, getLotImportInfo, importFamily, importLotFile, listTownImports, pickAndUploadImports, setLotDescription } from "./imports.js";
 import { Gfx, TSWin } from "../ui/tswin.js";
 import { winMgr } from "../ui/winmgr.js";
-import type { Neighborhood } from "./nghinterface.js";
+import { Zone, type Neighborhood } from "./nghinterface.js";
 import { WinCredits } from "./wincredits.js";
 import { WinLotBtn, type LotBtnOwner } from "./winlotbtn.js";
-import { WinLotPopup } from "./winlotpopup.js";
+import { WinLotPopup, type MagicPopupSource } from "./winlotpopup.js";
 import { MagiclandSprites, StudiotownCars } from "./townsprites.js";
 
 export const enum Town {
@@ -58,9 +62,13 @@ export const enum Town {
   Magictown = 3,
 }
 
-/** cWinDowntown::Mode (+0x19c): 0 regular, 2 bulldoze (evict), 3 lot moving (cheat, not ported). */
+/**
+ * cWinDowntown::Mode (+0x19c): 0 regular, 1 move in (cWinMagicland only), 2
+ * bulldoze (evict), 3 lot moving (cheat, not ported).
+ */
 const enum TownMode {
   Regular = 0,
+  MoveIn = 1,
   Evict = 2,
 }
 
@@ -162,6 +170,13 @@ interface TownDef {
    * cWinMagicland +0xdc (balloon 0x2f, else hole 0x2e).
    */
   pickerCursor: readonly [number, number];
+  /** CycleThroughImports' pattern (*.dtl / *.vil / *.stl; Magic Town: CycleCommunityImports' *.mtl). */
+  importExt: string;
+  /**
+   * The lot import dialog's title: entry 4 (1-based) of this UIText STR#
+   * (cWinVacation reads Downtown's 169 too).
+   */
+  importTitleStr: number;
 }
 
 const BAR_POS_5: ReadonlyArray<readonly [number, number]> = [
@@ -195,6 +210,8 @@ export const TOWNS: Readonly<Record<Town, TownDef>> = {
     credits: MUSIC.credits,
     music: "station_dtnhood",
     pickerCursor: [0x25, 0x25],
+    importExt: "dtl",
+    importTitleStr: 169,
   },
   [Town.Vacation]: {
     cls: "cWinVacation",
@@ -222,6 +239,8 @@ export const TOWNS: Readonly<Record<Town, TownDef>> = {
     credits: MUSIC.credits,
     music: "station_vacation",
     pickerCursor: [0x27, 0x27],
+    importExt: "vil",
+    importTitleStr: 169,
   },
   [Town.Studiotown]: {
     cls: "cWinStudiotown",
@@ -259,6 +278,8 @@ export const TOWNS: Readonly<Record<Town, TownDef>> = {
     credits: MUSIC.credits,
     music: "station_superstar",
     pickerCursor: [0x2d, 0x2c],
+    importExt: "stl",
+    importTitleStr: 173,
   },
   [Town.Magictown]: {
     cls: "cWinMagicland",
@@ -294,6 +315,8 @@ export const TOWNS: Readonly<Record<Town, TownDef>> = {
     credits: "music_magictown_credits",
     music: "music_magictown",
     pickerCursor: [0x2e, 0x2f],
+    importExt: "mtl",
+    importTitleStr: 174,
   },
 };
 
@@ -340,9 +363,28 @@ const STR_BULLDOZE = 131;
 const STR_MOVE_IN = 132;
 /** UIText STR# 171: the filter tooltips. */
 const STR_FILTER_TIPS = 171;
+/** UIText STR# 143 (the family import dialog), 144 (entry 5: "Delete"), 154 (entries 0x12 / 0x13: delete the file?). */
+const STR_IMPORT_FAMILY = 0x8f;
+const STR_IMPORT_DELETE = 0x90;
+const STR_IMPORT_MISC = 0x9a;
+/** cWinPictureDialog::SetKey codes. */
+const KEY_RETURN = 0x0d;
+const KEY_ESCAPE = 0x1b;
+/** lbl_105BD254 +0x199 / +0x1b4: ImportFamily's error box (English literals in the code). */
+const IMPORT_ERROR_TEXT = "Couldn't import the family";
+const IMPORT_ERROR_TITLE = "Error";
 
-/** One credits window at a time (lbl_105C2EF0). */
+/** One credits window at a time (lbl_105C2EF0); one family picker at a time (cWinMagicland, lbl_105C4559). */
 let creditsOpen = false;
+let pickFamilyOpen = false;
+
+/** UIText STR# 133 "RegularModeStrs" (lbl_105BD240) and STR# 261 "Visit Mode Magictown Strings" (lbl_105BD25C). */
+const STR_REGULAR = 133;
+const STR_VISIT_MAGIC = 261;
+/** UIText STR# 134 "NghRollover": entries 32 / 33 are cWinMagicland +0xe0 / +0xe4 (Init, GetString(0x21 / 0x22)). */
+const STR_ROLLOVER = 134;
+/** kNghNoOneLivesHereIcon */
+const NO_ONE_LIVES_HERE_ICON = 0x14b9;
 
 export interface TownCallbacks {
   /**
@@ -356,6 +398,12 @@ export interface TownCallbacks {
   onUnported(what: string): void;
   /** The house file side of Neighborhood::MoveOut (bulldoze), as on the neighborhood screen. */
   onMoveOutHouse?(house: number, bulldoze: boolean, store: NeighborhoodStore): Promise<boolean>;
+  /**
+   * cWinMagicland::MoveInModeLotHandler: cSimsApp::LoadGame(house, family),
+   * the family moving into the lot; resolves whether the lot loaded (the
+   * screen ends with the house number afterwards).
+   */
+  onMoveIn?(house: number, familyId: number, houseValue: number): Promise<boolean>;
 }
 
 /**
@@ -447,6 +495,12 @@ export class WinTown extends TSWin implements LotBtnOwner {
   private popupTargetH = 0;
   /** +0x1f4: a command is being handled. */
   private handling = false;
+  /** cWinMagicland +0xd4: the family moving in (TSOnCommand 0x20 from cWinPickFamily). */
+  private moveInFamily = -1;
+  /** cWinMagicland +0xd8: the fee Move In charges, written by the lot popup (GetMagicPopupIndex). */
+  private moveInFee = 0;
+  /** cWinMagicland +0xe0 / +0xe4: the magicoin cost of house 91 / of the other residential lots. */
+  private costs = { house91: 0, other: 0 };
 
   constructor(
     private readonly ctx: GameContext,
@@ -554,7 +608,14 @@ export class WinTown extends TSWin implements LotBtnOwner {
     this.childAdd(water);
     this.waterLayer = water;
 
-    const popup = new WinLotPopup(ctx, this.nb, () => this.mode);
+    if (this.town === Town.Magictown) {
+      // Init: GetString(0x21) / GetString(0x22) of STR# 134, through atoi.
+      this.costs = {
+        house91: Number.parseInt(ctx.strings.get("UIText", STR_ROLLOVER, 0x20), 10) || 0,
+        other: Number.parseInt(ctx.strings.get("UIText", STR_ROLLOVER, 0x21), 10) || 0,
+      };
+    }
+    const popup = new WinLotPopup(ctx, this.nb, () => this.mode, this.town === Town.Magictown ? this.magicPopupSource() : null);
     if (!(await popup.init())) return false;
     this.childAdd(popup);
     this.popup = popup;
@@ -687,10 +748,16 @@ export class WinTown extends TSWin implements LotBtnOwner {
       this.buttons[BTN_BULLDOZE]?.setState(0);
       for (const lot of this.lots.values()) lot.setMode(0);
       soundPlayer.playBySource("UI_Nhood_bdoze_cancel", -4);
+    } else if (this.mode === TownMode.MoveIn) {
+      this.buttons[BTN_MOVE_IN]?.setState(0);
     }
     this.mode = mode;
     let cursor: string | null = null;
-    if (mode === TownMode.Evict) {
+    if (mode === TownMode.MoveIn) {
+      // cWinMagicland::SetMode(1): MoveInModeLotHandler / RegularModeBtnHandler, cursor 0x21, Move In down.
+      cursor = getCursor(0x21);
+      this.buttons[BTN_MOVE_IN]?.setState(1);
+    } else if (mode === TownMode.Evict) {
       for (const i of [BTN_EXIT, BTN_INET, BTN_LOGO, BTN_IMPORT, BTN_MOVE_IN]) this.buttons[i]?.setEnabled(false);
       cursor = getCursor(0x22);
       this.buttons[BTN_BULLDOZE]?.setState(1);
@@ -701,7 +768,10 @@ export class WinTown extends TSWin implements LotBtnOwner {
         this.buttons[BTN_EXIT]?.setEnabled(true);
         this.buttons[BTN_INET]?.setEnabled(false);
         this.buttons[BTN_LOGO]?.setEnabled(true);
-        this.buttons[BTN_IMPORT]?.setEnabled(false);
+        // CheckForNewImports: enabled when the import folder holds a lot.
+        // Web: always enabled, the file picker opens when it is empty (as on
+        // the neighborhood screen).
+        this.buttons[BTN_IMPORT]?.setEnabled(true);
         this.buttons[BTN_MOVE_IN]?.setEnabled(true);
       }
       cursor = this.mainScreen ? getStandardCursor(4) : getCursor(this.def.pickerCursor[this.vehicleFlag ? 1 : 0]);
@@ -709,9 +779,54 @@ export class WinTown extends TSWin implements LotBtnOwner {
     if (cursor) this.setCursor(cursor);
   }
 
-  /** cWinLotBtn::CalcRowCol with a town owner: the roof always dissolves. */
-  shouldAllowRoofDissolve(): boolean {
-    return true;
+  /**
+   * cWinLotBtn::CalcRowCol with a town owner: the roof always dissolves,
+   * except on Magic Town (cWinMagicland::ShouldAllowRoofDissolve): in move in
+   * only on what the moving family can buy (GetFamilyInfo: true without one;
+   * funds >= value, HouseInfo +0x10 set, nobody living there); in bulldoze not
+   * on an empty lot without a house nor on the tutorial lot; in regular mode
+   * not on an empty residential lot (90..92).
+   */
+  shouldAllowRoofDissolve(btn: WinLotBtn): boolean {
+    if (this.town !== Town.Magictown) return true;
+    const info = btn.info;
+    if (!info) return false;
+    switch (this.mode) {
+      case TownMode.MoveIn: {
+        const funds = this.moveInFunds;
+        if (funds === null) return true;
+        if (funds < info.value) return false;
+        if (!info.isEmpty) return false;
+        return info.familyNumber === -1;
+      }
+      case TownMode.Evict:
+        if (info.familyNumber === -1 && !info.hasHouse) return false;
+        return !info.isTutorial;
+      default:
+        if (info.houseNumber > 0x5c) return true;
+        return info.familyNumber !== -1;
+    }
+  }
+
+  /** GetFamilyInfo(+0xd4)'s funds (budget + net worth) for the roof rule, null without a family. */
+  private moveInFunds: number | null = null;
+
+  /** cWinLotPopup's view of this screen (+0xf8): mode, costs, the moving family. */
+  private magicPopupSource(): MagicPopupSource {
+    return {
+      mode: () => this.mode,
+      cost: (house) => (house === 0x5b ? this.costs.house91 : this.costs.other),
+      setFee: (cost) => {
+        this.moveInFee = cost;
+      },
+      movingFamily: async () => {
+        if (this.moveInFamily === -1) return null;
+        const store = await NeighborhoodStore.open(this.nb.dir);
+        const f = store.family(this.moveInFamily);
+        return f ? { name: f.name, funds: f.budget + f.netWorth, coins: store.magiCoins(f.id) } : null;
+      },
+      familyCoins: async (family) => (family === -1 ? 0 : (await NeighborhoodStore.open(this.nb.dir)).magiCoins(family)),
+    };
   }
 
   lotEntered(btn: WinLotBtn): void {
@@ -768,7 +883,14 @@ export class WinTown extends TSWin implements LotBtnOwner {
       });
     };
     if (source instanceof WinLotBtn) {
-      run(this.mode === TownMode.Evict ? this.evictModeLotHandler(source.houseNumber) : this.regularModeLotHandler(source.houseNumber));
+      const house = source.houseNumber;
+      run(
+        this.mode === TownMode.Evict
+          ? this.evictModeLotHandler(house)
+          : this.mode === TownMode.MoveIn
+            ? this.moveInModeLotHandler(house)
+            : this.regularModeLotHandler(house),
+      );
       return true;
     }
     const b = this.buttons.indexOf(source as TSWinBtn);
@@ -797,8 +919,9 @@ export class WinTown extends TSWin implements LotBtnOwner {
     let target = house;
     if (this.town === Town.Magictown && house <= 0x5c) {
       if (!this.mainScreen || lot.info.familyNumber === -1) {
-        // STR# 133 entries 0 / 1 (cWinPictureDialog with kNghNoOneLivesHereIcon).
-        await TSWinMsgBox.show(this.ctx, this.ctx.strings.get("UIText", 133, 1), this.ctx.strings.get("UIText", 133, 0));
+        // cWinPictureDialog with kNghNoOneLivesHereIcon, the title and text of
+        // STR# 261 (the picker: a private lot) or STR# 133 (nobody lives here).
+        await this.noOneLivesHere(this.mainScreen ? STR_REGULAR : STR_VISIT_MAGIC);
         return;
       }
       const store = await NeighborhoodStore.open(this.nb.dir);
@@ -826,17 +949,340 @@ export class WinTown extends TSWin implements LotBtnOwner {
       case BTN_LOGO:
         return this.showCredits();
       case BTN_IMPORT:
-        this.callbacks.onUnported(`${this.def.cls}::CycleThroughImports (town lots *.dtl / *.vtl / *.stl / *.mtl from the data directory)`);
-        return;
+        return this.cycleThroughImports();
       case BTN_BULLDOZE:
         this.setMode(TownMode.Evict);
         return;
       case BTN_MOVE_IN:
-        this.callbacks.onUnported("cWinMagicland Move In (cWinPickFamily, MoveInModeLotHandler with magic coins)");
-        return;
+        return this.pickFamily();
       default:
         return;
     }
+  }
+
+  /**
+   * The picture dialog of cWinMagicland::RegularModeLotHandler: the strings'
+   * entry 0 as the title, entry 1 as the text, kNghNoOneLivesHereIcon, one
+   * button with cTSWinMsgBox::GetButtonLabel(3) (OK), DoSimsModalDialog.
+   */
+  private async noOneLivesHere(set: number): Promise<void> {
+    const dlg = new WinPictureDialog(this.ctx);
+    const icon = await this.ctx.res.image(NO_ONE_LIVES_HERE_ICON).catch(() => null);
+    if (icon) dlg.setImage(icon);
+    dlg.setTitle(this.ctx.strings.get("UIText", set, 0));
+    dlg.addText(this.ctx.strings.get("UIText", set, 1));
+    dlg.addButton(TSWinMsgBox.getButtonLabel(this.ctx, IDOK), IDOK);
+    await dlg.run();
+  }
+
+  /**
+   * cWinMagicland::RegularModeBtnHandler(5): cWinPickFamily in Magic Town
+   * mode (+0x141) over the screen's area, owned by this screen (+0x12c), one
+   * at a time (lbl_105C4559). SetMode(0) runs first, so the picker's
+   * preselection of +0xd4 (mode 1) and the bulldoze cancel sound (mode 2)
+   * that follow it never happen. The lot popup is cleared, the screen hidden,
+   * "bkground_family" plays while the picker is up, then "music_magictown";
+   * Move In's button goes up unless the picker started Move In mode.
+   */
+  private async pickFamily(): Promise<void> {
+    if (pickFamilyOpen) return;
+    pickFamilyOpen = true;
+    try {
+      const dlg = new WinPickFamily(this.ctx, this.nb.dir);
+      this.setMode(TownMode.Regular);
+      this.popup?.hideWindow();
+      this.hideWindow();
+      dlg.setArea(this.area.left, this.area.top, this.area.right, this.area.bottom);
+      dlg.setOwner({ moveIn: (id) => this.startMoveIn(id) });
+      dlg.magicTown = true;
+      soundPlayer.playBySource(MUSIC.family, -1);
+      if (await dlg.init()) await winMgr.doModalWin(dlg);
+      soundPlayer.playBySource(this.def.music, -1);
+      this.showWindow();
+      if (this.mode !== TownMode.MoveIn) this.buttons[BTN_MOVE_IN]?.setState(0);
+      winMgr.setFocus(this);
+    } finally {
+      pickFamilyOpen = false;
+    }
+  }
+
+  /** cWinMagicland::TSOnCommand(0x20): Move In mode for the family the picker sent (+0xd4). */
+  private startMoveIn(familyId: number): void {
+    this.setMode(TownMode.MoveIn);
+    this.moveInFamily = familyId;
+    void NeighborhoodStore.open(this.nb.dir).then((store) => {
+      const f = store.family(familyId);
+      this.moveInFunds = f ? f.budget + f.netWorth : null;
+    });
+  }
+
+  /**
+   * cWinMagicland::MoveInModeLotHandler. Only the residential lots 90..92
+   * (else STR# 132 entries 22 / 23); the magicoin cost is +0xe0 for house 91,
+   * +0xe4 otherwise. The tutorial lot: entries 16 / 17. Without the moving
+   * family (GetFamilyInfo fails): back to regular mode. HouseInfo +0x10
+   * clear: "too expensive" (2 / 3). An empty lot without a house: occupied
+   * (14 / 15) when a family lives there, "too expensive" when the funds are
+   * short, else "buy this lot?" (6 / 7, yes / no) and LoadGame(house, family),
+   * no magicoins taken. A lot with a house, nobody living there, funds and
+   * magicoins enough: "buy this house?" (0 / 1); yes: SetMode(0), every lot's
+   * tutorial arrow off, LoadGame, then ChargeMagicCoinsFee(family, +0xd8).
+   * Otherwise "too expensive" or occupied.
+   * The magicoins are taken before the load here (the store is written
+   * before Neighborhood::LoadHouse reads it); the original takes them from the
+   * Neighborhood in memory right after a successful LoadGame.
+   */
+  private async moveInModeLotHandler(house: number): Promise<void> {
+    const str = (i: number): string => this.ctx.strings.get("UIText", STR_MOVE_IN, i);
+    const message = (title: number, type = MB_OK): Promise<number> => TSWinMsgBox.show(this.ctx, str(title + 1), str(title), type);
+    if (house < 0x5a || house > 0x5c) {
+      await message(22);
+      return;
+    }
+    const cost = house === 0x5b ? this.costs.house91 : this.costs.other;
+    const info = this.lots.get(house)?.info;
+    if (!info) return;
+    if (info.isTutorial) {
+      await message(16);
+      return;
+    }
+    const store = await NeighborhoodStore.open(this.nb.dir);
+    const fam = store.family(this.moveInFamily);
+    if (!fam) {
+      this.setMode(TownMode.Regular);
+      return;
+    }
+    const funds = fam.budget + fam.netWorth;
+    if (!info.isEmpty) {
+      await message(2);
+      return;
+    }
+    if (!info.hasHouse) {
+      if (info.familyNumber !== -1) {
+        await message(14);
+        return;
+      }
+      if (funds < info.value) {
+        await message(2);
+        return;
+      }
+      if ((await message(6, MB_YESNO)) !== IDYES) return;
+      await this.loadMovingIn(house, fam.id, info.value, 0, store);
+      return;
+    }
+    if (info.familyNumber !== -1) {
+      await message(14);
+      return;
+    }
+    if (info.value > funds || cost > store.magiCoins(fam.id)) {
+      await message(2);
+      return;
+    }
+    if ((await message(0, MB_YESNO)) !== IDYES) return;
+    this.setMode(TownMode.Regular);
+    for (const lot of this.lots.values()) void lot.hiliteForTutorial(this.ctx, false);
+    await this.loadMovingIn(house, fam.id, info.value, this.moveInFee, store);
+  }
+
+  /**
+   * cSimsApp::LoadGame(house, family) and the screen's end (TSWinMsgPost
+   * 0x10 with the house), after cWinMagicland::ChargeMagicCoinsFee(family,
+   * fee): the members in order give their magicoin tokens
+   * (SimInventory::RemoveCountTokens) until the fee is paid.
+   */
+  private async loadMovingIn(house: number, familyId: number, value: number, fee: number, store: NeighborhoodStore): Promise<void> {
+    if (!this.callbacks.onMoveIn) {
+      this.callbacks.onUnported(`${this.def.cls}::MoveInModeLotHandler without a LoadGame callback`);
+      return;
+    }
+    let left = fee;
+    for (const guid of store.family(familyId)?.memberGuids ?? []) {
+      if (left === 0) break;
+      const id = store.neighborIdOf(guid);
+      if (id === undefined) continue;
+      const take = Math.min(store.findToken(id, 7, 0x99e81bec), left);
+      store.removeCountTokens(id, 7, 0x99e81bec, take);
+      left -= take;
+    }
+    if (fee !== 0) await store.save();
+    await this.callbacks.onMoveIn(house, familyId, value);
+  }
+
+  /**
+   * RegularModeBtnHandler(3). cWinDowntown / cWinVacation /
+   * cWinStudiotown::CycleThroughImports: every *.dtl / *.vil / *.stl lot file
+   * of the import folder once; cWinMagicland: CycleResidentialImports (the
+   * *.mtf families) then CycleCommunityImports (*.mtl). When a lot changed
+   * the screen is built again (DoDowntownScreen(1) and friends: here the lots
+   * reload their house info and thumbnails).
+   * Web: with nothing to import, the file picker opens first.
+   */
+  private async cycleThroughImports(): Promise<void> {
+    const dir = this.nb.dir;
+    const magic = this.town === Town.Magictown;
+    let families = magic ? await listTownImports(dir, "mtf") : [];
+    let lots = await listTownImports(dir, this.def.importExt);
+    if (!families.length && !lots.length) {
+      if (!(await pickAndUploadImports(dir)).length) return;
+      families = magic ? await listTownImports(dir, "mtf") : [];
+      lots = await listTownImports(dir, this.def.importExt);
+    }
+    const changed: number[] = [];
+    for (const path of families) {
+      const house = await this.residentialImport(path);
+      if (house) changed.push(house);
+    }
+    for (const path of lots) {
+      const house = await this.lotImport(path);
+      if (house) changed.push(house);
+    }
+    if (!changed.length) return;
+    await this.nb.reloadData();
+    for (const house of changed) await this.lots.get(house)?.reloadThumbnail();
+  }
+
+  private importStr(set: number, i: number): string {
+    return this.ctx.strings.get("UIText", set, i);
+  }
+
+  /** The "Delete" answer: the STR# 154 confirmation (title entry 0x12, text 0x13, 1-based), then CTGFileManager::DeleteFile. */
+  private async confirmDeleteImport(path: string): Promise<void> {
+    const r = await TSWinMsgBox.show(this.ctx, this.importStr(STR_IMPORT_MISC, 0x12), this.importStr(STR_IMPORT_MISC, 0x11), MB_YESNO);
+    if (r === IDYES) await deleteGameFile(path).catch(() => console.warn(`[import] ${path} is read-only`));
+  }
+
+  /** HiliteForImport on the lot of `house` (0: every lot off). */
+  private hiliteLot(house: number): void {
+    if (house === 0) for (const lot of this.lots.values()) lot.hiliteForImport(false);
+    else this.lots.get(house)?.hiliteForImport(true);
+  }
+
+  /** A lot button's absolute area (the rect SetPositioning(2) keeps the dialog off). */
+  private lotRect(house: number): { left: number; top: number; right: number; bottom: number } | undefined {
+    const lot = this.lots.get(house);
+    if (!lot) return undefined;
+    const o = lot.absOrigin();
+    return { left: o.x, top: o.y, right: o.x + lot.getW(), bottom: o.y + lot.getH() };
+  }
+
+  /**
+   * One lot file of CycleThroughImports / CycleCommunityImports: its STR#
+   * 2000 name, description and house (entries 1..3), a cWinPictureDialog
+   * with both texts, Yes (STR# 143 entry 7, Return) / No (8, Escape) /
+   * Delete (STR# 144 entry 5), the lot picture (BMP_ 0x200), the title
+   * (entry 4 of TownDef.importTitleStr), the lot outlined and kept clear
+   * (Downtown, Vacation and Studio Town leave the outline on). cWinVacation
+   * refuses a lot a family is on vacation on (STR# 131 entries 22 / 23)
+   * before acting on the answer. Yes: the house file replaced by the lot file
+   * (deleted after), the name and description written into the town's
+   * description file. Resolves with the house when a lot came in.
+   */
+  private async lotImport(path: string): Promise<number> {
+    const lot = await getLotImportInfo(path);
+    if (!lot) return 0;
+    const house = lot.house;
+    const dlg = new WinPictureDialog(this.ctx);
+    dlg.addText(lot.name);
+    dlg.addText(lot.description);
+    dlg.addButton(this.importStr(STR_IMPORT_FAMILY, 6), 1);
+    dlg.setKey(1, KEY_RETURN);
+    dlg.addButton(this.importStr(STR_IMPORT_FAMILY, 7), 0);
+    dlg.setKey(0, KEY_ESCAPE);
+    dlg.addButton(this.importStr(STR_IMPORT_DELETE, 4), 2);
+    if (lot.image) dlg.setImage(lot.image);
+    dlg.setTitle(this.importStr(this.def.importTitleStr, 3));
+    this.hiliteLot(house);
+    const rect = this.lotRect(house);
+    if (rect) dlg.setPositioning(PD_AVOID_RECT, rect);
+    const r = await dlg.run();
+    if (this.town === Town.Magictown && r === 0) this.hiliteLot(0);
+    if (r === 0) return 0;
+    if (this.town === Town.Vacation) {
+      const store = await NeighborhoodStore.open(this.nb.dir);
+      if (store.familyIds().some((id) => store.familyVacationLot(id) === house)) {
+        await TSWinMsgBox.show(this.ctx, this.importStr(STR_BULLDOZE, 22), this.importStr(STR_BULLDOZE, 21));
+        return 0;
+      }
+    }
+    if (r === 2) {
+      await this.confirmDeleteImport(path);
+      return 0;
+    }
+    await importLotFile(this.nb.dir, lot);
+    await setLotDescription(this.nb.dir, this.def.template.desc, house, lot.name, lot.description);
+    return house;
+  }
+
+  /**
+   * One family file of cWinMagicland::CycleResidentialImports (*.mtf):
+   * GetImportInfoForFile, the STR# 143 dialog ("$family" in entry 1; no lot:
+   * entry 2; a lot of 90..98: entry 3 with the family living there, 4 empty,
+   * 5 vacant house, "$lot" the house number), Yes / No / Delete, the lot
+   * picture, title entry 9, the lot outlined. A lot whose family is on
+   * vacation: STR# 131 entries 22 / 23. Yes: the lot zoned residential,
+   * ImportFamily (failure: the zoning back, "Couldn't import the family").
+   * Not ported: the character set test (STR# 154 entries 20 / 21), as on the
+   * neighborhood screen. Resolves with the house when a family came onto one.
+   */
+  private async residentialImport(path: string): Promise<number> {
+    const info = await getImportInfoForFile(path);
+    if (!info) return 0;
+    const house = info.house;
+    const s = (i: number): string => this.importStr(STR_IMPORT_FAMILY, i - 1);
+    const dlg = new WinPictureDialog(this.ctx);
+    dlg.addText(s(1).replace("$family", info.familyName));
+    let where = "";
+    if (house === 0) {
+      where = s(2);
+    } else {
+      const lot = house >= 0x5a && house <= 0x62 ? this.lots.get(house)?.info : undefined;
+      if (lot) {
+        if (lot.familyNumber === -1) where = lot.hasHouse ? s(5) : s(4);
+        else where = s(3).replace("$family", lot.familyName);
+        where = where.replace("$lot", String(house));
+      }
+    }
+    dlg.addText(where);
+    dlg.addButton(s(7), 1);
+    dlg.setKey(1, KEY_RETURN);
+    dlg.addButton(s(8), 0);
+    dlg.setKey(0, KEY_ESCAPE);
+    dlg.addButton(this.importStr(STR_IMPORT_DELETE, 4), 2);
+    if (info.image) dlg.setImage(info.image);
+    dlg.setTitle(s(9));
+    if (house !== 0) {
+      this.hiliteLot(house);
+      const rect = this.lotRect(house);
+      if (rect) dlg.setPositioning(PD_AVOID_RECT, rect);
+    }
+    const r = await dlg.run();
+    if (house !== 0) this.hiliteLot(0);
+    if (r === 0) return 0;
+    const store = await NeighborhoodStore.open(this.nb.dir);
+    const resident = store.familyOfHouse(house);
+    if (house !== 0 && resident !== undefined && store.familyVacationLot(resident) !== 0) {
+      await TSWinMsgBox.show(this.ctx, this.importStr(STR_BULLDOZE, 22), this.importStr(STR_BULLDOZE, 21));
+      return 0;
+    }
+    if (r === 2) {
+      await this.confirmDeleteImport(path);
+      return 0;
+    }
+    const zone = this.nb.getZoningType(house);
+    await this.nb.setZoningType(house, Zone.Residential);
+    winMgr.setGlobalCursor(getCursor(3));
+    let ok = false;
+    try {
+      ok = (await importFamily(this.nb.dir, info).catch((e: unknown) => (console.error("[import]", e), null))) !== null;
+    } finally {
+      winMgr.setGlobalCursor(null);
+    }
+    if (!ok) {
+      await this.nb.setZoningType(house, zone);
+      await TSWinMsgBox.show(this.ctx, IMPORT_ERROR_TEXT, IMPORT_ERROR_TITLE, MB_OK);
+      return 0;
+    }
+    return house;
   }
 
   /** cWinDowntown::EvictModeBtnHandler: Bulldoze leaves the mode, Exit leaves it and acts, the others act. */
@@ -909,7 +1355,7 @@ export class WinTown extends TSWin implements LotBtnOwner {
     }
   }
 
-  /** cWinDowntown::TSOnKeyDown: Escape leaves bulldoze mode. */
+  /** cWinDowntown::TSOnKeyDown: Escape leaves bulldoze mode (cWinMagicland: and Move In mode). */
   override tsOnKeyDown(key: string): boolean {
     if (key === "Escape") {
       if (this.mode !== TownMode.Regular) this.setMode(TownMode.Regular);

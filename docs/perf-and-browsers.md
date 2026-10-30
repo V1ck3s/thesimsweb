@@ -136,6 +136,18 @@ The shared dev server (:3000, `tsx watch`) does not see file changes on `/mnt/c`
 the old routes: no `/api/ranges` (the client falls back, scan ~16 s) and the per-call overlay walk.
 Restart `pnpm dev` to get both. The :5174 / :3001 pair used for the measurements was stopped.
 
+## Long play (soak test, 2026-10-30)
+
+House01 at speed 3 for ~22 sim days in headless Chrome (SwiftShader), details in
+`docs/decomp/playtest.md` ("Soak test"). About 2 real minutes per sim day.
+
+| | Before the fixes | After |
+|---|---|---|
+| Heap (after GC) per sim day | +33..48 MB (killed visitors kept their VitaBoys, visitor flood) | +11..17 MB, back to ~320..350 MB on reload |
+| Tick mean | 0.11 → 0.47 ms (up to 29 people) | 0.13..0.30 ms |
+| Ticks ≥ 100 ms | 30 in 2 sim days (route failures in the crowd) | none in 11 sim days; 5..40 of 20..50 ms per 4 days |
+| Save size | | House01.iff +17 KB in 11 sim days |
+
 ## Remaining issues
 
 - **Firefox: WebGL -> 2D readback, ~7 ms per frame.** The lot is rendered in a WebGL canvas and

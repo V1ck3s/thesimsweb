@@ -53,6 +53,7 @@ import { getImportInfoForFile, getLotImportInfo, hasImports, importFamily, impor
 import { PD_AVOID_RECT, WinPictureDialog } from "../ui/picturedialog.js";
 import { getCheatCodeManager, type CheatCommandLine } from "../ui/cheat.js";
 import { doFirstTimeTownies, refillTownies, TOWNIE_COUNT } from "./townies.js";
+import { importTutorialIfPresent } from "./tutorial.js";
 
 /** cWinNeighborhood::Mode */
 export const enum NbhdMode {
@@ -681,13 +682,24 @@ export class WinNeighborhoodUL extends TSWin implements LotBtnOwner {
    * holds *.FAM, *.rdt or *.cmt (nbhd/imports.ts adds the exported families).
    * Web: the button stays enabled without files, since pressing it then opens
    * the file picker (the player's disk stands for the Import folder).
-   * Not ported: the Tutorial.FAM import of the first run (it needs the
-   * tutorial neighborhood's lot).
+   * Then Import/Tutorial.FAM is imported at once (nbhd/tutorial.ts; on the
+   * main screen only, +0x111, and not while one runs, +0x1d8); a family
+   * coming onto a lot builds the screen again (DoNbhdScreen(1)).
    */
   private async checkForNewImports(): Promise<void> {
     await hasImports(this.nb.dir);
     this.buttons[BTN_IMPORT]!.setEnabled(true);
+    if (this.picker || this.checkingImports) return;
+    this.checkingImports = true;
+    try {
+      if (await importTutorialIfPresent(this.ctx, this.nb)) this.callbacks.onSwitchNeighborhood(this.nb.dir);
+    } finally {
+      this.checkingImports = false;
+    }
   }
+
+  /** +0x1d8: CheckForNewImports is running. */
+  private checkingImports = false;
 
   /** cWinNeighborhoodUL::HiliteLot: the lot's import outline (community outline in the picker), 0 = all off. */
   private hiliteLot(house: number): void {

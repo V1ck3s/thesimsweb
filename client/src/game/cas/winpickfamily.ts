@@ -56,10 +56,8 @@
  *    (entry 18) sits at (0x2b2, 0x2a); its own hint (lbl_105C14A9, entries 19
  *    / 20) while GetRunPAFMagicCount() < 6.
  *
- * Not ported: cPickFamilyList::GetTTPosition. The Magic Town screen's Move
- * In (cWinMagicland::MoveInModeLotHandler) does not open the picker yet.
- * The game's run count is not kept: getRunCount() reads a counter nobody
- * increments yet, so the hint shows once per session.
+ * Not ported: cPickFamilyList::GetTTPosition, the preselection of +0x130
+ * (cWinMagicland sets it only in Move In mode, after leaving that mode).
  */
 
 import type { GameContext } from "../context.js";
@@ -68,6 +66,7 @@ import type { NeighborhoodStore } from "../data/nbhdstore.js";
 import { loadCharacter, loadNeighborhood, type NeighborhoodData } from "../data/neighborhood.js";
 import { makeMoneyString } from "../nbhd/nghinterface.js";
 import { decodeImage } from "../res/bmp.js";
+import { getOptionsMgr } from "../optionsmgr.js";
 import type { FfnFont } from "../res/ffn.js";
 import { LANG_FRENCH } from "../res/uires.js";
 import { TSWinBtn } from "../ui/btn.js";
@@ -146,15 +145,6 @@ const HINT_DELAY_MS = 500;
 /** lbl_105C14AA: the hint was already scheduled this session; lbl_105C14A9: the Magic Town one. */
 let hintScheduled = false;
 let magicHintScheduled = false;
-
-/** cOptionsMgr::GetRunCount: the number of times the game was started (not kept yet). */
-function getRunCount(): number {
-  try {
-    return Number(localStorage.getItem("thesimsweb.runCount") ?? 0) || 0;
-  } catch {
-    return 0;
-  }
-}
 
 /** RampGenerator with SetupConstantSpeedRamp / GetVal. */
 class RampGenerator {
@@ -638,12 +628,11 @@ export class WinPickFamily extends TSWinGenDlg {
     this.buttons[B.delete]!.enabled = false;
     if (!hintScheduled && !magic) {
       hintScheduled = true;
-      if (getRunCount() < 2) this.hintTimer = window.setTimeout(() => void this.tsOnTimerMsg(), HINT_DELAY_MS);
+      if (getOptionsMgr().getRunCount() < 2) this.hintTimer = window.setTimeout(() => void this.tsOnTimerMsg(), HINT_DELAY_MS);
     }
-    // cOptionsMgr::GetRunPAFMagicCount (runs with Makin' Magic): the run count stands for it.
     if (!magicHintScheduled && magic) {
       magicHintScheduled = true;
-      if (getRunCount() < 6) this.hintTimer = window.setTimeout(() => void this.tsOnTimerMsg(), HINT_DELAY_MS);
+      if (getOptionsMgr().getRunPAFMagicCount() < 6) this.hintTimer = window.setTimeout(() => void this.tsOnTimerMsg(), HINT_DELAY_MS);
     }
     return true;
   }

@@ -80,6 +80,12 @@ export async function saveGame(ctx: GameContext, lv: WinLotView | null, nbhdDir:
   const n = houseNumber(lv.housePath);
   try {
     const store = await NeighborhoodStore.open(nbhdDir).catch(() => null);
+    // SaveGame starts with Neighborhood +0x12e = 1: the tutorial lot loses its
+    // arrow on the neighborhood screen once a game was saved.
+    if (store && store.ngbh().shorts[3] !== 1) {
+      store.ngbh().shorts[3] = 1;
+      store.touchNgbh();
+    }
     const familyId = store?.familyOfHouse(n);
     const zoning = sim?.module.zoning.get(n) ?? 1;
     // cSimsApp::SaveGame: with sims on the lot (global 0x20 clear), a town

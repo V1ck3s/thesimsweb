@@ -8,7 +8,8 @@
  * (+0x39 clear), button 3 for types 1 / 2, button 4 for type 2, the
  * message, an edit box (999) for type 3, a 40 s timeout on the last button
  * except for types 3 / 4, Enter = 2, Escape = the last button, Space = 2
- * when there is only one button.
+ * when there is only one button. A dialog without a button is modeless:
+ * DoSimsModalDialog adds it to the lot view and returns.
  */
 
 import type { GameContext } from "../context.js";
@@ -18,7 +19,7 @@ import type { DialogHooks, DialogIcon, ObjectDialog } from "../sim/objectdialog.
 import type { Simulator } from "../sim/simulator.js";
 import { loadPicture, WinPhoneBook } from "../ui/phonebook.js";
 import { WinPictureDialog } from "../ui/picturedialog.js";
-import type { Rect } from "../ui/tswin.js";
+import type { Rect, TSWin } from "../ui/tswin.js";
 import { ObjectIcon } from "../cpanel/buy/objecticon.js";
 import { loadCharacter } from "../data/neighborhood.js";
 import { preloadEditPersonCatalog } from "../cas/editperson.js";
@@ -111,7 +112,7 @@ async function iconImage(ctx: GameContext, sim: Simulator, icon: DialogIcon | nu
   }
 }
 
-async function show(ctx: GameContext, sim: Simulator, d: ObjectDialog): Promise<void> {
+async function show(ctx: GameContext, sim: Simulator, d: ObjectDialog, view: TSWin | null): Promise<void> {
   if (d.state !== 0) return; // aborted while waiting for its turn
   const w = new WinPictureDialog(ctx);
   d.state = 1;
@@ -139,7 +140,8 @@ async function show(ctx: GameContext, sim: Simulator, d: ObjectDialog): Promise<
     w.setKey(last, 0x1b);
     if (single) w.setKey(2, 0x20);
     d.close = () => w.close();
-    const id = await w.run();
+    // DoSimsModalDialog(win, +0x39): a dialog with a close box is modeless (in the lot view).
+    const id = !d.modal && view ? await w.runModeless(view) : await w.run();
     if (d.state === 1) d.btnPressed(id, w.getEditedText());
   }
 }
@@ -167,7 +169,7 @@ async function showPersonPicker(ctx: GameContext, sim: Simulator, kind: 6 | 9 | 
   return w.run();
 }
 
-export function objectDialogHooks(ctx: GameContext, sim: Simulator): DialogHooks {
+export function objectDialogHooks(ctx: GameContext, sim: Simulator, view: TSWin | null = null): DialogHooks {
   // TryGenericSimCall 24 (set a suit) needs the suit catalog synchronously.
   void preloadEditPersonCatalog().catch(() => undefined);
   let chain: Promise<void> = Promise.resolve();
@@ -180,7 +182,12 @@ export function objectDialogHooks(ctx: GameContext, sim: Simulator): DialogHooks
   };
   return {
     uiString: (set, n) => (n >= 1 ? ctx.strings.get("UIText", set, n - 1) : ""),
-    show: (d) => serial(() => show(ctx, sim, d)),
+    // A modeless dialog (no button, +0x39 clear) holds neither the simulation nor the queue
+    // (ObjectModule::PostSim's ObjectDialog::Show returns at once).
+    show: (d) => {
+      if (!d.modal && view) void show(ctx, sim, d, view).catch((e: unknown) => console.error("[dialog]", e));
+      else serial(() => show(ctx, sim, d, view));
+    },
     showPersonPicker: (kind, person, type) =>
       new Promise<number>((resolve) => {
         serial(async () => {

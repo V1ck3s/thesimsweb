@@ -45,10 +45,34 @@ const POPUP_COMMUNITY = 0x11;
 const FONT_SIZE = 10;
 const TEXT_COLOR = "rgb(195,205,205)";
 
+/**
+ * cWinLotPopup +0xf8: the Magic Town screen (set by cWinLotPopup(cWinMagicland *)),
+ * read by GetMagicPopupIndex for its residential lots (90..92).
+ */
+export interface MagicPopupSource {
+  /** cWinMagicland +0xcc: the screen's mode (0 regular, 1 move in, 2 bulldoze, 4 visit). */
+  mode(): number;
+  /** cWinMagicland +0xe0 / +0xe4: the magicoin cost of a lot (house 91: STR# 134 entry 32, else 33). */
+  cost(house: number): number;
+  /** GetMagicPopupIndex's first store: cWinMagicland +0xd8 = the cost of the lot shown (the fee Move In charges). */
+  setFee(cost: number): void;
+  /** GetFamilyInfo(+0xd4): the moving family's name, funds (budget + net worth) and Family::GetMagiCoins; null without one. */
+  movingFamily(): Promise<{ name: string; funds: number; coins: number } | null>;
+  /** cWinMagicland::CalculateFamilyTokens(family): 0 for -1. */
+  familyCoins(familyNumber: number): Promise<number>;
+}
+
 /** wsprintf with %s / %d only. */
 function sprintf(fmt: string, ...args: Array<string | number>): string {
   let i = 0;
   return fmt.replace(/%[sd]/g, () => String(args[i++] ?? ""));
+}
+
+/** SetHouseInfo's locals the Magic Town formats read (+0x2894 name, local_28b0 funds, local_28a8 coins). */
+interface MagicValues {
+  familyName: string;
+  funds: number;
+  coins: number;
 }
 
 export class WinLotPopup extends TSWin {
@@ -65,6 +89,8 @@ export class WinLotPopup extends TSWin {
     private readonly nb: Neighborhood,
     /** cWinLotPopup+0xe8: the owning neighborhood screen's mode (0 = regular). */
     private readonly mode: () => number,
+    /** cWinLotPopup+0xf8 (Magic Town only). */
+    private readonly magic: MagicPopupSource | null = null,
   ) {
     super();
   }
@@ -95,6 +121,44 @@ export class WinLotPopup extends TSWin {
     if (h.isTutorial) return mode === 1 ? 8 : mode === 2 ? 9 : POPUP_TUTORIAL;
     if (h.familyNumber !== -1) return mode === 2 || mode === 3 ? 9 : POPUP_FAMILY;
     return this.nb.getZoningType(h.houseNumber) === Zone.Residential ? POPUP_EMPTY_RESIDENTIAL : POPUP_COMMUNITY;
+  }
+
+  /**
+   * cWinLotPopup::GetMagicPopupIndex (Magic Town residential lots): stores
+   * the lot's cost into cWinMagicland +0xd8 first. Visit mode: 28 empty, 34
+   * occupied. Tutorial: 8 in move in, 9 in bulldoze, else 6. Occupied: 35 in
+   * bulldoze, else 34 (with the family's magicoins). Empty: bulldoze 10 / 11
+   * (house or not); move in: MovingInFamilyCanAffordMagic(value, cost)
+   * 1 -> 31, -1 (neither) -> 37, -2 (coins short) -> 36, -3 (funds short)
+   * -> 38, 0 (no family) keeps 34; other modes 29. `v` receives the values
+   * the formats read (SetHouseInfo's locals).
+   */
+  private async getMagicPopupIndex(h: HouseInfo, cost: number, v: MagicValues): Promise<number> {
+    const m = this.magic!;
+    m.setFee(cost);
+    const mode = m.mode();
+    if (mode === 4) {
+      if (h.familyNumber === -1) return 0x1c;
+      v.coins = await m.familyCoins(h.familyNumber);
+      return 0x22;
+    }
+    if (h.isTutorial) return mode === 1 ? 8 : mode === 2 ? 9 : 6;
+    if (h.familyNumber !== -1) {
+      v.coins = await m.familyCoins(h.familyNumber);
+      return mode === 2 ? 0x23 : 0x22;
+    }
+    if (mode === 2) return h.hasHouse ? 10 : 0xb;
+    if (mode !== 1) return 0x1d;
+    const fam = await m.movingFamily();
+    if (!fam) return 0x22;
+    v.familyName = fam.name;
+    v.coins = fam.coins;
+    v.funds = fam.funds;
+    const coinsOk = cost <= fam.coins;
+    const fundsOk = h.value <= fam.funds;
+    if (coinsOk && fundsOk) return 0x1f;
+    if (!coinsOk && !fundsOk) return 0x25;
+    return coinsOk ? 0x26 : 0x24;
   }
 
   /**
@@ -177,6 +241,20 @@ export class WinLotPopup extends TSWin {
       // Town lots are described by their address and the town's desc file only.
     } else if (zone === Zone.Community) {
       text += sprintf(s[idx]!, name, desc);
+    } else if (zone === Zone.Residential && this.magic && h.houseNumber >= 0x5a && h.houseNumber <= 0x5c) {
+      // The lbl_105BC754 formats of the Magic Town indices (see getMagicPopupIndex).
+      const lang = LANG_FRENCH;
+      const v: MagicValues = { familyName: "", funds: 0, coins: 0 };
+      const cost = this.magic.cost(h.houseNumber);
+      const i = await this.getMagicPopupIndex(h, cost, v);
+      const money = (n: number): string => makeMoneyString(n, lang);
+      const coins = String(v.coins);
+      if (i === 0x1d || i === 0x1f) text += sprintf(s[i]!, name, desc, money(h.value), String(cost));
+      else if (i === 0x24 || i === 0x25) text += sprintf(s[i]!, name, desc, money(h.value), String(cost), v.familyName, coins);
+      else if (i === 0x26) text += sprintf(s[i]!, name, desc, money(h.value), String(cost), v.familyName, money(v.funds));
+      else if (i === 0x22 || i === 0x23) text += sprintf(s[i]!, h.familyName, money(h.netWorth), coins, h.friends);
+      else if (i === 0x1c) text += sprintf(s[i]!, name, desc);
+      else text += s[i]!;
     } else if (zone === Zone.Residential) {
       const lang = LANG_FRENCH;
       if (idx === POPUP_FAMILY) text += sprintf(s[idx]!, h.familyName, makeMoneyString(h.netWorth, lang), h.friends);

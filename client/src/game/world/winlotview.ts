@@ -75,7 +75,8 @@ import { WinBudgetDlg } from "../cpanel/budgetdlg.js";
 import { WinViewControl } from "../cpanel/viewcontrol.js";
 import { loadBuildCatalog } from "../data/buildcatalog.js";
 import { holdSimulator } from "../nbhd/transit.js";
-import { tutFlashButtonByImageID, tutFlashWindow } from "../ui/tutorialhighlight.js";
+import { hideTutorialHighlighter, tutFlashButtonByImageID, tutFlashWindow } from "../ui/tutorialhighlight.js";
+import { cancelTutorial, makeTutorialObject, tutorialCompleted } from "../nbhd/tutorial.js";
 import { findPersonPanelButton } from "../cpanel/people.js";
 import { findRelButton } from "../cpanel/live/relationship.js";
 import { moduleOrder } from "./housesave.js";
@@ -285,6 +286,8 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
     }
     // ObjectModule::Load -> UpdateSimObjects: the controllers / phone plugins every lot holds.
     if (this.lotObjects && this.sim && this.placement) await updateSimObjects(this.placement, this.lotObjects.folder, this.sim.module);
+    // Neighborhood::LoadHouse: the Tutorial object on a tutorial lot (nbhd/tutorial.ts).
+    if (this.lotObjects && this.sim && this.placement) await makeTutorialObject(this.placement, this.lotObjects.folder, this.sim.module, this.housePath.split("/")[0] ?? "UserData");
     if (this.lotObjects && this.sim) await this.bringInFamily(v, this.lotObjects);
     if (this.lotObjects && this.sim && this.placement) await this.initPlumbBobs(this.lotObjects, this.sim, this.placement);
     this.edge = new EdgeDetectScroller(v, this.ctx.width, this.ctx.height);
@@ -621,6 +624,7 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
       },
       onKill: (obj) => {
         this.plumbBobs?.onKill(obj);
+        this.people?.onKill(obj);
         this.sim?.module.removeObject(obj);
       },
       personData: (obj) => this.sim?.module.persons.find((p) => p.obj === obj)?.pd ?? null,
@@ -1334,6 +1338,10 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
         flashButtonByImageID: (id, on) => void tutFlashButtonByImageID(this.ctx, id, on),
         flashPersonPanelButton: (guid, on) => void tutFlashWindow(this.ctx, findPersonPanelButton(winMgr.main, guid), on),
         flashRelButton: (guid, on) => void tutFlashWindow(this.ctx, findRelButton(winMgr.main, guid), on),
+        tutorialCompleted: () => {
+          const dir = this.ctx.hooks?.neighborhoodDir?.();
+          if (dir) void tutorialCompleted(dir, 0);
+        },
       };
       this.sim = sim;
       this.initBudgetSource(sim, lot);
@@ -1506,6 +1514,9 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
 
   setScale(zoom: number): void {
     this.viewer?.setScale(zoom);
+    // HouseViewer::SetScale -> GlobalDispatch(0xf9, scale) -> cSimulator::DoCommand: global 2
+    // (the tutorial's "detect zoom" reads it).
+    if (this.sim) this.sim.globals[2] = zoom;
   }
 
   setRotation(rotation: number): void {
@@ -1581,6 +1592,11 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
     if (!v) return false;
     // cDDDSimsView::TSOnKeyDown: F1..F5 switch the control panel mode.
     if (modeKeyDown(this.ctx.state, key)) return true;
+    // cDDDSimsView::TSOnKeyDown: Escape is Neighborhood::CancelTutorial, then the tutorial arrow hides.
+    if (key === "Escape" && this.sim) {
+      cancelTutorial(this.sim.module);
+      hideTutorialHighlighter();
+    }
     if (this.activeTools()?.keyDown(key)) return true;
     // cObjPickerTool::OnChar (Live mode): Space advances the selected person
     // and centers the view on them (CenterHouseViewOnMe), N only advances.

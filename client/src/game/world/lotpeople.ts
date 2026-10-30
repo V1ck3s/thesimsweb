@@ -107,6 +107,18 @@ export class LotPeople {
   }
 
   /**
+   * An object that died (ObjectModule::KillOutOfWorldObject deletes the
+   * cXObject with its SAnimator / Animator): a person's animator, or a
+   * carried 3D object's, goes. Visitors and walk-bys come and go all day;
+   * kept, their VitaBoys piled up (memory, and every draw walked them).
+   */
+  onKill(obj: PlacedObject): void {
+    const i = this.people.findIndex((x) => x.obj === obj);
+    if (i >= 0) this.people.splice(i, 1);
+    this.animators.delete(obj);
+  }
+
+  /**
    * The simulation animates `obj` from now on: its practices are dropped,
    * `attach` receives the VitaBoy skeleton (the sim's SAnimator poses it),
    * and `dir` gives the facing to draw. False when `obj` has no animator.

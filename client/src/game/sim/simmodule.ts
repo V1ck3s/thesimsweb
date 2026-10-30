@@ -239,6 +239,8 @@ export class SimModule {
     flashButtonByImageID(id: number, on: boolean): void;
     flashPersonPanelButton?(guid: number, on: boolean): void;
     flashRelButton?(guid: number, on: boolean): void;
+    /** Generic sim call 0: Neighborhood::TutorialCompleted(0)'s neighborhood side (NGBH +0x12a / +0x12c). */
+    tutorialCompleted?(): void;
   } | null = null;
   /** Called when an object's look changed (cXObject::Dirty) or it was killed. */
   onDirty: ((o: SimObject) => void) | null = null;
@@ -820,7 +822,14 @@ export class SimModule {
 
   /** ObjectModule::AddToKillQueue. */
   addToKillQueue(id: number, flag: number): void {
-    if (!this.killQueue.some((k) => k.id === id)) this.killQueue.push({ id, flag });
+    const o = this.getObject(id);
+    if (!o) return;
+    // A multi-tile part queues its lead (cXMTObject: the +0x190 lead of a static object).
+    const lead = o.obj.selector.objd.masterId !== 0 && o.obj.mtLeadId !== 0 ? (this.getObject(o.obj.mtLeadId) ?? o) : o;
+    if (this.killQueue.some((k) => k.id === lead.id || k.id === id)) return;
+    // Pickup(1) is left to KillObject's world part. Bit 0x1000: kept records (see SimObject.keepRecordObjects).
+    lead.keepRecordObjects = flag === 0;
+    this.killQueue.push({ id: lead.id, flag });
   }
 
   /**

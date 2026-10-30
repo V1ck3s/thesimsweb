@@ -246,17 +246,171 @@ the routing problem below).
 | The tabloid / newspapers show only "Recycler" in the afternoon | Graphic 1 (old paper); their check trees need graphic 0 or 2. Probably faithful (a fresh paper comes in the morning), not compared |
 | ObjectModule::OnStarPowerChange after a promotion / demotion | Fixed with the plumb bobs (see the fixes above) |
 | "NPC - Vacation - Controller" made the mascot / janitor / maid / director before the world hooks existed | Fixed (see the fixes above) |
-| A family member (Jada) once appeared downtown as a townie while living at home | Not reproduced, not investigated further (the downtown walkers are picked by the NPC generators' trees from the neighbor data; compare their family / house checks with the original if it comes back) |
+| A family member (Jada) once appeared downtown as a townie while living at home | Investigated 2026-10-30 (see "Magic Town move in, town imports, tutorial"): probably faithful. The walk-by filter of VisitGenerator.iff ("make walk by" 4116 -> "can this person visit?" 4102 -> "test - person at work?" 4119) only refuses a neighbor living on the current lot (neighbor data 6 == global 10), on the tutorial lot (neighborhood data 2), at work, or some children; nothing tests the travelling family, so a member left at home is a valid walk-by on a community lot. The port's GetNeighborData 6 / scope 34 match. Not fixed |
 | Downtown "Have A Meal" from the expensive fridge repeats ($10 each) | Not compared with the original yet (possibly faithful: each meal is a new autonomous choice while hungry) |
 | "missing skill listen normal apathetic" once after the agent contract | Faithful data bug: SocialChild.iff (ExpansionShared.far) STR# 129 (adult animations) entry 73 is "Listen normal apathetic" (the child / mixed tables 130..132 have "C2C-listen-normal-apathetic" etc.); VBAnimMgr::FindSkill finds nothing in the original either. SAnimator::TryAnimate then runs the person's "missing animation tree" and starts GetSkill(0x25) on the main practice: now ported (`sim/person.ts` startMissingAnimation) |
 | Magic Town clouds and balloons (cMagiclandSprites::DoClouds / DoBalloons), Studio Town cars | Fixed (see the fixes above) |
 
-## Soak test (interrupted, 2026-10-30)
+## Soak test (2026-10-30)
 
-The long-play agent was stopped when the user paused the work, before it wrote its report. What its code changes show (committed as is, `tsc` clean, not re-verified):
-- `sim/xobject.ts`: cXObject::TryBurn (prim 9, fires: Fire object 0x24c95f99, burnable gathering, people cleaned up and re-placed); per-object error traces (last 32 kept).
-- `sim/simmodule.ts`: indexed relationship lookups and neighbor-by-id index (the Visit Generator reads friend counts for every neighbor pair each hour: sim tick spikes); KillOutOfWorldObject deselects the selected person first (plumb bob picked up, not killed).
-- `world/tools/placement.ts`: FindGoodLocation coordinate order fixed (FTilePt is {y, x}; the random start draws y first).
-- Its last measurement: Firefox WebGL→2D copy 5.7 ms per frame (was 7.4 ms), so no regression from the compositor framebuffer / depth texture change.
+House01 (Kyle, Jada, their child Max) in a throwaway copy of UserData (`?nbhd=UserData9`, copied
+through `PUT /api/files/...`, deleted at the end), headless Chrome (SwiftShader), speed 3, driven by
+`~/simsweb-build/tools/soak.mjs`: dialogs answered with Enter (their text logged), the speed put
+back to 3 when the game drops it (cXObject::TryUserEvent's GlobalDispatch(0x10c), faithful), a
+health sample every 15 s (heap after a forced GC, object / person counts, tick and frame
+histograms, tick spikes with the slowest object, new unported hits, tree errors, people made and
+killed with the object running, people on the same tree for 3 sim hours), saves through
+`ctx.hooks.saveGame` and a page reload between segments. Logs: `~/simsweb-build/scratch/soak/`.
 
-To redo: the soak itself, i.e. 14+ sim days at speed 3 on a throwaway copy of a neighborhood house (jobs, bills, party, baby, school, fire, saves every few days). Track tree errors, memory, sim tick spikes, accumulating objects and save sizes. Verify the fire flow end to end (TryBurn, firefighters, smoke detector).
+Earlier work of the interrupted run (committed): cXObject::TryBurn (prim 9), per-object error
+traces, indexed relationship lookups and a neighbor-by-id index, KillOutOfWorldObject deselecting
+the selected person, FindGoodLocation's coordinate order. Firefox WebGL→2D copy 5.7 ms per frame.
+
+### Segments
+
+| Segment | Sim time | What | Numbers |
+|---|---|---|---|
+| A (before the fixes) | 14d 05:54 → 16d 05:54 | autonomous, save at the end | heap 314 → 411 MB, objects 580 → 633, up to 29 people on the lot, tick mean 0.11 → 0.47 ms, 30 ticks over 100 ms (route-failure searches with the crowd), House01.iff 566 150 → 578 492 bytes |
+| 1 (fresh copy, visitor fix) | 14d 05:54 → 16d 09:11 | autonomous, save | heap 331 → 397 MB, objects 551 → 573, 2..10 people, tick mean 0.13 ms, 10 ticks over 50 ms, 2 tree errors (below), House01.iff 569 840 bytes |
+| 2 (reload, LotPeople fix) | 16d 11:43 → 19d 11:35 | autonomous, save | heap 331 → 383 MB, objects 581 → 593, 2..9 people, tick mean 0.17 ms, 1 tick over 50 ms, 0 tree errors, funds 66 189 → 64 029 (bills paid), House01.iff 571 054 bytes |
+| 3 (fresh copy) | 14d 05:54 → 18d 07:04 | autonomous | heap 331 → 419 MB; Kyle stuck in "Vibrer" (idle) for a day after Jada left the bed (not reproduced since) |
+| S1 (fresh copy, player plan) | 14d 05:54 → 17d 09:07 | plan (`main-plan.json`): breakfast pushes at 6:00, Max homework / reading 16:30, bills 17:00, Kyle cooking skill 17:30, kiss / hug 18:30, "Vibrer" + "câlin" 21:00, job search, caterer + phone-book invitations on days 16 / 21; save | heap 330 → 430 MB, objects 582 → 640, tick mean 0.14 ms, 10 ticks over 20 ms, 1 over 50 ms, 1 tree error, House01.iff 576 100. Caterer ($350, then left: "no table or punch bowl", faithful), phone book (WinPhoneBook, invite / talk, refusal), Kyle +1 cooking, a star-contract offer, bills paid. Kiss / hug menus empty when the target was busy, "câlin" missing when Kyle was not in bed (menu tests, faithful) |
+| S2 (reload of S1) | 17d 09:11 → 21d 12:08 | same plan; save | heap 350 → 398 MB, objects 676 → 690, tick mean 0.30 ms, 38 ticks of 20..50 ms, none over 50 ms, frame mean 87 ms (SwiftShader, many visitors and dogs). Max sent to military school 18d 11:04 (grades), Jada died 19d 23:46 (passed out, then starved). House01.iff 578 862 |
+| S3 (reload of S2) | 21d 12:12 → 25d 12:49 | same plan, Kyle alone; save | heap 321 → 366 MB (+11 MB/day), objects 693 → 740, tick mean 0.13 ms, 5 tick spikes (20..50 ms), 1 tree error, bank reminder for unpaid bills, Jada's ghost walking at night (urn, faithful). House01.iff 583 488 |
+
+S1 → S3 is 11.3 continuous sim days with two save / reload cycles; with the earlier segments the
+lot ran about 22 sim days. Save files grow slowly (House01.iff 566 150 → 583 488 bytes over 11
+days, Neighborhood.iff 180 628 → 183 232). The tick cost stays flat (mean 0.13..0.30 ms at speed 3).
+
+### Fire (cXObject::TryBurn)
+
+Second throwaway copy (`?nbhd=UserData10`). House01 has no stove, so a "Stove - Cheap" (GUID
+0xeb686709) was made and placed from the console through the same world hooks the Create Object
+primitive uses (no charge), and everyone's cooking skill (person data 10) set to 0; meals were
+pushed through the fridge entries as a click would.
+
+1. Stove in the kitchen (another room than the smoke alarm): the stove caught fire while cooking
+   (TryBurn, a Fire object on its tile), the stove burned away (Ash, ReserveTile), the fire spread
+   to 3 tiles, Max panicked ("Au feu !", Panic), no alarm (the detector is in another room, as in
+   the original: it only watches its room) and no firefighter; the fires burned out about two sim
+   hours later. No tree error.
+2. Stove next to the living-room smoke alarm: fire at ~9:50, the firefighter NPC came through
+   the pedestrian portal at 10:28 ("NPC Fire Fighter", extinguish core), Kyle panicked then ran
+   "burn to death", the Grim Reaper came (create reaper), the fires were out at 11:52, the
+   firefighter left at 13:15, the death dialog "Toutes nos condoléances ! Kyle vient de mourir"
+   and an "Urn Stone Celebrity" (a star's urn) appeared. Generic call 6 (run by the reaper's
+   ceremony) was the only unported hit: ported (neighbor check, error 0x37; the tool / main window
+   refresh it posts is what the port's panels do on every pump).
+
+### Findings and fixes
+
+| Problem | Cause | Fix (original function) |
+|---|---|---|
+| Visitor flood: up to 29 people on House01 by midnight, the family unable to sleep ("failure sleep"), tick mean x4, route-failure spikes | House01's save holds an out-of-world Studio Town tourist car ("Car - Studio - Row 0 Tile 0", attribute 0 = 1). Its Main spawns three visitors (Spawn Visitor) and pushes them its "get out of cab" interaction: they spend their whole visit inside the car's tree (an ObjectRecord on the car). When a visitor left through the pedestrian portal (Remove Object Instance, operand flag 2 or 3), the port's cXPerson::Cleanup cleaned up every record object, so the car ran Cleanup(0) → Reset → Main again → three more visitors, every time anyone left | ObjectModule::AddToKillQueue(id, false) sets +0x114 bit 0x1000 (cXObject::TryKillObject passes `!(flags & 2)`), and cXPerson::Cleanup only cleans its record objects up when that bit is clear on itself (own cleanup) or on the object cleaned up for. Ported (`SimObject.keepRecordObjects`, `SimModule.addToKillQueue` also queues a multi-tile part's lead, `PersonSim.cleanupFor`). Visitors on the lot after the fix: 5..11 |
+| Every visitor and walk-by kept its VitaBoy after leaving: heap +33 MB per sim day | `LotPeople` added a person's animator on entry (drawPerson) and never dropped it; killed people stayed in `people` (hidden by object data 34, still walked every frame) | `LotPeople.onKill`, called from the lot view's kill hook (KillOutOfWorldObject deletes the person with its SAnimator). Heap growth after the fix: about +17 MB per sim day (caches still warming, see below) |
+| Game speed dropped to 1 several times a day | cXObject::TryUserEvent's GlobalDispatch(0x10c) (skunk, NPC events): faithful | the driver puts speed 3 back, as a player would |
+| Studio car / "visitor leave" dialogs "Il se fait tard..." stop the clock while open | faithful (DoSimsModalDialog holds the simulation) | answered by the driver |
+| Generic sim call 6 unported (the Grim Reaper's ceremony) | not ported | ported in `tryGenericSimCall`: Neighborhood::FindNeighborByID on the stack object (error 0x37), the tool / main window refresh is the port's per-pump UI update |
+
+### Checked, faithful
+
+- **Autonomy scoring** (the family lets its needs fall to -100, top scores around 0.01). Compared
+  with MotiveEffects::GetInteractionScore (asm at 0x10096B40) and cXPerson::TryFindBestAction:
+  the advertised value is `min + delta` (or `min + personality * delta / 1000`), scaled by 0.001
+  (lbl_105BB934 = {0, 1000, 0.001, -100}) before it is added to the motive, the curve value is
+  averaged over the curves, the score is `1 / (dist * attenuation + 1) * (ad - current)` (the 1 is
+  lbl_105BBB78 +0x20), and FCNS 2 of Global.iff holds min score 1e-7, attenuations 0.1 / 0.3 /
+  0.6, random count 4: the port matches. Small scores are normal; the ranking is what counts.
+- **"Socials - Pet - Dog" objects pile up** (142 in the shipped House01 save, +37 per sim day
+  here): out-of-world social objects idling in their Main loop (node 20: `attributes[3] > 2` keeps
+  them alive, BHAV 0x1001 recomputes it from relationships). The Maxis save already holds 142 of
+  them, so the original keeps them too. Not changed.
+
+### Remaining
+
+- **Route give-ups around House01's doors** (the main cause of the family's collapse): the
+  driver's "gu" counter reaches 20..190 give-ups per 15 s sample for Kyle standing on
+  "Door - Wood 2 part 2" (488,392) and Jada at 584,394 (inside "Door - Wood 2 part 1" #94's tile):
+  route result 4 or 3 on a path that starts on the door tile (`488,390 488,392 488,408` →
+  "arrived" at once, then an empty path). Sims that cannot leave the doorway miss beds and food,
+  pass out ("failure sleep") and starve: Kyle died in segment 2, Jada in S2. Probably XRoute's
+  start point or the portal choice when the person stands in a door's tile (room id of the door
+  tile); not found yet.
+- **Autonomy object filter not ported**: TryFindBestAction only looks at every object one call in
+  four (`(lot +0x98 + person +0xf0) & 3`: 0 all objects, 1 within 7 tiles (lbl_105BBB78 +0x1c),
+  2 / 3 objects with +0xf0 bit 0), all objects when the neighborhood zoning type is not 0; the port
+  scores every object each time (more lenient, costs CPU).
+- **Tree errors** (each resets the person, as in the original): Kyle 0x15 in "Is either a Sim?"
+  (Social - Child 1.5's "Set Soc&Rel to Person A") after Max left for military school mid-social,
+  repeated 6 times over 10 sim hours from the same leftover social object; NPC Maid 0x15 in a
+  Tabloid's "get paper to read" whose reader (Jada's ghost) was gone; Butler 0x15 in the trash
+  compactor's pickup once; Jada 0x4 in Dance Floor Controller `Random(4097):10` (range 0) a few
+  times.
+- **Vibrer partner wait**: once (segment 3) Kyle stayed in "Vibrer" idle for a sim day after Jada
+  left; not reproduced.
+- **Heap**: +11..17 MB per sim day after the fixes, falling back on reload (S3: 321 → 366 MB in 4
+  days). The collections that grow are caches filled on first use of an object kind (behaviors
+  300 → 436, tree tables 272 → 322, parsed IFF chunks, action icons), no per-visitor leak left in
+  the objects reachable from `window.game`.
+- **Route-failure tick spikes** of 20..50 ms (`goto door and face thru`, `move from filled tile`,
+  `goto nearby`), 5..40 per 4 sim days; over 100 ms only with the visitor flood (fixed).
+- Unported animation names ("missing skill tease a", "giggle start/loop/stop", "scare b",
+  "listen normal apathetic"): skeleton animations missing from the loaded sets.
+
+## Magic Town move in, town imports, tutorial (2026-10-30)
+
+Throwaway copy of the game's UserData (`?nbhd=UserData21`, overlay, deleted afterwards), Chrome.
+
+### Magic Town Move In (cWinMagicland mode 1)
+
+- Move In button -> cWinPickFamily (magic town variant: MagiCoins column, magic hint text,
+  `bkground_family` music then the town music), Move In mode (cursor 0x21, buttons), lot popups
+  per cWinLotPopup::GetMagicPopupIndex (MovingInFamilyCanAffordMagic: 31 ok, 36 coins short, 37,
+  38 funds short, 34 nobody), roof dissolve per cWinMagicland::ShouldAllowRoofDissolve,
+  MoveInModeLotHandler (STR# 132: buy house / lot, too expensive, occupied, tutorial lot, not a
+  Magic residential lot), "Acheter la maison ?" -> lot loaded with the family.
+- Fee: cWinMagicland +0xd8 is written by GetMagicPopupIndex (`stw r26,0xd8(r7)`: the cost of the
+  last popup's lot), costs are UIText STR# 134 entries 32 (1500, house 91) / 33 (1000). Verified:
+  family 4 with 2000 MagiCoins moves onto lot 92, 1000 coins charged (SimInventory::
+  RemoveCountTokens on the first inventory record of the first member, GetInventoryByNeighbourID
+  semantics), funds 8213 after the house price.
+- Deviation: the coins are charged just before the lot loads (the original charges in the same
+  call chain, before LoadGame; no visible difference).
+
+### Town imports (Downtown, Vacation, Studio Town, Magic Town)
+
+- cWinNeighborhoodUL::CycleThroughImports per town: `*.dtl` (DTDesc.iff), `*.vil` (VIDesc.iff),
+  `*.stl` (STDesc.iff), Magic Town `*.mtl` (MTDesc.iff, CycleCommunityImports) and `*.mtf`
+  (families, CycleResidentialImports), titles STR# 169 entry 3 / 173 / 174. A lot file carries
+  STR# 2000 (name, description, house) and BMP_ 0x200; Yes replaces the house file, writes the
+  name / description into the town's description file and deletes the import; Delete asks
+  (STR# 154) then deletes. Vacation refuses a lot a family is on (STR# 131 22 / 21).
+- Verified with a synthetic `TestLot.mtl` (House94 + STR# 2000): dialog "Importer parcelle
+  Magicland" with the picture, lot outlined; Oui -> House94 replaced, MTDesc updated, file gone.
+  No real town lot file was available (the game ships none).
+- Web: with an empty import folder the button opens the file picker (as the neighborhood's).
+
+### Tutorial
+
+- Tutorial.FAM import (cWinNeighborhoodUL::CheckForNewImports, silent), Reset Tutorial
+  (cSimsApp::ResetTutorial, STR# 153 7/8/9), generic sim call 0 (Neighborhood::
+  TutorialCompleted), Escape (Neighborhood::CancelTutorial), first run emulation of the installer
+  (`firstRunTutorial`: run count 1 -> Tutorial.FAM copied into UserData/Import when the tutorial
+  lot is free), run counts in cOptionsMgr (factory 1, +1 per launch).
+- Fixed: the Tutorial object was never made. Tutorial.FAM carries global 26, not the object:
+  Neighborhood::LoadHouse makes it (MakeNewOutOfWorldObject of GUID 0xc3249a1d, Objects.far
+  Tutorial.iff) after PostLoad when NGBH +0x12a < 3, global 26 set and the cheat flag
+  DAT_006e4a58 clear (`makeTutorialObject`).
+- Fixed: object dialogs without a button (+0x39 clear, close box) are modeless in the original
+  (cSimsApp::DoSimsModalDialog(win, false): ChildAdd to cDDDSimsView + TSBeginModal, no modal
+  loop, no focus change, the simulation runs). The port ran them modally: the tutorial's "press
+  Zoom in" could not be done and Escape never reached the lot view.
+  `WinPictureDialog.runModeless`, `objectDialogHooks(ctx, sim, view)`.
+- Fixed: simulator global 2 is the zoom (HouseViewer::SetScale -> GlobalDispatch(0xf9) ->
+  cSimulator::DoCommand); the tutorial's "detect zoom" waits on it. WinLotView.setScale writes it.
+- Verified on lot 7 (Nouvot family): "Bienvenue dans le didacticiel" -> OK -> modeless "Voici une
+  vue générale..." with the arrow on the zoom button -> Zoom in -> "Voici le niveau moyen du
+  zoom..."; Escape cancels (tutorial object killed, global 26 = 0).
+- Not ported: cTutorialIcon (the tutorial dialog's icon / close animation, SetupDialog's +0x3c
+  positioning), generic sim call 6 (Neighborhood::RemoveFromFamily of a neighbor, run at the
+  tutorial's start) and 4 (logged).

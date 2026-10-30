@@ -775,6 +775,80 @@ export class NeighborhoodStore {
     f.dirty = true;
   }
 
+  /** Neighbor::GetID of the neighbor whose GUID is `guid` (Neighborhood::FindNeighborByGUID), or undefined. */
+  neighborIdOf(guid: number): number | undefined {
+    return this.neighborByGuid(guid)?.id;
+  }
+
+  /**
+   * SimInventory::FindToken(type, guid) on Neighborhood::GetInventoryByNeighbourID(id):
+   * the token's count, 0 when the neighbor has no such token.
+   */
+  findToken(neighborId: number, type: number, guid: number): number {
+    const records = parseInventoryRecords(this.ngbh().inventory ?? new Uint8Array(4));
+    for (const r of records) {
+      if (!r) continue;
+      const v = new DataView(r.buffer, r.byteOffset, r.byteLength);
+      if (v.getInt16(0, true) !== neighborId) continue;
+      // GetInventoryByNeighbourID: the first record of the neighbor.
+      const n = v.getInt32(2, true);
+      for (let k = 0; k < n; k++) {
+        const p = 6 + k * 10;
+        if (v.getInt32(p, true) === type && v.getInt32(p + 4, true) >>> 0 === guid >>> 0) return v.getInt16(p + 8, true);
+      }
+      return 0;
+    }
+    return 0;
+  }
+
+  /** Family::GetMagiCoins: the members' magicoin tokens (type 7, GUID 0x99e81bec), added as shorts. */
+  magiCoins(familyId: number): number {
+    let sum = 0;
+    for (const guid of this.familyRaw(familyId)?.memberGuids ?? []) {
+      const id = this.neighborIdOf(guid);
+      if (id !== undefined) sum += this.findToken(id, 7, 0x99e81bec);
+    }
+    return (sum << 16) >> 16;
+  }
+
+  /**
+   * SimInventory::RemoveCountTokens(type, guid, count): nothing for 0, false
+   * without the token or with fewer than `count`; the count drops by `count`
+   * and an emptied token is erased.
+   */
+  removeCountTokens(neighborId: number, type: number, guid: number, count: number): boolean {
+    if (count === 0) return true;
+    const records = parseInventoryRecords(this.ngbh().inventory ?? new Uint8Array(4));
+    for (let i = 0; i < records.length; i++) {
+      const r = records[i];
+      if (!r) continue;
+      const v = new DataView(r.buffer, r.byteOffset, r.byteLength);
+      if (v.getInt16(0, true) !== neighborId) continue;
+      const n = v.getInt32(2, true);
+      for (let k = 0; k < n; k++) {
+        const p = 6 + k * 10;
+        if (v.getInt32(p, true) !== type || v.getInt32(p + 4, true) >>> 0 !== guid >>> 0) continue;
+        const have = v.getInt16(p + 8, true);
+        if (have < count) return false;
+        const left = Math.max(0, have - count);
+        if (left > 0) {
+          v.setInt16(p + 8, left, true);
+        } else {
+          const out = new Uint8Array(r.length - 10);
+          out.set(r.subarray(0, p));
+          out.set(r.subarray(p + 10), p);
+          new DataView(out.buffer).setInt32(2, n - 1, true);
+          records[i] = out;
+        }
+        this.ngbh().inventory = serializeInventoryRecords(records);
+        this.touchNgbh();
+        return true;
+      }
+      return false;
+    }
+    return false;
+  }
+
   private put(c: IffChunk): void {
     const i = this.chunks.findIndex((x) => x.type === c.type && x.id === c.id);
     if (i >= 0) this.chunks[i] = c;

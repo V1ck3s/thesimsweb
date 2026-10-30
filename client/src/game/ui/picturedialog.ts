@@ -39,6 +39,8 @@
  *    cTSObjectDialog::TSOnCommand forwards the press to its owner first
  *    (ObjectDialog::BtnPressed): `onButton` here.
  *
+ * A modeless dialog (runModeless) lives in the lot view without a modal loop.
+ *
  * Not ported: BoboVision transparent drag, the cTutorialIcon close box
  * variant, the window flag 0x20 cleared for a modeless dialog (+0x121).
  */
@@ -295,6 +297,37 @@ export class WinPictureDialog extends TSWinDlg {
   async run(): Promise<number> {
     await this.init();
     return winMgr.doModalWin(this);
+  }
+
+  /** Set while the dialog runs modeless (runModeless): ends it. */
+  private modelessDone: ((result: number) => void) | null = null;
+
+  /**
+   * cSimsApp::DoSimsModalDialog(win, modal = false): the dialog is added to
+   * the lot view (cDDDSimsView, ChildAdd) and TSBeginModal lays it out; no
+   * modal loop, the focus and the simulation are left alone. Resolves with
+   * the button that ended it (TSEndDialog), 0 when destroyed.
+   */
+  async runModeless(parent: TSWin): Promise<number> {
+    await this.init();
+    parent.childAdd(this);
+    this.tsBeginModal();
+    return new Promise((resolve) => {
+      this.modelessDone = resolve;
+    });
+  }
+
+  override tsEndDialog(result: number): void {
+    const done = this.modelessDone;
+    if (!done) {
+      super.tsEndDialog(result);
+      return;
+    }
+    this.modelessDone = null;
+    this.tsEndModal();
+    winMgr.releaseCapture(this);
+    this.parent?.childRemove(this);
+    done(result);
   }
 
   /** cTSWinMgrW95::DestroyWindow (ObjectDialog::Abort): ends the dialog with 0 if it is still up. */

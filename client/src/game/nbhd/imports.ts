@@ -22,9 +22,10 @@
 import { fetchManifest, readFarEntry } from "../../engine/assets.js";
 import { saveCharacter } from "../data/character.js";
 import { deleteGameFile, writeGameFile } from "../data/files.js";
-import { buildIff, decodeStrSet, parseIff, parseIffMapOrder, type IffChunk } from "../data/iff.js";
+import { buildIff, decodeStrSet, parseIff, parseIffMapOrder, stringSetMultiSave, type IffChunk } from "../data/iff.js";
 import { NeighborhoodStore } from "../data/nbhdstore.js";
 import { decodeImage } from "../res/bmp.js";
+import { LANG_FRENCH } from "../res/uires.js";
 import { ObjectFolder } from "../world/objectfolder.js";
 import { readSimi } from "./nghinterface.js";
 
@@ -62,6 +63,47 @@ export async function listImports(nbhdDir: string): Promise<ImportFiles> {
   }
   out.families.push(...exported.sort());
   return out;
+}
+
+/**
+ * The town screens' import files (cWinDowntown / cWinVacation /
+ * cWinStudiotown::CycleThroughImports, cWinMagicland::CycleCommunityImports
+ * and CycleResidentialImports): <dir>/Import/*.<ext> (dtl, vil, stl, mtl,
+ * mtf). For the Magic Town families (mtf), the .MTF files every
+ * neighborhood exported follow, as the .FAM ones do on the neighborhood
+ * screen.
+ */
+export async function listTownImports(nbhdDir: string, ext: string): Promise<string[]> {
+  const { files } = await fetchManifest();
+  const prefix = `Sims/${importDir(nbhdDir)}/`.toLowerCase();
+  const suffix = `.${ext.toLowerCase()}`;
+  const out: string[] = [];
+  const exported: string[] = [];
+  for (const f of files) {
+    const p = f.path.toLowerCase();
+    if (!p.endsWith(suffix)) continue;
+    if (p.startsWith(prefix) && !p.slice(prefix.length).includes("/")) out.push(f.path.slice(5));
+    else if (ext.toLowerCase() === "mtf" && /^sims\/userdata\d*\/export\/[^/]+$/.test(p)) exported.push(f.path.slice(5));
+  }
+  out.push(...exported.sort());
+  return out;
+}
+
+/**
+ * The lot description a lot import writes: StringSetBase::Load of STR# 2000 +
+ * house in <dir>/Houses/<file> (NeighborhoodDesc.iff, DTDesc.iff, ...),
+ * SetString(1 / 2, current language), Save; nothing when the file or the set
+ * is missing.
+ */
+export async function setLotDescription(nbhdDir: string, file: string, house: number, name: string, description: string): Promise<void> {
+  const path = `${nbhdDir}/Houses/${file}`;
+  const res = await fetch(`/assets/Sims/${path}`, { cache: "no-store" });
+  if (!res.ok) return;
+  const chunks = parseIff(new Uint8Array(await res.arrayBuffer()));
+  const c = chunks.find((x): boolean => x.type === "STR#" && x.id === 2000 + house);
+  if (!c) return;
+  c.data = stringSetMultiSave(c.data, LANG_FRENCH, [name, description]);
+  await writeGameFile(path, buildIff(chunks));
 }
 
 /** cWinNeighborhoodUL::CheckForNewImports: any file to import. */
@@ -235,10 +277,11 @@ export async function importLotFile(nbhdDir: string, lot: LotImportInfo): Promis
 
 /**
  * The web side of the Explorer copy into Import/: files from the player's
- * computer go to the overlay's <neighborhood>/Import/. .FAM / .MTF, .rdt and
- * .cmt keep their names; an .iff becomes a family when it holds EXPi 0 (an
- * exported family), else a residential lot (.rdt). Resolves with the names
- * written.
+ * computer go to the overlay's <neighborhood>/Import/. .FAM, .MTF (Magic
+ * Town families, imported from the Magic Town screen only), .rdt, .cmt and
+ * the town lots (.dtl, .vil, .stl, .mtl) keep their names; an .iff becomes
+ * a family when it holds EXPi 0 (an exported family), else a residential lot
+ * (.rdt). Resolves with the names written.
  */
 export async function uploadImports(nbhdDir: string, files: Iterable<File>): Promise<string[]> {
   const written: string[] = [];
@@ -248,8 +291,9 @@ export async function uploadImports(nbhdDir: string, files: Iterable<File>): Pro
     const base = dot < 0 ? f.name : f.name.slice(0, dot);
     const ext = dot < 0 ? "" : f.name.slice(dot + 1).toLowerCase();
     let name: string;
-    if (ext === "fam" || ext === "mtf") name = `${base}.FAM`;
-    else if (ext === "rdt" || ext === "cmt") name = `${base}.${ext}`;
+    if (ext === "fam") name = `${base}.FAM`;
+    else if (ext === "mtf") name = `${base}.MTF`;
+    else if (TOWN_LOT_EXTS.includes(ext) || ext === "rdt" || ext === "cmt") name = `${base}.${ext}`;
     else if (ext === "iff") {
       let family = false;
       try {
@@ -265,13 +309,16 @@ export async function uploadImports(nbhdDir: string, files: Iterable<File>): Pro
   return written;
 }
 
+/** The town lot files (Downtown, Vacation, Studio Town, Magic Town). */
+const TOWN_LOT_EXTS = ["dtl", "vil", "stl", "mtl"];
+
 /** Opens the browser's file picker (works in Firefox: no File System Access API) and uploads the choice. */
 export function pickAndUploadImports(nbhdDir: string): Promise<string[]> {
   return new Promise((resolve) => {
     const input = document.createElement("input");
     input.type = "file";
     input.multiple = true;
-    input.accept = ".fam,.FAM,.mtf,.MTF,.iff,.IFF,.rdt,.cmt";
+    input.accept = ".fam,.FAM,.mtf,.MTF,.iff,.IFF,.rdt,.cmt,.dtl,.vil,.stl,.mtl";
     input.style.display = "none";
     document.body.appendChild(input);
     const finish = (names: string[]): void => {

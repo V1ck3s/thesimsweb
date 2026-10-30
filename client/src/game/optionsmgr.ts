@@ -47,6 +47,10 @@ export interface OptionsData {
   autoSnapshots: boolean;
   livePIP: boolean;
   exportHTML: boolean;
+  /** +8: the number of runs (cOptionsMgr::GetRunCount). */
+  runCount: number;
+  /** +0x10: the number of runs with Makin' Magic (cOptionsMgr::GetRunPAFMagicCount). */
+  runPAFMagicCount: number;
 }
 
 /** cOptionsMgr::RestoreFactorySettings */
@@ -69,6 +73,8 @@ const FACTORY: OptionsData = {
   autoSnapshots: true,
   livePIP: true,
   exportHTML: true,
+  runCount: 1,
+  runPAFMagicCount: 1,
 };
 
 /** cOptionsMgr::SetQuickTips: tooltip delay (lbl_105BA848) and button async timeout (lbl_105BA774). */
@@ -204,6 +210,16 @@ export class OptionsMgr {
   setLivePIP(on: boolean): void {
     this.set("livePIP", on);
   }
+  /** cOptionsMgr::GetRunCount: 1 on the first run (read by the family picker's hint and the tutorial). */
+  getRunCount(): number {
+    return this.data.runCount;
+  }
+
+  /** cOptionsMgr::GetRunPAFMagicCount: the runs counted since Makin' Magic. */
+  getRunPAFMagicCount(): number {
+    return this.data.runPAFMagicCount;
+  }
+
   getExportHTML(): boolean {
     return this.data.exportHTML;
   }
@@ -243,19 +259,29 @@ export class OptionsMgr {
     }
   }
 
-  /** cOptionsMgr::Load: stored values over the factory settings. */
+  /**
+   * cOptionsMgr::Load: stored values over the factory settings. A stored
+   * file counts one more run (both counters); without one the factory 1
+   * stands (the first run) and the first Save writes it.
+   */
   private load(): void {
-    let stored: Partial<OptionsData> = {};
+    let stored: Partial<OptionsData> | null = null;
     try {
-      stored = JSON.parse(localStorage.getItem(STORAGE_KEY) ?? "{}") as Partial<OptionsData>;
+      const raw = localStorage.getItem(STORAGE_KEY);
+      stored = raw === null ? null : (JSON.parse(raw) as Partial<OptionsData>);
     } catch {
-      stored = {};
+      stored = null;
     }
     for (const key of Object.keys(FACTORY) as Array<keyof OptionsData>) {
-      const v = stored[key];
+      const v = stored?.[key];
       if (typeof v === typeof FACTORY[key])
         (this.data as unknown as Record<string, unknown>)[key] = v;
     }
+    if (stored) {
+      this.data.runCount++;
+      this.data.runPAFMagicCount++;
+    }
+    this.save();
   }
 }
 

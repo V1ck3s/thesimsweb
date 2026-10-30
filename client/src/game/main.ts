@@ -37,6 +37,7 @@ import { WinLotView } from "./world/winlotview.js";
 import { doSave, isLotDirty, markLotClean, saveGame } from "./world/savegame.js";
 import { moveOutHouse } from "./world/moveout.js";
 import { installCheatConsole } from "./ui/cheat.js";
+import { firstRunTutorial, resetTutorial } from "./nbhd/tutorial.js";
 
 const SCREEN_W = 1024;
 const SCREEN_H = 768;
@@ -134,6 +135,10 @@ class Game {
           blockReleases.pop()?.();
         }
       },
+      // cSimsApp::ResetTutorial: Tutorial.FAM back into the import folder, then the neighborhood screen.
+      resetTutorial: () => {
+        void resetTutorial(ctx, this.nbhdDir, () => doSave(ctx, this.lotView, this.nbhdDir), () => ctx.hooks?.showNeighborhood?.());
+      },
       // cSimsApp::ShowNbhdDialog: the lot is unloaded and the neighborhood
       // screen built while the last lot frame stays up (screens/frozen.ts).
       showNeighborhood: () => {
@@ -160,6 +165,8 @@ class Game {
   /** cSimsApp::DoNbhdScreen */
   async showNeighborhood(): Promise<void> {
     const { ctx, mgr } = this;
+    // The installer's Tutorial.FAM, imported by the screen's CheckForNewImports (first run only).
+    await firstRunTutorial(this.nbhdDir);
     const nb = await Neighborhood.load(this.nbhdDir);
     this.nbhd = nb;
     const screen: WinNeighborhoodUL = new WinNeighborhoodUL(ctx, nb, {
@@ -231,6 +238,12 @@ class Game {
       },
       onUnported: (what) => console.log(`not ported: ${what}`),
       onMoveOutHouse: (house, bulldoze, store) => moveOutHouse(ctx, store, house, bulldoze),
+      // cWinMagicland::MoveInModeLotHandler: LoadGame(house, family) under the frozen screen.
+      onMoveIn: (house, family, value) =>
+        whileFrozen(mgr, true, async () => {
+          await this.moveIn(house, family, value);
+          mgr.main.childDelete(screen);
+        }).then(() => true),
     });
     screen.setArea(0, 0, ctx.width, ctx.height);
     if (!(await screen.init())) throw new Error("town screen init failed");
@@ -293,7 +306,7 @@ class Game {
         { ctx, nb: () => nb, lotView: () => this.lotView, switchLots: (t) => this.switchLots(t) },
         view.sim,
       );
-      view.sim.module.dialogHooks = objectDialogHooks(ctx, view.sim);
+      view.sim.module.dialogHooks = objectDialogHooks(ctx, view.sim, view);
     }
     await applyLoadGameLocation(ctx, view, this.nbhd, house, arrival);
     state.houseNumber = house;
@@ -355,12 +368,6 @@ async function boot(): Promise<void> {
   // cSimsApp::Init: RegisterCheats and the cheat widget (the shipped builds
   // restrict the cheats, IsFinalShip; `?devcheats` lifts it for development).
   await installCheatConsole(ctx, { lotView: () => game.lotView }, !new URLSearchParams(location.search).has("devcheats"));
-  // cOptionsMgr run count (registry), read by cWinPickFamily's first-run hint.
-  try {
-    localStorage.setItem("thesimsweb.runCount", String((Number(localStorage.getItem("thesimsweb.runCount")) || 0) + 1));
-  } catch {
-    // not kept
-  }
   // Dev handle for the screenshot tooling (`eval:game.lotView...`).
   (window as unknown as { game: Game }).game = game;
   (window as unknown as { soundPlayer: typeof soundPlayer }).soundPlayer = soundPlayer;

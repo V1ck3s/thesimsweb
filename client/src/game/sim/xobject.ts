@@ -141,6 +141,13 @@ export interface PersonSimData {
 export class SimObject extends TreeSim {
   /** cXObject +0x114 bit 0x100 (Error sets it, HandleError clears it). */
   errorPending = false;
+  /**
+   * cXObject +0x114 bit 0x1000, set by ObjectModule::AddToKillQueue(id,
+   * false): when this object dies (or a person is cleaned up for it),
+   * cXPerson::Cleanup lets go of its ObjectRecords without cleaning their
+   * objects up (CleanupPeople + Cleanup(0)).
+   */
+  keepRecordObjects = false;
   /** Primitive opcode -> times run (trace). */
   readonly primCounts = new Map<number, number>();
   /** The last errors caught on this object (code, tree and its label, node), bounded. */
@@ -1190,16 +1197,22 @@ export class SimObject extends TreeSim {
    * true; calls >= 0x2c (and 7, 22) are error 0x2a. Ported: 2 (the stack
    * object becomes the current action's icon), 10/11 (buy and build
    * disabled/enabled: recorded), 12 (the stack object's depth towards the
-   * camera), 14 (global 0x1f := temp 0), 15 (person data 0x48 := temp 0),
+   * camera), 0 (Neighborhood::TutorialCompleted), 14 (global 0x1f := temp 0), 15 (person data 0x48 := temp 0),
    * 26 (the current family or the house's first person), 28 (lot zoning
    * into temp 0), 18..23 (the lot change's arrival, sim/lotcalls.ts), 24
-   * (set suit), 43 (Family::LoadSpellsForFamily). Others are logged and
+   * (set suit), 43 (Family::LoadSpellsForFamily), 6 (neighbor check). Others are logged and
    * return true.
    */
   protected tryGenericSimCall(elem: StackElem, call: number): number {
     const m = this.module;
     if (call < 0 || call >= 0x2c || call === 7 || call === 22) simThrow(0x2a);
     switch (call) {
+      case 0:
+        // Neighborhood::TutorialCompleted(0): the tutorial lot's global 26
+        // cleared in the simulator, the neighborhood's tutorial lot forgotten.
+        m.sim.globals[26] = 0;
+        m.tutorialHooks?.tutorialCompleted?.();
+        return PRIM_TRUE;
       case 2: {
         // The stack object (error 0xa) becomes my current action's icon (person only, error 0x1c).
         const o = this.obj_(elem.stackObj);
@@ -1212,6 +1225,13 @@ export class SimObject extends TreeSim {
         }
         return PRIM_TRUE;
       }
+      case 6:
+        // The stack object names a neighbor (Neighborhood::FindNeighborByID, error 0x37
+        // without one), then the app refreshes its current tool (app +0x48, vtable +0x20)
+        // and posts message 0x10 / 0x1b to the main window: UI updates the port's
+        // panels make on every pump. Run on a death (Grim Reaper's ceremony).
+        if (!m.findNeighborByID(elem.stackObj)) simThrow(0x37);
+        return PRIM_TRUE;
       case 14:
         // cSimulator::SetGlobal(0x1f, temp 0).
         m.sim.globals[0x1f] = this.temps[0]!;

@@ -124,6 +124,11 @@ export function getTutorialHighlighter(ctx: GameContext): Promise<TSWinTutorialH
   return creating;
 }
 
+/** cTSWinMgrW95 +0x20c's HideWindow (cDDDSimsView's Escape). */
+export function hideTutorialHighlighter(): void {
+  highlighter?.hideWindow();
+}
+
 /**
  * cTSWin::HiliteForTutorial(on) (vtable +0x168) for `win`; `lotBtn` adds
  * cWinLotBtn's override (0x32 lower, arrow cursor).
