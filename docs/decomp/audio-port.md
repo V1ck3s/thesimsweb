@@ -186,10 +186,32 @@ reg 0x13 = a2, 0x14 = a3, and UpdateAmbienceLoop passes (0, 0, 0) — same as or
 - PauseSounds runs on every CPState switch to a mode other than Live. The Windows
   cBoxX::Pause (FUN_00574972) leaves MainMusicLoop (0x203) playing, with the UI
   tracks; the Mac one pauses it, and so did the port: Options (mode 7, no music
-  change) left the song paused (U28). Live after Buy / Build / Camera kills
-  MainMusicLoop at once (no fade, FUN_005752c4 case 0: vtable +0x38 =
-  cTrackPlayer::Kill); after Options or the neighborhood it fades
-  (FadeAndKillTrackSlow, 519).
+  change) left the song paused (U28).
+- Back to Live (re-checked 2026-10-31 in Sims.exe, disassembly + vtables): the
+  cut without fade is the **Windows** behaviour, and the Mac one too (same code).
+  - `bkground_live` / `_buy1` / `_build` / `_camera` / `_option(s)` are plain
+    `kSetMusicMode,N` events in SimsSound.hot (0 / 1 / 2 / 2 / 7): no HIT script
+    runs on them. Camera is mode 2, like Build; community-lot Buy is 10..15
+    (`station_*`, `music_magictown`), Magic Town Build / Buy 17 / 18.
+  - Windows cGameModeManager::SetMode FUN_005752c4, jump table 0x575799, case
+    0/4/9 at 0x575365: previous mode 1, 2, 0x11 or 0x12 → track 0x203
+    (MainMusicLoop) `call [edx+0x38]`; any other previous mode (Options 7, hood
+    3, community lots 10..16) → track 0x207 (519 FadeAndKillTrackSlow)
+    `Play(0x203)` (+0x2c). Mac 0x102D916C (asm/code/Boxx.s): the same test
+    (`r29-1 <= 1 || 0x11 || 0x12`), Kill at PPC vtable +0x40.
+  - cTrackPlayer vtables 0x671a74 / 0x6719b4: +0x2c Play 0x57df06, +0x34 Stop
+    0x57df9c (the only fading stop: fade_dest 0, fade_var 0x13, speed 100),
+    +0x38 **Kill 0x57e037**. Kill clears the playing flag, calls the channel's
+    NoteOff (cSampleChannel vtable 0x671c84 +0x98 = 0x5804ba), which calls the
+    sound's Stop (cITSSnd +0x28: cTSSndDShow::Stop 0x5fc956 for the MP3s,
+    cTSSnd::Stop 0x5f9798 for waves): both stop at once, no FadeVolume. Kill
+    runs no track code, so no HIT fade either.
+  - The only Mac / Windows difference in these transitions is cBoxX::Pause
+    (Windows FUN_00574972 exempts 0x203; Mac 0x102dc0d0 does not).
+  - Port (unchanged, already this): headless Chrome, track 515 channel gain
+    after `bkground_live`: from Buy or Camera inactive at +1 ms (cut); from
+    Buy → Options 0.56 → 0.47 (+0.3 s) → 0.26 (+1.3 s) → 0.08 (+3.3 s) →
+    0.025 (+5.3 s), killed by 519.
 - Object deletion and cXObject::Cleanup quiet the object's sounds
   (cSoundPlayer::QuietBySourceID from ~cXObject / Cleanup): `SimModule.killObject`
   and `XObject.cleanup` call `soundHooks.killSounds(id)` (U23: the mail carrier's
