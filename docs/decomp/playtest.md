@@ -540,8 +540,8 @@ Throwaway copy of the game's UserData (`?nbhd=UserData21`, overlay, deleted afte
 | U23 | The mailwoman's whistle differs (loops, odd quality) | fixed: XA decoding; ~cXObject / Cleanup now quiet the object's sounds (the looping mailbox_deliver_vox went on after she left) |
 | U24 | Objects on other objects (bird cage, phone, anything on a table) are placed inside instead of on top: wrong slot position (Charmant family, probably everywhere) | fixed: cXObject::DrawIso's DrawObjectSlot pass ported (objectdraw.ts): every object slot's content is drawn from the container's RenderParam moved by the slot offset (turned by the container's direction, jump table lbl_105BB9D0) and raised by the slot z (SetHeight: 2.5 / 4 / 4.05), even when the container is hidden. Contained objects left the dynamic list (DoStaticToDynamicObjectTransitions skips objects with a PlacementSpec container), where they were drawn at their own location (the container's, cXObject::SetLocation) at floor height. Objects held by people keep placeHeld. Sim side unchanged: contained objects share the container's location, as in the original |
 | U25 | House panel (Habitation): no information filled in | fixed: the panel was ported but CPState.houseStats was never filled. House::GetHouseStats + HouseStats getters ported (`getHouseStats` in `world/housestats.ts`): rooms' area / bed / bath objects (Room::CollectTileStats / CollectObjectStats), Global.iff STR# 505 size and furnishings curves (PiecewiseFn), yard (outside rooms' impact x 2 + good objects and pool tiles, x 0.33), upkeep (FillInObjectStats), layout from HOUS 1's route history. House::AddLayoutTick (cXPerson::Simulate) and its midnight shift are not ported: the layout score stays the saved one |
-| U26 | Charmant: walls turn black when switching from Buy/Live to Build mode | open |
-| U27 | Build mode on level 2: the buildable-floor grid is missing | open |
+| U26 | Charmant: walls turn black when switching from Buy/Live to Build mode | not reproduced (see below) |
+| U27 | Build mode on level 2: the buildable-floor grid is missing | fixed (see below) |
 | U28 | Mode music: switching between non-Live modes (Buy, Build, Camera, Options) cuts the music; only Live <-> others should change it, with a fade | fixed: the Windows cBoxX::Pause leaves MainMusicLoop playing (Options paused it); Live entry is a Kill from Buy / Build / Camera, a slow fade otherwise, as in the original |
 
 ### Sound fixes (U21, U22, U23, U28)
@@ -582,3 +582,36 @@ Throwaway copy of the game's UserData (`?nbhd=UserData21`, overlay, deleted afte
   (FUN_005752c4 case 0: vtable +0x38 = cTrackPlayer::Kill, cTSSndDShow::Stop has no fade);
   from Options / the neighborhood it fades (FadeAndKillTrackSlow). That is the original.
 
+### U27: build-mode grid on upper levels (fixed)
+
+- HouseViewer::RenderStaticRow: a tile with no floor on the current level, when that level is not
+  1, the mode is build (CPState::GetMode() == 0), the render flag lbl_105BA690 is set (1, a debug
+  toggle of the cheat console) and the tile is floorable (flags bit 0, cFixedWorld::ComputeRooms),
+  gets cRenderer::DrawGrid at the floor's position. Level 1 has no such grid: its grid is the
+  terrain overlay (cTerrain), which floors cover.
+- cRenderer::DrawGrid / GridBlit: the shape of the global floor renderer's sprite
+  (scale - 1) * 0x100 + 1, frame 0 (floor 1); only its pixel runs count. With r the row, c the
+  column and h the sprite height: top edges (r + (c + 1) / 2 == h / 2, r - c / 2 == 1 - h / 2)
+  white, bottom edges (== 3h / 2 - 1, == h / 2) and a dot where c & 3 == r & 3 in {0, 2} black;
+  raw 16-bit colors (no ambient, no light pool), depth GetTerrainZ + (level - 1) * level step
+  plus the floor table (DrawFloor's depth without its +0x41), written where not behind.
+- Port: `HouseViewer.drawGrid` / `makeGridFrame` (sprite made once per scale), `isBuildMode`
+  set by the lot view. The lot view also redraws when only the mode changes (Buy <-> Build:
+  Wall::Draw and the grid read it).
+- Checked on Charmant (house 69) in headless Chrome and Firefox: level 2 in build mode shows the
+  grid over the house (dotted, white lines), none outside the floorable area, none on level 1,
+  none in Live / Buy / Camera; Build L2 -> Camera / Buy drop to level 1 (cWinViewControl's rule)
+  without a stale grid.
+
+### U26: black walls on Build mode (not reproduced)
+
+Charmant is house 69 (Neighborhood.iff FAMI 13). Tried, comparing Live / Buy / Build frames:
+headless Chrome (SwiftShader), headed Chrome (GPU) and Firefox; Live -> Buy -> Build and back;
+the cursor swept over the house (cutaway, counted near-black pixels: no change); every build tool
+selected then left and re-entered; wall states Up / Down / Cutaway / Roof; zooms 1..3 and a
+rotation; night (21h, 22h) with the lamps' lighting contribution forced on (light pools on walls);
+entering Charmant after another lot (house 56). No black walls in any of them. Things ruled out:
+the sprite texture caches are per lot (walls / floors renderers are made per WallManager /
+FloorGraphicsMgr, so no texture from another WebGL context), `comp.light` / `comp.ambient` are
+reset after each use. Needs the user's steps (time of day, tool, level, zoom, browser) or a
+screenshot.

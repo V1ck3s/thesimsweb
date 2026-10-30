@@ -236,7 +236,11 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
       walls.setWallState(st.getWallState());
       walls.mode = st.getMode();
       this.listen(() => {
+        if (walls.mode === st.getMode()) return;
         walls.mode = st.getMode();
+        // Wall::Draw and RenderStaticRow's grid read the mode: a switch with
+        // nothing else changing (Buy <-> Build) must still redraw.
+        v.dirty = true;
       });
       this.wallManager = walls;
       v.walls = walls;
