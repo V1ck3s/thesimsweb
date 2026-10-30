@@ -905,7 +905,7 @@ export class WallManager implements WallDrawer {
   readonly cutawayMask = new CutawayMask();
   /** Bumped whenever cutawayMask changes. */
   maskVersion = 0;
-  /** CPState mode and whether the wall / door tool is active (Wall::Draw's build-mode tests). */
+  /** CPState mode, and the door / window tool in build mode (CPState::ShouldAlwaysShowWallStuff, Wall::Draw's build-mode tests). */
   mode: Mode = Mode.Live;
   wallToolActive = false;
   /** GetCustomWallStyleID hook (door / window objects). */

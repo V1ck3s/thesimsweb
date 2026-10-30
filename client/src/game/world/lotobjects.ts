@@ -14,6 +14,15 @@ import { loadLotModule, type IntegrityWorld, type ObjectModule, type PlacedObjec
 import { OBJ_TYPE_PERSON, OBJ_TYPE_PORTAL } from "./objselector.js";
 import { Renderer } from "./renderer.js";
 import { SEG_ROTATION } from "./tilewalls.js";
+import type { CustomWallStyleFn } from "./walls.js";
+
+/** cXObject::GetRequiredSegment: wall placement flags 1 -> segment 2, 4 -> 8, turned by the object direction. */
+function requiredSegment(o: PlacedObject): number {
+  const p = o.wallPlacementFlags & 5;
+  const seg = p === 1 ? 2 : p === 4 ? 8 : 0;
+  const d = o.dir;
+  return seg !== 0 && d !== 0 ? SEG_ROTATION[(d >> 1) & 3]![seg]! : seg;
+}
 
 class DrawableLotObject implements DrawableObject {
   next: DrawableObject | null = null;
@@ -50,10 +59,7 @@ class DrawableLotObject implements DrawableObject {
   }
   /** cXObject::GetRequiredSegment: wall placement flags 1 -> segment 2, 4 -> 8, turned by the object direction. */
   get requiredSegment(): number {
-    const p = this.obj.wallPlacementFlags & 5;
-    const seg = p === 1 ? 2 : p === 4 ? 8 : 0;
-    const d = this.obj.dir;
-    return seg !== 0 && d !== 0 ? SEG_ROTATION[(d >> 1) & 3]![seg]! : seg;
+    return requiredSegment(this.obj);
   }
   /** Objects load dynamic and settle on the static layer once idle (RenderDynamicObjects). */
   get isDynamic(): boolean {
@@ -150,4 +156,38 @@ export async function loadLotObjectDrawer(house: ResFile, world: IntegrityWorld)
     },
   );
   return { objects, drawer, module, folder, renderer };
+}
+
+/**
+ * GetCustomWallStyleID(cRenderer **, CTilePt const &, TileWalls::Segment)
+ * (world tile and segment): ObjectIterator over the tile, the first cXPortal
+ * whose required segment is `seg` gives its sprite file (ObjSelector +8) and
+ * cXPortal::GetCustomWallStyleID, the wall style sprite id of its definition
+ * (OBJD +0xa2). GETCUSTOMSTYLE then adds the scale and the cut offset
+ * (ids id .. id + 2 full height, id + 3 .. id + 5 cut). 0 (or no portal)
+ * falls back to the plain wall.
+ */
+export function customWallStyleOf(lot: LotObjects, world: IntegrityWorld): CustomWallStyleFn {
+  return (x, y, level, seg) => {
+    const tiles = world.objects[level - 1];
+    if (!tiles || x < 0 || y < 0 || x >= world.size || y >= world.size) return null;
+    const o = tiles.offset(x, y);
+    const first = ((tiles.data[o]! | (tiles.data[o + 1]! << 8)) << 16) >> 16;
+    const stack = first > 0 ? [first] : [];
+    const seen = new Set<number>();
+    for (let id = stack.pop(); id !== undefined; id = stack.pop()) {
+      if (seen.has(id)) continue;
+      seen.add(id);
+      const obj = lot.objects.get(id);
+      if (!obj) continue;
+      for (let i = obj.objectSlots.length - 1; i >= 0; i--) {
+        const c = obj.objectSlots[i]!.containedId;
+        if (c > 0) stack.push(c);
+      }
+      if (obj.kind !== "portal" || requiredSegment(obj) !== seg) continue;
+      const styleId = obj.selector.objd.i16(0xa2);
+      return styleId === 0 ? null : { renderer: lot.renderer(obj.selector.res), id: styleId };
+    }
+    return null;
+  };
 }

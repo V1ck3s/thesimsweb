@@ -58,7 +58,7 @@ import { FloorGraphicsMgr } from "./floors.js";
 import { HouseViewer } from "./houseviewer.js";
 import { ResFile } from "./iffres.js";
 import { RoomLighting } from "./lighting.js";
-import { loadLotObjectDrawer } from "./lotobjects.js";
+import { customWallStyleOf, loadLotObjectDrawer } from "./lotobjects.js";
 import { computeRooms, RoomManager } from "./rooms.js";
 import { Terrain } from "./terrain.js";
 import { WallManager } from "./walls.js";
@@ -440,6 +440,7 @@ export async function withHouseThumbnails(name: string, bytes: Uint8Array, viewW
     const lot = await loadLotObjectDrawer(house, world.fixed);
     v.objects = lot.drawer;
     lot.drawer.cutawayView = walls;
+    walls.customWallStyle = customWallStyleOf(lot, world.fixed);
     const rooms = new RoomManager(world.fixed);
     computeRooms(world.fixed, rooms);
     rooms.computeCutaway(v, 0);

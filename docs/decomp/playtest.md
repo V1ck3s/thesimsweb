@@ -540,9 +540,9 @@ Throwaway copy of the game's UserData (`?nbhd=UserData21`, overlay, deleted afte
 | U23 | The mailwoman's whistle differs (loops, odd quality) | fixed: XA decoding; ~cXObject / Cleanup now quiet the object's sounds (the looping mailbox_deliver_vox went on after she left) |
 | U24 | Objects on other objects (bird cage, phone, anything on a table) are placed inside instead of on top: wrong slot position (Charmant family, probably everywhere) | fixed: cXObject::DrawIso's DrawObjectSlot pass ported (objectdraw.ts): every object slot's content is drawn from the container's RenderParam moved by the slot offset (turned by the container's direction, jump table lbl_105BB9D0) and raised by the slot z (SetHeight: 2.5 / 4 / 4.05), even when the container is hidden. Contained objects left the dynamic list (DoStaticToDynamicObjectTransitions skips objects with a PlacementSpec container), where they were drawn at their own location (the container's, cXObject::SetLocation) at floor height. Objects held by people keep placeHeld. Sim side unchanged: contained objects share the container's location, as in the original |
 | U25 | House panel (Habitation): no information filled in | fixed: the panel was ported but CPState.houseStats was never filled. House::GetHouseStats + HouseStats getters ported (`getHouseStats` in `world/housestats.ts`): rooms' area / bed / bath objects (Room::CollectTileStats / CollectObjectStats), Global.iff STR# 505 size and furnishings curves (PiecewiseFn), yard (outside rooms' impact x 2 + good objects and pool tiles, x 0.33), upkeep (FillInObjectStats), layout from HOUS 1's route history. House::AddLayoutTick (cXPerson::Simulate) and its midnight shift are not ported: the layout score stays the saved one |
-| U26 | Charmant: walls turn black when switching from Buy/Live to Build mode | not reproduced (see below) |
+| U26 | Charmant: walls turn black when switching from Buy/Live to Build mode | fixed: GetCustomWallStyleID (door / window wall sprites) was never wired, so the Build-mode outline pass painted the whole cut stub (see below) |
 | U27 | Build mode on level 2: the buildable-floor grid is missing | fixed (see below) |
-| U28 | Mode music: switching between non-Live modes (Buy, Build, Camera, Options) cuts the music; only Live <-> others should change it, with a fade | fixed: the Windows cBoxX::Pause leaves MainMusicLoop playing (Options paused it); Live entry is a Kill from Buy / Build / Camera, a slow fade otherwise, as in the original |
+| U28 | Mode music: switching between non-Live modes (Buy, Build, Camera, Options) cuts the music; only Live <-> others should change it, with a fade | fixed: the Windows cBoxX::Pause leaves MainMusicLoop playing (Options paused it); Live entry is a Kill from Buy / Build / Camera, a slow fade otherwise, as in the original (Windows Sims.exe, re-checked 2026-10-31; the Mac build is identical) |
 
 ### Sound fixes (U21, U22, U23, U28)
 
@@ -581,6 +581,12 @@ Throwaway copy of the game's UserData (`?nbhd=UserData21`, overlay, deleted afte
   keeps one song until Live. Leaving Buy / Build / Camera for Live kills MainMusicLoop at once
   (FUN_005752c4 case 0: vtable +0x38 = cTrackPlayer::Kill, cTSSndDShow::Stop has no fade);
   from Options / the neighborhood it fades (FadeAndKillTrackSlow). That is the original.
+  Re-checked 2026-10-31 (user question "Mac or Windows?"): the cut is the Windows behaviour
+  (Sims.exe disassembly: case 0/4/9 at 0x575365, previous mode 1/2/0x11/0x12 -> track 0x203
+  `call [edx+0x38]`, cTrackPlayer vtable 0x671a74 +0x38 = Kill 0x57e037 -> cSampleChannel::NoteOff
+  -> cTSSndDShow::Stop, no fade), identical on the Mac (0x102D916C). Camera is mode 2 (Build) in
+  SimsSound.hot, and the bkground_* events are bare kSetMusicMode, so no HIT script fades either.
+  The port already matches; no code change (details in audio-port.md, "Back to Live").
 
 ### U27: build-mode grid on upper levels (fixed)
 
@@ -603,15 +609,41 @@ Throwaway copy of the game's UserData (`?nbhd=UserData21`, overlay, deleted afte
   none in Live / Buy / Camera; Build L2 -> Camera / Buy drop to level 1 (cWinViewControl's rule)
   without a stale grid.
 
-### U26: black walls on Build mode (not reproduced)
+### U26: black walls on Build mode (fixed)
 
-Charmant is house 69 (Neighborhood.iff FAMI 13). Tried, comparing Live / Buy / Build frames:
-headless Chrome (SwiftShader), headed Chrome (GPU) and Firefox; Live -> Buy -> Build and back;
-the cursor swept over the house (cutaway, counted near-black pixels: no change); every build tool
-selected then left and re-entered; wall states Up / Down / Cutaway / Roof; zooms 1..3 and a
-rotation; night (21h, 22h) with the lamps' lighting contribution forced on (light pools on walls);
-entering Charmant after another lot (house 56). No black walls in any of them. Things ruled out:
-the sprite texture caches are per lot (walls / floors renderers are made per WallManager /
-FloorGraphicsMgr, so no texture from another WebGL context), `comp.light` / `comp.ambient` are
-reset after each use. Needs the user's steps (time of day, tool, level, zoom, browser) or a
-screenshot.
+Reproduced with the user's view: Charmant (house 69), zoom 3, walls **down**, Build mode with the
+wall tool (the default) or the hand. Every cut wall holding a window or door (style 0x16 / 0x17)
+had its stub painted solid black; Buy / Live were fine. It also shows in the dynamic cutaway
+wherever the cursor cuts such a wall (house 1). Measured as near-black pixel counts per frame
+(+3400 at zoom 3 on Charmant's front, Build vs Buy).
+
+Cause: Wall::Draw gives a cut door / window wall (flag 8) two passes in Build mode unless the
+door or window tool is active (CPState::GetMode == 0 && ArchGetCurrentTool 8 / 9). Pass 0 draws
+the wall pattern through the cut style; pass 1 draws the walls.iff colour pattern 0x6fe
+(+0x100 per zoom, palette 1790, every pixel index 2 = black) through
+GETCUSTOMSTYLE(style, cut): for 0x16 / 0x17 that is GetCustomWallStyleID, the portal's own wall
+sprite (cXPortal::GetCustomWallStyleID = OBJD +0xa2, ids id .. id + 2 full, id + 3 .. id + 5 cut,
+from the object's sprite file), i.e. the window / door **outline** the original shows on cut walls
+in Build mode. `WallManager.customWallStyle` (the GetCustomWallStyleID hook) was never set, so
+GETCUSTOMSTYLE fell back to the plain cut wall mask and pass 1 filled the whole stub in black.
+DrawWall's blitter is WallBlit (Wall::Draw's last argument is always 0 from WallManager), so pass 1
+does overwrite pass 0: the black is right, the mask was wrong. Not a palette issue: the pattern
+lists are SPR# version 504 with their own PALT (the spr.ts SPR2 change does not touch them).
+
+Fix:
+- `customWallStyleOf` (lotobjects.ts) ports GetCustomWallStyleID: ObjectIterator over the world
+  tile, the first cXPortal whose GetRequiredSegment equals the world segment gives its renderer
+  (ObjSelector +8) and OBJD +0xa2; installed on the WallManager by the lot view and the
+  thumbnail renderer.
+- `WallManager.wallToolActive` (CPState::ShouldAlwaysShowWallStuff: Build + door / window tool)
+  was never set either; the lot view now follows the tool, so with the door / window tool the
+  cut walls skip the outline pass and the hidden wall objects are drawn full height, as in the
+  original.
+
+Checked (Chrome headless and Firefox, black-pixel counts per frame and screenshots):
+house 69 zoom 3 in Up / Down / Cutaway / Roof x wall tool / window tool / hand, against Buy;
+houses 1, 2 and 56 at load zoom in Down / Cutaway / Up x wall tool / door tool. No black stubs;
+in Build with walls down or cut, doors and windows show as thin black outlines over the stubs
+(the original's look), and the extra dark pixels left in those counts are those outlines.
+The tall curtain windows of Charmant stay drawn full height in every mode (no object flag
+0x400), as in the user's Buy screenshot.

@@ -14,7 +14,7 @@ import { modeKeyDown } from "../cpanel/modekeys.js";
 import type { GameContext } from "../context.js";
 import { soundPlayer, UI_SOURCE } from "../audio/index.js";
 import { getOptionsMgr } from "../optionsmgr.js";
-import { DIRTY_ARCH_SUBTOOL, DIRTY_ARCH_TOOL, DIRTY_ARCH_UNDO, DIRTY_LEVEL, DIRTY_SHOP_ITEM, Mode, type CPState, type HouseViewerHooks, type WallState } from "../cpstate.js";
+import { ArchTool, DIRTY_ARCH_SUBTOOL, DIRTY_ARCH_TOOL, DIRTY_ARCH_UNDO, DIRTY_LEVEL, DIRTY_SHOP_ITEM, Mode, type CPState, type HouseViewerHooks, type WallState } from "../cpstate.js";
 import { DefaultTTWindow } from "../ui/ttwindow.js";
 import { Gfx, TSWin } from "../ui/tswin.js";
 import { Compositor } from "./compositor.js";
@@ -23,7 +23,7 @@ import { EdgeDetectScroller } from "./edgescroll.js";
 import { FloorGraphicsMgr } from "./floors.js";
 import { HouseViewer, type ObjectDrawer, type TerrainDrawer, type WallDrawer } from "./houseviewer.js";
 import { ResFile } from "./iffres.js";
-import { loadLotObjectDrawer, type LotObjects } from "./lotobjects.js";
+import { customWallStyleOf, loadLotObjectDrawer, type LotObjects } from "./lotobjects.js";
 import type { DrawableObject } from "./objectdraw.js";
 import type { RenderParam } from "./renderparam.js";
 import { LotPeople } from "./lotpeople.js";
@@ -234,12 +234,19 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
       const walls = await WallManager.create(house, world);
       const st = this.ctx.state;
       walls.setWallState(st.getWallState());
+      // CPState::ShouldAlwaysShowWallStuff: build mode with the door or window tool.
+      const wallStuff = (): boolean => {
+        const t = st.archGetCurrentTool();
+        return t === ArchTool.Door || t === ArchTool.Window;
+      };
       walls.mode = st.getMode();
+      walls.wallToolActive = wallStuff();
       this.listen(() => {
-        if (walls.mode === st.getMode()) return;
+        if (walls.mode === st.getMode() && walls.wallToolActive === wallStuff()) return;
         walls.mode = st.getMode();
-        // Wall::Draw and RenderStaticRow's grid read the mode: a switch with
-        // nothing else changing (Buy <-> Build) must still redraw.
+        walls.wallToolActive = wallStuff();
+        // Wall::Draw and RenderStaticRow's grid read the mode and the tool: a
+        // switch with nothing else changing (Buy <-> Build) must still redraw.
         v.dirty = true;
       });
       this.wallManager = walls;
@@ -327,7 +334,10 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
     });
     this.rooms = rooms;
     this.cutaway = cut;
-    if (this.lotObjects) this.lotObjects.drawer.cutawayView = walls;
+    if (this.lotObjects) {
+      this.lotObjects.drawer.cutawayView = walls;
+      walls.customWallStyle = customWallStyleOf(this.lotObjects, fixed);
+    }
     // Room lighting follows the time of day (cSimulator global 4).
     const lighting = new RoomLighting(rooms, v.world, () => this.lotObjects?.objects ?? null);
     const phase0 = timeOfDay(st.getTime().hour);
