@@ -87,7 +87,7 @@ or developer-only tools).
 | cWinPictureInPicture | Event picture-in-picture | partial (scrapbook auto snapshot) | `world/winpictureinpicture.ts` |
 | cTutorialIcon | Close box of the tutorial dialogs | partial | `ui/picturedialog.ts` |
 | cTSWinTutorialHighlight | Tutorial arrow over a button or lot (neighborhood tutorial lots, prim 34 effect 0) | partial (Tut_CheckForEvents) | `ui/tutorialhighlight.ts` |
-| cActionIcon | Queued action icons | ported | `world/actionicons.ts` |
+| cActionIcon | Queued action icons (frame, product / people picture, cancel cross, slides, StartUserAction) | ported | `world/actionicons.ts` |
 | cColorSwatch, cGouraudSwatch, cMapTileSwatch | Terrain tool swatches | ported | `world/terrain*.ts` |
 
 ## Neighborhood, towns, Create-a-Sim

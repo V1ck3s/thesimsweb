@@ -36,7 +36,7 @@ import { CursorDrawer, GUID_TILE_CURSOR } from "./tools/cursorobject.js";
 import { BUILD_TOOLS } from "./tools/buildtools.js";
 import { GameTools, MoveToolAdapter, ToolId } from "./tools/gametools.js";
 import { MoveTool } from "./tools/movetool.js";
-import type { ToolHost } from "./tools/tool.js";
+import { ToolSounds, type ToolHost } from "./tools/tool.js";
 import { UndoManager } from "./tools/undo.js";
 import { Placement, type ObjectBehaviorHooks } from "./tools/placement.js";
 import { FixedWorld, RotatableWorld } from "./world.js";
@@ -80,7 +80,8 @@ import { cancelTutorial, makeTutorialObject, tutorialCompleted } from "../nbhd/t
 import { findPersonPanelButton } from "../cpanel/people.js";
 import { findRelButton } from "../cpanel/live/relationship.js";
 import { moduleOrder } from "./housesave.js";
-import { summarizeHouseStats } from "./housestats.js";
+import { getHouseStats, piecewiseFromText, readLayoutHistory, STR_HOUSE_SCORE_CURVES, summarizeHouseStats, type LayoutHistory, type PiecewiseFn } from "./housestats.js";
+import { loadStringSet } from "../sim/behavior.js";
 
 /** NeighborhoodConstants "architecture value multiplier" (lbl_105BA1EC, default 0.7). */
 const ARCHITECTURE_VALUE_MULTIPLIER = Math.fround(0.7);
@@ -190,6 +191,7 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
     private readonly parts: LotViewParts = {},
   ) {
     super();
+    this.actionIcons = new ActionIcons(ctx, this);
   }
 
   override async init(): Promise<boolean> {
@@ -204,6 +206,7 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
     const viewH = this.ctx.height - 100;
     const comp = new Compositor(viewW, viewH);
     const v = new HouseViewer(world, comp, floors, viewW, viewH);
+    v.isBuildMode = () => this.ctx.state.getMode() === Mode.Build;
     if (this.parts.terrain) {
       v.terrain = this.parts.terrain;
     } else {
@@ -833,7 +836,7 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
   arrivalOutOfWorld = false;
 
   /** The selected sim's action icons (Live mode). */
-  private readonly actionIcons = Object.assign(new ActionIcons(), { personPicture: (o: SimObject) => this.personPicture(o) });
+  private readonly actionIcons: ActionIcons;
 
   /** The sprite slots' balloons and headlines (cXObject::DrawSpriteSlot). */
   private balloons: BalloonPainter | null = null;
@@ -897,9 +900,18 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
       for (let who: PersonSim | null = person; who; who = this.selectedPerson()) {
         const p = who;
         const entries = p.menuItemsFor(t);
-        if (!entries.length) return; // cTool::DoDeniedSound
+        if (!entries.length) {
+          this.doDeniedSound();
+          return;
+        }
         const ok = await this.doMenu(p, entries, this.area.left + x, this.area.top + y, (e) => {
-          const done = p.addAction(p.makeInteraction(t, e.entry, 50, e));
+          const action = p.makeInteraction(t, e.entry, 50, e);
+          const done = p.addAction(action);
+          // cObjPickerTool::MenuItemSelected -> cDDDSimsView::StartUserAction at the cursor.
+          if (done) {
+            const c = winMgr.cursorPosition();
+            this.actionIcons.startUserAction(action, c.x - this.area.left, c.y - this.area.top);
+          }
           picked ||= done;
           return done;
         });
@@ -908,6 +920,21 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
     } finally {
       if (helper && !picked && sim.module.getObject(helper.id) === helper) sim.module.killObject(helper);
     }
+  }
+
+  /** cObjPickerTool's cTool +0: when its last limited sound played. */
+  private pickerSoundAt = -Infinity;
+
+  /**
+   * cTool::DoDeniedSound of the Live mode picker tool (cObjPickerTool::
+   * TryClick with an empty menu, MenuItemSelected refused): "UI_error"
+   * (lbl_105BBE58 + 0x5a), at most once per 400 ms.
+   */
+  private doDeniedSound(): void {
+    const now = performance.now();
+    if (now <= this.pickerSoundAt + 400) return;
+    this.pickerSoundAt = now;
+    soundPlayer.playBySource(ToolSounds.denied, UI_SOURCE);
   }
 
   /**
@@ -990,17 +1017,6 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
   private picParts: { template: ImageBitmap; frame: ImageBitmap } | null = null;
 
   /**
-   * PersonFinder::GetPictureBuffer of the neighbor `neighborId` (its
-   * BuildPersonBtn image) through cActionIcon::MakeActionBitmap(buf, true):
-   * a 45 x 45 picture, cell (0, 1) of the 4 x 3 button image (the happy
-   * face) under the first half of kIconFrame. Null when the neighbor's face
-   * is not known (only the family and the people it knows are loaded).
-   */
-  /** The action icons' head pictures, by person GUID (null: face not known). */
-  private readonly personPics = new Map<number, ImageBitmap | null>();
-  private picPartsLoading = false;
-
-  /**
    * kPeopleTemplate and kIconFrame. The frame (two 45 x 45 halves: plain,
    * and the yellow selected ring) is blitted over the picture with its pure
    * blue as the transparent color (cActionIcon::MakeActionBitmap), so that
@@ -1019,24 +1035,13 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
     this.picParts ??= { template, frame: c.transferToImageBitmap() };
   }
 
-  /** ActionIcons.personPicture: the neighbor picture of a person object on the lot. */
-  private personPicture(o: SimObject): ImageBitmap | null {
-    const guid = o.obj.selector.guid | 0;
-    if (this.personPics.has(guid)) return this.personPics.get(guid)!;
-    if (!this.picParts) {
-      if (!this.picPartsLoading) {
-        this.picPartsLoading = true;
-        void this.loadPicParts().then(() => this.actionIcons.onReady?.());
-      }
-      return null;
-    }
-    const st = this.ctx.state;
-    const info = [...st.family, ...st.neighbors].find((q) => q.guid !== undefined && (q.guid | 0) === guid);
-    const pic = info?.neighborId !== undefined ? this.neighborPicture(info.neighborId) : null;
-    this.personPics.set(guid, pic);
-    return pic;
-  }
-
+  /**
+   * PersonFinder::GetPictureBuffer of the neighbor `neighborId` (its
+   * BuildPersonBtn image) through cActionIcon::MakeActionBitmap(buf, true):
+   * a 45 x 45 picture, cell (0, 1) of the 4 x 3 button image (the happy
+   * face) under the first half of kIconFrame. Null when the neighbor's face
+   * is not known (only the family and the people it knows are loaded).
+   */
   private neighborPicture(neighborId: number): ImageBitmap | null {
     const st = this.ctx.state;
     const info = [...st.family, ...st.neighbors].find((q) => q.neighborId === neighborId);
@@ -1122,7 +1127,7 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
           }
         }
         if (!shift) m.endPopup();
-        // sound: cTool::DoDeniedSound
+        this.doDeniedSound();
         return false;
       }
       if (cmd === CMD_PIE_HILITE) {
@@ -1251,10 +1256,6 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
   }
 
   override postChildDraw(g: Gfx): void {
-    if (this.sim && this.ctx.state.getMode() === Mode.Live) {
-      const p = this.selectedPerson();
-      if (p) this.actionIcons.paint(g, p);
-    }
     const t = this.tip;
     if (!t) return;
     t.win.setToolTip(t.text);
@@ -1282,10 +1283,7 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
     }
     const tools = this.activeTools();
     if (!tools && this.viewer && this.ctx.state.getMode() === Mode.Live && this.sim) {
-      const p = this.selectedPerson();
-      const a = p ? this.actionIcons.hit(p, x, y) : null;
-      if (p && a) p.removeAction(a);
-      else void this.liveClick(x, y);
+      void this.liveClick(x, y);
       return true;
     }
     if (!tools || !this.viewer) return false;
@@ -1476,6 +1474,7 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
     window.removeEventListener("keyup", this.onModifiers);
     window.removeEventListener("pointermove", this.onModifiers);
     this.buyTool?.cancel();
+    this.actionIcons.clear();
     if (this.ctx.state.viewer === this) this.ctx.state.viewer = null;
     super.shutdown();
   }
@@ -1527,6 +1526,13 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
     this.viewer?.setLevel(level);
   }
 
+  setViewportHeight(height: number): void {
+    const v = this.viewer;
+    if (!v || v.viewH === height) return;
+    v.setViewportHeight(height);
+    this.frame = null;
+  }
+
   setWallState(state: WallState): void {
     if (this.cutaway) this.cutaway.setWallState(state);
     else this.wallManager?.setWallState(state);
@@ -1535,7 +1541,46 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
 
   // --- painting / input -----------------------------------------------------------
 
+  /** House +0x30..+0x5c: the layout history (read from HOUS 1; House::AddLayoutTick is not ported). */
+  private layoutHistory: LayoutHistory | null = null;
+  /** House +0x60 / +0x64: the size and furnishings score curves (Global.iff STR# 505). */
+  private scoreFns: { size: PiecewiseFn; furnishings: PiecewiseFn } | null = null;
+  private houseStatsAt = -Infinity;
+
+  /**
+   * cWinSubpanelHouse::TSPaint's House::GetHouseStats, into CPState for the
+   * house page. Not part of the original (perf): computed twice a second in
+   * Live mode rather than on every paint.
+   */
+  private updateHouseStats(nowMs: number): void {
+    const sim = this.sim;
+    const v = this.viewer;
+    const lot = this.lotObjects;
+    const rooms = this.rooms;
+    if (!sim || !v || !lot || !rooms || this.ctx.state.getMode() !== Mode.Live || nowMs - this.houseStatsAt < 500) return;
+    this.houseStatsAt = nowMs;
+    this.layoutHistory ??= readLayoutHistory(this.house?.get("HOUS", 1));
+    if (!this.scoreFns) {
+      const curves = sim.module.res.glob ? loadStringSet(sim.module.res.glob, STR_HOUSE_SCORE_CURVES) : null;
+      this.scoreFns = { size: piecewiseFromText(curves?.[0]), furnishings: piecewiseFromText(curves?.[1]) };
+    }
+    this.ctx.state.houseStats = getHouseStats({
+      fixed: v.world.fixed,
+      rooms: rooms.inUseRooms(),
+      objects: new Map(moduleOrder(lot.module).map((o) => [o.objectId, o])),
+      members: this.ctx.state.family.length,
+      objectValue: sim.objectValue,
+      archValue: sim.archValue,
+      layout: this.layoutHistory,
+      sizeFn: this.scoreFns.size,
+      furnishingsFn: this.scoreFns.furnishings,
+    });
+  }
+
   override pump(nowMs: number): void {
+    this.updateHouseStats(nowMs);
+    // cDDDSimsView::Draw -> UpdateActionIcons.
+    this.actionIcons.update(this.sim ? this.selectedPerson() : null, !!this.sim && this.ctx.state.getMode() === Mode.Live, nowMs);
     this.edge?.pump(nowMs);
     this.viewer?.pump(nowMs);
     this.cutaway?.updateWorld();

@@ -434,10 +434,18 @@ export class WinViewControl extends TSWin {
     this.mode = mode;
     const cpanel = this.controlPanel();
     if (!cpanel) return;
-    // HouseViewer::SetViewportHeight follows here in the original.
-    if (mode === VCMode.PanelShown) cpanel.showWindow();
-    else cpanel.hideWindow();
+    // Without Bobo vision: HouseViewer::SetViewportHeight to the lot view's
+    // height less the panel's opaque part (its height - 0x32), or all of it
+    // once the panel is hidden: the lot view then runs under the panel's area.
     const parent = this.parent;
+    const viewH = parent?.getH() ?? 0;
+    if (mode === VCMode.PanelShown) {
+      cpanel.showWindow();
+      if (parent) this.ctx.state.viewer?.setViewportHeight?.(viewH - (cpanel.getH() - 0x32));
+    } else {
+      cpanel.hideWindow();
+      if (parent) this.ctx.state.viewer?.setViewportHeight?.(viewH);
+    }
     if (parent && this.background) {
       const top = parent.getH() - this.background.height;
       this.setArea(0, top, this.getW(), top + this.getH());

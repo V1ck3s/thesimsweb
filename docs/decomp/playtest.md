@@ -336,11 +336,12 @@ pushed through the fridge entries as a click would.
   pass out ("failure sleep") and starve: Kyle died in segment 2, Jada in S2. Probably XRoute's
   start point or the portal choice when the person stands in a door's tile (room id of the door
   tile); not found yet.
-- **Autonomy object filter not ported**: TryFindBestAction only looks at every object one call in
+- **Autonomy object filter not ported** (ported since, see "Door deadlocks..."): TryFindBestAction only looks at every object one call in
   four (`(lot +0x98 + person +0xf0) & 3`: 0 all objects, 1 within 7 tiles (lbl_105BBB78 +0x1c),
   2 / 3 objects with +0xf0 bit 0), all objects when the neighborhood zoning type is not 0; the port
   scores every object each time (more lenient, costs CPU).
-- **Tree errors** (each resets the person, as in the original): Kyle 0x15 in "Is either a Sim?"
+- **Tree errors** (each resets the person, as in the original; Kyle's 0x15 fixed since, see "Door
+  deadlocks..."): Kyle 0x15 in "Is either a Sim?"
   (Social - Child 1.5's "Set Soc&Rel to Person A") after Max left for military school mid-social,
   repeated 6 times over 10 sim hours from the same leftover social object; NPC Maid 0x15 in a
   Tabloid's "get paper to read" whose reader (Jada's ghost) was gone; Butler 0x15 in the trash
@@ -357,6 +358,114 @@ pushed through the fridge entries as a click would.
 - Unported animation names ("missing skill tease a", "giggle start/loop/stop", "scare b",
   "listen normal apathetic"): skeleton animations missing from the loaded sets. Fixed in the
   next section (wrong anim table: a port bug, not the data).
+
+## Door deadlocks, autonomy filter, partner cleanup, anim tables (2026-10-30)
+
+Throwaway copy `?nbhd=UserData11` (deleted at the end), headless Chrome, speed 3, soak driver
+with extra hooks (scratch: `~/simsweb-build/scratch/route/`): every failed XRoute::FindPath of a
+person (result 3) recorded with its RoutingParams (start, goals, obstacles near the person, the
+room partition rectangles), and, after 6 failures at the same spot, the person's last routes and
+those of the people near it.
+
+### Door tiles (task: sims stuck at 488,392 / 584,394)
+
+- **Not the door tile itself.** A sim teleported onto 488,390 / 488,392 / 584,394 (any facing,
+  walking or running) plans and walks normally: the room id of a door tile is the room on its side
+  (ResolveRoomID; the door's two parts are two objects in two rooms: "part 2" #115 at 488,392 in
+  room 1, "part 1" #119 at 488,408 in room 2), ChooseStartingPoint is the person's position, the
+  portal chosen is the door's part in the person's room. When the person stands idle on a door
+  tile, its own "move away from door" tree (person main loop node 23) walks it off first.
+- **Static map of the door tiles** (FindPath from every point of the tile, 8 facings, door slots 5
+  "goto door and face thru" and 1 "goto other side"): only the starts inside the 7-unit inflated
+  wall margin fail (y 394..399 except the 4-unit gap x 486..489 in front of the door; for door #94
+  also x < 582, the wall west of room 7). The door's two-step crossing keeps people in the gap, so
+  these starts are not reached by a normal walk. Faithful (BuildRoomPartition's inflation,
+  SpacePartition::Init keeping a 1x1 start rectangle that cannot grow).
+- **What the stuck runs showed** (the old trace `trace1`, and soak f1 / f4): the failing plans
+  all had a *person* (or a lying one) in the way, never the door geometry:
+  - f1: visitor Freddy stopped mid-crossing at 488,403 (in the door gap of room 2) facing the
+    Superstar Butler at 486,409 who was waiting to cross the other way. Each one's start or goal is
+    inside the other's inflated rectangle (BLOCKED, person +3 +3); each asks the other to move
+    (AskOthersToMove) but MoveOutOfWay refuses when the asked person's top route has itself asked
+    someone (+0x80), and the move-out-of-the-way interaction of the other is not taken while it
+    runs the door's portal tree. 40 + 24 failures in a row, and Jada (504,408) could not reach the
+    door behind them (35 failures).
+  - f4: Max passed out on the bathroom floor (sleep anim) next to the door #94: a BLOCKED rectangle
+    [575,361 .. 597,383] closes the only lane to the door gap; Kyle (584,360) and Jada (616,376)
+    fail every plan out of the bathroom (604 failures in 3 sim hours).
+  - `trace1` (Jada at 488,390 → door #115): the first step ("goto door and face thru", path
+    488,390 → 488,392) "arrives" without moving (see below), then "goto other side" finds no path
+    from 488,390, which works statically from there: most likely the butler (the only other person
+    in room 1; its position was not logged) stood in the gap.
+  These obstacle rules are the original's (XRoute::FindPath's loop checked against the Mac
+  pseudo-C: person rectangle = ComputeRect with lbl_105BA224 = 6, objects overlapping the
+  person's rectangle skipped with _IntersectRect, people and BLOCKED rectangles inflated by 3;
+  ShouldIgnore only ignores +0x7c, people farther than lbl_105BBD58 +0x14, passable objects;
+  MoveOutOfWay(person, route, path) and AskOthersToMove match). No port deviation found in the
+  routing itself; the deadlocks need two people in a door at once, which the fixes below make
+  rarer (stale partners no longer reset, fewer autonomous object scans).
+- **Deviation left**: a walk-through-door step (object data 9 set) whose only segment is shorter
+  than the 3-unit stop threshold ends without moving (SAnimator walking: `pending`, `oneMore`
+  step with the last step's stale delta), e.g. "path 584,458 584,456 → arrived at 584,458". The
+  next step ("goto other side") plans from there and works; not changed.
+
+### Autonomy object filter (cXPerson::TryFindBestAction)
+
+Ported: `filter = (cSimulator +0x98 ticks + person id) & 3`, 0 when the lot's zoning type is not 0
+(not residential); 0 scores every object, 1 only those within 7 tiles (CalcShortDistance <=
+lbl_105BBB78 +0x1c = 7.0, read from mac.bin), 2 objects with an even id, 3 odd ids (+0xf0 bit 0).
+The person's own object is scored when it is a pet (person data 0x41 >= 2), as in the original
+(the port skipped it always). Not ported (logged here): the Hot Date downtown / vacation filters
+of the same loop (lots 40..49 or zoning 2: objects whose master OBJD +0x8a is 4 or 5 skipped;
+on lots 40..49 with a family other than global 9, objects with object data 59 = 0x2e).
+
+### cXPerson::Cleanup(obj): the interaction's icon person (+0xa14)
+
+The original lets go of everything (records' frames popped, Main restarted, current action
+emptied) when `obj` is one of the person's ObjectRecords **or the current interaction's icon
+object (+0xa14)**, drops queued interactions whose object (+8) **or icon (+0xc)** is `obj`, and
+zeroes the icon of the last / current action when only the icon matches. The port only tested
+the records and the object. Effect: when Max left for military school mid-social (Kyle running
+"Tease Scare - Person B" with Max as icon), Kyle kept his frames and later ran "Set Soc&Rel to
+Person A" → "Is either a Sim?" with the gone Max as stack object: tree error 0x15, six times over
+ten hours. Fixed (`PersonSim.cleanupFor`).
+
+### Animation tables (GetObjectSkill)
+
+"missing skill tease a / giggle start / giggle loop / giggle stop / scare b" (and "listen normal
+apathetic") come from SocialChild.iff STR# 129, the *adult* table of the child socials object,
+whose entries are placeholders ("Tease A", "Giggle Start", "Scare B", "Tickle A Start"...); the
+real names are in STR# 130 C2C, 131 A2C, 132 C2A (Animation.far has a2c-/c2a-/c2c-giggle-start,
+-scaree, -scarer...). The original's GetObjectSkill(object, person, index, other) picks 0x81 adult,
+0x82 child, 0x83 adult to child, 0x84 child to adult from the person's age (+0x600 < 18) and,
+for the main practice (neither flag 1 nor 0x10), the age of the current interaction's icon person
+when the interaction is on that object. The port only had 0x81 / 0x82: an adult socializing with
+a child read STR# 129. Fixed (`PersonSim.resolveSkillName`). Not a data bug.
+
+### Validation
+
+Two runs with all the fixes, fresh copies of House01: f5 14d → 18d (4 sim days) and v1 14d 08:42
+→ 20d 06:25 (6 sim days). No family member stuck: the per-sample give-up counter stayed at 0..5
+for Kyle and Jada (Max once 69 while dancing on the dance floor, not near a door), 167 / 646
+failed person plans in all (visitors and NPCs mostly; f1 / f4 before the fixes: 621 in 2 days,
+604 in 3 hours of a bathroom deadlock), no death; Max sent to military school 19d 11:00 (grades,
+faithful) and removed at 19d 18:06 without any tree error for Kyle this time; no "missing skill";
+the only tree error was Jada's 0x4 in the Dance Floor Controller's `Random(4097):10` (range 0, known).
+Tick mean 0.17 ms. The deadlocks are random (f3, old code, 6 days without one), so this does not
+prove they are gone: they need two people meeting head-on in a door, or a sim passing out in a
+doorway, which the original allows too.
+
+### Other 0x15 errors
+
+- **Maid in the Tabloid's "get paper to read"** (node 2, run functional 5 on the paper's container,
+  object data 2 = 440, Jada's ghost, gone): the paper's container id (written by cXObject::Place
+  / Pickup / Reset only, as in the original) still named the dead ghost while the paper was not in
+  its slots (else KillObject would have killed it with the ghost). Not reproduced; cause not found.
+- **Butler / maid at the trash compactor's "pickup core"** (node 5, Call named tree on the
+  compactor's slot 0 after the animation event): the plate the cleaner wanted is in the
+  compactor's slot per its object data 2 when "get food" starts, slot 0 is empty when the event
+  fires. Likely two cleaners on the same plate (the butler and the maid both run Clean Up). Not
+  reproduced; not changed.
 
 ## Magic Town move in, town imports, tutorial (2026-10-30)
 
@@ -420,17 +529,56 @@ Throwaway copy of the game's UserData (`?nbhd=UserData21`, overlay, deleted afte
 
 | # | Bug | Status |
 |---|---|---|
-| U15 | Chachat family: Gina is invisible (also her head in the pie menu / when clicking something) | open |
-| U16 | 7 avenue des Sims: a second, invisible sim (the original has only one sim there) | open |
-| U17 | Same lot: the radio that should be on the table is invisible | open |
-| U18 | Clicking something with no action (grey cursor) should play a sound | open |
-| U19 | Action queue icons (top left): not as pretty as the original, sometimes broken with invisible objects, no cancel cross | open |
-| U20 | Clicking the Live mode button a second time: black background where the panel was, instead of the game (the game runs under the panel) | open |
-| U21 | Many sounds of very bad quality: audio decoding/playback problem? | open |
-| U22 | Lots of bird sounds: check against the original's ambience | open |
-| U23 | The mailwoman's whistle differs (loops, odd quality) | open |
-| U24 | Objects on other objects (bird cage, phone, anything on a table) are placed inside instead of on top: wrong slot position (Charmant family, probably everywhere) | open |
-| U25 | House panel (Habitation): no information filled in | open |
+| U15 | Chachat family: Gina is invisible (also her head in the pie menu / when clicking something) | fixed: the House56 save has Gina inside the Magic Town clown portal (ClownPortal.iff "Interaction - Go to Magic Town", hidden, object data 34 = 1, until its tree unhides her after the trip). LotPeople.load skipped hidden people, so she never got a VitaBoy (no body, no pie head, bindSim failed) even once unhidden. Hidden people are now dressed and only skipped when drawing (DoStaticToDynamicObjectTransitions lists 3D objects with +0x8e == 0) |
+| U16 | 7 avenue des Sims: a second, invisible sim (the original has only one sim there) | fixed: House07 (the tutorial lot) holds Bob and Betty; the Tutorial object's tree 0x1002 hides Betty, calls generic sim call 6 and removes her instance. Call 6 is Neighborhood::RemoveFromFamily (asm 100E96FC; Ghidra dropped it), which was a no-op here: Paulette stayed in the family panel with no body. Now ported (SimModule.removeFromFamily, CPState.removeFamilyMember, NeighborhoodStore saves the member list) |
+| U17 | Same lot: the radio that should be on the table is invisible | fixed with U24: the boombox sits in the dining table's slot 1; contained objects are in no tile chain, and as static objects the port never drew them (lamps on tables, microwaves on counters too) |
+| U18 | Clicking something with no action (grey cursor) should play a sound | fixed: cObjPickerTool::TryClick with an empty menu (and MenuItemSelected refused) calls cTool::DoDeniedSound: "UI_error" (lbl_105BBE58 + 0x5a), at most once per 400 ms (`WinLotView.doDeniedSound`) |
+| U19 | Action queue icons (top left): not as pretty as the original, sometimes broken with invisible objects, no cancel cross | fixed: cActionIcon ported as child windows of the lot view (`world/actionicons.ts`): MakeActionBitmap (source cell, kIconFrame half with its magenta corners cut, yellow ring for a current action once person data 0x27 is set), Product::ComposeBtnImage of the master selector (catalog template + BMP_ / catalog shot) or the people button, dark grey square without a product, kQueueCancelOverlay red cross on cancel, 500 ms slides (StartAnimating) and the picked action starting at the cursor (StartUserAction), tooltips, arrow cursor, left / right click cancel with UI_queue_delete / UI_error (pets refuse), UI_queued per new icon. Actions without an icon object get no icon (ConvertAction) |
+| U20 | Clicking the Live mode button a second time: black background where the panel was, instead of the game (the game runs under the panel) | fixed: cWinViewControl::SetMode calls HouseViewer::SetViewportHeight (lot view height - (panel height - 0x32) shown, full height collapsed); the compositor and view rectangle resize (`Compositor.resize`, `HouseViewer.setViewportHeight`), offsets kept so the view grows at the bottom. Bobo vision variant not ported |
+| U21 | Many sounds of very bad quality: audio decoding/playback problem? | fixed: the XA decoder read the low nibble first and had no rounding (see "Sound fixes" below); DirectSound pan law |
+| U22 | Lots of bird sounds: check against the original's ambience | checked: the fresh engine matches the decomp (2 cells at once by design, sim_amb min = max = 2); the harsh, noisy chirps came from the XA bug |
+| U23 | The mailwoman's whistle differs (loops, odd quality) | fixed: XA decoding; ~cXObject / Cleanup now quiet the object's sounds (the looping mailbox_deliver_vox went on after she left) |
+| U24 | Objects on other objects (bird cage, phone, anything on a table) are placed inside instead of on top: wrong slot position (Charmant family, probably everywhere) | fixed: cXObject::DrawIso's DrawObjectSlot pass ported (objectdraw.ts): every object slot's content is drawn from the container's RenderParam moved by the slot offset (turned by the container's direction, jump table lbl_105BB9D0) and raised by the slot z (SetHeight: 2.5 / 4 / 4.05), even when the container is hidden. Contained objects left the dynamic list (DoStaticToDynamicObjectTransitions skips objects with a PlacementSpec container), where they were drawn at their own location (the container's, cXObject::SetLocation) at floor height. Objects held by people keep placeHeld. Sim side unchanged: contained objects share the container's location, as in the original |
+| U25 | House panel (Habitation): no information filled in | fixed: the panel was ported but CPState.houseStats was never filled. House::GetHouseStats + HouseStats getters ported (`getHouseStats` in `world/housestats.ts`): rooms' area / bed / bath objects (Room::CollectTileStats / CollectObjectStats), Global.iff STR# 505 size and furnishings curves (PiecewiseFn), yard (outside rooms' impact x 2 + good objects and pool tiles, x 0.33), upkeep (FillInObjectStats), layout from HOUS 1's route history. House::AddLayoutTick (cXPerson::Simulate) and its midnight shift are not ported: the layout score stays the saved one |
 | U26 | Charmant: walls turn black when switching from Buy/Live to Build mode | open |
 | U27 | Build mode on level 2: the buildable-floor grid is missing | open |
-| U28 | Mode music: switching between non-Live modes (Buy, Build, Camera, Options) cuts the music; only Live <-> others should change it, with a fade | open |
+| U28 | Mode music: switching between non-Live modes (Buy, Build, Camera, Options) cuts the music; only Live <-> others should change it, with a fade | fixed: the Windows cBoxX::Pause leaves MainMusicLoop playing (Options paused it); Live entry is a Kill from Buy / Build / Camera, a slow fade otherwise, as in the original |
+
+### Sound fixes (U21, U22, U23, U28)
+
+- XA (`crates/audio`): the original cWaveXA (Windows, FUN_005fc013) decodes the **high nibble
+  first**, coefficients `{0, 240, 460, 392}` / `{0, 0, -208, -220}`, shift `20 - (h & 15)`,
+  rounding `+0x80` before `>> 8`; the header is "XA" + 2 tag bytes, the output size, then a
+  WAVEFORMATEX (`wFormatTag` at 0x08, `nChannels` at 0x0a). The decoder read the low nibble
+  first (every sample pair swapped: harsh noise on every XA sound), did not round, took the
+  channel count from `wFormatTag` and refused `XA\x12\0` (patched in TS before). Stereo XA
+  (one file: `sting_crystalball.xa`) has one header byte per channel, then the rows interleaved
+  by byte. Output trimmed to the declared size (loops). Checked sample for sample against
+  `ffmpeg -f xa` (adpcm_ea_maxis_xa) on 91 random files from every FAR, mono and stereo, all tag
+  variants: identical; same through the browser path (WASM -> WAV bytes).
+- WAV: all 285 game WAVs are PCM 16-bit 22050 Hz (mono or stereo), no `smpl` loops: the
+  browser decodes them as is. No UTK files in TS1. MP3s stream through `<audio>`.
+- Pan: cTSSnd::SetPan is a DirectSound pan (`p * 20000 / 1024 - 10000` in 1/100 dB on the far
+  side, nothing at the centre). The StereoPannerNode (equal-power: -3 dB at the centre, much
+  gentler sides) is replaced by `DSPanner` (samplepatch.ts).
+- Pitch: cSampleChannel::SetPitch sets an absolute frequency (22050 * 2^((p - 3600) / 1200));
+  the port keeps a rate relative to the file (the 11025 Hz TV clips would otherwise play at
+  double speed when the DirectSound buffer already exists at SetPatch time).
+- U22: cFreshPlayer::Update / ProbOfCellStarting / UpdatePlayerInfo / SetX/YPos,
+  cFreshCellPlayer::Update / UpdatePan, kNotifyChange (ratio < 30 -> 0, x10; hour table / 13)
+  and OutdoorTileRatio re-read: the port matches. sim_amb.fsc asks for min = max = 2 cells,
+  one add attempt per bar (2 beats at 62 bpm): two sounds most of the time, in the original
+  too. Measured on lot 1 (ratio 77, 5 h): 19 sample starts in 60 s, never more than 2 at once.
+- U23: the mail carrier's `mailbox_deliver_vox` (MailCarrierF1.iff FWAV) runs
+  tkd_generic_fm_smartlists then `loop` (back to the entry: cTrackPlayer::PlayPause sets the
+  loop point to it): she sings VOX_sing_happyNPCF1/F3 until her sounds are quieted. ~cXObject
+  and cXObject::Cleanup call cSoundPlayer::QuietBySourceID(id); the port did not (simmodule
+  killObject, xobject cleanup), so the song went on after she left.
+- U28: CPState::UpdateWorldFromCPState calls PauseSounds on every switch to a mode other than
+  Live. The Windows cBoxX::Pause (FUN_00574972) exempts track 0x203 (MainMusicLoop) besides the
+  UI tracks; the Mac build does not, and the port followed the Mac: Options (mode 7, no music
+  change) left the song paused. Checked in headless Chrome: Buy -> Options -> Build -> Live
+  keeps one song until Live. Leaving Buy / Build / Camera for Live kills MainMusicLoop at once
+  (FUN_005752c4 case 0: vtable +0x38 = cTrackPlayer::Kill, cTSSndDShow::Stop has no fade);
+  from Options / the neighborhood it fades (FadeAndKillTrackSlow). That is the original.
+

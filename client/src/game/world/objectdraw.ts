@@ -84,11 +84,72 @@ export interface DrawableObject {
   items(graphic: number, dirIndex: number, scale: number): readonly DrawGroupItem[] | null;
   /** GetNextObjectSibling. */
   next: DrawableObject | null;
+  /**
+   * The objects in the object slots 1.. (cXObject +0x130) with each slot's
+   * offset, for DrawIso's DrawObjectSlot pass; absent or empty for a person
+   * (OBJD type 2: cXPerson draws what it holds).
+   */
+  slotContents?(): Iterable<SlotContent>;
 }
 
-/** cXObject::DrawIso (draw group part; slots and head text are not drawn here). */
+/** An object in a slot of another: ObjectSlot +0 / +4 / +8 (1/16 tile, altitude units) and +0x10. */
+export interface SlotContent {
+  obj: DrawableObject;
+  x: number;
+  y: number;
+  z: number;
+}
+
+/**
+ * The jump tables lbl_105BB9C8 (draw group item offsets) and lbl_105BB9D0
+ * (slot offsets): an offset (x, y) turned by the object direction
+ * (0 -> (+x, +y), 2 -> (-y, +x), 4 -> (-x, -y), 6 -> (+y, -x), odd -> none).
+ */
+function objectOffset(dir: number, x: number, y: number): [number, number] {
+  switch (dir & 7) {
+    case 0:
+      return [x, y];
+    case 2:
+      return [-y, x];
+    case 4:
+      return [-x, -y];
+    case 6:
+      return [y, -x];
+    default:
+      return [0, 0];
+  }
+}
+
+/**
+ * cXObject::DrawIso: the draw group unless hidden (+0x8e), then (OBJD type
+ * != 2) DrawObjectSlot for every object slot, hidden or not. Sprite slots
+ * and head text are drawn elsewhere.
+ */
 export function drawIso(obj: DrawableObject, viewer: HouseViewer, comp: Compositor, rp: RenderParam, hidden = obj.hidden): void {
-  if (hidden !== 0) return;
+  if (hidden === 0) drawGroup(obj, viewer, comp, rp);
+  const slots = obj.slotContents?.();
+  if (slots) for (const s of slots) drawObjectSlot(obj, s, viewer, comp, rp);
+}
+
+/**
+ * cXObject::DrawObjectSlot: the contained object's DrawIso (vtable +0x38)
+ * with the container's RenderParam moved by the slot offset, turned by the
+ * container's direction (lbl_105BB9D0), and raised by the slot's z, then
+ * RenderLoc::UpdateScreenCoords. The contained object's own location (the
+ * container's) is not used.
+ */
+function drawObjectSlot(container: DrawableObject, s: SlotContent, viewer: HouseViewer, comp: Compositor, rp: RenderParam): void {
+  const q = rp.clone();
+  const [dx, dy] = objectOffset(container.dir, s.x, s.y);
+  q.x += dx;
+  q.y += dy;
+  q.z += s.z;
+  q.updateScreenCoords();
+  drawIso(s.obj, viewer, comp, q);
+}
+
+/** DrawIso's draw group part. */
+function drawGroup(obj: DrawableObject, viewer: HouseViewer, comp: Compositor, rp: RenderParam): void {
   const s = viewer.scale;
   const list = obj.items(obj.graphic, (rp.rotation2 + obj.dir) & 7, s);
   if (!list) return;
@@ -108,24 +169,7 @@ export function drawIso(obj: DrawableObject, viewer: HouseViewer, comp: Composit
       continue;
     }
     const q = rp.clone();
-    let dx = 0;
-    let dy = 0;
-    switch (obj.dir & 7) {
-      case 0:
-        [dx, dy] = [it.objX, it.objY];
-        break;
-      case 2:
-        [dx, dy] = [-it.objY, it.objX];
-        break;
-      case 4:
-        [dx, dy] = [-it.objX, -it.objY];
-        break;
-      case 6:
-        [dx, dy] = [it.objY, -it.objX];
-        break;
-      default:
-        break;
-    }
+    const [dx, dy] = objectOffset(obj.dir, it.objX, it.objY);
     q.x += dx;
     q.y += dy;
     q.z += it.objZ;

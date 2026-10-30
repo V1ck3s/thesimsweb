@@ -231,6 +231,8 @@ export interface HouseViewerHooks {
   setWallState(state: WallState): void;
   /** cXObject::CenterHouseViewOnMe(selected person, smooth). */
   centerOnSelected?(): void;
+  /** HouseViewer::SetViewportHeight (cWinViewControl::SetMode). */
+  setViewportHeight?(height: number): void;
 }
 
 /**
@@ -496,6 +498,20 @@ export class CPState {
 
   selectedIndex(): number {
     return this.selected;
+  }
+
+  /**
+   * Neighborhood::RemoveFromFamily's UI side: the member leaves the family
+   * (PersonFinder's house index follows Family::GetIndexedMember) and
+   * GlobalDispatch(0xe8) makes cSimsApp SetDirty(0xffffffff). The selection
+   * stays on the same person.
+   */
+  removeFamilyMember(guid: number): void {
+    const i = this.family.findIndex((p) => ((p.guid ?? 0) | 0) === (guid | 0));
+    if (i < 0) return;
+    this.family.splice(i, 1);
+    if (this.selected > i || this.selected >= this.family.length) this.selected = Math.max(0, this.selected - 1);
+    this.touch(0xffffffff);
   }
 
   /**

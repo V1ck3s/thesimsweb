@@ -79,14 +79,18 @@ export class LotPeople {
     readonly people: LotPerson[],
   ) {}
 
-  /** Animators for the person objects that are neighbors of `nbhdDir`. */
+  /**
+   * Animators for the person objects that are neighbors of `nbhdDir`. Hidden
+   * ones (object data 34, saved in the middle of an interaction that hides
+   * them) are dressed too: they show once their trees clear it (draw).
+   */
   static async load(comp: Compositor, nbhdDir: string, objects: Iterable<PlacedObject>): Promise<LotPeople> {
     const nbhd = await loadNeighborhood(nbhdDir);
     const renderer = await SimRenderer.create(comp.gl);
     const people: LotPerson[] = [];
     await Promise.all(
       [...objects]
-        .filter((o) => o.isPerson && o.hidden === 0 && o.tileX > 0 && o.tileY > 0)
+        .filter((o) => o.isPerson && o.tileX > 0 && o.tileY > 0)
         .map(async (obj) => {
           const anim = await loadLotPerson(nbhdDir, nbhd, obj);
           if (!anim || !(await anim.startIdle())) return;
@@ -221,8 +225,10 @@ export class LotPeople {
     const view = LotPeople.viewOf(viewer);
     for (const person of this.people) {
       const { obj, anim, simDir } = person;
-      // Out of the world (in a car, at work, not arrived yet): not drawn.
-      if (obj.level > viewer.level || obj.fx < 0 || obj.fy < 0) continue;
+      // Out of the world (in a car, at work, not arrived yet): not drawn. Neither is a hidden
+      // person (+0x8e): HouseViewer::DoStaticToDynamicObjectTransitions lists only the 3D
+      // objects with +0x8e == 0 for HouseViewer::Render3DObject.
+      if (obj.level > viewer.level || obj.fx < 0 || obj.fy < 0 || obj.hidden !== 0) continue;
       const at = drawPos(person);
       // HouseViewer::Render3DObject: RoomManager::GetRoomAmbientLight at the person's view position.
       const [vx, vy] = RotatableWorld.rotateCoords(Math.round(at.fx), Math.round(at.fy), viewer.world.rotation, 0x400);

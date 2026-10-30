@@ -253,6 +253,8 @@ export class SimObject extends TreeSim {
       this.resetTree(this.behavior, fns.getTreeID(EP.main));
     }
     this.module.setIdleCounter(this.id, 0xffff);
+    // cXObject::Cleanup: cSoundPlayer::QuietBySourceID(id).
+    this.module.soundHooks?.killSounds(this.id);
   }
 
   /**
@@ -1225,13 +1227,17 @@ export class SimObject extends TreeSim {
         }
         return PRIM_TRUE;
       }
-      case 6:
+      case 6: {
         // The stack object names a neighbor (Neighborhood::FindNeighborByID, error 0x37
         // without one), then the app refreshes its current tool (app +0x48, vtable +0x20)
         // and posts message 0x10 / 0x1b to the main window: UI updates the port's
-        // panels make on every pump. Run on a death (Grim Reaper's ceremony).
-        if (!m.findNeighborByID(elem.stackObj)) simThrow(0x37);
-        return PRIM_TRUE;
+        // panels make on every pump. Then Neighborhood::RemoveFromFamily(neighbor):
+        // true when it succeeded (the tutorial takes Betty out of the Newbies, the
+        // Grim Reaper's ceremony the dead).
+        const nb = m.findNeighborByID(elem.stackObj);
+        if (!nb) simThrow(0x37);
+        return m.removeFromFamily(nb) ? PRIM_TRUE : PRIM_FALSE;
+      }
       case 14:
         // cSimulator::SetGlobal(0x1f, temp 0).
         m.sim.globals[0x1f] = this.temps[0]!;

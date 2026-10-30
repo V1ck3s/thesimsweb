@@ -217,13 +217,15 @@ export class Compositor {
   private readonly wallZoneOff = new Float32Array(8);
   /** Render target (color + depth texture) and the depth readback pass. */
   private readonly target: WebGLFramebuffer;
+  private readonly colorRb: WebGLRenderbuffer;
   private readonly depthTex: WebGLTexture;
   private depthProg: WebGLProgram | null = null;
   private depthOut: WebGLFramebuffer | null = null;
 
   constructor(
-    readonly width: number,
-    readonly height: number,
+    /** The target size; changed by resize (HouseViewer::SetViewportHeight). */
+    public width: number,
+    public height: number,
   ) {
     this.canvas = document.createElement("canvas");
     this.canvas.width = width;
@@ -263,13 +265,38 @@ export class Compositor {
     // the color to the canvas.
     this.target = gl.createFramebuffer();
     gl.bindFramebuffer(gl.FRAMEBUFFER, this.target);
-    const color = gl.createRenderbuffer();
-    gl.bindRenderbuffer(gl.RENDERBUFFER, color);
+    this.colorRb = gl.createRenderbuffer();
+    gl.bindRenderbuffer(gl.RENDERBUFFER, this.colorRb);
     gl.renderbufferStorage(gl.RENDERBUFFER, gl.RGBA8, width, height);
-    gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.RENDERBUFFER, color);
+    gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.RENDERBUFFER, this.colorRb);
     this.depthTex = this.texture();
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.DEPTH_COMPONENT32F, width, height, 0, gl.DEPTH_COMPONENT, gl.FLOAT, null);
     gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.TEXTURE_2D, this.depthTex, 0);
+  }
+
+  /**
+   * cAnimDeviceSub::SetViewportHeight (Viewport3D::SetDimensions): the
+   * target, its depth and the canvas take the new size; the next frame is
+   * drawn whole.
+   */
+  resize(width: number, height: number): void {
+    if (width === this.width && height === this.height) return;
+    const gl = this.gl;
+    this.width = width;
+    this.height = height;
+    this.canvas.width = width;
+    this.canvas.height = height;
+    gl.bindRenderbuffer(gl.RENDERBUFFER, this.colorRb);
+    gl.renderbufferStorage(gl.RENDERBUFFER, gl.RGBA8, width, height);
+    gl.bindTexture(gl.TEXTURE_2D, this.depthTex);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.DEPTH_COMPONENT32F, width, height, 0, gl.DEPTH_COMPONENT, gl.FLOAT, null);
+    gl.bindTexture(gl.TEXTURE_2D, null);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, this.target);
+    gl.useProgram(this.prog);
+    gl.uniform2f(this.u.uView!, width, height);
+    gl.uniform1f(this.u.uViewH!, height);
+    gl.viewport(0, 0, width, height);
+    this.rawZBytes = null;
   }
 
   /** The frame is finished: copy the target's color to the canvas. */

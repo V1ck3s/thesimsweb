@@ -900,6 +900,20 @@ export class NeighborhoodStore {
       const entries = n.relationships.map((r) => ({ present: 1, other: r.other, values: [...r.values] }));
       e.rels = e.rels.count < 0 ? { count: e.rels.count, vecCount: entries.length, entries } : { count: entries.length, vecCount: 0, entries };
     }
+    // Neighborhood::RemoveFromFamily in the lot (generic sim call 6): the family's member
+    // list (Family +0x124 set: saved) and the neighbor's family number (+0xee, person data 0x3d).
+    for (const f of this.families) {
+      const lf = live.data.families.find((x) => x.chunkId === f.id);
+      if (!lf || lf.memberGuids.length === f.memberGuids.length) continue;
+      const kept = new Set(lf.memberGuids.map((g) => g >>> 0));
+      for (const g of f.memberGuids) {
+        const n = kept.has(g >>> 0) ? undefined : this.neighborByGuid(g);
+        if (n) n.personData[0x3d] = 0;
+      }
+      f.memberGuids = [...kept];
+      f.flags &= ~8;
+      f.dirty = true;
+    }
     const ngbh = this.ngbh();
     if (ngbh.version > 0x3f || ngbh.inventory || live.data.inventories.length) {
       ngbh.inventory = serializeInventories(live.data);

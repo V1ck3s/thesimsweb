@@ -8,15 +8,16 @@
  */
 
 import type { ResFile } from "./iffres.js";
-import { ObjectModuleDrawer, type DrawableObject } from "./objectdraw.js";
+import { ObjectModuleDrawer, type DrawableObject, type SlotContent } from "./objectdraw.js";
 import type { ObjectFolder } from "./objectfolder.js";
 import { loadLotModule, type IntegrityWorld, type ObjectModule, type PlacedObject } from "./objects.js";
-import { OBJ_TYPE_PORTAL } from "./objselector.js";
+import { OBJ_TYPE_PERSON, OBJ_TYPE_PORTAL } from "./objselector.js";
 import { Renderer } from "./renderer.js";
 import { SEG_ROTATION } from "./tilewalls.js";
 
 class DrawableLotObject implements DrawableObject {
   next: DrawableObject | null = null;
+  slotContents?: () => Iterable<SlotContent>;
 
   constructor(
     readonly obj: PlacedObject,
@@ -113,8 +114,29 @@ export async function loadLotObjectDrawer(house: ResFile, world: IntegrityWorld)
       d = new DrawableLotObject(o, renderer(o.selector.res));
       drawables.set(o, d);
       Object.defineProperty(d, "next", { get: () => drawableOf(skipPeople(objects.get(o.nextSiblingId))) });
+      // cXObject::DrawIso's DrawObjectSlot pass (not for people: OBJD type 2).
+      if (o.selector.objd.objectType !== OBJ_TYPE_PERSON) d.slotContents = () => slotContents(o);
     }
     return d;
+  };
+  function* slotContents(o: PlacedObject): Generator<SlotContent> {
+    for (let i = 1; i < o.objectSlots.length; i++) {
+      const s = o.objectSlots[i]!;
+      const held = s.containedId > 0 ? drawableOf(objects.get(s.containedId)) : null;
+      if (held) yield { obj: held, x: s.x, y: s.y, z: s.z };
+    }
+  }
+  /**
+   * In an object slot (1..) of a non-person: drawn by its container's
+   * DrawIso, never on its own (HouseViewer::DoStaticToDynamicObjectTransitions
+   * leaves objects with a PlacementSpec container out of the dynamic list).
+   * Objects people hold are drawn at their hand (placeHeld).
+   */
+  const inObjectSlot = (o: PlacedObject): boolean => {
+    const p = objects.get(o.parentId);
+    if (!p || p.isPerson) return false;
+    for (let i = 1; i < p.objectSlots.length; i++) if (p.objectSlots[i]!.containedId === o.objectId) return true;
+    return false;
   };
   for (const o of objects.values()) drawableOf(o);
   const drawer = new ObjectModuleDrawer(
@@ -123,7 +145,7 @@ export async function loadLotObjectDrawer(house: ResFile, world: IntegrityWorld)
       for (const o of objects.values()) {
         const d = drawableOf(o);
         // Out-of-world objects (picked up, or just bought) sit at negative coordinates.
-        if (d?.isDynamic && o.fx >= 0 && o.fy >= 0) yield d;
+        if (d?.isDynamic && o.fx >= 0 && o.fy >= 0 && !inObjectSlot(o)) yield d;
       }
     },
   );

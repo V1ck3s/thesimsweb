@@ -895,6 +895,9 @@ export class SimModule {
         y.obj.relations.delete(x.id);
       }
       if (this.tutorialObject === x) this.setTutorialObject(null);
+      // ~cXObject: cSoundPlayer::QuietBySourceID(id) (a looping voice track
+      // with this source, e.g. the mail carrier's mailbox_deliver_vox, stops).
+      this.soundHooks?.killSounds(x.id);
     }
     for (const x of group) this.onKill?.(x);
   }
@@ -965,6 +968,32 @@ export class SimModule {
   /** Neighborhood::FindNeighborByGUID. */
   findNeighborByGUID(guid: number): Neighbor | null {
     return this.nbhd?.neighbors.find((n) => (n.guid | 0) === (guid | 0)) ?? null;
+  }
+
+  /**
+   * Neighborhood::RemoveFromFamily(neighbor): fails (false) when the
+   * neighbor's family number (Neighbor +0xee, person data 0x3d) is 0, names
+   * no family or the family does not list them. Otherwise the person's
+   * instance (ObjectModule::GetPersonByGUID, cXPerson +0x606) and the
+   * neighbor lose the family number, Family::RemoveMember drops the GUID,
+   * UpdateInstanceVisitorTypes runs and the family is marked changed
+   * (+0x124 = 1, +0x138 bit 3 cleared; NeighborhoodStore saves the member
+   * list); GlobalDispatch(0xe8) refreshes the control panel.
+   */
+  removeFromFamily(nb: Neighbor): boolean {
+    const number = nb.personData?.[0x3d] ?? 0;
+    if (number === 0) return false;
+    const fam = this.nbhd?.families.find((f) => f.chunkId === number);
+    const i = fam ? fam.memberGuids.findIndex((g) => (g | 0) === (nb.guid | 0)) : -1;
+    if (!fam || i < 0) return false;
+    const inst = this.persons.find((p) => (p.obj.selector.guid | 0) === (nb.guid | 0));
+    if (inst) inst.pd[0x3d] = 0;
+    nb.personData![0x3d] = 0;
+    fam.memberGuids.splice(i, 1);
+    this.sim.state?.removeFamilyMember(nb.guid);
+    this.updateInstanceVisitorTypes();
+    fam.flags &= ~8;
+    return true;
   }
 
   /**

@@ -21,6 +21,7 @@ import { RenderParam } from "./renderparam.js";
 import { getOverlappingSprite, poolCornerSpriteId, poolSpriteId, rotateTileBits, type ByteLayer } from "./pools.js";
 import { LIGHT_POOLS_ENABLED, lightMapSet, NO_LIGHT, processFloorLightEntry } from "./lightmaps.js";
 import { RoofRenderer } from "./roofrender.js";
+import { PX_COLOR, type SpriteFrame } from "./spr.js";
 import { getViewWall } from "./tools/wallworld.js";
 import { DIRS, RotatableWorld } from "./world.js";
 import { LEVEL_PX, makeZSpriteLookup, ZBufferLookup } from "./zbuffer.js";
@@ -73,7 +74,7 @@ class TerrainCache {
     const t = v.terrain?.cacheKey?.() ?? null;
     if (t === null || v.thumbnailClearColor !== null) return null;
     const w = v.world;
-    return `${t}|${v.originX},${v.originY},${v.scale},${w.rotation},${w.size},${w.minX},${w.maxX},${w.minY},${w.maxY}`;
+    return `${t}|${v.viewW}x${v.viewH}|${v.originX},${v.originY},${v.scale},${w.rotation},${w.size},${w.minX},${w.maxX},${w.minY},${w.maxY}`;
   }
 
   /** Whether the target still holds the terrain pass for the viewer's current state. */
@@ -150,6 +151,8 @@ export class HouseViewer {
   readonly zbuf: ZBufferLookup;
   private readonly zLookupIndex: number;
   private readonly floorIndex = new Map<number, number>();
+  /** Build-mode grid sprites (cRenderer::DrawGrid / GridBlit) by scale. */
+  private readonly gridTex = new Map<number, SpriteTex | null>();
   /** Water sprites with their transparent color keyed out, by (id << 2) | frame. */
   private readonly waterTex = new Map<number, SpriteTex | null>();
   private target: TerrainTarget;
@@ -177,6 +180,8 @@ export class HouseViewer {
   private pickCameraKey = "";
   /** cXPerson::DrawIso's sprite slot pass (balloons.ts): balloons and headlines, drawn after the people. */
   spriteSlots: { draw(viewer: HouseViewer, comp: Compositor): void } | null = null;
+  /** CPState::GetMode() == 0 (build mode), as RenderStaticRow tests it for the upper-level grid. */
+  isBuildMode: () => boolean = () => false;
   /** HouseViewer::RenderCursorObject: the buy / build tool's cursor object, drawn after the dynamic objects. */
   cursor: { draw(viewer: HouseViewer, comp: Compositor, rp: RenderParam): void } | null = null;
   /** cRoofLayer::RenderRoofPolys (created with the first roof drawn). */
@@ -201,20 +206,40 @@ export class HouseViewer {
     readonly world: RotatableWorld,
     readonly comp: Compositor,
     readonly floors: FloorGraphicsMgr,
-    /** View rectangle (HouseViewer+0x28): the 3D viewport, width x (height - 100). */
+    /** View rectangle (HouseViewer+0x28): the 3D viewport, width x (height - 100); its height follows setViewportHeight. */
     readonly viewW: number,
-    readonly viewH: number,
+    public viewH: number,
   ) {
     this.zbuf = new ZBufferLookup(viewW, viewH);
     this.zLookupIndex = comp.table1D("zsprite", makeZSpriteLookup());
-    this.target = {
+    this.target = HouseViewer.terrainTarget(comp);
+    this.buildMaxAltsTable();
+  }
+
+  private static terrainTarget(comp: Compositor): TerrainTarget {
+    return {
       width: comp.width,
       height: comp.height,
       color: new Uint32Array(comp.width * comp.height),
       depth: new Uint16Array(comp.width * comp.height),
       clip: { left: 0, top: 0, right: comp.width, bottom: comp.height },
     };
-    this.buildMaxAltsTable();
+  }
+
+  /**
+   * HouseViewer::SetViewportHeight (cWinViewControl::SetMode: the lot
+   * view's height less the control panel's opaque 100 px, or all of it
+   * when the panel is collapsed): the 3D viewport (cAnimDeviceSub::
+   * SetViewportHeight) and the view rectangle (+0x28) take the new height;
+   * the offsets stay, so the view grows or shrinks at the bottom. The
+   * depth lookups (+0x4c) keep the projection they were made with.
+   */
+  setViewportHeight(h: number): void {
+    if (h === this.viewH) return;
+    this.viewH = h;
+    this.comp.resize(this.viewW, h);
+    this.target = HouseViewer.terrainTarget(this.comp);
+    this.dirty = true;
   }
 
   // --- projection -------------------------------------------------------------
@@ -398,7 +423,7 @@ export class HouseViewer {
     const z = this.comp.readDepth(px, py);
     if (z !== null) {
       const view = { zoom: this.scale, rotation: this.world.rotation, originX: this.originX, originY: this.originY, width: this.viewW, height: this.viewH };
-      const key = `${view.zoom}|${view.rotation}|${view.originX}|${view.originY}`;
+      const key = `${view.zoom}|${view.rotation}|${view.originX}|${view.originY}|${view.height}`;
       if (this.pickCameraKey !== key || !this.pickCamera) {
         this.pickCamera = new AnimDeviceCamera(view);
         this.pickCameraKey = key;
@@ -926,6 +951,31 @@ export class HouseViewer {
   /** +0x4b4: cPoolTool's preview layer (HouseViewer::ApplyDynamicPoolLayer). */
   dynamicPoolLayer: ByteLayer | null = null;
 
+  /**
+   * cRenderer::DrawGrid with the global floor renderer, sprite
+   * (scale - 1) * 0x100 + 1 (floor 1, for its shape), frame 0, at the floor's
+   * position. GridBlit writes its two raw colors (no ambient, no light pool)
+   * where the depth GetTerrainZ + (level - 1) * level step plus the floor
+   * table row is not behind the z-buffer (DrawFloor's depth without its
+   * +0x41).
+   */
+  private drawGrid(x: number, y: number, level: number, fx: number, fy: number): void {
+    const s = this.scale;
+    let tex = this.gridTex.get(s);
+    if (tex === undefined) {
+      const shape = this.floors.global.frame(((s - 1) << 8) + 1, 0);
+      tex = shape && shape.width > 0 && shape.height > 0 ? this.comp.uploadSprite(makeGridFrame(shape), GRID_PALETTE) : null;
+      this.gridTex.set(s, tex);
+    }
+    if (!tex) return;
+    const zb = this.zbuf;
+    const base = this.getTerrainZ(x, y) + (level - 1) * zb.levelZ.get(s)! - zb.floorAt(s, fy, this.originY);
+    const ambient = this.comp.ambient;
+    this.comp.ambient = 1;
+    this.comp.drawFloorSprite(tex, fx, fy, false, base, this.floorRowIndex(fy));
+    this.comp.ambient = ambient;
+  }
+
   /** HouseViewer::ApplyDynamicPoolLayer */
   applyDynamicPoolLayer(layer: ByteLayer): void {
     this.dynamicPoolLayer = layer;
@@ -975,10 +1025,16 @@ export class HouseViewer {
     for (let k = 0; k < 4; k++) if (corners & (1 << k)) drawFloor(this.comp, this, g, tile, poolCornerSpriteId(k, s), sx, sy);
   }
 
-  /** RenderStaticRow: upper-level floors and the objects standing on each tile. */
+  /**
+   * RenderStaticRow: upper-level floors and the objects standing on each
+   * tile. A tile without a floor on the current level (not level 1) gets the
+   * build-mode grid when it is floorable (flags bit 0, ComputeRooms) and the
+   * mode is build (lbl_105BA690, a render debug flag, is 1).
+   */
   private renderStaticRow(x0: number, y0: number, count: number, step: readonly [number, number], level: number, rp: RenderParam): void {
     const w = this.world;
     const s = this.scale;
+    const buildGrid = level !== 1 && level === this.level && this.isBuildMode();
     for (let k = 0; k < count; k++) {
       const x = x0 + step[0] * k;
       const y = y0 + step[1] * k;
@@ -989,13 +1045,71 @@ export class HouseViewer {
       this.comp.ambient = rp.ambient;
       if (level >= 2) {
         const floor = w.getFloor(x, y, level);
-        if (floor !== 0) this.drawTileFloor(x, y, level, floor, base.h - (8 << s), base.v - (alt[1] << (s + 1)));
+        const fx = base.h - (8 << s);
+        const fy = base.v - (alt[1] << (s + 1));
+        if (floor !== 0) this.drawTileFloor(x, y, level, floor, fx, fy);
+        else if (buildGrid && w.getFlags(x, y, level) & 1) this.drawGrid(x, y, level, fx, fy);
       }
       if (level === 1) this.drawPoolTile(x, y, rp);
       if (this.objects && w.getTileObjectID(x, y, level) !== 0) this.objects.drawTileObjects(this, this.comp, x, y, level, rp);
     }
   }
 }
+
+/**
+ * GridBlit's pattern over the shape of a floor sprite (only its pixel runs
+ * count, not their colors), for a diamond of height h (0x10 / 0x20 / 0x40):
+ * with r the row and c the column in the sprite, a = r + (c + 1) / 2 and
+ * b = r - c / 2, the top edges (a == h / 2 or b == 1 - h / 2) are white
+ * (0xffff), the bottom edges (a == 3h / 2 - 1 or b == h / 2) and a dot every
+ * 4 pixels on alternating rows (c & 3 == r & 3, both 0 or both 2) are black
+ * (0). Every other pixel is left alone.
+ */
+function makeGridFrame(shape: SpriteFrame): SpriteFrame {
+  const { width, height } = shape;
+  const n = width * height;
+  const f: SpriteFrame = {
+    width,
+    height,
+    yLoc: 0,
+    xLoc: 0,
+    index: new Uint8Array(n),
+    z: new Uint8Array(n),
+    alpha: new Uint8Array(n),
+    mode: new Uint8Array(n),
+    paletteId: 0,
+    transparentIndex: -1,
+  };
+  const h = height;
+  for (let r = 0; r < height; r++) {
+    for (let c = 0; c < width; c++) {
+      const i = r * width + c;
+      if (shape.mode[i] === 0) continue;
+      const a = r + ((c + 1) >> 1);
+      const b = r - (c >> 1);
+      let on = ((c & 3) === 0 && (r & 3) === 0) || ((c & 3) === 2 && (r & 3) === 2);
+      let white = false;
+      if (a === h / 2 || b === 1 - h / 2) {
+        on = true;
+        white = true;
+      } else if (a === (3 * h) / 2 - 1 || b === h / 2) {
+        on = true;
+        white = false;
+      }
+      if (!on) continue;
+      f.index[i] = white ? 1 : 0;
+      f.mode[i] = PX_COLOR;
+    }
+  }
+  return f;
+}
+
+/** GridBlit's two colors (palette index 0 black, 1 white). */
+const GRID_PALETTE = (() => {
+  const p = new Uint8Array(256 * 3);
+  p.fill(0xff, 3, 6);
+  return p;
+})();
 
 /** World coordinates of a view tile. */
 function w2(world: RotatableWorld, x: number, y: number): [number, number] {

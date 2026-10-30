@@ -20,6 +20,8 @@
  */
 
 import { OD, type XObject } from "./objects.js";
+import { ReconBuffer } from "./reconbuffer.js";
+import type { Room } from "./rooms.js";
 import { getWall, patternIndex } from "./tilewalls.js";
 import type { FixedWorld } from "./world.js";
 
@@ -398,4 +400,247 @@ export function summarizeHouseStats(objects: ObjectList, fixed: FixedWorld, wall
     transitFilterFlags: (stats.bits << 16) >> 16,
     familyFlags: (stats.category1InWorld ? 1 : 0) | (stats.category9 ? 2 : 0),
   };
+}
+
+// --- House::GetHouseStats (the Live mode house page) ----------------------------
+
+/** NeighborhoodConstants "fill value for layout history" (lbl_105BA14C, default 200). */
+const LAYOUT_HISTORY_FILL = 200;
+/** NeighborhoodConstants "yard score multiplier" (lbl_105BA150, default 0.33). */
+const YARD_SCORE_MULTIPLIER = Math.fround(0.33);
+/** NeighborhoodConstants "upkeep penalty per dirty object" (lbl_105BA1D0, default 6). */
+const UPKEEP_PENALTY_DIRTY = 6;
+/** NeighborhoodConstants "upkeep penalty per broken object" (lbl_105BA1CC, default 15). */
+const UPKEEP_PENALTY_BROKEN = 15;
+/** RoomScoreConstants "outdoor room impact factor" (lbl_105BEA40, default 2). */
+const OUTDOOR_IMPACT_FACTOR = 2;
+/** RoomScoreConstants "outdoor good object count factor" (lbl_105BEA3C, default 1). */
+const OUTDOOR_GOOD_OBJECT_FACTOR = 1;
+/** Object data 7 (+0x58): room impact; 29 (+0x84): room (negative = not counted); 34 (+0x8e): hidden; 39 (+0x98): dirtiness. */
+const OD_ROOM_IMPACT = 7;
+const OD_ROOM = 29;
+const OD_DIRTY = 39;
+/** Object data 59 (category) of the objects that make a bedroom (4) or a bathroom (5..7) (Room::CollectObjectStats). */
+const CATEGORY_BED = 4;
+/** Global.iff STR# 505: the size and furnishings score curves (House::Initialize, PiecewiseFn::AddPointsFromText). */
+export const STR_HOUSE_SCORE_CURVES = 505;
+
+/**
+ * House +0x30..+0x5c, the layout (route) history: five past days then today,
+ * each (ticks, ticks spent routing), filled by House::AddLayoutTick and
+ * shifted by House::DoCommand at midnight; saved in HOUS 1
+ * (SimpleReconObject<House>::DoStream, version >= 0x26).
+ */
+export interface LayoutHistory {
+  ticks: number[];
+  routing: number[];
+}
+
+/** House::ClearRouteHistory: the past days at the fill value, today empty. */
+export function clearLayoutHistory(): LayoutHistory {
+  const f = LAYOUT_HISTORY_FILL;
+  return { ticks: [f, f, f, f, f, 0], routing: [f, f, f, f, f, 0] };
+}
+
+/**
+ * SimpleReconObject<House>::DoStream (read): the house name (version > 0x12),
+ * then for each of the six days the routing ticks and the ticks (version >=
+ * 0x26; older files get ClearRouteHistory's values).
+ */
+export function readLayoutHistory(bytes: Uint8Array | null | undefined): LayoutHistory {
+  if (!bytes) return clearLayoutHistory();
+  try {
+    const { buf, version } = ReconBuffer.fromChunk(bytes);
+    if (version > 0x12) buf.reconString();
+    if (version < 0x26) return clearLayoutHistory();
+    const h: LayoutHistory = { ticks: [], routing: [] };
+    for (let i = 0; i < 6; i++) {
+      h.routing.push(buf.recon32());
+      h.ticks.push(buf.recon32());
+    }
+    return h;
+  } catch {
+    return clearLayoutHistory();
+  }
+}
+
+/** PiecewiseFn: points sorted by x (AddPoint drops an x already there), at most 8 (SetMaxPoints). */
+export interface PiecewiseFn {
+  pts: Array<{ x: number; y: number }>;
+}
+
+/** PiecewiseFn::AddPointsFromText: "(x;y)" pairs of integers. */
+export function piecewiseFromText(text: string | undefined): PiecewiseFn {
+  const pts: Array<{ x: number; y: number }> = [];
+  for (const m of (text ?? "").matchAll(/\(\s*(-?\d+)\s*;\s*(-?\d+)\s*\)/g)) {
+    const x = Math.fround(Number(m[1]));
+    const y = Math.fround(Number(m[2]));
+    if (pts.length >= 8 || pts.some((p) => p.x === x)) continue;
+    const i = pts.findIndex((p) => x < p.x);
+    pts.splice(i < 0 ? pts.length : i, 0, { x, y });
+  }
+  return { pts };
+}
+
+/**
+ * The curve lookup HouseStats::GetSizeScore / GetFurnishingsScore inline:
+ * the last point left of x (strictly), interpolated toward the next one;
+ * the end values outside. Truncated to an int.
+ */
+function evalPiecewise(fn: PiecewiseFn, x: number): number {
+  const p = fn.pts;
+  if (p.length === 0) return 0;
+  let i = p.length - 1;
+  let d = 0;
+  for (; i >= 0; i--) {
+    d = Math.fround(x - p[i]!.x);
+    if (d > 0) break;
+  }
+  if (i === p.length - 1) return Math.trunc(p[i]!.y);
+  if (i === -1) return Math.trunc(p[0]!.y);
+  const a = p[i]!;
+  const b = p[i + 1]!;
+  const inv = Math.fround(1 / Math.fround(b.x - a.x));
+  return Math.trunc(Math.fround(Math.fround(d * inv) * Math.fround(b.y - a.y) + a.y));
+}
+
+/** What House::GetHouseStats reads. */
+export interface HousePageInputs {
+  fixed: FixedWorld;
+  /** RoomManager's rooms (the map at +0x10). */
+  rooms: Iterable<Room>;
+  /** ObjectModule's objects, by id, in module order. */
+  objects: ObjectList;
+  /** Family::CountMembers of the house's family. */
+  members: number;
+  /** cSimulator +0xa0 (objects) and +0xa4 (architecture and other). */
+  objectValue: number;
+  archValue: number;
+  layout: LayoutHistory;
+  /** House +0x60 / +0x64: the size and furnishings curves. */
+  sizeFn: PiecewiseFn;
+  furnishingsFn: PiecewiseFn;
+}
+
+/** The scores and lines of the house page (CPState's HouseStats). */
+export interface HousePageStats {
+  sizeScore: number;
+  furnishingsScore: number;
+  yardScore: number;
+  upkeepScore: number;
+  layoutScore: number;
+  squareFeet: number;
+  numBedrooms: number;
+  numBathrooms: number;
+  lotSize: number;
+}
+
+/**
+ * ObjectIterator(tile): the object on the tile, then its slots' hierarchy
+ * (slot 0 = the next object on the tile, the others = contained objects).
+ */
+function objectsOnTile(fixed: FixedWorld, objects: ObjectList, x: number, y: number, level: number): XObject[] {
+  const out: XObject[] = [];
+  const first = fixed.objects[level - 1]!.s16(x, y);
+  const stack = first > 0 ? [first] : [];
+  const seen = new Set<number>();
+  for (let id = stack.pop(); id !== undefined; id = stack.pop()) {
+    if (seen.has(id)) continue;
+    seen.add(id);
+    const o = objects.get(id);
+    if (!o) continue;
+    for (let i = o.objectSlots.length - 1; i >= 0; i--) {
+      const c = o.objectSlots[i]!.containedId;
+      if (c > 0) stack.push(c);
+    }
+    out.push(o);
+  }
+  return out;
+}
+
+/**
+ * The parts of a room House::GetHouseStats and the yard score read, from
+ * RoomManager::ComputeRooms' loop: Room::CollectTileStats (+0x38 area, 2 per
+ * tile, 1 per half of a tile a diagonal wall splits, 2 outside; +0x54 pool
+ * tiles) and Room::CollectObjectStats over each tile's objects that are not
+ * hidden and counted in a room (+0x58 / +0x5c bed / bathroom objects, +0x50
+ * room impact, outside only the negative ones, +0x54 the others counted).
+ */
+function roomScoreParts(r: Room, fixed: FixedWorld, objects: ObjectList): { area2: number; beds: number; baths: number; impact: number; good: number } {
+  const s = { area2: 0, beds: 0, baths: 0, impact: 0, good: 0 };
+  const outside = r.isOutside();
+  for (const t of r.tiles) {
+    if (fixed.pool.u8(t.x, t.y) < POOL_DECK) s.good++;
+    if (outside) s.area2 += 2;
+    else s.area2 += (getWall(fixed, t.x, t.y, t.level).segs & 0x30) === 0 ? 2 : 1;
+    for (const o of objectsOnTile(fixed, objects, t.x, t.y, t.level)) {
+      const d = o.objectData;
+      if (d[OD.hidden] !== 0 || d[OD_ROOM]! < 0) continue;
+      const category = d[OD_CATEGORY]!;
+      if (category === CATEGORY_BED) s.beds++;
+      else if (category > CATEGORY_BED && category < 8) s.baths++;
+      const impact = d[OD_ROOM_IMPACT]!;
+      if (!outside || impact < 0) s.impact += impact;
+      if (impact >= 0) s.good++;
+    }
+  }
+  return s;
+}
+
+/**
+ * House::GetHouseStats and the HouseStats getters cWinSubpanelHouse::TSPaint
+ * calls:
+ *  - square feet: 9 per unit of Room::GetArea of the inside rooms in use;
+ *    bedrooms / bathrooms: those rooms with a bed / bathroom object;
+ *  - lot size: world size < 40 small, < 50 medium, else large;
+ *  - size: the size curve at square feet per family member (0 without one);
+ *  - furnishings: the furnishings curve at +0xa4 / +0xa0 (100 when there
+ *    are no objects);
+ *  - yard (RoomManager +0x4c, ComputeRooms): the outside rooms' Room +0x68
+ *    (impact x 2 + good objects and pool tiles x 1) times 0.33, 0..100;
+ *  - upkeep (ObjectModule::FillInObjectStats): 15 per broken object, else 6
+ *    per dirty one, against the count of catalog objects (OBJD +0x4e, +0x50
+ *    or +0x8a set): (count - penalty) / count x 100;
+ *  - layout: 100 x (ticks - 2 x routing ticks) / ticks over the history.
+ */
+export function getHouseStats(inp: HousePageInputs): HousePageStats {
+  const { fixed, objects } = inp;
+  let squareFeet = 0;
+  let numBedrooms = 0;
+  let numBathrooms = 0;
+  let yard = 0;
+  for (const r of inp.rooms) {
+    if (!r.inUse) continue;
+    const s = roomScoreParts(r, fixed, objects);
+    if (r.isOutside()) {
+      yard = Math.fround(yard + Math.fround(s.impact * OUTDOOR_IMPACT_FACTOR + s.good * OUTDOOR_GOOD_OBJECT_FACTOR));
+      continue;
+    }
+    squareFeet += Math.trunc(s.area2 / 2) * 9;
+    if (s.baths > 0) numBathrooms++;
+    if (s.beds > 0) numBedrooms++;
+  }
+  const lotSize = fixed.size < 40 ? 0 : fixed.size < 50 ? 1 : 2;
+
+  // FillInObjectStats
+  let penalty = 0;
+  let count = 0;
+  for (const o of objects.values()) {
+    const d = o.objectData;
+    if (d[OD_REPAIR_STATE] !== 0) penalty += UPKEEP_PENALTY_BROKEN;
+    else if (d[OD_DIRTY]! > 0) penalty += UPKEEP_PENALTY_DIRTY;
+    const objd = o.selector.objd;
+    if (objd.i16(0x4e) !== 0 || objd.i16(0x50) !== 0 || objd.i16(0x8a) !== 0) count++;
+  }
+
+  const clamp01 = (f: number): number => Math.min(1, Math.max(0, f));
+  const sizeScore = inp.members === 0 ? 0 : evalPiecewise(inp.sizeFn, Math.fround(squareFeet / inp.members));
+  const ratio = inp.objectValue === 0 ? 100 : Math.fround(inp.archValue / inp.objectValue);
+  const furnishingsScore = evalPiecewise(inp.furnishingsFn, ratio);
+  const yardScore = Math.trunc(Math.min(100, Math.max(0, Math.fround(yard * YARD_SCORE_MULTIPLIER))));
+  const upkeepScore = count === 0 ? 0 : Math.trunc(100 * clamp01(Math.fround((count - penalty) / count)));
+  const ticks = Math.max(1, inp.layout.ticks.reduce((a, b) => a + b, 0));
+  const routing = inp.layout.routing.reduce((a, b) => a + b, 0) * 2;
+  const layoutScore = Math.trunc(100 * clamp01(Math.fround((ticks - routing) / ticks)));
+  return { sizeScore, furnishingsScore, yardScore, upkeepScore, layoutScore, squareFeet, numBedrooms, numBathrooms, lotSize };
 }
