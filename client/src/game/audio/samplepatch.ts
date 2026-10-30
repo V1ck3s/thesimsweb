@@ -78,7 +78,8 @@ export class SampleChannel {
   static readonly playLog: Array<{ path: string; at: number }> = [];
 
   private readonly gain: GainNode;
-  private readonly panner: StereoPannerNode;
+  /** cTSSnd::SetPan: a DirectSound pan (per-side attenuation, no centre dip). */
+  private readonly panner: DSPanner;
   private source: AudioBufferSourceNode | null = null;
   private element: HTMLAudioElement | null = null;
   private elementNode: MediaElementAudioSourceNode | null = null;
@@ -92,8 +93,9 @@ export class SampleChannel {
   constructor(readonly patch: SamplePatch) {
     const ctx = audioContext();
     this.gain = ctx.createGain();
-    this.panner = ctx.createStereoPanner();
-    this.gain.connect(this.panner).connect(masterOut());
+    this.panner = new DSPanner(ctx);
+    this.gain.connect(this.panner.input);
+    this.panner.output.connect(masterOut());
   }
 
   /** IsPlaying: true from play() (including while loading) until the end. */
@@ -114,7 +116,7 @@ export class SampleChannel {
 
   /** Pan 0..1024 (512 centre). */
   setPan(p: number): void {
-    this.panner.pan.value = Math.max(-1, Math.min(1, (p - 0x200) / 0x200));
+    this.panner.setPan(p);
   }
 
   /** Pitch in cents around 3600 (cTrackPlayer passes trackPitch + patchPitch - 3600). */
@@ -206,7 +208,7 @@ export class SampleChannel {
   unpause(): void {
     if (!this.paused) return;
     this.paused = false;
-    this.gain.connect(this.panner);
+    this.gain.connect(this.panner.input);
     if (this.element && this.playing) void this.element.play();
   }
 
@@ -215,5 +217,48 @@ export class SampleChannel {
     this.stop();
     this.gain.disconnect();
     this.panner.disconnect();
+  }
+}
+
+/**
+ * IDirectSoundBuffer::SetPan as cTSSnd::SetPan drives it: 0..1024 becomes
+ * -10000..10000 (1/100 dB); a positive pan attenuates the left side by that
+ * many dB, a negative one the right side; the centre plays both sides at full
+ * volume. (A StereoPannerNode is equal-power: -3 dB at the centre and a much
+ * gentler curve.) Mono input is upmixed to both sides first.
+ */
+export class DSPanner {
+  /** Upmixes to 2 channels ("explicit" 2, "speakers": mono -> L = R). */
+  readonly input: GainNode;
+  readonly output: ChannelMergerNode;
+  private readonly split: ChannelSplitterNode;
+  private readonly left: GainNode;
+  private readonly right: GainNode;
+
+  constructor(ctx: BaseAudioContext) {
+    this.input = new GainNode(ctx, { channelCount: 2, channelCountMode: "explicit", channelInterpretation: "speakers" });
+    this.split = ctx.createChannelSplitter(2);
+    this.left = ctx.createGain();
+    this.right = ctx.createGain();
+    this.output = ctx.createChannelMerger(2);
+    this.input.connect(this.split);
+    this.split.connect(this.left, 0).connect(this.output, 0, 0);
+    this.split.connect(this.right, 1).connect(this.output, 0, 1);
+  }
+
+  /** cTSSnd::SetPan(0..1024, 512 = centre). */
+  setPan(p: number): void {
+    const c = Math.max(0, Math.min(0x400, p | 0));
+    const mb = Math.trunc((c * 20000) / 1024) - 10000;
+    this.left.gain.value = mb > 0 ? Math.pow(10, -mb / 2000) : 1;
+    this.right.gain.value = mb < 0 ? Math.pow(10, mb / 2000) : 1;
+  }
+
+  disconnect(): void {
+    this.input.disconnect();
+    this.split.disconnect();
+    this.left.disconnect();
+    this.right.disconnect();
+    this.output.disconnect();
   }
 }

@@ -42,6 +42,9 @@ until `soundPlayer.initialize()` installs the hook.
   reads/writes to another track (FadeAndKillTrack*, SetMainMusicSongAndHitList).
 - Volume: UpdateVolPan = extvol(0x13) × group volume × vol(0x12) / 1024², halved
   when ducked; cTSSnd::SetVolume maps 0..1024 linearly in dB from −40 dB to 0 dB.
+  Pan: cTSSnd::SetPan maps 0..1024 to a DirectSound pan −10000..10000 (1/100 dB
+  of attenuation on the far side, none at the centre): `DSPanner` in
+  samplepatch.ts (not a StereoPannerNode, which is equal-power).
   Options volumes 0..10 → table `[0,300,390,490,590,690,790,840,895,960,1024]`
   → control groups 1 sfx, 2 music, 3 vox.
 - Music: cBoxX::Init makes a receiver per music folder (`Music\Modes\Buy` →
@@ -75,9 +78,13 @@ until `soundPlayer.initialize()` installs the hook.
   `ui_remove` points at `UI_remove.xa`, absent from SoundData.far (game data);
   `ui_terrain_raise/lower` use a hitlist track (no default patch).
 - Expansion samples: FAR entries of ExpansionPack, ExpansionShared, EP5–7 decode.
-  EP6/EP7 (and 5 base files) are tagged `XA\x12\0`; decoded as `XA\0\0`, the
-  duration matches the header size exactly (e.g. smoothie_brain3 2.127 s);
-  needs an ear check.
+  EP6/EP7 (and 5 base files) are tagged `XA\x12\0`: same layout (cWaveXA::Init
+  only checks "XA" and wFormatTag 1).
+- XA decoder (2026-10-31, U21): high nibble first, rounding `+0x80`, channel
+  count at 0x0a (WAVEFORMATEX), stereo rows interleaved by byte, output
+  trimmed to the declared size, as cWaveXA (Windows FUN_005fc013). Identical
+  to `ffmpeg -f xa` (adpcm_ea_maxis_xa) on 91 random files of every FAR. The
+  earlier decoder swapped every sample pair (harsh noise on all XA sounds).
 - Music: buy1.mp3 164 s, latin2.mp3 389 s, loadloop.wav 38 s, sting_baby.wav 7.6 s.
 - Flows: mode 3 → river_loop.xa + MainMusicLoop playing `Music\Modes\Nhood\latin*.mp3`;
   mode 0 → 515 faded and killed in ~7 s; stereo_rock then stereo_jazz on the same
@@ -176,6 +183,17 @@ reg 0x13 = a2, 0x14 = a3, and UpdateAmbienceLoop passes (0, 0, 0) — same as or
   90..92 `music_magictown_build`, else `bkground_build`; Camera
   `bkground_camera` (= build music); Options `bkground_option` (no change).
 - Buy -> Build keeps the current song in the original too (see U8 in playtest.md).
+- PauseSounds runs on every CPState switch to a mode other than Live. The Windows
+  cBoxX::Pause (FUN_00574972) leaves MainMusicLoop (0x203) playing, with the UI
+  tracks; the Mac one pauses it, and so did the port: Options (mode 7, no music
+  change) left the song paused (U28). Live after Buy / Build / Camera kills
+  MainMusicLoop at once (no fade, FUN_005752c4 case 0: vtable +0x38 =
+  cTrackPlayer::Kill); after Options or the neighborhood it fades
+  (FadeAndKillTrackSlow, 519).
+- Object deletion and cXObject::Cleanup quiet the object's sounds
+  (cSoundPlayer::QuietBySourceID from ~cXObject / Cleanup): `SimModule.killObject`
+  and `XObject.cleanup` call `soundHooks.killSounds(id)` (U23: the mail carrier's
+  looping mailbox_deliver_vox).
 - cBoxX's timer catches up missed 20 ms ticks (at most 1 s per callback): the
   original cTSCallbackTimer runs on its own thread.
 - Camera: `ui_camera_photo` on each snapshot (HouseViewer::TakeAsyncSnapshot, Windows).

@@ -174,15 +174,9 @@ export function loadBuffer(path: string): Promise<AudioBuffer> {
       let wav: Uint8Array = bytes;
       if (isXa(bytes)) {
         const wasm = await engine();
-        // The Superstar / Makin' Magic samples (and a few base ones) are tagged
-        // "XA\x12\0"; the header and ADPCM blocks are laid out like "XA\0\0",
-        // which is the variant the decoder accepts.
-        let xa = bytes;
-        if (bytes[2] === 0x12 && bytes[3] === 0) {
-          xa = bytes.slice();
-          xa[2] = 0;
-        }
-        wav = (wasm.decodeXa(xa) as { wav: Uint8Array }).wav;
+        // cWaveXA::Init only checks "XA" and wFormatTag == 1; the tag bytes
+        // after "XA" ("\0\0", "J\0", "\x12\0") do not change the layout.
+        wav = (wasm.decodeXa(bytes) as { wav: Uint8Array }).wav;
       }
       const copy = new ArrayBuffer(wav.byteLength);
       new Uint8Array(copy).set(wav);

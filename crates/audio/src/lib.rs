@@ -1,38 +1,34 @@
-//! Audio decoders for The Sims (Maxis) — currently EA-XA ADPCM.
+//! Audio decoders for The Sims (Maxis) — currently Maxis XA (EA-XA ADPCM).
 //!
-//! `XA` is a Maxis container around the EA-XA 4-predictor ADPCM codec used in
-//! several EA games of that era. Layout:
+//! `XA` is a Maxis container around the EA-XA 4-predictor ADPCM codec. Layout
+//! (a `WAVEFORMATEX` after the output size):
 //!
 //! ```text
 //! Offset  Size  Field
 //! ------  ----  --------------------------------------------------------
-//! 0x00    4     magic ("XA\0\0" or "XAJ\0")
+//! 0x00    4     magic: "XA" + 2 tag bytes ("XA\0\0", "XAJ\0", "XA\x12\0", "XAI\0")
 //! 0x04    4     pcm_size_bytes (decompressed size in bytes)
-//! 0x08    2     channels (1 = mono, 2 = stereo)
-//! 0x0A    2     unknown (often 1; possibly version)
-//! 0x0C    4     sample_rate (Hz)
-//! 0x10    4     avg_bytes_per_sec
-//! 0x14    2     block_align (often 2 for 16-bit mono)
-//! 0x16    2     bits_per_sample (always 16 in TS1)
-//! 0x18    …     ADPCM data (15-byte blocks each producing 28 samples)
+//! 0x08    2     wFormatTag (1 = PCM)
+//! 0x0A    2     nChannels (1 = mono, 2 = stereo)
+//! 0x0C    4     nSamplesPerSec
+//! 0x10    4     nAvgBytesPerSec
+//! 0x14    2     nBlockAlign
+//! 0x16    2     wBitsPerSample (always 16)
+//! 0x18    …     ADPCM blocks of 15 × channels bytes, 28 samples per channel
 //! ```
 //!
-//! Each ADPCM block:
-//! - Byte 0: high-nibble = predictor index (0..3 / 0..5 depending on variant),
-//!           low-nibble  = shift factor
-//! - Bytes 1..15: 14 bytes of nibble pairs → 28 4-bit signed samples
+//! Each block starts with one header byte per channel (high nibble =
+//! predictor index into the coefficient table, low nibble = shift), followed
+//! by 14 rows of one byte per channel. Each byte holds two samples, the
+//! **high nibble first**:
 //!
-//! Sample reconstruction (per nibble):
 //! ```text
-//! decoded = (nibble << 12) >> shift
-//! sample  = decoded + (coef0 * prev1 + coef1 * prev2) / 256
-//! sample  = clamp(sample, -32768, 32767)
-//! prev2   = prev1
-//! prev1   = sample
+//! sample = ((nibble << (20 - shift)) + c1 * prev1 + c2 * prev2 + 0x80) >> 8
+//! sample = clamp(sample, -32768, 32767)
 //! ```
 //!
-//! Stereo files have left/right blocks interleaved on a per-block basis.
-//! We currently only test against mono TS1 files.
+//! This matches `ffmpeg -c:a adpcm_ea_maxis_xa` sample for sample (checked
+//! on the game's own files, see `docs/decomp/audio-port.md`).
 
 #![no_std]
 
@@ -45,7 +41,7 @@ use thiserror::Error;
 pub enum AudioError {
     #[error("XA file too short: need at least {need} bytes, got {got}")]
     XaTooShort { need: usize, got: usize },
-    #[error("XA bad magic (want \"XA\\0\\0\" or \"XAJ\\0\")")]
+    #[error("XA bad magic (want \"XA\" + 2 tag bytes)")]
     XaBadMagic,
     #[error("XA channel count {0} unsupported (need 1 or 2)")]
     XaBadChannels(u16),
@@ -120,11 +116,14 @@ impl Xa {
             return Err(AudioError::XaTooShort { need: 0x18, got: data.len() });
         }
         let magic = [data[0], data[1], data[2], data[3]];
-        if &magic != b"XA\0\0" && &magic != b"XAJ\0" && &magic != b"XAI\0" {
+        // The tag bytes after "XA" vary ("\0\0", "J\0", "\x12\0", "I\0") and
+        // do not change the layout.
+        if &magic[..2] != b"XA" {
             return Err(AudioError::XaBadMagic);
         }
         let pcm_size_bytes = u32_le(data, 4);
-        let channels = u16_le(data, 8);
+        // 0x08 is wFormatTag; the channel count is the WAVEFORMATEX nChannels.
+        let channels = u16_le(data, 0x0A);
         let sample_rate = u32_le(data, 0x0C);
         let avg_bytes_per_sec = u32_le(data, 0x10);
         let block_align = u16_le(data, 0x14);
@@ -154,11 +153,13 @@ impl Xa {
     pub fn decode(data: &[u8]) -> Result<DecodedPcm, AudioError> {
         let header = Self::parse_header(data)?;
         let body = &data[header.data_offset..];
-        let samples = match header.channels {
-            1 => decode_mono(body),
-            2 => decode_stereo(body),
-            other => return Err(AudioError::XaBadChannels(other)),
-        };
+        let mut samples = decode_blocks(body, usize::from(header.channels));
+        // The last block is padded to 28 samples; keep the declared length
+        // (it matters for looped samples).
+        let declared = (header.pcm_size_bytes / 2) as usize;
+        if declared > 0 && declared < samples.len() {
+            samples.truncate(declared);
+        }
         Ok(DecodedPcm {
             sample_rate: header.sample_rate,
             channels: header.channels,
@@ -167,91 +168,41 @@ impl Xa {
     }
 }
 
-/// Predictor coefficients for EA-XA ADPCM (4-predictor variant). Each pair
-/// is `(coef0, coef1)`; the divisor is 256.
-const COEF: [(i32, i32); 4] = [
-    (0,   0),
-    (240, 0),
-    (460, -208),
-    (392, -220),
-];
+/// EA-XA predictor coefficients: `c1 = TABLE[p]`, `c2 = TABLE[p + 4]`
+/// (fixed point, divisor 256).
+const COEF: [i32; 8] = [0, 240, 460, 392, 0, 0, -208, -220];
 
-#[inline]
-fn predict(predictor: usize, prev1: i32, prev2: i32) -> i32 {
-    let p = predictor.min(COEF.len() - 1);
-    let (c0, c1) = COEF[p];
-    (c0 * prev1 + c1 * prev2) >> 8
-}
-
-fn decode_mono(body: &[u8]) -> Vec<i16> {
+/// Decode interleaved EA-XA blocks (15 × `channels` bytes each) into
+/// interleaved 16-bit PCM.
+fn decode_blocks(body: &[u8], channels: usize) -> Vec<i16> {
+    let block_len = 15 * channels;
     let mut out = Vec::with_capacity(body.len() / 15 * 28);
-    let mut prev1: i32 = 0;
-    let mut prev2: i32 = 0;
-    for block in body.chunks_exact(15) {
-        let header = block[0];
-        let predictor = (header >> 4) as usize;
-        let shift = header & 0x0F;
-        // Each of bytes 1..15 holds two 4-bit nibbles (low first per EA-XA).
-        for &byte in &block[1..15] {
-            let nibbles = [byte & 0x0F, byte >> 4];
-            for n in nibbles {
-                let mut s = i32::from(sign_extend4(n)) << 12;
-                s >>= shift;
-                s += predict(predictor, prev1, prev2);
-                let clipped = s.clamp(i32::from(i16::MIN), i32::from(i16::MAX));
-                #[allow(clippy::cast_possible_truncation)]
-                let s16 = clipped as i16;
-                out.push(s16);
-                prev2 = prev1;
-                prev1 = i32::from(s16);
+    let mut prev1 = [0i32; 2];
+    let mut prev2 = [0i32; 2];
+    let mut c1 = [0i32; 2];
+    let mut c2 = [0i32; 2];
+    let mut shift = [0u32; 2];
+    for block in body.chunks_exact(block_len) {
+        for ch in 0..channels {
+            let h = block[ch];
+            let p = usize::from(h >> 4) & 3;
+            c1[ch] = COEF[p];
+            c2[ch] = COEF[p + 4];
+            shift[ch] = 20 - u32::from(h & 0x0F);
+        }
+        for row in block[channels..].chunks_exact(channels) {
+            for nibble_shift in [4u8, 0] {
+                for (ch, &byte) in row.iter().enumerate() {
+                    let n = i32::from(sign_extend4(byte >> nibble_shift));
+                    let s = ((n << shift[ch]) + c1[ch] * prev1[ch] + c2[ch] * prev2[ch] + 0x80) >> 8;
+                    let s = s.clamp(i32::from(i16::MIN), i32::from(i16::MAX));
+                    prev2[ch] = prev1[ch];
+                    prev1[ch] = s;
+                    #[allow(clippy::cast_possible_truncation)]
+                    out.push(s as i16);
+                }
             }
         }
-    }
-    out
-}
-
-fn decode_stereo(body: &[u8]) -> Vec<i16> {
-    // Stereo XA interleaves left/right blocks (15 bytes each).
-    let mut out = Vec::with_capacity(body.len() / 15 * 28);
-    let mut prev1_l: i32 = 0;
-    let mut prev2_l: i32 = 0;
-    let mut prev1_r: i32 = 0;
-    let mut prev2_r: i32 = 0;
-    let mut left_buf: Vec<i16> = Vec::with_capacity(28);
-    let mut right_buf: Vec<i16> = Vec::with_capacity(28);
-    let mut is_right = false;
-    for block in body.chunks_exact(15) {
-        let header = block[0];
-        let predictor = (header >> 4) as usize;
-        let shift = header & 0x0F;
-        let buf = if is_right { &mut right_buf } else { &mut left_buf };
-        let (prev1, prev2) = if is_right {
-            (&mut prev1_r, &mut prev2_r)
-        } else {
-            (&mut prev1_l, &mut prev2_l)
-        };
-        buf.clear();
-        for &byte in &block[1..15] {
-            let nibbles = [byte & 0x0F, byte >> 4];
-            for n in nibbles {
-                let mut s = i32::from(sign_extend4(n)) << 12;
-                s >>= shift;
-                s += predict(predictor, *prev1, *prev2);
-                let clipped = s.clamp(i32::from(i16::MIN), i32::from(i16::MAX));
-                #[allow(clippy::cast_possible_truncation)]
-                let s16 = clipped as i16;
-                buf.push(s16);
-                *prev2 = *prev1;
-                *prev1 = i32::from(s16);
-            }
-        }
-        if is_right {
-            for i in 0..28 {
-                out.push(left_buf[i]);
-                out.push(right_buf[i]);
-            }
-        }
-        is_right = !is_right;
     }
     out
 }
@@ -355,15 +306,15 @@ mod tests {
         xa.extend_from_slice(&22050u32.to_le_bytes());
         xa.extend_from_slice(&2u16.to_le_bytes());
         xa.extend_from_slice(&16u16.to_le_bytes());
-        xa.push(0x10); // predictor=1, shift=0
+        xa.push(0x1C); // predictor=1, shift=12
         xa.extend_from_slice(&[0x11u8; 14]); // all nibbles = 1
 
         let pcm = Xa::decode(&xa).unwrap();
         assert_eq!(pcm.samples.len(), 28);
-        // First sample: (1<<12) + 0 = 4096
-        assert_eq!(pcm.samples[0], 4096);
-        // Second: 4096 + (240 * 4096) >> 8 = 4096 + 3840 = 7936
-        assert_eq!(pcm.samples[1], 7936);
+        // First sample: ((1 << 8) + 0 + 0x80) >> 8 = 1
+        assert_eq!(pcm.samples[0], 1);
+        // Second: ((1 << 8) + 240 * 1 + 0x80) >> 8 = 2
+        assert_eq!(pcm.samples[1], 2);
         // Successive samples grow until clamping; verify they ramp upward.
         for i in 1..pcm.samples.len() {
             assert!(pcm.samples[i] >= pcm.samples[i - 1]);
@@ -388,6 +339,31 @@ mod tests {
             wav[data_size_offset + 3],
         ]);
         assert_eq!(data_size as usize, 2 * 28 * 2);
+    }
+
+    #[test]
+    fn xa_high_nibble_first() {
+        // predictor 0, shift 0 (<< 20): nibble 7 -> 0x70000 >> 8 = 28672,
+        // nibble -8 -> -32768. Byte 0x78: 28672 then -32768.
+        let mut xa = build_silent_xa(1);
+        xa[0x18] = 0x00;
+        xa[0x19] = 0x78;
+        let pcm = Xa::decode(&xa).unwrap();
+        assert_eq!(pcm.samples[0], 28672);
+        assert_eq!(pcm.samples[1], -32768);
+    }
+
+    #[test]
+    fn xa_stereo_interleaves_per_byte() {
+        let mut xa = build_silent_xa(2);
+        xa[0x0A] = 2; // nChannels
+        xa[0x18] = 0x00; // left header
+        xa[0x19] = 0x00; // right header
+        xa[0x1A] = 0x10; // left row 0: 1, 0
+        xa[0x1B] = 0x20; // right row 0: 2, 0
+        let pcm = Xa::decode(&xa).unwrap();
+        assert_eq!(pcm.channels, 2);
+        assert_eq!(&pcm.samples[..4], &[4096, 8192, 0, 0]);
     }
 
     #[test]

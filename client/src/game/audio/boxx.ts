@@ -239,8 +239,13 @@ const AMBIENCE_SCORES: ReadonlyArray<[dir: string, file: string]> = [
 const TRK_BEACH_LOOP = 0x10aa3;
 const TRK_NITE_LOOP = 0xba9;
 
-/** cBoxX::Pause leaves these playing: ui_click and ui_speed_{1,2,3}top. */
-const PAUSE_EXEMPT = new Set([0x605, 0xaa7, 0xaad, 0xab3]);
+/**
+ * cBoxX::Pause leaves these playing: ui_click, ui_speed_{1,2,3}top and, in
+ * the Windows build (FUN_00574972), MainMusicLoop 0x203: the mode music goes
+ * on in Buy / Build / Camera / Options (PauseSounds runs on every switch to a
+ * mode other than Live). The Mac build pauses it too.
+ */
+const PAUSE_EXEMPT = new Set([0x605, 0x203, 0xaa7, 0xaad, 0xab3]);
 
 /** lbl_106171D8: hour (0..23) -> fresh X column step (x 1000 / 13 in kNotifyChange). */
 const HOUR_TO_X = [12, 12, 12, 12, 12, 1, 2, 3, 4, 4, 5, 6, 6, 7, 8, 9, 10, 11, 11, 11, 12, 12, 12, 12];
