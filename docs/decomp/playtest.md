@@ -666,3 +666,13 @@ in Build with walls down or cut, doors and windows show as thin black outlines o
 (the original's look), and the extra dark pixels left in those counts are those outlines.
 The tall curtain windows of Charmant stay drawn full height in every mode (no object flag
 0x400), as in the user's Buy screenshot.
+
+## User-reported bugs, round 3 (2026-10-31)
+
+| # | Bug | Status |
+|---|---|---|
+| U30 | When every sim is away at work, time does not switch to the temporary fast speed (x3) as in the original | open |
+| U31 | Holding the right mouse button and dragging should scroll the view (original), not implemented | open |
+| U32 | Chachat: the phone now sits on the table, but clicking it does nothing; you must click under it (the table) to get its actions | open |
+| U33 | Buy catalog hover price: objects you can't afford must show the price in red | open |
+| U34 | Placing stairs fails with "the stairs must connect to floor tiles of the second level" when they should be placeable | open |
