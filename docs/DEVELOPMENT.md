@@ -5,7 +5,6 @@
 - Node 22+ with `corepack` enabled (provides `pnpm`).
 - Rust stable 1.85+ with `wasm32-unknown-unknown` target.
 - `wasm-pack` 0.14+.
-- WSL/Linux helpers used by the v86 spike: `dosfstools`, `mtools`, `genisoimage`. Optional outside the spike.
 
 See the README for the full bootstrap script.
 

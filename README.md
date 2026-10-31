@@ -65,7 +65,6 @@ crates/
   sprite/               SPR2 / RLE / palette decoder
   wasm-bindings/        wasm-pack cdylib exposing the above to TS
 docs/                   Format specs & design decisions
-spike/                  Throwaway experiments (v86 emulation spike, etc.)
 PLAN.md                 Living roadmap
 ```
 
