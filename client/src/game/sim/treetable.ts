@@ -10,6 +10,10 @@
  * autonomy threshold (+0x1c), joining index (+0x20), then per motive
  * (+8, 6 bytes each) +2 min, +4 delta, +0 personality; version 7 adds the
  * menu string. Before version 4 the string index is the entry index.
+ * TreeTable::Load names the entries of version >= 8 from the TTAs string
+ * (string index + 1), or the action tree's label when that string is
+ * missing or empty (e.g. the Magic Town skeleton maid's "Dismiss" / "Fire":
+ * its TTAs 129 strings are empty in every language).
  */
 
 import { ReconBuffer } from "../world/reconbuffer.js";
@@ -85,9 +89,14 @@ export class TreeTable {
       t.entries.push(e);
     }
     if (t.version >= 8) {
-      // The menu strings are shown: the UI language (StringSetBase default language).
+      // The menu strings are shown: the UI language (StringSetBase::Load(false, true):
+      // the English ones when the set has none). A missing or empty string falls back
+      // to the action tree's BHAV label in the same file, "?<tree id>" without one.
       const names = loadUIStringSet(res, id, "TTAs") ?? [];
-      for (const e of t.entries) e.name = names[e.stringIndex] ?? "";
+      for (const e of t.entries) {
+        const s = names[e.stringIndex];
+        e.name = s ? s : res.find("BHAV", e.actionTree)?.label || `?${e.actionTree}`;
+      }
     }
     return t;
   }
