@@ -1118,3 +1118,4 @@ Verified (throwaway copy of UserData House01): toilet (flags 0x80 undressing) an
 (flags 0x80 then 1), zoom 3 and 2, all rotations, before / after toggled on the same frames:
 before, the feet and lower legs showed under the pixelation; after, the whole rect down to
 the feet is pixelated (as in the original, so are objects in front low in the rect).
+| U59 | Gargouillis family: the carpool came but did not drive straight along the road, it was turned 90 degrees to the road | open |
