@@ -689,6 +689,7 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
           if (this.viewer) this.viewer.dirty = true;
         });
       },
+      keyGUID: () => this.lotObjects?.folder.keyGUID() ?? 0,
       selector: (guid) => {
         const lot = this.lotObjects;
         if (!lot) return null;

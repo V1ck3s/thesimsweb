@@ -87,6 +87,8 @@ interface FolderIndex {
    * every lot: OBJD type (+0x12) 7 or 0xc with OBJD +0x54 set, in AddSelector order.
    */
   simObjects: number[];
+  /** GUIDs of the OBJD type (+0x12) 13 definitions (key tokens: the Vacation hotel key), in AddSelector order. */
+  keyGuids: number[];
 }
 
 const INDEX_VERSION = 2;
@@ -309,7 +311,8 @@ export class ObjectFolder implements SelectorFolder {
     const stamp = stampOf(scanned.map((f) => `${f.rel}:${f.size}`).join("|"));
     const cacheKey = `@ObjectFolder/${userDir}`;
     const cached = (await idbGetFarManifest(cacheKey)) as FolderIndex | null;
-    if (cached && cached.stamp === stamp) return cached;
+    // (an index cached before keyGuids existed is scanned again)
+    if (cached && cached.stamp === stamp && Array.isArray(cached.keyGuids)) return cached;
 
     // Every IFF (loose or inside a FAR) in scan order, then their OBJDs in parallel.
     const iffs: Array<{ key: string; path: string; base: number; size: number; flag: number }> = [];
@@ -339,7 +342,7 @@ export class ObjectFolder implements SelectorFolder {
         console.warn(`ObjectFolder: ${f.key}:`, e);
       }
     });
-    const index: FolderIndex = { stamp, packs, files: [], objds: [], simObjects: [] };
+    const index: FolderIndex = { stamp, packs, files: [], objds: [], simObjects: [], keyGuids: [] };
     for (const f of iffs) {
       const objds = found.get(f.key);
       if (!objds?.length) continue;
@@ -349,6 +352,7 @@ export class ObjectFolder implements SelectorFolder {
         if (def.disabled !== 0) continue;
         index.objds.push([def.guid, fi, id]);
         if ((def.objectType === 7 || def.objectType === 0xc) && def.i16(0x54) !== 0) index.simObjects.push(def.guid);
+        if (def.objectType === 0xd) index.keyGuids.push(def.guid);
       }
     }
     void idbPutFarManifest(cacheKey, index);
@@ -406,6 +410,15 @@ export class ObjectFolder implements SelectorFolder {
    */
   simObjectGUIDs(): number[] {
     return [...new Set(this.index.simObjects ?? [])].filter((g) => this.byGuid.has(g >>> 0));
+  }
+
+  /**
+   * ObjectFolder::GetKeyGUID: the GUID of the last selector of OBJD type 13
+   * (the original caches it in lbl_105BE500 once found), 0 without one.
+   */
+  keyGUID(): number {
+    const keys = this.index.keyGuids.filter((g) => this.byGuid.has(g >>> 0));
+    return keys.at(-1) ?? 0;
   }
 
   /** Synchronous lookup of an already opened selector. */

@@ -22,6 +22,7 @@ import { PRIM_FALSE, PRIM_TRUE, PRIM_WAIT, simThrow, SimError } from "./treesim.
 import type { ParamSource, StackElem } from "./treestack.js";
 import { SimObject, XERR } from "./xobject.js";
 import { loadStringSet } from "./behavior.js";
+import { findToken } from "./inventory.js";
 import { PersonAnimator, requestSkill } from "./personanim.js";
 import { handleAnimSound } from "./animsound.js";
 import type { Skill } from "../sims/skill.js";
@@ -1845,7 +1846,7 @@ export class PersonSim extends SimObject {
 
   /**
    * ObjTestSim::TestInteraction for autonomy: the entry's flags against the
-   * person (visitor flag 1, children 0x10, adults-only 0x40, pets 0x200 /
+   * person (visitor flags 1 / 0x20, children 0x10, adults-only 0x40, pets 0x200 /
    * 0x400), the object's lockout count, then its check tree run on the person
    * with the object as stack object (parameter 0 = 1: autonomous). The
    * person's temps are restored afterwards.
@@ -1858,7 +1859,16 @@ export class PersonSim extends SimObject {
     const visitor = pd[PDX.personType] !== 0;
     if (target.obj.objectData[8]! & 0x200) return false;
     if (auto && target.obj.objectData[25]! >= 1) return false;
-    if (!(e.flags & 1) && visitor && this.module.getZoningType(this.module.sim.globals[10]!) === 1) return false;
+    // A visitor (person data 0x20) needs "allow visitors" (flag 1); on a lot that is not
+    // residential (zoning type != 1: the travelling family are visitors there too) flag
+    // 0x20 is enough. Objects with object data 59 (+0xc0) 4 or 7 (hotel rooms) stay
+    // usable when the person's neighbor holds the key token (type 0, ObjectFolder::GetKeyGUID).
+    if (!(e.flags & 1) && visitor && (this.module.getZoningType(this.module.sim.globals[10]!) === 1 || !(e.flags & 0x20))) {
+      const t = target.obj.objectData[59];
+      if (t !== 4 && t !== 7) return false;
+      const inv = this.module.getInventoryByNeighbourID(pd[PDX.neighborId]!);
+      if (findToken(inv, 0, this.module.worldHooks?.keyGUID?.() ?? 0).count <= 0) return false;
+    }
     if (this.isChild) {
       if (e.flags & 0x10) return false;
     } else if (pd[PDX.gender]! & 2) {

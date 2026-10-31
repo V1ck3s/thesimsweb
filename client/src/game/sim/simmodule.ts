@@ -124,6 +124,8 @@ export interface WorldHooks {
   lastError(): { code: number; obstacle: number };
   /** The person's body strings changed (TryGenericSimCall 24): redress it (SAnimator::UpdateOutfitAndHands). */
   bodyStringsChanged?(obj: XObject, strings: readonly string[]): void;
+  /** ObjectFolder::GetKeyGUID: the GUID of the folder's key token object (OBJD type 13), 0 without one. */
+  keyGUID?(): number;
 }
 
 /** See SimModule.transitHooks (nbhd/transit.ts). */
