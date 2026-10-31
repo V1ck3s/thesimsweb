@@ -1119,3 +1119,4 @@ Verified (throwaway copy of UserData House01): toilet (flags 0x80 undressing) an
 before, the feet and lower legs showed under the pixelation; after, the whole rect down to
 the feet is pixelated (as in the original, so are objects in front low in the rect).
 | U59 | Gargouillis family: the carpool came but did not drive straight along the road, it was turned 90 degrees to the road | open |
+| U60 | Magic Town: clicking the skeleton maid gives a pie menu with two empty entries (no text) | open |
