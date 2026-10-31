@@ -5,7 +5,10 @@
  *  - the panel spans the lot view's width and its bottom 150 px
  *    (cSimsApp: SetArea(view.left, view.bottom - 150, view.right, view.bottom));
  *  - its top 50 px are transparent to the mouse (IsPointInWindowWindowCoordinates);
- *  - kUniversalCPBkg (PanelBack.bmp) is painted at (168, 50) (cWinCPanel::TSPaint);
+ *  - cWinCPanel::TSPaint (Windows 0050a673, Mac 10266680) paints kBackPatch
+ *    (BackPatch.bmp, 52 x 100: the corner joining the view control's band to
+ *    the subpanels; +0x100 Windows / +0xf8 Mac) at (168, 50) (DAT_006f35e0 /
+ *    lbl_105BC3D0); kUniversalCPBkg (+0x104 / +0xfc) is handed to the subpanels;
  *  - subpanels sit at (220, 50), (width - 220) x 100; the Live panel is 50 px
  *    taller and starts at y = 0 (cWinCPanel::Init);
  *  - the view control gadget is reparented to the lot view, bottom-left
@@ -34,7 +37,7 @@ export const enum PanelID {
   Camera = 5,
 }
 
-/** cWinCPanel.cpp static init. */
+/** cWinCPanel.cpp static init (kBackPatch's position: lbl_105BC3D0, Windows DAT_006f35e0). */
 export const SUBPANEL_ORIGIN = { x: 220, y: 50 };
 const BACKGROUND_ORIGIN = { x: 168, y: 50 };
 export const CPANEL_HEIGHT = 150;
@@ -59,6 +62,7 @@ export class WinCPanel extends TSWin {
   private panel = PanelID.People;
   /** +0xcd: the dispose popup replaces the mode's panel. */
   private disposeShown = false;
+  /** +0x100 (Mac +0xf8): kBackPatch. */
   private background: ImageBitmap | null = null;
 
   private readonly listener = (s: CPState): void => this.updateViewFromCPState(s);
@@ -69,7 +73,7 @@ export class WinCPanel extends TSWin {
 
   override async init(): Promise<boolean> {
     const { ctx } = this;
-    this.background = await ctx.res.image("kUniversalCPBkg");
+    this.background = await ctx.res.image("kBackPatch");
     // cWinCPanel::Init: SetCursor(GetCursor(0)), so that the lot view's tool cursor stops at the panel.
     this.winCursor = getCursor(0);
     const width = this.getW();

@@ -407,6 +407,18 @@ export class WinCatalog extends TSWin {
     }
   }
 
+  /** cWinCatalog::PageLeft (the previous page button, when shown) */
+  pageLeft(): void {
+    const b = this.pageBtns[0];
+    if (b?.isVisible()) this.tsOnCommand(CMD_BUTTON, b);
+  }
+
+  /** cWinCatalog::PageRight */
+  pageRight(): void {
+    const b = this.pageBtns[1];
+    if (b?.isVisible()) this.tsOnCommand(CMD_BUTTON, b);
+  }
+
   /** cWinCatalog::LowerPopup */
   lowerPopup(): void {
     this.popup.disablePopup();

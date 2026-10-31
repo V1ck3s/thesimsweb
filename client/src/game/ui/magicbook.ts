@@ -34,16 +34,26 @@
  *    H - 0x96);
  *  - TSOnKeyDown: Escape closes; a 400 s timer closes the book.
  *
- *  - cPickSpellItem (one per row, kPickSpellItemBkg, 3 frames stacked):
+ *  - cPickSpellItem (one per row, a cTSWinBtn on kPickSpellItemBkg, 1
+ *    column x 3 rows; Init: +0xec = 1 (the command on press), +0xf0 = 1
+ *    (toggle); Windows 004ebd1d, Mac 10580680): CalcRowCol picks row 2 when
+ *    selected, 1 while the mouse is over it (the white outline), else 0, and
+ *    enables the ingredient buttons only on the selected row (SetFlag(2)).
  *    SetSpellID reads the entry's three ingredients ("%d,%d,%d", entry id + 1
  *    of STR# 3 spells / 4 kid charms / 5 recipes of the Magic Controller's
  *    file, GUID 0xb6c90029, LoadMagicStrings / LoadOnlyEnglish) and each
- *    ingredient's GUID (STR# 7, "%x"); each ingredient is a 45-wide button
- *    (Init: at x = 0, 0x44, 0x88, image offset (0, (row height - 0x2d) / 2 -
- *    5)) showing Product::ComposeBtnImage of the ingredient's product, or
- *    kCatalogTemplate1Frame without one, with the catalog name as tooltip
- *    ("ingredient ?" when the GUID is unknown). The ingredient buttons do not
- *    select their row (cPickSpellItem::TSOnCommand only forwards 0x1a).
+ *    ingredient's GUID (STR# 7, "%x"); each ingredient is a 45-wide button,
+ *    as high as a row, tiled from (0x20, 6) (lbl_105BD264, Windows
+ *    DAT_006f26a0 = 0x20 / 6) every 0x44 px, image offset (0, (row height -
+ *    0x2d) / 2 - 5), showing Product::ComposeBtnImage of the ingredient's
+ *    product, or kCatalogTemplate1Frame without one, with the catalog name as
+ *    tooltip ("ingredient ?" when the GUID is unknown). The ingredient
+ *    buttons do not select their row (cPickSpellItem::TSOnCommand only
+ *    forwards 0x1a).
+ *  - cPickSpellList::TSPaint (Windows 004ecbce): with fewer than 4 items on
+ *    the page, kMagicBookBkg (the book's +0x120) cut at the list's area is
+ *    drawn at (3, 10) in the list, then frame 0 of kPickSpellItemBkg in each
+ *    empty row; the list's private buffer is transparent elsewhere.
  *
  * Simplifications: the cookbook's two "Has Made" filters (recipes 9 and 4)
  * are not applied; the expansion flags of the spell list (ids 0x16 and 10)
@@ -57,7 +67,7 @@ import { ObjectFolder } from "../world/objectfolder.js";
 import type { FfnFont } from "../res/ffn.js";
 import type { Simulator } from "../sim/simulator.js";
 import type { SimObject } from "../sim/xobject.js";
-import { TSWinBtn } from "./btn.js";
+import { BTN_TOGGLE, TSWinBtn } from "./btn.js";
 import { TSWinCtrlMgr } from "./ctrlmgr.js";
 import { bltEdge, TSWinDlg } from "./dlg.js";
 import { TSSystemButton } from "./systembutton.js";
@@ -92,9 +102,13 @@ const STR_SPELL_IDS = 0xf;
 const STR_KID_IDS = 0x10;
 /** lbl_105BD268: the tooltip of an unknown ingredient. */
 const UNKNOWN_INGREDIENT = "ingredient ?";
-/** cPickSpellItem::Init: ingredient button width and step. */
+/** cPickSpellItem::Init: ingredient button width and step; lbl_105BD264: the first one's position. */
 const INGREDIENT_W = 0x2d;
 const INGREDIENT_STEP = 0x44;
+const INGREDIENT_ORIGIN = { x: 0x20, y: 6 };
+/** CWinMagicBook::Init: the list's position (lbl_105BD26C); cPickSpellList::TSPaint's background offset. */
+const LIST_POS = { x: 0x31, y: 0x36 };
+const LIST_BKG_OFFSET = { x: 3, y: 10 };
 const INGREDIENTS = 3;
 const ID_CLOSE = 1;
 const ID_BACK = 2;
@@ -121,7 +135,7 @@ export class CWinMagicBook extends TSWinDlg {
   private pageLabel: TSWinText | null = null;
   private entryTitle: TSWinText | null = null;
   private description: TSWinText | null = null;
-  private items: TSWinBtn[] = [];
+  private items: PickSpellItem[] = [];
   /** The ingredient buttons of each item (cPickSpellItem +0x18c). */
   private ingredientBtns: IngredientBtn[] = [];
   /** cPickSpellItem +0x1b8 / +0x224 / +0x290 / +0x2fc and cPickSpellList +0x118 / +0x184: STR# 3, 4, 5, 7, 0xf and 0x10 of the Magic Controller. */
@@ -133,6 +147,8 @@ export class CWinMagicBook extends TSWinDlg {
   private frame: ImageBitmap | null = null;
   private pictures: Array<ImageBitmap | null> = [];
   private itemBkg: ImageBitmap | null = null;
+  /** +0x120 (kMagicBookBkg), handed to the list (+0xf4). */
+  private listBkg: ImageBitmap | null = null;
   private timer = 0;
 
   constructor(
@@ -169,10 +185,11 @@ export class CWinMagicBook extends TSWinDlg {
   override async init(): Promise<boolean> {
     const ctx = this.ctx;
     await ctx.strings.load("GameData/magic.iff");
-    const [mgr, frame, itemBkg, titleFont, descFont, template, template1, ...pictures] = await Promise.all([
+    const [mgr, frame, itemBkg, listBkg, titleFont, descFont, template, template1, ...pictures] = await Promise.all([
       TSWinCtrlMgr.get(ctx),
       ctx.res.image("kCatalogPopupBackTiles"),
       ctx.res.image("kPickSpellItemBkg").catch(() => null),
+      ctx.res.image("kMagicBookBkg").catch(() => null),
       ctx.fonts.acquire(12),
       ctx.fonts.acquire(8),
       ctx.res.image("kCatalogTemplate").catch(() => null),
@@ -184,6 +201,7 @@ export class CWinMagicBook extends TSWinDlg {
     await this.loadMagicStrings();
     this.frame = frame;
     this.itemBkg = itemBkg;
+    this.listBkg = listBkg;
     this.pictures = pictures;
     const main = winMgr.main.area;
     this.setArea(0, 0, 600, 0x17e);
@@ -306,7 +324,7 @@ export class CWinMagicBook extends TSWinDlg {
     else if (this.mode === Mode.Kid) this.picture = 0;
     else this.picture = id < 5 ? 4 : 3;
     this.pageLabel?.setCaption(this.str(STR_UI, 5).replace("%d", String(this.page + 1)).replace("%d", String(this.pages)));
-    this.items.forEach((b, i) => b.setState(i === this.selected ? 1 : 0));
+    this.items.forEach((b, i) => b.setSelected(i === this.selected));
   }
 
   /** LoadMagicStrings(3, 4, 5, 7, 0xf, 0x10): StringSetBase::LoadOnlyEnglish on the Magic Controller's file. */
@@ -361,23 +379,30 @@ export class CWinMagicBook extends TSWinDlg {
     this.items = [];
     this.ingredientBtns = [];
     const img = this.itemBkg;
-    const rowH = img ? Math.trunc(img.height / 3) : 0x43;
+    const rowH = this.rowHeight();
     const ids = this.ids.slice(this.page * PER_PAGE, (this.page + 1) * PER_PAGE);
     ids.forEach((id, i) => {
-      const b = new TSWinBtn(0x100 + i, img, 1, 3);
-      b.moveTo(0x31, 0x36 + i * rowH);
+      const b = new PickSpellItem(0x100 + i, img);
+      b.moveTo(LIST_POS.x, LIST_POS.y + i * rowH);
       this.childAdd(b);
       this.items.push(b);
       this.setSpellID(b, id, rowH);
     });
   }
 
-  /** cPickSpellItem::Init's ingredient buttons + SetSpellID's pictures. */
-  private setSpellID(item: TSWinBtn, id: number, rowH: number): void {
+  /** cPickSpellList +0x10c: kPickSpellItemBkg's height / 3. */
+  private rowHeight(): number {
+    return this.itemBkg ? Math.trunc(this.itemBkg.height / 3) : 0x44;
+  }
+
+  /** cPickSpellItem::Init's ingredient buttons (tiled from lbl_105BD264) + SetSpellID's pictures. */
+  private setSpellID(item: PickSpellItem, id: number, rowH: number): void {
     this.ingredients(id).forEach((n, k) => {
       const btn = new IngredientBtn(Math.trunc((rowH - INGREDIENT_W) / 2) - 5);
-      btn.setArea(k * INGREDIENT_STEP, 0, k * INGREDIENT_STEP + INGREDIENT_W, rowH);
+      const x = INGREDIENT_ORIGIN.x + k * INGREDIENT_STEP;
+      btn.setArea(x, INGREDIENT_ORIGIN.y, x + INGREDIENT_W, INGREDIENT_ORIGIN.y + rowH);
       item.childAdd(btn);
+      item.ingredients.push(btn);
       this.ingredientBtns.push(btn);
       void this.ingredient(this.ingredientGuid(n)).then(([pic, tip]) => {
         btn.picture = pic;
@@ -422,7 +447,7 @@ export class CWinMagicBook extends TSWinDlg {
     }
     // cPickSpellItem::TSOnCommand: the ingredient buttons' commands go no further.
     if (this.ingredientBtns.includes(source as IngredientBtn)) return true;
-    const i = this.items.indexOf(source as TSWinBtn);
+    const i = this.items.indexOf(source as PickSpellItem);
     if (i >= 0) {
       this.selected = i;
       this.updateDescription();
@@ -446,8 +471,49 @@ export class CWinMagicBook extends TSWinDlg {
     const H = this.getH();
     const f = this.frame;
     if (f) bltEdge(g, f, Math.trunc(f.width / 3), Math.trunc(f.height / 3), W, H, true);
+    this.paintList(g);
     const pic = this.pictures[this.picture];
     if (pic) g.blit(pic, W - 0xb4, H - 0x96);
+  }
+
+  /** cPickSpellList::TSPaint (the list's own drawing, under its items) on a page of fewer than 4 items. */
+  private paintList(g: Gfx): void {
+    const n = this.items.length;
+    if (n >= PER_PAGE) return;
+    const img = this.itemBkg;
+    const rowH = this.rowHeight();
+    const listW = img ? img.width : 0;
+    const listH = rowH * PER_PAGE;
+    const bkg = this.listBkg;
+    if (bkg) {
+      g.blitPart(bkg, LIST_POS.x, LIST_POS.y, listW - LIST_BKG_OFFSET.x, listH - LIST_BKG_OFFSET.y, LIST_POS.x + LIST_BKG_OFFSET.x, LIST_POS.y + LIST_BKG_OFFSET.y);
+    }
+    if (img) for (let row = n; row < PER_PAGE; row++) g.blitPart(img, 0, 0, img.width, rowH, LIST_POS.x, LIST_POS.y + row * rowH);
+  }
+}
+
+/** cPickSpellItem: a row of the list, kPickSpellItemBkg (1 column x 3 rows), toggled on press. */
+class PickSpellItem extends TSWinBtn {
+  /** +0x18c: the ingredient buttons. */
+  readonly ingredients: IngredientBtn[] = [];
+
+  constructor(id: number, image: ImageBitmap | null) {
+    super(id, image, 1, 3);
+    this.sendOnDown = true;
+    this.mode = BTN_TOGGLE;
+  }
+
+  /** The list's selection (SetState), then CalcRowCol's enabling of the ingredient buttons. */
+  setSelected(on: boolean): void {
+    this.setState(on ? 1 : 0);
+    for (const b of this.ingredients) b.setEnabled(on);
+  }
+
+  /** cPickSpellItem::CalcRowCol: row 2 selected, 1 under the mouse, else 0; column 0. */
+  override tsPaint(g: Gfx): void {
+    this.row = this.state !== 0 ? 2 : this.entered ? 1 : 0;
+    for (const b of this.ingredients) b.setEnabled(this.state !== 0);
+    super.tsPaint(g);
   }
 }
 

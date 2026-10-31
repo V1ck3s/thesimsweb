@@ -11,8 +11,10 @@
  *
  * BuildMyBuffer (16-bit buffer of the window's size):
  *  - the control panel background kUniversalCPBkg (cWinCPanel+0xfc) at (0, 0);
- *  - (0, 0)-(0xa8, 100) (lbl_105BC404) filled with 0xffff (white), then the
- *    master selector's DrawDefaultObjectIcon in it;
+ *  - the buffer's Z-buffer (CreateZBuffer, +0x5c) filled with 0xffff in
+ *    (0, 0)-(0xa8, 100) (lbl_105BC404; Windows 0050cca5, DAT_006f3648), then
+ *    the master selector's DrawDefaultObjectIcon there: the picture is drawn
+ *    over the panel background (the fill is the depth, not a white color);
  *  - UIText STR# 0x88 (six entries, else no text): entries 1 / 2 / 3 for buy
  *    mode objects, 4 / 5 / 6 when the master OBJD +0x8a is set: "dispose of
  *    %" when the refund is 0, "sell % for $" otherwise, "% cannot be deleted"
@@ -103,8 +105,6 @@ export class WinDisposePopup extends TSWin {
     const c = new OffscreenCanvas(Math.max(1, w), Math.max(1, h));
     const g = c.getContext("2d") as unknown as CanvasRenderingContext2D;
     if (this.background) g.drawImage(this.background, 0, 0);
-    g.fillStyle = "#ffffff";
-    g.fillRect(ICON_RECT.left, ICON_RECT.top, ICON_RECT.right - ICON_RECT.left, ICON_RECT.bottom - ICON_RECT.top);
     icon?.draw(g, ICON_RECT.left, ICON_RECT.top, ICON_RECT.right - ICON_RECT.left, ICON_RECT.bottom - ICON_RECT.top);
 
     const refund = item.notNew && item.refundable ? Math.trunc(Math.fround(item.factor * item.currentValue) + ROUND) : 0;

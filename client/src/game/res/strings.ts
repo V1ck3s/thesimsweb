@@ -26,6 +26,8 @@ const latin1 = new TextDecoder("windows-1252");
 
 export class Strings {
   private readonly tables = new Map<string, Map<number, Str[]>>();
+  /** The US English entries of the format -3 chunks (StringSetBase::GetString(index, 0)). */
+  private readonly usTables = new Map<string, Map<number, Str[]>>();
 
   constructor(private readonly lang = LANG_FRENCH) {}
 
@@ -36,19 +38,27 @@ export class Strings {
     const wasm = await engine();
     const { data, chunks } = await readStandaloneIff(`Sims/${path}`);
     const table = new Map<number, Str[]>();
+    const usTable = new Map<number, Str[]>();
     for (const c of chunks) {
       if (c.kind !== "STR#") continue;
       const parsed = wasm.parseStrTable(data.subarray(c.dataStart, c.dataStart + c.dataLen)) as {
         entries: StrEntry[];
       };
       table.set(c.id, this.pick(parsed.entries));
+      usTable.set(c.id, this.pick(parsed.entries, 1));
     }
     this.tables.set(name, table);
+    this.usTables.set(name, usTable);
   }
 
   /** Entry `index` of STR# `id` in table `name`, or "" when missing. */
   get(name: string, id: number, index: number): string {
     return this.tables.get(name)?.get(id)?.[index]?.text ?? "";
+  }
+
+  /** Entry `index` in US English (StringSetBase::GetString(index, 0)), or "" when missing. */
+  getUS(name: string, id: number, index: number): string {
+    return this.usTables.get(name)?.get(id)?.[index]?.text ?? "";
   }
 
   /** The entry's description (StringSetBase::GetDescription). */
@@ -67,14 +77,14 @@ export class Strings {
     return this.pick(parsed.entries).map((s) => s.text);
   }
 
-  private pick(entries: StrEntry[]): Str[] {
+  private pick(entries: StrEntry[], lang = this.lang): Str[] {
     const str = (e: StrEntry): Str => ({
       text: latin1.decode(e.data),
       comment: e.comment ? latin1.decode(e.comment) : "",
     });
     if (!entries.some((e) => e.kind === "lang")) return entries.map(str);
     // Format -3 stores one entry per (string, language); keep ours, fall back to US English.
-    const ours = entries.filter((e) => e.langCode === this.lang);
+    const ours = entries.filter((e) => e.langCode === lang);
     const us = entries.filter((e) => e.langCode === 1);
     const n = Math.max(ours.length, us.length);
     const out: Str[] = [];
