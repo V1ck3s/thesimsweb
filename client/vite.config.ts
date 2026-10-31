@@ -2,8 +2,7 @@ import { fileURLToPath } from "node:url";
 import { defineConfig, type Connect, type Plugin } from "vite";
 
 /**
- * The game (game.html, src/game/) is the page served at "/". The old
- * prototype client stays reachable at /legacy.html.
+ * The game (game.html, src/game/) is the page served at "/".
  */
 function gameAsRoot(): Plugin {
   const rewrite: Connect.NextHandleFunction = (req, _res, next) => {
@@ -47,7 +46,6 @@ export default defineConfig({
     rollupOptions: {
       input: {
         game: fileURLToPath(new URL("game.html", import.meta.url)),
-        legacy: fileURLToPath(new URL("legacy.html", import.meta.url)),
       },
     },
   },

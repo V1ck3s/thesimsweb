@@ -66,11 +66,6 @@ diff-iff:
 diff-vm object oracle event="1" *globals_far="":
     ./scripts/diff/vm.sh --object {{object}} --oracle {{oracle}} --event {{event}} {{ if globals_far != "" { "--globals-far " + globals_far } else { "" } }}
 
-# transcode TS1 .avi intro/cutscene videos to web-friendly .webm + .mp4.
-# Outputs land under server/assets/converted/intro/ (gitignored).
-transcode-videos *args:
-    ./scripts/transcode-videos.sh {{args}}
-
 # clean build artifacts (keeps node_modules and target caches)
 clean:
     rm -rf client/dist server/dist

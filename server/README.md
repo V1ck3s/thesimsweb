@@ -4,7 +4,8 @@ Local development server. Two responsibilities:
 
 1. **Stream game assets** from `server/assets/` (gitignored, populated manually
    from your own legal install) over HTTP with Range support.
-2. **Persist saves** in a local SQLite file, exposed via a simple REST API.
+2. **Persist saves** the way the game does: files written to the overlay
+   `server/data/overlay/`, served in place of the game's own copies.
 
 ## Setup
 
@@ -34,11 +35,10 @@ pnpm --filter @thesimsweb/server dev
 - `GET /api/manifest` — JSON listing of every file under `server/assets/`.
 - `GET /assets/<path>` — streams the asset, supports `Range`, sets ETag and
   cache headers.
-- `GET /api/saves` — list saves of the current user (header `X-User`,
-  defaults to `anonymous`).
-- `GET /api/saves/:id` — fetch one save (raw bytes).
-- `PUT /api/saves/:id?name=...` — upload a save (body: `application/octet-stream`).
-- `DELETE /api/saves/:id` — remove a save.
+- `POST /api/ranges` — batched byte-range reads.
+- `PUT` / `DELETE /api/files/Sims/UserData*/<path>` — write / remove a save in
+  the writable overlay `server/data/overlay/` (the game folder stays read-only).
+- `/`, `/static/*` — the built client (`client/dist`), when it exists.
 
 Auth is intentionally a stub for phase 0 (`X-User` header). JWT will
 replace this when the client gets a login UI.

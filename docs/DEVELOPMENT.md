@@ -13,14 +13,13 @@ See the README for the full bootstrap script.
 
 | Path | Role |
 |---|---|
-| `client/` | Vite + TS strict frontend. WebGL 2 canvas + WASM bridge. |
-| `server/` | Fastify dev backend. Streams `server/assets/*` with Range, persists saves in `server/data/saves.sqlite`. |
+| `client/` | Vite + TS strict frontend: `game.html` / `src/game/` (the game ported from the decompilation) + WASM bridge. |
+| `server/` | Fastify dev backend. Streams `server/assets/*` with Range, writes saves to the overlay `server/data/overlay/`, serves the built client. |
 | `crates/iff` | Maxis IFF parser, `#![no_std]`. |
 | `crates/far` | FAR! archive parser, `#![no_std]`. |
 | `crates/sprite` | SPR2 / RLE / palette decoder, `#![no_std]`. |
 | `crates/wasm-bindings` | `cdylib` re-exporting the parsers via `wasm-bindgen`. Built with `wasm-pack`. |
 | `docs/` | Format specs and design decisions. |
-| `spike/` | Throwaway experiments (kept for reference, gitignored binaries). |
 | `samples/` | Local-only fixtures from the user's game install. **Gitignored.** |
 
 ## Common commands
@@ -77,12 +76,8 @@ weighs ~25 KB total at present (HTML + JS + WASM, gzipped JS ≈ 3 KB).
 - `GET /api/health` → `{ ok: true }`.
 - `GET /api/manifest` → `{ version, assetsRoot, files: [{ path, size, kind }] }` walked from `server/assets/`.
 - `GET /assets/<path>` → static file with `Range`, `ETag`, `Cache-Control: public, max-age=3600`.
-- `GET /api/saves` (auth header `X-User`) → `{ saves: [...] }`.
-- `GET /api/saves/:id` → raw bytes (`application/octet-stream`).
-- `PUT /api/saves/:id?name=...` → upload (`application/octet-stream`, body limit 50 MiB).
-- `DELETE /api/saves/:id` → 204 / 404.
-
-Auth is currently a stub (`X-User` header). Replace with JWT later.
+- `POST /api/ranges` → batched byte-range reads.
+- `PUT` / `DELETE /api/files/Sims/UserData*/<path>` → save files in the overlay `server/data/overlay/`.
 
 ## Adding a new Rust function callable from TS
 

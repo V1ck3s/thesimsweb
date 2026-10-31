@@ -66,7 +66,7 @@ if (!skip) {
   }
   // 2. The client bundle (tsc --noEmit + vite build → client/dist).
   const clientOut = "client/dist/game.html";
-  if (force || mtime(clientOut) < newest(["client/src", "client/game.html", "client/legacy.html", "client/vite.config.ts", "client/package.json", wasmOut])) {
+  if (force || mtime(clientOut) < newest(["client/src", "client/game.html", "client/vite.config.ts", "client/package.json", wasmOut])) {
     run("client", "pnpm", ["--filter", "@thesimsweb/client", "run", "build"]);
   }
   // 3. The server (tsc → server/dist).

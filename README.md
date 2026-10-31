@@ -10,7 +10,7 @@ Le but : faire tourner le jeu directement dans un navigateur moderne, sans insta
 
 - Phase 0 (monorepo + scaffold) : ✅ terminée.
 - Phase 0bis (spike d'émulation v86/Boxedwine) : ✅ terminée — Approche D rejetée. Voir [`docs/decision-A-vs-D.md`](./docs/decision-A-vs-D.md).
-- Phase 1 (RE des formats) + Phase 2 (parseurs Rust) : 🚧 prochaines étapes.
+- Depuis 2026-10-25 : le jeu est porté classe par classe depuis le code décompilé (`client/game.html`, `client/src/game/`, voir [`docs/decomp/`](./docs/decomp/)). Jouable de bout en bout ; phase de playtest et corrections (`docs/decomp/playtest.md`).
 
 Plan détaillé : [`PLAN.md`](./PLAN.md). Notes pour les sessions futures : `docs/DEVELOPMENT.md`.
 
@@ -18,7 +18,7 @@ Plan détaillé : [`PLAN.md`](./PLAN.md). Notes pour les sessions futures : `doc
 
 - **Client** : TypeScript strict, Vite, WebGL 2, IndexedDB.
 - **Engine** : Rust → WebAssembly (`#![no_std]`, `wasm-pack`, exposé en workspace pnpm sous `@thesimsweb/wasm-bindings`).
-- **Serveur de dev** : Fastify (Node 22), `@fastify/static` avec Range, SQLite via `better-sqlite3` pour les saves.
+- **Serveur de dev** : Fastify (Node 22), `@fastify/static` avec Range, sauvegardes écrites dans un overlay (`server/data/overlay/`), le dossier du jeu restant en lecture seule.
 
 ## Quick start
 
@@ -58,7 +58,7 @@ then runs the Fastify server, which serves the game at `/` next to `/assets`,
 
 ```
 client/                 Vite + TS frontend
-server/                 Fastify dev backend (assets streaming + saves API)
+server/                 Fastify dev backend (assets streaming, save overlay, built client)
 crates/
   iff/                  Maxis IFF parser
   far/                  FAR archive parser

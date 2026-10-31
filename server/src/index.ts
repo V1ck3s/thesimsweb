@@ -6,8 +6,6 @@ import fastifyStatic from "@fastify/static";
 import { registerClientRoute } from "./routes/client.js";
 import { registerManifestRoute } from "./routes/manifest.js";
 import { registerRangesRoute } from "./routes/ranges.js";
-import { registerSavesRoute } from "./routes/saves.js";
-import { registerTemplatesRoute } from "./routes/templates.js";
 import { overlayDirOf, overlayRewrite, registerUserDataRoute } from "./routes/userdata.js";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -48,8 +46,6 @@ let invalidateOverlay = (): void => {};
 await registerUserDataRoute(app, { overlayDir, onChange: () => invalidateOverlay() });
 ({ invalidateOverlay } = await registerManifestRoute(app, { assetsDir, overlayDir }));
 await registerRangesRoute(app, { assetsDir, overlayDir });
-await registerSavesRoute(app, { repoRoot });
-await registerTemplatesRoute(app, { assetsDir });
 // The built game (`pnpm build`); in dev, vite serves the client on :5173 instead.
 // Served whenever client/dist exists; SERVE_CLIENT=0 turns it off.
 if (process.env["SERVE_CLIENT"] !== "0" && (await registerClientRoute(app, { clientDir }))) {
