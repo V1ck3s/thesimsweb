@@ -31,6 +31,13 @@ export class VitaBoy {
   /** Worn suits by slot ("body", "head", "lhand", "rhand", ...). */
   readonly dressings = new Map<string, Dressing>();
   readonly practices: Practice[] = [];
+  /**
+   * SAnimator +0x248 / +0x24c: the censor suit's dressing (Skeleton::Dress
+   * with the person's censorship flags as the skin mask) and that mask. Not
+   * drawn: SAnimator::Render projects its vertices to place the censor
+   * rectangle.
+   */
+  censor: { mask: number; dressing: Dressing } | null = null;
   /** Bumped whenever the deformed vertices change (renderers re-upload). */
   version = 0;
 
@@ -71,6 +78,24 @@ export class VitaBoy {
     return meshes.length > 0;
   }
 
+  /**
+   * Skeleton::Dress(suit, 0, 0, mask) -> Dressing::Bind: only the skins whose
+   * censor flags (Skin +0x10) share a bit with `mask` are bound.
+   */
+  async dressCensor(suitName: string, mask: number): Promise<Dressing> {
+    const suit = await this.mgr.findSuit(suitName);
+    const meshes: DressingMesh[] = [];
+    for (const skin of suit?.skins ?? []) {
+      if ((skin.censorFlags & mask) === 0 || !this.skeleton.findBone(skin.boneName)) continue;
+      const mesh = await this.mgr.loadDeformableMesh(skin.meshName);
+      const binding = mesh?.bind(this.skeleton, null);
+      if (!binding) continue;
+      binding.deform();
+      meshes.push({ binding, image: null });
+    }
+    return { suit: suitName, texture: "", meshes };
+  }
+
   undress(slot: string): void {
     if (this.dressings.delete(slot)) this.version++;
   }
@@ -88,6 +113,7 @@ export class VitaBoy {
     for (const p of this.practices) p.apply(now);
     this.skeleton.updateBoneTransforms();
     for (const d of this.dressings.values()) for (const m of d.meshes) m.binding.deform();
+    if (this.censor) for (const m of this.censor.dressing.meshes) m.binding.deform();
     this.version++;
   }
 }

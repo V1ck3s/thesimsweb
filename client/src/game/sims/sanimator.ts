@@ -107,6 +107,35 @@ export class SAnimator {
     }
   }
 
+  /** The censor mask UpdateCensorDressing last asked for (0 = undressed). */
+  private censorWanted = 0;
+
+  /**
+   * SAnimator::UpdateCensorDressing (1034ef70), run by SAnimator::Render
+   * while the person's censorship flags (person data 0x1e) are set: bit 0x80
+   * stands for every part (0x7f); 0 undresses, another mask redresses the
+   * censor suit ("<skeleton>-needs", SAnimator +0x244, found at
+   * initialization) with it. The suit loads asynchronously here.
+   */
+  updateCensorDressing(flags: number): void {
+    let mask = flags & 0xffff;
+    if (mask & 0x80) mask = 0x7f;
+    if (mask === 0 || mask === 0x80) {
+      this.censorWanted = 0;
+      this.vitaboy.censor = null;
+      return;
+    }
+    if (mask === this.censorWanted) return;
+    this.censorWanted = mask;
+    this.vitaboy.censor = null;
+    void this.vitaboy
+      .dressCensor(`${this.skeletonName.toLowerCase()}-needs`, mask)
+      .then((dressing) => {
+        if (this.censorWanted === mask) this.vitaboy.censor = { mask, dressing };
+      })
+      .catch((e: unknown) => console.warn("UpdateCensorDressing", e));
+  }
+
   /** EditPerson::End on a person in the world: new body strings, then UpdateOutfitAndHands. */
   async setBodyStrings(strings: readonly string[]): Promise<void> {
     this.bodyStrings = new BodyStrings(strings);

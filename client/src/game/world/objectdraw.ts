@@ -204,12 +204,14 @@ export class ObjectModuleDrawer implements ObjectDrawer {
    * +0x8e set (no draw group) when its wall is cut: with walls down, always;
    * with the dynamic cutaway, when the tile across its required segment is
    * in the cutaway mask too. The cut wall itself draws the object's opening
-   * (custom wall style). Not while the roof is drawn or the wall / door tool
-   * shows wall stuff.
+   * (custom wall style). Not while the wall / door tool shows wall stuff,
+   * nor (RenderStaticRow only, `dynamic` false) while the roof is drawn.
+   * RenderDynamicObjects (101c9bc0) applies the same rule at the object's
+   * view tile, without the roof test.
    */
-  private hiddenByCutaway(o: DrawableObject, viewer: HouseViewer, x: number, y: number): boolean {
+  private hiddenByCutaway(o: DrawableObject, viewer: HouseViewer, x: number, y: number, dynamic = false): boolean {
     const c = this.cutawayView;
-    if (!c || c.drawRoof || (c.mode === Mode.Build && c.wallToolActive)) return false;
+    if (!c || (!dynamic && c.drawRoof) || (c.mode === Mode.Build && c.wallToolActive)) return false;
     if (!(c.cutaway || (c.dynamicCutaway && c.cutawayMask.has(x, y)))) return false;
     if (((o.flags ?? 0) & FLAG_HIDE_FOR_CUTAWAY) === 0) return false;
     let ax = x;
@@ -245,7 +247,7 @@ export class ObjectModuleDrawer implements ObjectDrawer {
       if (!this.placeHeld?.(o, rp)) rp.setGridCoords(o.fx, o.fy, o.level);
       const [vx, vy] = viewer.world.toView(tx, ty);
       comp.ambient = viewer.ambientAtTile(vx, vy, o.level);
-      drawIso(o, viewer, comp, rp);
+      drawIso(o, viewer, comp, rp, this.hiddenByCutaway(o, viewer, vx, vy, true) ? 1 : o.hidden);
     }
   }
 }

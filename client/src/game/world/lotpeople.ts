@@ -14,6 +14,7 @@ import { loadPerson, personLooks, rootTransform, SAnimator, SimRenderer, type Si
 import { Animator, AnimStyle } from "../sims/animator.js";
 import { loadStringSet } from "../sim/behavior.js";
 import { mat4Mul, quatRotate, transformPoint, translationTf, type Vec3 } from "../sims/math3d.js";
+import { VERTEX_FLOATS } from "../sims/deformablemesh.js";
 import type { Skeleton } from "../sims/skeleton.js";
 import type { Compositor } from "./compositor.js";
 import type { HouseViewer } from "./houseviewer.js";
@@ -61,6 +62,8 @@ const HEAD_SLOT = 2;
 const OD_HIDDEN = 34;
 /** Person data 74 bit 0: VitaBoy::SetRenderFlags' hide flag for the date and star bobs. */
 const PD_RENDER_FLAGS = 0x4a;
+/** Person data 30: censorship flags (the animations' "censor" event; SAnimator::GetPixelated). */
+const PD_CENSOR = 0x1e;
 
 export class LotPeople {
   /** cXObject::Initialize3D's animators of the 3D objects carried (null: none or failed; absent: loading). */
@@ -73,6 +76,19 @@ export class LotPeople {
    */
   objectById: ((id: number) => PlacedObject | null) | null = null;
   motive: ((person: PlacedObject, i: number) => number) | null = null;
+  /**
+   * Animator::SetPickingObject (lbl_105BADA4, turned on by cObjPickerTool::
+   * Float) with the cursor's view point (Animator::Render's GetCursorPos):
+   * null = picking off.
+   */
+  pickPoint: { x: number; y: number } | null = null;
+  /**
+   * Animator::PickedObject (lbl_105BADA0): the last 3D object drawn this
+   * frame whose rendering changed the z-buffer at the cursor (null: none).
+   */
+  pickedObject: PlacedObject | null = null;
+  /** The viewer of the draw in progress (Animator::Render's HouseViewer::PointToZ). */
+  private drawingIn: HouseViewer | null = null;
 
   private constructor(
     private readonly renderer: SimRenderer,
@@ -174,6 +190,8 @@ export class LotPeople {
       // SAnimator::Render -> UpdateOutfitAndHands(false): redressed when the outfit, gestures or accessories changed.
       const look = personLooks.get(p.obj);
       if (look) void p.anim.updateOutfitAndHands(look);
+      // SAnimator::UpdatePose / Render: UpdateCensorDressing.
+      p.anim.updateCensorDressing(look?.pd[PD_CENSOR] ?? 0);
       p.anim.update(nowMs);
     }
   }
@@ -223,6 +241,9 @@ export class LotPeople {
   /** Draw everyone on the levels up to the viewer's current level. */
   draw(viewer: HouseViewer): void {
     const view = LotPeople.viewOf(viewer);
+    // HouseViewer::UpdateStaticDynamic: SetPickedObject(0) before the Render3DObject loop.
+    this.pickedObject = null;
+    this.drawingIn = viewer;
     for (const person of this.people) {
       const { obj, anim, simDir } = person;
       // Out of the world (in a car, at work, not arrived yet): not drawn. Neither is a hidden
@@ -240,8 +261,104 @@ export class LotPeople {
         alt: viewer.world.fixed.getFAlt(Math.round(at.fx), Math.round(at.fy)),
         direction: simDir ? simDir() : obj.dir,
       };
-      this.renderer.renderSim(anim.vitaboy, place, view, { ambient });
+      this.picking(obj, () => this.renderer.renderSim(anim.vitaboy, place, view, { ambient }));
       this.drawHeadObject(person, place, view);
+    }
+    this.drawingIn = null;
+  }
+
+  /**
+   * Animator::Render's picking (Mac 0x10475360, Windows 0x5865xx): while
+   * picking is on and the cursor is in the view, the z-buffer value under the
+   * cursor is read (HouseViewer::PointToZ) before and after the dressings are
+   * drawn; when it changed, neither read being empty, the object becomes the
+   * picked object. Otherwise the picked object is cleared.
+   */
+  private picking(obj: PlacedObject, render: () => void): void {
+    const viewer = this.drawingIn;
+    const at = this.pickPoint;
+    if (!viewer || !at || at.x < 0 || at.y < 0 || at.x >= viewer.viewW || at.y >= viewer.viewH) {
+      this.pickedObject = null;
+      render();
+      return;
+    }
+    const before = viewer.pointToZ(at.x, at.y);
+    render();
+    if (before === null) return;
+    const after = viewer.pointToZ(at.x, at.y);
+    if (after !== null && after !== before) this.pickedObject = obj;
+  }
+
+  /** Where draw() puts a person (null: not drawn), at `level` (the drawing level, or 1 for the RenderLoc frame). */
+  private placementOf(person: LotPerson, viewer: HouseViewer, level: number): SimPlacement | null {
+    const { obj, simDir } = person;
+    if (obj.level > viewer.level || obj.fx < 0 || obj.fy < 0 || obj.hidden !== 0) return null;
+    const at = drawPos(person);
+    return {
+      x: at.fx / 16,
+      y: at.fy / 16,
+      level,
+      alt: viewer.world.fixed.getFAlt(Math.round(at.fx), Math.round(at.fy)),
+      direction: simDir ? simDir() : obj.dir,
+    };
+  }
+
+  /**
+   * HouseViewer::RenderCensoredBlocks (101c5720, Windows 004ac916) with the
+   * censor rectangle SAnimator::Render leaves (+0x228 / Windows +0x230): for
+   * each person drawn whose censorship flags (person data 30) are set, the
+   * screen bounding box of its censor dressing's vertices, as
+   * (ftol(min), ftol(max + 0.999)) with y moved by -3 << (scale - 1); grown
+   * by 1 / 2 / 4 pixels on each side and moved down 3 / 6 / 12 (scale
+   * 1 / 2 / 3), it is censored (HouseViewer::Censor) behind the plane through
+   * the censor point: the PELVIS bone (bone id 1) moved 1 unit toward the
+   * camera (cAnimDeviceSub +0x180, the view direction scaled to
+   * lbl_105BBEA8[9] = 1).
+   */
+  censor(viewer: HouseViewer): void {
+    const view = LotPeople.viewOf(viewer);
+    const cam = this.renderer.cameraFor(view);
+    const s = viewer.scale;
+    for (const person of this.people) {
+      const flags = personLooks.get(person.obj)?.pd[PD_CENSOR] ?? 0;
+      const dressing = person.anim.vitaboy.censor?.dressing;
+      const place = flags !== 0 && dressing ? this.placementOf(person, viewer, person.obj.level) : null;
+      if (!place || !dressing) continue;
+      const root = rootTransform(place, view.rotation);
+      let minX = 1e6;
+      let minY = 1e6;
+      let maxX = -1e6;
+      let maxY = -1e6;
+      let any = false;
+      for (const m of dressing.meshes) {
+        const out = m.binding.out;
+        for (let i = 0; i < m.binding.mesh.realVertexCount; i++) {
+          const o = i * VERTEX_FLOATS;
+          const p = cam.project(transformPoint([out[o]!, out[o + 1]!, out[o + 2]!], root));
+          minX = Math.min(minX, p.x);
+          minY = Math.min(minY, p.y);
+          maxX = Math.max(maxX, p.x);
+          maxY = Math.max(maxY, p.y);
+          any = true;
+        }
+      }
+      if (!any) continue;
+      const dy = -3 << (s - 1);
+      let left = Math.trunc(minX);
+      let top = Math.trunc(minY) + dy;
+      let right = Math.trunc(maxX + 0.999);
+      let bottom = Math.trunc(maxY + 0.999) + dy;
+      if (left >= right || top >= bottom) continue;
+      const [m, e] = s === 1 ? [1, 3] : s === 2 ? [2, 6] : s === 3 ? [4, 12] : [0, 0];
+      top = top - m + e;
+      left -= m;
+      right += m;
+      bottom = bottom + m + e;
+      const pelvis = person.anim.vitaboy.skeleton.findBone("PELVIS");
+      if (!pelvis) continue;
+      const pt = transformPoint(pelvis.worldPos, rootTransform({ ...place, level: 1 }, view.rotation));
+      const d = cam.camZ;
+      viewer.censor(left, top, right - left, bottom - top, [pt[0] - d[0], pt[1] - d[1], pt[2] - d[2]], person.obj.level);
     }
   }
 
@@ -272,6 +389,6 @@ export class LotPeople {
     if (anim.style !== AnimStyle.plumbBob && ((obj.objectData[OD_HIDDEN] ?? 0) !== 0 || ((pd?.[PD_RENDER_FLAGS] ?? 0) & 1) !== 0)) return;
     anim.root = mat4Mul(translationTf(head.worldPos), rootTransform(place, view.rotation));
     anim.value = Math.trunc(this.motive(obj, 3));
-    anim.render(this.renderer, view, this.now);
+    this.picking(held, () => anim.render(this.renderer, view, this.now));
   }
 }

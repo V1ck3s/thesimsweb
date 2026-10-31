@@ -21,6 +21,7 @@ import { RenderParam } from "./renderparam.js";
 import { getOverlappingSprite, poolCornerSpriteId, poolSpriteId, rotateTileBits, type ByteLayer } from "./pools.js";
 import { LIGHT_POOLS_ENABLED, lightMapSet, NO_LIGHT, processFloorLightEntry } from "./lightmaps.js";
 import { RoofRenderer } from "./roofrender.js";
+import { getNextRandomNumber } from "./random.js";
 import { PX_COLOR, type SpriteFrame } from "./spr.js";
 import { getViewWall } from "./tools/wallworld.js";
 import { DIRS, RotatableWorld } from "./world.js";
@@ -174,7 +175,12 @@ export class HouseViewer {
   /** HouseViewer's dynamic cutaway (cutaway.ts), told about scale / rotation / level changes. */
   cutawayCtl: { onScale(): void; onRotation(): void; onLevel(old: number): void } | null = null;
   /** People (3D meshes), drawn after the dynamic objects with the shared depth buffer. */
-  people: { draw(viewer: HouseViewer): void } | null = null;
+  /**
+   * People (3D meshes): drawn after the static layer and before the dynamic
+   * objects, with the shared depth buffer; `censor` is
+   * HouseViewer::RenderCensoredBlocks, run last.
+   */
+  people: { draw(viewer: HouseViewer): void; censor?(viewer: HouseViewer): void } | null = null;
   /** pointToTile's 3D camera (cAnimDeviceSub), rebuilt when the view moves. */
   private pickCamera: AnimDeviceCamera | null = null;
   private pickCameraKey = "";
@@ -409,6 +415,37 @@ export class HouseViewer {
     const h = p[1] - alt;
     if (h < 2 * LEVEL_HEIGHT_3D) return h < LEVEL_HEIGHT_3D ? 1 : 2;
     return 3;
+  }
+
+  /**
+   * HouseViewer::PointToZ (101cb540, Windows 004a994a): the z-buffer value at
+   * a view point (M3D_GetZValueAtPoint), null where nothing was drawn (the
+   * original's -1). Safe in the middle of a frame (Animator::Render reads it
+   * around each person): the GL state the read changes is put back.
+   */
+  pointToZ(px: number, py: number): number | null {
+    const gl = this.comp.gl;
+    const fb = gl.getParameter(gl.FRAMEBUFFER_BINDING) as WebGLFramebuffer | null;
+    const vp = gl.getParameter(gl.VIEWPORT) as Int32Array;
+    const caps = [gl.BLEND, gl.SCISSOR_TEST, gl.DEPTH_TEST].map((c) => [c, gl.isEnabled(c)] as const);
+    const prog = gl.getParameter(gl.CURRENT_PROGRAM) as WebGLProgram | null;
+    const vao = gl.getParameter(gl.VERTEX_ARRAY_BINDING) as WebGLVertexArrayObject | null;
+    const unit = gl.getParameter(gl.ACTIVE_TEXTURE) as number;
+    gl.activeTexture(gl.TEXTURE0);
+    const tex = gl.getParameter(gl.TEXTURE_BINDING_2D) as WebGLTexture | null;
+    const z = this.comp.readDepth(px, py);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, tex);
+    gl.activeTexture(unit);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, fb);
+    gl.viewport(vp[0]!, vp[1]!, vp[2]!, vp[3]!);
+    for (const [c, on] of caps) {
+      if (on) gl.enable(c);
+      else gl.disable(c);
+    }
+    gl.useProgram(prog);
+    gl.bindVertexArray(vao);
+    return z;
   }
 
   /**
@@ -680,13 +717,91 @@ export class HouseViewer {
     }
     // UpdateStaticLayer: with the roof shown (+0x51), RenderRoofPolys of the roof layers below the level.
     if (this.drawRoof) (this.roofRenderer ??= new RoofRenderer(comp.gl)).draw(this);
-    this.objects?.drawDynamicObjects?.(this, comp, rp);
-    comp.ambient = 1;
-    this.cursor?.draw(this, comp, rp);
+    // UpdateStaticDynamic (101cba20): the 3D objects (people) are rendered
+    // between the static layer and RenderDynamicObjects, so a dynamic
+    // object's alpha pixels (a window's glass) blend over a person behind it.
     this.people?.draw(this);
+    this.objects?.drawDynamicObjects?.(this, comp, rp);
     this.spriteSlots?.draw(this, comp);
+    comp.ambient = 1;
+    // UpdateWorld: RenderCursorObject, then RenderCensoredBlocks.
+    this.cursor?.draw(this, comp, rp);
+    this.people?.censor?.(this);
     comp.present();
     this.dirty = false;
+  }
+
+  /**
+   * HouseViewer::Censor (101c5a00, Windows 004ac510) for a censored person:
+   * RenderLoc::SetWorldCoord places the RenderParam at `pt` (world units, the
+   * person's level 1 frame) on `level`, then the rectangle (x, y, w, h),
+   * clipped to the view, is cut into blocks of 2 / 4 / 8 pixels (scale 1 / 2
+   * / 3). In each block, the pixels whose depth lies behind the vertical
+   * plane through the point (RenderParam +0x28 plus the ZBufferLookup
+   * vertical table at the row's height above +0x24) get their average color,
+   * each channel moved by (GetNextRandomNumber() & 15) - 8. Colors go
+   * through the 16-bit 565 surface format; the z-buffer is not touched.
+   */
+  censor(x: number, y: number, w: number, h: number, pt: Vec3, level: number): void {
+    const comp = this.comp;
+    const rp = new RenderParam(this, this.zLookupIndex);
+    rp.x = pt[2] / 0.1875;
+    rp.y = pt[0] / 0.1875;
+    rp.z = Math.fround((pt[1] * 2 * Math.sqrt(6)) / 3);
+    rp.level = level;
+    rp.updateScreenCoords();
+    const left = Math.max(x, 0);
+    const top = Math.max(y, 0);
+    const right = Math.min(x + w, comp.width);
+    const bottom = Math.min(y + h, comp.height);
+    const cw = right - left;
+    const ch = bottom - top;
+    if (cw <= 0 || ch <= 0) return;
+    const s = this.scale;
+    const block = s === 1 ? 2 : s === 3 ? 8 : 4;
+    const plane = (row: number): number => rp.depth + this.zbuf.verticalAt(s, rp.depthRow + (8 << s) - row);
+    const { color, depth } = comp.readRegion(left, top, cw, ch);
+    const out = new Uint8Array(cw * ch * 4);
+    for (let by = 0; by < ch; by += block) {
+      const bh = Math.min(block, ch - by);
+      for (let bx = 0; bx < cw; bx += block) {
+        const bw = Math.min(block, cw - bx);
+        let r = 0;
+        let g = 0;
+        let b = 0;
+        let n = 0;
+        for (let j = 0; j < bh; j++) {
+          const z = plane(top + by + j);
+          for (let i = 0; i < bw; i++) {
+            const k = (by + j) * cw + bx + i;
+            if (z < depth[k]!) {
+              r += color[k * 4]! & 0xf8;
+              g += color[k * 4 + 1]! & 0xfc;
+              b += color[k * 4 + 2]! & 0xf8;
+              n++;
+            }
+          }
+        }
+        if (n === 0) continue;
+        const jitter = (sum: number): number => Math.max(0, Math.min(0xff, Math.trunc(sum / n) + ((getNextRandomNumber() & 0xf) - 8)));
+        const cr = jitter(r) & 0xf8;
+        const cg = jitter(g) & 0xfc;
+        const cb = jitter(b) & 0xf8;
+        for (let j = 0; j < bh; j++) {
+          const z = plane(top + by + j);
+          for (let i = 0; i < bw; i++) {
+            const k = (by + j) * cw + bx + i;
+            if (z < depth[k]!) {
+              out[k * 4] = cr;
+              out[k * 4 + 1] = cg;
+              out[k * 4 + 2] = cb;
+              out[k * 4 + 3] = 0xff;
+            }
+          }
+        }
+      }
+    }
+    comp.writeRegion(left, top, cw, ch, out);
   }
 
   /** HouseViewer::RenderStatic: rows of tiles of equal x + y, top to bottom. */
