@@ -109,6 +109,7 @@ function headlessWorldHooks(lot: Omit<HeadlessLot, "sim">): WorldHooks {
     place: (obj, pos, level, container, slot) => p.place(obj, pos, level, container, slot, true),
     moveTo: (obj, pos, level) => p.setLocation(obj, pos, level),
     pickup: (obj) => p.pickup(obj, true),
+    turn: (obj, n) => p.turnObject(obj, n),
     findGoodLocation: (obj, start, level, opts) => p.findGoodLocation(obj, start, level, opts),
     kill: (obj) => {
       if (lot.module.objects.get(obj.objectId) === obj) killObject(p, obj);

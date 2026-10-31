@@ -115,6 +115,8 @@ export interface WorldHooks {
   moveTo(obj: XObject, pos: FPos, level: number): void;
   /** cXObject::Pickup (out of the world). */
   pickup(obj: XObject): void;
+  /** Turn (vtable +0x54): cXObject::Turn, or cXMTObject::Turn turning every part of the group. */
+  turn(obj: XObject, n: number): void;
   /** cXObject::FindGoodLocation (Placement.findGoodLocation). */
   findGoodLocation(obj: XObject, start: FPos, level: number, opts: { emptyTile: boolean; buildable: boolean; random: (() => number) | null; sameRoom?: boolean; direction?: number }): FPos | null;
   kill(obj: XObject): void;

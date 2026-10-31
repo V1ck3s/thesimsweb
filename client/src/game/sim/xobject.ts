@@ -2266,7 +2266,11 @@ export class SimObject extends TreeSim {
     if (!x) return PRIM_FALSE;
     const o = this.module.addObject(x, true);
     if (flags & 0x20 && stack) {
-      x.objectData[1] = o.isPerson ? stack.dir : stack.dir & 6;
+      // A person takes the direction; anything else is turned (Turn(1), at most
+      // 4 times) until it faces the stack object's even direction, so a
+      // multi-tile object turns as a whole (cXMTObject::Turn).
+      if (o.isPerson) x.objectData[1] = stack.dir;
+      else for (let i = 0; i < 4 && x.dir !== (stack.dir & 6); i++) hooks.turn(x, 1);
       this.module.dirty(o);
     }
     if (place) {
@@ -2405,9 +2409,8 @@ export class SimObject extends TreeSim {
     const opts = { emptyTile: (flags & 2) === 0, buildable: (flags & 4) !== 0, random: null as (() => number) | null };
     if (mode === 2) {
       const r = ref ?? (this as SimObject);
-      // Turn((((dir + 5) & 7) - my dir) & 7) / 2) with the usual 2 rotation notches.
-      const steps = ((((r.obj.dir + 5) & 7) - x.dir) & 7) >> 1;
-      x.objectData[1] = (x.dir + 2 * steps) & 7;
+      // Turn((((dir + 5) & 7) - my dir) & 7) / 2): the whole group for a multi-tile object.
+      hooks.turn(x, ((((r.obj.dir + 5) & 7) - x.dir) & 7) >> 1);
       return placeAt({ fx: r.obj.fx, fy: r.obj.fy }, r.obj.level);
     }
     if (mode === 1) {

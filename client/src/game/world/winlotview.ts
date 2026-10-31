@@ -754,6 +754,10 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
         this.placement?.pickup(obj, true);
         if (this.viewer) this.viewer.dirty = true;
       },
+      turn: (obj, n) => {
+        this.placement?.turnObject(obj, n);
+        if (this.viewer) this.viewer.dirty = true;
+      },
       findGoodLocation: (obj, start, level, opts) => this.placement?.findGoodLocation(obj, start, level, opts) ?? null,
       kill: (obj) => {
         const p = this.placement;
