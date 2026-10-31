@@ -1037,3 +1037,14 @@ knows would still have no face in the relationship panel (not observed).
   applied it. `ObjectModuleDrawer.drawDynamicObjects` now does. Verified: House01 walls
   down shows no doors or windows.
 
+
+## User-reported bugs, round 5 (2026-10-31)
+
+Most round 4 fixes were checked by the user in game.
+
+| # | Bug | Status |
+|---|---|---|
+| U55 | Walls down: clicking the floor where windows stand (e.g. with the raise walls / build tools) is blocked, as if the hidden window still caught the mouse | open |
+| U56 | Charmant's front door: a wall runs through the door (visible with walls up); sims can pass one way but not the other | open |
+| U57 | Toilet censor works, but part of the body shows at times, as if the censor were not far enough forward | open |
+| U58 | With the cheat "move_objects on" you can delete a sim, then in Live mode bring it back by clicking its icon; not working | open |
