@@ -543,8 +543,9 @@ Throwaway copy of the game's UserData (`?nbhd=UserData21`, overlay, deleted afte
 | U26 | Charmant: walls turn black when switching from Buy/Live to Build mode | fixed: GetCustomWallStyleID (door / window wall sprites) was never wired, so the Build-mode outline pass painted the whole cut stub (see below) |
 | U27 | Build mode on level 2: the buildable-floor grid is missing | fixed (see below) |
 | U28 | Mode music: switching between non-Live modes (Buy, Build, Camera, Options) cuts the music; only Live <-> others should change it, with a fade | fixed: the Windows cBoxX::Pause leaves MainMusicLoop playing (Options paused it); Live entry is a Kill from Buy / Build / Camera, a slow fade otherwise, as in the original (Windows Sims.exe, re-checked 2026-10-31; the Mac build is identical) |
+| U29 | TV sounds very slowed down and low-pitched | fixed: the TV station tracks (TrkTvAction / Mystery / Romance / ComedyCartoon) set pitch 2400 before choosing a clip; the port turned the pitch into a rate relative to the file (2^((2400 - 3600) / 1200) = 0.5), so the 11025 Hz clips played at half speed, an octave down. cSampleChannel::SetPitch gives cTSSnd::SetFrequency an absolute frequency (22050 Hz at 3600, 11025 Hz at 2400), which does nothing until the sound's DirectSound buffer exists (first Play after cSamplePatch::CreateSnd): the clips play at their own 11025 Hz (see "Sound fixes") |
 
-### Sound fixes (U21, U22, U23, U28)
+### Sound fixes (U21, U22, U23, U28, U29)
 
 - XA (`crates/audio`): the original cWaveXA (Windows, FUN_005fc013) decodes the **high nibble
   first**, coefficients `{0, 240, 460, 392}` / `{0, 0, -208, -220}`, shift `20 - (h & 15)`,
@@ -561,9 +562,27 @@ Throwaway copy of the game's UserData (`?nbhd=UserData21`, overlay, deleted afte
 - Pan: cTSSnd::SetPan is a DirectSound pan (`p * 20000 / 1024 - 10000` in 1/100 dB on the far
   side, nothing at the centre). The StereoPannerNode (equal-power: -3 dB at the centre, much
   gentler sides) is replaced by `DSPanner` (samplepatch.ts).
-- Pitch: cSampleChannel::SetPitch sets an absolute frequency (22050 * 2^((p - 3600) / 1200));
-  the port keeps a rate relative to the file (the 11025 Hz TV clips would otherwise play at
-  double speed when the DirectSound buffer already exists at SetPatch time).
+- Pitch (U29): cSampleChannel::SetPitch (Mac 0x103054b0, Windows 0x5802d4) passes an absolute
+  frequency, `22050 * 1.0594631^((p - 3600) / 100)` Hz (constants lbl_105BC85C + 8 / + 0x10), to
+  cTSSnd::SetFrequency (Mac 0x104db5b0, Windows 0x5f9471: clamp 100..100000, and **nothing** while
+  the cTSSnd has no DirectSound buffer, +0x70 / +0x80). The buffer is made by cTSSnd::Load, which
+  runs in cTSSnd::Play (or at cSamplePatch::CreateSnd for a Preload patch); the cTSSnd itself is
+  made by cSamplePatch::AddRef (first reference, from cTrackPlayer::SetPatch) and freed by Release
+  (FreeSnd). note / note_on call UpdateVolPan + SetPitch after cSampleChannel::NoteOn only for a
+  streamed patch (register 0x26). The TV station tracks write pitch 2400 (= 11025 Hz) and then the
+  patch: in the original the SetPitch at SetPatch hits a sound with no buffer yet and the clip
+  plays at its own 11025 Hz (later SetFrequency calls would give 11025 Hz too). The port made the
+  pitch a rate relative to the file and applied it after every play: 2^(-1) = 0.5, the clips at
+  half speed, an octave down. The Superstar TV channels (ExpansionPack6, also 11025 Hz) keep 3600
+  and played right. Now: SamplePatch.addRef / release / sndLoaded / sndFrequency, the rate is
+  `(sndFrequency ?? file rate) / file rate` (file rate kept per decoded buffer, `fileSampleRate`,
+  since decodeAudioData resamples to the context rate), and the post-note SetPitch is limited to
+  streamed patches. MP3s (cTSSndDShow) are never re-pitched. Shipped formats (all FARs and
+  folders): XA 22050 mono (17673) / stereo (2), XA 11025 mono (480, TV stations only), WAV PCM16
+  22050 mono (44) / stereo (241), MP3 44100 stereo (141). One of each decoded through the browser
+  path matches `ffmpeg` in rate, channels, duration and waveform (correlation >= 0.998 at lag 0,
+  `~/simsweb-build/scratch/audio2/`). In lot 1, "Films d'action" on the TV: TV_ACTION_MUS5.XA
+  buffer 15.42 s (ffprobe 15.418 s, 11025 Hz mono), playbackRate 1 (was 0.5).
 - U22: cFreshPlayer::Update / ProbOfCellStarting / UpdatePlayerInfo / SetX/YPos,
   cFreshCellPlayer::Update / UpdatePan, kNotifyChange (ratio < 30 -> 0, x10; hour table / 13)
   and OutdoorTileRatio re-read: the port matches. sim_amb.fsc asks for min = max = 2 cells,

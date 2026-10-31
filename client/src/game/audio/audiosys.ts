@@ -162,6 +162,31 @@ function isXa(bytes: Uint8Array): boolean {
 const buffers = new Map<string, Promise<AudioBuffer>>();
 
 /**
+ * The file's own sample rate (WAVEFORMATEX nSamplesPerSec) per decoded
+ * buffer: decodeAudioData resamples to the context rate, but the game's
+ * frequencies (cTSSnd::GetFrequency / SetFrequency) are in the file's Hz.
+ */
+const fileRates = new WeakMap<AudioBuffer, number>();
+
+/** nSamplesPerSec of the file a buffer was decoded from (11025 for the TV clips, 22050 for the rest). */
+export function fileSampleRate(buf: AudioBuffer): number {
+  return fileRates.get(buf) ?? buf.sampleRate;
+}
+
+/** nSamplesPerSec of a RIFF/WAVE file ("fmt " chunk), or 0. */
+function wavSampleRate(b: Uint8Array): number {
+  if (b.length < 12 || String.fromCharCode(b[0]!, b[1]!, b[2]!, b[3]!) !== "RIFF") return 0;
+  const v = new DataView(b.buffer, b.byteOffset, b.byteLength);
+  for (let p = 12; p + 8 <= b.length; ) {
+    const id = String.fromCharCode(b[p]!, b[p + 1]!, b[p + 2]!, b[p + 3]!);
+    const size = v.getUint32(p + 4, true);
+    if (id === "fmt " && p + 16 <= b.length) return v.getUint32(p + 12, true);
+    p += 8 + size + (size & 1);
+  }
+  return 0;
+}
+
+/**
  * Decode a whole sample (XA through the WASM decoder, WAV/MP3 through the
  * browser). Cached per path, like cSamplePatch keeps its cTSSnd loaded.
  */
@@ -178,9 +203,12 @@ export function loadBuffer(path: string): Promise<AudioBuffer> {
         // after "XA" ("\0\0", "J\0", "\x12\0") do not change the layout.
         wav = (wasm.decodeXa(bytes) as { wav: Uint8Array }).wav;
       }
+      const rate = wavSampleRate(wav);
       const copy = new ArrayBuffer(wav.byteLength);
       new Uint8Array(copy).set(wav);
-      return audioContext().decodeAudioData(copy);
+      const buf = await audioContext().decodeAudioData(copy);
+      if (rate > 0) fileRates.set(buf, rate);
+      return buf;
     })();
     p.catch(() => buffers.delete(key));
     buffers.set(key, p);

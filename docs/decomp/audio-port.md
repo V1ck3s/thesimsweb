@@ -85,6 +85,19 @@ until `soundPlayer.initialize()` installs the hook.
   trimmed to the declared size, as cWaveXA (Windows FUN_005fc013). Identical
   to `ffmpeg -f xa` (adpcm_ea_maxis_xa) on 91 random files of every FAR. The
   earlier decoder swapped every sample pair (harsh noise on all XA sounds).
+- Pitch / frequency (2026-10-31, U29): cSampleChannel::SetPitch is an absolute
+  frequency, `22050 * 1.0594631^((p - 3600) / 100)` Hz, through cTSSnd::SetFrequency,
+  which is a no-op until the sound's DirectSound buffer exists (cTSSnd::Load on the
+  first Play after cSamplePatch::AddRef / CreateSnd, or a Preload patch) and for MP3s.
+  note / note_on re-apply vol/pan/pitch after NoteOn only for streamed patches (reg
+  0x26). Port: `SamplePatch.addRef/release` (from TrackPlayer.setPatch), `sndLoaded`,
+  `sndFrequency`; rate = frequency / the file's own rate (`fileSampleRate`, audiosys.ts;
+  the AudioBuffer itself is at the context rate). The TV station tracks set pitch 2400
+  (11025 Hz): the port's old relative rate halved their 11025 Hz clips. FreshSnd
+  Get/SetFrequency also use the file rate now (was the 44100 Hz context rate).
+- Shipped formats: XA 22050 mono / stereo, XA 11025 mono (TV stations only), WAV PCM16
+  22050 mono / stereo, MP3 44100 stereo; one of each decoded in the browser matches
+  ffmpeg (rate, channels, duration, waveform).
 - Music: buy1.mp3 164 s, latin2.mp3 389 s, loadloop.wav 38 s, sting_baby.wav 7.6 s.
 - Flows: mode 3 → river_loop.xa + MainMusicLoop playing `Music\Modes\Nhood\latin*.mp3`;
   mode 0 → 515 faded and killed in ~7 s; stereo_rock then stereo_jazz on the same

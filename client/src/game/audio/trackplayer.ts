@@ -149,6 +149,7 @@ export class TrackPlayer extends SoundObject {
       this.channel.release();
       this.channel = null;
     }
+    this.patchObj?.release();
     this.patchObj = null;
     this.regs.set(R.patch, id);
     if (id === 0) return true;
@@ -158,6 +159,7 @@ export class TrackPlayer extends SoundObject {
       return false;
     }
     this.patchObj = obj;
+    obj.addRef();
     this.channel = obj.createChannel();
     this.updateVolPan();
     this.updatePitch();
@@ -190,8 +192,14 @@ export class TrackPlayer extends SoundObject {
     if (!this.patchObj) return this.hm.error(this.def.name, "Attempt to play note with no patch");
     this.channel.setLooped(this.registerVal(R.IsLooped) !== 0 || this.patchObj.registerVal(R.IsLooped) !== 0);
     this.channel.play();
-    this.updateVolPan();
-    this.updatePitch();
+    // cTrackPlayer::DoCommand note / note_on: only a streamed patch (register
+    // 0x26) gets UpdateVolPan and SetPitch again after cSampleChannel::NoteOn.
+    // Others keep what SetPatch set, so a pitch written before the first Play
+    // (the TV stations' 2400) never reaches the not yet loaded sound.
+    if (this.patchObj.registerVal(R.IsStreamed) !== 0) {
+      this.updateVolPan();
+      this.updatePitch();
+    }
   }
 
   /** cTrackPlayer::ChainPatch: play `id` now, or right after the current sample. */

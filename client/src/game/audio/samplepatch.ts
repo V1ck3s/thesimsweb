@@ -11,7 +11,7 @@
  * loaded whole (cTSSnd, here an AudioBuffer).
  */
 
-import { audioContext, audioUnlocked, loadBuffer, looseUrl, masterOut, tsVolumeToGain, whenUnlocked } from "./audiosys.js";
+import { audioContext, audioUnlocked, fileSampleRate, loadBuffer, looseUrl, masterOut, tsVolumeToGain, whenUnlocked } from "./audiosys.js";
 import { R } from "./registers.js";
 
 export const CLASS_TRACK = 0xa3cd96cf;
@@ -42,7 +42,26 @@ export abstract class SoundObject {
   }
 }
 
+/**
+ * cSampleChannel::SetPitch: the base frequency (lbl_105BC85C + 8) and the
+ * semitone ratio (+0x10); the pitch is in cents, 3600 = 22050 Hz.
+ */
+const PITCH_BASE_HZ = 22050;
+const SEMITONE = 1.0594630943592953;
+
 export class SamplePatch extends SoundObject {
+  /** cSoundObject +0x14: references taken by cTrackPlayer::SetPatch (AddRef / Release). */
+  private refs = 0;
+  /**
+   * The cTSSnd made by cSamplePatch::CreateSnd has its DirectSound buffer
+   * (cTSSnd +0x70, Windows +0x80): created by cTSSnd::Load, which runs on
+   * the first Play (or at CreateSnd for a Preload patch), and dropped with
+   * the cTSSnd by FreeSnd when the last reference goes.
+   */
+  sndLoaded = false;
+  /** Frequency set on that buffer by cTSSnd::SetFrequency; null = the file's own rate. */
+  sndFrequency: number | null = null;
+
   constructor(
     id: number,
     readonly name: string,
@@ -61,6 +80,23 @@ export class SamplePatch extends SoundObject {
   /** cSamplePatch::CreateSnd: ".MP3" files stream, the rest load whole. */
   isStreamedFile(): boolean {
     return this.path.slice(-4).toUpperCase().startsWith(".MP");
+  }
+
+  /** cSamplePatch::AddRef: the first reference creates the sound (CreateSnd). */
+  addRef(): void {
+    if (this.refs++ === 0) {
+      // cSamplePatch::CreateSnd: a new cTSSnd, loaded at once when Preload.
+      this.sndLoaded = this.registerVal(R.Preload) !== 0 && !this.isStreamedFile();
+      this.sndFrequency = null;
+    }
+  }
+
+  /** cSamplePatch::Release: the last reference frees the sound (FreeSnd). */
+  release(): void {
+    if (this.refs > 0 && --this.refs === 0) {
+      this.sndLoaded = false;
+      this.sndFrequency = null;
+    }
   }
 
   /** cSamplePatch::CreateChannel */
@@ -88,7 +124,6 @@ export class SampleChannel {
   private paused = false;
   private generation = 0;
   private looped = false;
-  private rate = 1;
 
   constructor(readonly patch: SamplePatch) {
     const ctx = audioContext();
@@ -119,11 +154,29 @@ export class SampleChannel {
     this.panner.setPan(p);
   }
 
-  /** Pitch in cents around 3600 (cTrackPlayer passes trackPitch + patchPitch - 3600). */
+  /**
+   * cSampleChannel::SetPitch (cTrackPlayer passes trackPitch + patchPitch -
+   * 3600): an **absolute** frequency, 22050 * 1.0594631^((p - 3600) / 100) Hz,
+   * given to cTSSnd::SetFrequency (clamped to 100..100000), which does
+   * nothing while the sound has no DirectSound buffer yet (not played since
+   * CreateSnd) and nothing for the streamed MP3s (cTSSndDShow). So pitch
+   * 3600 is 22050 Hz, and the TV stations' 2400 is 11025 Hz, the rate of
+   * their 11025 Hz clips.
+   */
   setPitch(p: number): void {
-    this.rate = Math.pow(2, (p - 0xe10) / 1200);
-    if (this.source) this.source.playbackRate.value = this.rate;
-    if (this.element) this.element.playbackRate = this.rate;
+    const patch = this.patch;
+    if (patch.isStreamedFile() || !patch.sndLoaded) return;
+    const hz = p === 0xe10 ? PITCH_BASE_HZ : PITCH_BASE_HZ * Math.pow(SEMITONE, (p - 0xe10) / 100);
+    patch.sndFrequency = Math.max(100, Math.min(100000, Math.trunc(hz)));
+    this.applyFrequency();
+  }
+
+  /** Playback rate of the buffer source: the sound's frequency over the file's own rate. */
+  private applyFrequency(): void {
+    const src = this.source;
+    if (!src?.buffer) return;
+    const native = fileSampleRate(src.buffer);
+    src.playbackRate.value = (this.patch.sndFrequency ?? native) / native;
   }
 
   /** Start the sample from the beginning. */
@@ -132,6 +185,12 @@ export class SampleChannel {
     if (SampleChannel.playLog.length > 100) SampleChannel.playLog.shift();
     this.stop();
     this.playing = true;
+    // cTSSnd::Play loads the sound first (cTSSnd::Load creates the buffer at
+    // the file's own frequency); later SetFrequency calls then apply.
+    if (!this.patch.isStreamedFile() && !this.patch.sndLoaded) {
+      this.patch.sndLoaded = true;
+      this.patch.sndFrequency = null;
+    }
     const gen = ++this.generation;
     void this.start(gen).catch((err: unknown) => {
       if (gen !== this.generation) return;
@@ -148,7 +207,6 @@ export class SampleChannel {
       if (gen !== this.generation) return;
       const el = new Audio(url);
       el.loop = this.looped;
-      el.playbackRate = this.rate;
       el.addEventListener("ended", () => {
         if (gen === this.generation) this.playing = false;
       });
@@ -164,7 +222,6 @@ export class SampleChannel {
     const src = audioContext().createBufferSource();
     src.buffer = buf;
     src.loop = this.looped;
-    src.playbackRate.value = this.rate;
     src.connect(this.gain);
     src.onended = () => {
       if (gen === this.generation && this.source === src) {
@@ -173,6 +230,7 @@ export class SampleChannel {
       }
     };
     this.source = src;
+    this.applyFrequency();
     src.start();
   }
 

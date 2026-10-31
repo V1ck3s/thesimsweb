@@ -14,7 +14,7 @@
  * not through the HIT engine.
  */
 
-import { audioContext, loadBuffer, masterOut, readGameFile, tsVolumeToGain } from "./audiosys.js";
+import { audioContext, fileSampleRate, loadBuffer, masterOut, readGameFile, tsVolumeToGain } from "./audiosys.js";
 
 let randSeed = 1;
 
@@ -240,12 +240,15 @@ class FreshSnd {
     );
   }
 
+  /** cTSSnd::GetFrequency, in the file's Hz (not the context's resampled rate). */
   getFrequency(): number {
-    return (this.buffer?.sampleRate ?? 22050) * this.rate;
+    return Math.trunc((this.buffer ? fileSampleRate(this.buffer) : 22050) * this.rate);
   }
 
+  /** cTSSnd::SetFrequency: absolute Hz, clamped to 100..100000. */
   setFrequency(f: number): void {
-    this.rate = f / (this.buffer?.sampleRate ?? 22050);
+    const hz = Math.max(100, Math.min(100000, Math.trunc(f)));
+    this.rate = hz / (this.buffer ? fileSampleRate(this.buffer) : 22050);
     if (this.source) this.source.playbackRate.value = this.rate;
   }
 
