@@ -741,6 +741,11 @@ export class HouseViewer {
    * vertical table at the row's height above +0x24) get their average color,
    * each channel moved by (GetNextRandomNumber() & 15) - 8. Colors go
    * through the 16-bit 565 surface format; the z-buffer is not touched.
+   * The plane's row is the row within the block plus the rectangle's top
+   * (Windows: FUN_0049a73d(rp, row + top); Mac: rp+0x24 - (row + top)),
+   * not the block's own row: every block row is tested against the plane's
+   * depth at the top rows, which lie nearer the camera, so the lower blocks
+   * pixelate further forward (U57).
    */
   censor(x: number, y: number, w: number, h: number, pt: Vec3, level: number): void {
     const comp = this.comp;
@@ -771,7 +776,7 @@ export class HouseViewer {
         let b = 0;
         let n = 0;
         for (let j = 0; j < bh; j++) {
-          const z = plane(top + by + j);
+          const z = plane(top + j);
           for (let i = 0; i < bw; i++) {
             const k = (by + j) * cw + bx + i;
             if (z < depth[k]!) {
@@ -788,7 +793,7 @@ export class HouseViewer {
         const cg = jitter(g) & 0xfc;
         const cb = jitter(b) & 0xf8;
         for (let j = 0; j < bh; j++) {
-          const z = plane(top + by + j);
+          const z = plane(top + j);
           for (let i = 0; i < bw; i++) {
             const k = (by + j) * cw + bx + i;
             if (z < depth[k]!) {
