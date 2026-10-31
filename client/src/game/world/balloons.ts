@@ -41,7 +41,7 @@ import { cheatFlags } from "../cheatflags.js";
 import { ObjectIcon } from "../cpanel/buy/objecticon.js";
 import type { Compositor, SpriteTex } from "./compositor.js";
 import type { GameContext } from "../context.js";
-import { loadCharacter } from "../data/neighborhood.js";
+import { personBitmap } from "../cas/personpictures.js";
 import { decodeImage } from "../res/bmp.js";
 import type { SimModule } from "../sim/simmodule.js";
 import type { HouseViewer } from "./houseviewer.js";
@@ -251,7 +251,7 @@ export class BalloonPainter {
     if (slot.spriteId !== -1) {
       if (slot.spriteId !== 0) drawShape(comp, rp, slot.spriteId, zoom + slot.frame * 3, x, y);
     } else if (slot.selector) {
-      const img = this.speechImage(slot.selector as ObjSelector, s, scene.module);
+      const img = this.speechImage(slot.selector as ObjSelector, s);
       if (img) {
         const dx = s === 2 ? 0x10 : 0x20;
         const dy = s === 2 ? -0x12 : -0x24;
@@ -262,29 +262,26 @@ export class BalloonPainter {
   }
 
   /** Product::GetSpeechImage / PersonFinder::GetSpeechIcon at scale 2 (medium) or 3 (large). */
-  private speechImage(sel: ObjSelector, scale: number, module: SimModule): ImageBitmap | null {
+  private speechImage(sel: ObjSelector, scale: number): ImageBitmap | null {
     const key = `${sel.guid}:${scale}`;
     if (this.speech.has(key)) return this.speech.get(key) ?? null;
     this.speech.set(key, null);
-    void this.loadSpeechImage(sel, scale, module)
+    void this.loadSpeechImage(sel, scale)
       .catch(() => null)
       .then((img) => this.speech.set(key, img));
     return null;
   }
 
-  private async loadSpeechImage(sel: ObjSelector, scale: number, module: SimModule): Promise<ImageBitmap | null> {
+  private async loadSpeechImage(sel: ObjSelector, scale: number): Promise<ImageBitmap | null> {
     const keyed = async (bytes: Uint8Array | null | undefined): Promise<ImageBitmap | null> => {
       if (!bytes) return null;
       const img = decodeImage(bytes, "speech.bmp", { colorKey: true });
       return createImageBitmap(new ImageData(img.data, img.width, img.height));
     };
     if (sel.getIsPerson()) {
-      // PersonFinder::GetSpeechIcon: the character file's BMP_ 2005 (medium) / 2006 (large).
-      const nb = module.findNeighborByGUID(sel.guid);
-      const dir = module.nbhd?.dir;
-      if (!nb || !dir) return null;
-      const c = await loadCharacter(dir, nb.name);
-      return keyed(c.bitmaps.get(scale === 3 ? 2006 : 2005));
+      // PersonFinder::GetSpeechIcon: BMP_ 2005 (medium) / 2006 (large) of the person's own file
+      // (a character file or an NPC of GameData/Objects/People), else rendered.
+      return keyed(await personBitmap(sel, scale === 3 ? 2006 : 2005));
     }
     // Product::GenerateSpeechIcons: BMP_ catalog id + 2000 / + 4000 of the object file.
     const id = sel.objd.i16(0x52);

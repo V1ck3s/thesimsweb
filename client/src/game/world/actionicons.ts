@@ -10,8 +10,8 @@
  *    (BuildPersonBtn of the face BMP_ 2002);
  *  - an object: the master selector's catalog Product::ComposeBtnImage, the
  *    catalog template's first frame with the product picture (the object
- *    file's BMP_, else RenderCatalogShot) centered on it; no product leaves
- *    the icon without a picture: a dark grey square.
+ *    file's BMP_, else RenderCatalogShot, else kItemUnknown) centered on
+ *    it; no product leaves the icon without a picture: a dark grey square.
  * PersonAction +8 picks the frame half: the queued actions and a current
  * one whose person data 0x27 is clear get the plain frame, else the yellow
  * ring.
@@ -36,6 +36,7 @@ import type { GameContext } from "../context.js";
 import { soundPlayer, UI_SOURCE } from "../audio/index.js";
 import { UI } from "../audio/uisound.js";
 import { buildPersonBtn } from "../cpanel/live/peoplebuttons.js";
+import { personBitmap } from "../cas/personpictures.js";
 import { PDX, type Interaction, type PersonSim } from "../sim/person.js";
 import type { SimObject } from "../sim/xobject.js";
 import { getStandardCursor } from "../ui/cursor.js";
@@ -316,7 +317,8 @@ export class ActionIcons {
 
   /**
    * PersonFinder::GetPictureBuffer: BuildPersonBtn of the person's faces
-   * (the neighbor's, else the BMP_ 2002 of its character file).
+   * (the family's or a known neighbor's, else the BMP_ 2002 of the person's
+   * own file, rendered when missing or with a blank head).
    */
   private async personPicture(o: SimObject): Promise<ImageBitmap | null> {
     const template = this.peopleTemplate;
@@ -325,7 +327,7 @@ export class ActionIcons {
     const guid = o.obj.selector.guid | 0;
     const info = [...st.family, ...st.neighbors].find((q) => q.guid !== undefined && (q.guid | 0) === guid);
     if (info?.face) return buildPersonBtn(info.face, template);
-    const bytes = o.obj.selector.res.get("BMP_", BMP_FACE);
+    const bytes = await personBitmap(o.obj.selector, BMP_FACE);
     return bytes ? loadPicture(bytes, template) : null;
   }
 
@@ -337,7 +339,8 @@ export class ActionIcons {
   private async productPicture(master: ObjSelector): Promise<ImageBitmap | null> {
     const template = this.template;
     if (!template || master.getIsMultiTileSubObject() || master.getIsPerson()) return null;
-    const picture = await generateGraphics(master.res, master.objdId, master.objd.i16(0x52), master.getHasGraphics(), template);
+    // GenerateGraphics leaves kItemUnknown (lbl_105BA784) when there is no picture.
+    const picture = (await generateGraphics(master.res, master.objdId, master.objd.i16(0x52), master.getHasGraphics(), template)) ?? (await this.ctx.res.image("kItemUnknown").catch(() => null));
     return composeBtnImage(template, picture);
   }
 

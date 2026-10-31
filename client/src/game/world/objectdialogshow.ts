@@ -19,9 +19,11 @@ import type { DialogHooks, DialogIcon, ObjectDialog } from "../sim/objectdialog.
 import type { Simulator } from "../sim/simulator.js";
 import { loadPicture, WinPhoneBook } from "../ui/phonebook.js";
 import { WinPictureDialog } from "../ui/picturedialog.js";
+import { rgb } from "../ui/syscolors.js";
 import type { Rect, TSWin } from "../ui/tswin.js";
 import { ObjectIcon } from "../cpanel/buy/objecticon.js";
-import { loadCharacter } from "../data/neighborhood.js";
+import { personBitmap, personSelector } from "../cas/personpictures.js";
+import type { ObjSelector } from "./objselector.js";
 import { preloadEditPersonCatalog } from "../cas/editperson.js";
 import { loadStringSet } from "../sim/behavior.js";
 import type { SimObject } from "../sim/xobject.js";
@@ -30,6 +32,9 @@ import { CWinMagicBook } from "../ui/magicbook.js";
 
 /** PersonFinder's picture cell (45 x 45). */
 const PERSON_CELL = 0x2d;
+/** ObjectDialog::SetParams' object picture: the buffer and the drawn / shown square. */
+const OBJECT_ICON_BUFFER = { w: 0x7d, h: 0x7f };
+const OBJECT_ICON_SIZE = 0x78;
 
 /** The picture SetParams made (ImageHandle +0x24) and its shown part (+0x28). */
 interface DialogPicture {
@@ -50,13 +55,25 @@ async function bitmapOf(bytes: Uint8Array | null | undefined): Promise<ImageBitm
 const whole = (image: ImageBitmap, w = image.width, h = image.height): DialogPicture => ({ image, rect: { left: 0, top: 0, right: w, bottom: h } });
 
 /** ObjectDialog::SetParams' picture part (the image making). */
-async function iconImage(ctx: GameContext, sim: Simulator, icon: DialogIcon | null): Promise<DialogPicture | null> {
+async function iconImage(ctx: GameContext, from: ObjSelector, icon: DialogIcon | null): Promise<DialogPicture | null> {
   if (!icon) return null;
   switch (icon.kind) {
     case "object": {
-      // Product::DrawIcon: the catalog BMP_ (same id as the catalog strings).
-      const img = await bitmapOf(icon.selector.res.get("BMP_", icon.selector.objd.i16(0x52)));
-      return img ? whole(img) : null;
+      // ObjectDialog::SetParams (Windows 004360c1, Mac 100c3bc0), the selector's
+      // Product (+0x84; Catalog::Init makes none for a multi-tile part): a 0x7d x 0x7f
+      // buffer filled with (0, 0, 0x52) (DAT_006f2a54 / lbl_105BA25C), then
+      // Product::DrawIcon -> DrawDefaultObjectIcon (the object's sprites, not its
+      // catalog BMP_) in (0, 0, 0x78, 0x78); that rectangle is shown.
+      if (icon.selector.getIsMultiTileSubObject()) return null;
+      const ic = await ObjectIcon.create(icon.selector.res, icon.selector.objdId).catch(() => null);
+      const c = document.createElement("canvas");
+      c.width = OBJECT_ICON_BUFFER.w;
+      c.height = OBJECT_ICON_BUFFER.h;
+      const g = c.getContext("2d")!;
+      g.fillStyle = rgb(0, 0, 0x52);
+      g.fillRect(0, 0, c.width, c.height);
+      ic?.draw(g, 0, 0, OBJECT_ICON_SIZE, OBJECT_ICON_SIZE);
+      return whole(await createImageBitmap(c), OBJECT_ICON_SIZE, OBJECT_ICON_SIZE);
     }
     case "bmp": {
       // nsSMResFac::LoadBuffer(object file, id): mode 3 (BMP_ 5000 + n) and "my n".
@@ -80,11 +97,8 @@ async function iconImage(ctx: GameContext, sim: Simulator, icon: DialogIcon | nu
     }
     case "rel": {
       // PersonFinder::GetRelPictureBuffer: the relationship picture (BMP_ 2003, five heads), its middle fifth.
-      const nb = sim.module.nbhd;
-      const n = sim.module.findNeighborByGUID(icon.guid);
-      if (!nb || !n) return null;
-      const c = await loadCharacter(nb.dir, n.name).catch(() => null);
-      const bytes = c?.bitmaps.get(2003);
+      const sel = await personSelector(from, icon.guid);
+      const bytes = sel ? await personBitmap(sel, 2003) : null;
       if (!bytes) return null;
       const img = decodeImage(bytes, "rel.bmp", { colorKey: true });
       const bmp = await createImageBitmap(new ImageData(img.data, img.width, img.height));
@@ -100,13 +114,11 @@ async function iconImage(ctx: GameContext, sim: Simulator, icon: DialogIcon | nu
     }
     case "person": {
       // PersonFinder::GetHandle(guid) + GetPictureBuffer: the person button picture, its first 45 x 45 cell.
-      const nb = sim.module.nbhd;
-      const n = sim.module.findNeighborByGUID(icon.guid);
-      if (!nb || !n) return null;
-      const c = await loadCharacter(nb.dir, n.name).catch(() => null);
-      if (!c) return null;
+      const sel = await personSelector(from, icon.guid);
+      const bytes = sel ? await personBitmap(sel, 2002) : null;
+      if (!bytes) return null;
       const template = await ctx.res.image("kPeopleTemplate");
-      const img = await loadPicture(c.bitmaps.get(2002), template).catch(() => null);
+      const img = await loadPicture(bytes, template).catch(() => null);
       return img ? whole(img, PERSON_CELL, PERSON_CELL) : null;
     }
   }
@@ -118,7 +130,7 @@ async function show(ctx: GameContext, sim: Simulator, d: ObjectDialog, view: TSW
   d.state = 1;
   {
     w.setTitle(d.title);
-    const pic = await iconImage(ctx, sim, d.icon);
+    const pic = await iconImage(ctx, d.obj.obj.selector, d.icon);
     if (pic) w.setImage(pic.image, pic.rect);
     let last = 2;
     let single = true;

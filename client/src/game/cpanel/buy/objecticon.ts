@@ -334,8 +334,9 @@ const CATALOG_ICON_H = 0x25;
 /**
  * Product::GenerateGraphics for any object selector (the catalog keeps a
  * Product for every selector Catalog::Init accepts, even one no sort shows):
- * the object file's 74x37 BMP_ with the catalog strings id (OBJD +0x52), else
- * RenderCatalogShot when the object has graphics; null means kItemUnknown.
+ * the object file's BMP_ with the catalog strings id (OBJD +0x52; dropped
+ * unless 74x37 when the object has graphics), else RenderCatalogShot when
+ * the object has graphics; null means kItemUnknown.
  */
 export async function generateGraphics(
   file: ResFile,
@@ -348,7 +349,10 @@ export async function generateGraphics(
   if (bytes) {
     try {
       const img = decodeImage(bytes, "catalog.bmp");
-      if (img.width === CATALOG_ICON_W && img.height === CATALOG_ICON_H) {
+      // The 74x37 size is only checked for an object with graphics (Windows
+      // FUN_004cbf52, Mac 102011F0): a graphics-less one keeps any BMP_ (the Go
+      // Here destination's 45x45 DestinationIcon.bmp).
+      if (!hasGraphics || (img.width === CATALOG_ICON_W && img.height === CATALOG_ICON_H)) {
         return await createImageBitmap(new ImageData(img.data, img.width, img.height));
       }
     } catch {

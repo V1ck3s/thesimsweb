@@ -281,55 +281,73 @@ export async function loadCharacter(dir: string, shortName: string, lang = LANG_
   const strings = ctss ? await localizedStrings(payload(data, ctss), lang) : [];
   const bitmaps = new Map<number, Uint8Array>();
   for (const c of chunks) if (c.kind === "BMP_") bitmaps.set(c.id, payload(data, c));
-  const faces = bitmaps.get(2002);
-  if (faces && hasBlankFace(faces)) {
+  if (blankHeadIds(bitmaps).length) {
     const key = `${dir}/${file}`;
     let fixed = regeneratedFaces.get(key);
     if (!fixed) {
       fixed = regenerateFaces(dir, shortName);
       regeneratedFaces.set(key, fixed);
     }
-    const bytes = await fixed;
-    if (bytes) bitmaps.set(2002, bytes);
+    const generated = await fixed;
+    for (const id of blankHeadIds(bitmaps)) {
+      const bytes = generated?.get(id);
+      if (bytes) bitmaps.set(id, bytes);
+    }
   }
   return { firstName: strings[0] ?? shortName, bio: strings[1] ?? "", bitmaps };
 }
 
 /**
- * Faces (BMP_ 2002) regenerated in memory, by character file. MakePersonBtnImage
- * does not clear its 105 x 41 buffer, so a head whose MakePersonHeadImage failed
- * is saved as a solid black 35 x 41 third (UserData's User00109..User00174 have a
- * black middle, "happy", head). The original only re-renders the faces when the
- * person's thumbnails are dirty (PersonFinder::DirtyThumbnails, then
- * GetPictureBuffer -> GenerateBitmaps(i, 1, 0): rendered, not saved); this
- * port treats a blank third as such a dirty face so the portrait is not black.
+ * Faces (BMP_ 2002) and relationship heads (2003) regenerated in memory, by
+ * character file. MakePersonBtnImage / MakeRelationshipBtnImage do not clear
+ * their buffer, so a head whose MakePersonHeadImage failed is saved as a
+ * solid black cell (UserData's User00109..User00174 have a black middle,
+ * "happy", face and two black relationship heads). The original only
+ * re-renders the pictures when the person's thumbnails are dirty
+ * (PersonFinder::DirtyThumbnails, then GetPictureBuffer -> GenerateBitmaps(i,
+ * 1, 0): rendered, not saved); this port treats a blank head cell as such a
+ * dirty picture so the portrait is not black.
  */
-const regeneratedFaces = new Map<string, Promise<Uint8Array | null>>();
+const regeneratedFaces = new Map<string, Promise<Map<number, Uint8Array> | null>>();
 
-async function regenerateFaces(dir: string, shortName: string): Promise<Uint8Array | null> {
+async function regenerateFaces(dir: string, shortName: string): Promise<Map<number, Uint8Array> | null> {
   try {
     const bodyStrings = await loadBodyStrings(dir, shortName);
     const { generatePortraits } = await import("../cas/portraits.js");
-    return (await generatePortraits(bodyStrings)).get(2002) ?? null;
+    return await generatePortraits(bodyStrings);
   } catch {
     return null;
   }
 }
 
-/** A 2002 faces bitmap with a 35-pixel third that is all 0x000000. */
-function hasBlankFace(bytes: Uint8Array): boolean {
+/** The head cells of the pictures that can be saved blank: 2002 three faces, 2003 five relationship heads. */
+const HEAD_CELLS: ReadonlyMap<number, number> = new Map([
+  [2002, 3],
+  [2003, 5],
+]);
+
+/** The BMP_ ids (2002, 2003) of `bitmaps` with a blank head cell. */
+export function blankHeadIds(bitmaps: ReadonlyMap<number, Uint8Array>): number[] {
+  return [...HEAD_CELLS].filter(([id, cells]) => {
+    const bytes = bitmaps.get(id);
+    return !!bytes && hasBlankCell(bytes, cells);
+  }).map(([id]) => id);
+}
+
+/** A bitmap cut in `cells` columns, one of which is all 0x000000. */
+function hasBlankCell(bytes: Uint8Array, cells: number): boolean {
   let img;
   try {
     img = decodeBmp(bytes);
   } catch {
     return false;
   }
-  const third = Math.trunc(img.width / 3);
-  if (third <= 0) return false;
-  for (let i = 0; i < 3; i++) {
+  const cell = Math.trunc(img.width / cells);
+  if (cell <= 0) return false;
+  for (let i = 0; i < cells; i++) {
     let blank = true;
     for (let y = 0; y < img.height && blank; y++) {
-      for (let x = i * third; x < (i + 1) * third; x++) {
+      for (let x = i * cell; x < (i + 1) * cell; x++) {
         const o = (y * img.width + x) * 4;
         if (img.data[o] !== 0 || img.data[o + 1] !== 0 || img.data[o + 2] !== 0) {
           blank = false;
