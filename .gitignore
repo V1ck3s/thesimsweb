@@ -61,15 +61,6 @@ Sims.exe
 gimex.dll
 ijl10.dll
 
-# Spike (émulateurs, images Win98, dumps)
-spike/*/image/
-spike/*/images/
-spike/*/build/
-spike/v86/v86-source/
-spike/**/*.img
-spike/**/*.iso
-spike/**/*.bin
-spike/v86/sims-disk/staging/
 *.qcow2
 
 # Sauvegardes serveur de dev
