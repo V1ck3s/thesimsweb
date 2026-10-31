@@ -11,10 +11,11 @@
  */
 
 import { computeCameraFrame, drawCameraFrame, takeCameraSnapshot } from "../cpanel/camsnapshot.js";
-import { modeKeyDown } from "../cpanel/modekeys.js";
+import { characterAfterTool, characterBeforeTool, modeKeyDown } from "../cpanel/modekeys.js";
+import { WinCPanel } from "../cpanel/cpanel.js";
 import type { GameContext } from "../context.js";
 import { soundPlayer, UI_SOURCE } from "../audio/index.js";
-import { getOptionsMgr } from "../optionsmgr.js";
+import { getOptionsMgr, type OptionsMgr } from "../optionsmgr.js";
 import { ArchTool, DIRTY_ARCH_SUBTOOL, DIRTY_ARCH_TOOL, DIRTY_ARCH_UNDO, DIRTY_LEVEL, DIRTY_SHOP_ITEM, Mode, type CPState, type HouseViewerHooks, type WallState } from "../cpstate.js";
 import { DefaultTTWindow } from "../ui/ttwindow.js";
 import { Gfx, TSWin, WF_GLOBAL_CURSOR } from "../ui/tswin.js";
@@ -26,7 +27,7 @@ import { HouseViewer, type ObjectDrawer, type TerrainDrawer, type WallDrawer } f
 import { ResFile } from "./iffres.js";
 import { customWallStyleOf, loadLotObjectDrawer, type LotObjects } from "./lotobjects.js";
 import type { DrawableObject } from "./objectdraw.js";
-import type { RenderParam } from "./renderparam.js";
+import { RenderParam as RenderParamImpl, type RenderParam } from "./renderparam.js";
 import { LotPeople } from "./lotpeople.js";
 import { RoomLighting, timeOfDay } from "./lighting.js";
 import { loadRoofSettings, makeArchRoofHooks, roofLayersOf } from "./roofs.js";
@@ -64,7 +65,7 @@ import {
 } from "../sims/popuphead.js";
 import { winMgr } from "../ui/winmgr.js";
 import { getCursor } from "../ui/cursor.js";
-import { pointToObjectId, PickMode } from "./tools/picking.js";
+import { objectScreenRect, pointToObjectId, PickMode } from "./tools/picking.js";
 import { ActionIcons } from "./actionicons.js";
 import { BalloonPainter, loadBalloonSprites } from "./balloons.js";
 import { WinPictureInPicture } from "./winpictureinpicture.js";
@@ -732,7 +733,15 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
         }
         const tile = (f: number): number => f >> 4;
         const sameTile = tile(obj.fx) === tile(pos.fx) && tile(obj.fy) === tile(pos.fy) && obj.level === level;
-        const onTile = !sameTile && p.isInWorld(obj) && obj.parentId === 0;
+        // SAnimator's walk step and FollowOneStep: CanPlace then cXPerson::Place
+        // (cXObject::Place: TestAndPlace out of the old site, then into the new
+        // tile). A person chained under another object of its tile (two people
+        // on a tile: slot 0 of the newcomer) leaves that chain too; skipping it
+        // left the person linked at the old tile, and its later removal took
+        // the wrong tile's head with it (objects lost from their tile chain:
+        // not drawn, not pickable). Not for a person in a container's slot.
+        const spec = p.getPlacementSpec(obj);
+        const onTile = !sameTile && spec.placing && spec.container === null;
         if (onTile) p.testAndPlace(obj, { placing: false, fy: 0, fx: 0, container: null, slot: -1, level: 0 }, true);
         p.setLocation(obj, pos, level);
         if (onTile && !p.outOfBounds(tile(pos.fx), tile(pos.fy))) {
@@ -882,7 +891,17 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
     if (this.pip) return this.pip;
     const pip = new WinPictureInPicture(this.ctx, {
       viewer: () => this.viewer,
-      groupOf: (o) => (this.sim?.module.objects ?? []).flatMap((s) => (s && o.mtLeadId !== 0 && s.obj.mtLeadId === o.mtLeadId ? [s.obj] : [])),
+      // The lead (its own +0x190 is null: lead id 0) and the parts naming it.
+      groupOf: (o) => {
+        const lead = o.mtLeadId !== 0 ? o.mtLeadId : o.objectId;
+        return (this.sim?.module.objects ?? []).flatMap((s) => (s && (s.id === lead || s.obj.mtLeadId === lead) ? [s.obj] : []));
+      },
+      damageRect: (o) => {
+        const v = this.viewer;
+        const lot = this.lotObjects;
+        if (!v || !lot) return null;
+        return o.isPerson ? (this.people?.screenRect(o, v) ?? null) : objectScreenRect(o, v, lot.renderer(o.selector.res), new RenderParamImpl(v, 0));
+      },
       cpMode: () => this.ctx.state.getCPMode(),
       livePIP: () => getOptionsMgr().getLivePIP(),
     });
@@ -916,7 +935,8 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
     const person = this.selectedPerson();
     if (!sim || !v || !p || !lot || !person) return;
     const people = this.people;
-    const id = pointToObjectId(v, p, (r) => lot.renderer(r), x, y, v.level || 1, PickMode.Any, people ? (o) => people.screenRect(o, v) : null, sim.globals[G.modeFreeze]);
+    // TryClick runs Float first: the picked person replaces PointToObjectID's object.
+    const id = this.pickedPersonId(pointToObjectId(v, p, (r) => lot.renderer(r), x, y, v.level || 1, PickMode.Any, people ? (o) => people.screenRect(o, v) : null, sim.globals[G.modeFreeze]));
     let target = id ? sim.module.getObject(id) : null;
     /** +0xb4: the Go Here helper was made and placed for this click (killed unless used). */
     let helper: SimObject | null = null;
@@ -1348,6 +1368,8 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
   private async initSimulator(house: ResFile, lot: LotObjects, fixed?: FixedWorld): Promise<void> {
     try {
       // PostLoad waits for the world hooks (the placement): see init.
+      // cOptionsMgr::Load -> cXObject::SetFreeWill: DoStream copies the flag into global 30.
+      Simulator.freeWill = getOptionsMgr().getFreeWill();
       const sim = await Simulator.create(house, lot.objects.values() as Iterable<XObject>, lot.folder.packs, true);
       // The simulation works on the viewer's fixed world (the router reads its rooms, walls and tile objects).
       if (fixed) sim.world = fixed;
@@ -1377,6 +1399,7 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
         },
       };
       this.sim = sim;
+      getOptionsMgr().onChange(this.onOptions);
       this.initBudgetSource(sim, lot);
       // cWinPeople::BuildGifts reads the selected sim's SimInventory and the gifts' selectors.
       GiftsPanel.source = {
@@ -1507,8 +1530,12 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
     this.ctx.state.onChange(fn);
   }
 
+  /** cOptionsMgr::SetFreeWill -> cXObject::SetFreeWill. */
+  private readonly onOptions = (o: OptionsMgr): void => this.sim?.setFreeWill(o.getFreeWill());
+
   override shutdown(): void {
     for (const fn of this.listeners) this.ctx.state.offChange(fn);
+    getOptionsMgr().offChange(this.onOptions);
     window.removeEventListener("keydown", this.onModifiers);
     window.removeEventListener("keyup", this.onModifiers);
     window.removeEventListener("pointermove", this.onModifiers);
@@ -1710,7 +1737,14 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
       cancelTutorial(this.sim.module);
       hideTutorialHighlighter();
     }
+    // cDDDSimsView::TSOnCharacter (WM_CHAR: none while Ctrl or Alt is down):
+    // speed, pause, zoom and catalog page keys, then the tool, then rotation.
+    const typed = !winMgr.isKeyDown("Control") && !winMgr.isKeyDown("Alt");
+    const cpanel = this.children.find((c): c is WinCPanel => c instanceof WinCPanel) ?? null;
+    const chr = typed ? characterBeforeTool(this.ctx.state, this.ctx.strings, cpanel, key) : { done: false, ch: key };
+    if (chr.done) return true;
     if (this.activeTools()?.keyDown(key)) return true;
+    if (typed && characterAfterTool(this.ctx.state, chr.ch)) return true;
     // cObjPickerTool::OnChar (Live mode): Space advances the selected person
     // and centers the view on them (CenterHouseViewOnMe), N only advances.
     if (this.sim && this.ctx.state.getMode() === Mode.Live && (key === " " || key === "n" || key === "N")) {
@@ -1794,7 +1828,10 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
     if (!sim || !v || !p || !lot) return;
     const person = this.selectedPerson();
     const people = this.people;
-    const id = person ? pointToObjectId(v, p, (r) => lot.renderer(r), x, y, v.level || 1, PickMode.Any, people ? (o) => people.screenRect(o, v) : null, sim.globals[G.modeFreeze]) : 0;
+    // Float: Animator::SetPickingObject(1), or 0 without a selected person (the cursor point
+    // stands for Animator::Render's GetCursorPos).
+    if (people) people.pickPoint = person ? { x, y } : null;
+    const id = person ? this.pickedPersonId(pointToObjectId(v, p, (r) => lot.renderer(r), x, y, v.level || 1, PickMode.Any, people ? (o) => people.screenRect(o, v) : null, sim.globals[G.modeFreeze])) : 0;
     const target = id ? sim.module.getObject(id) : null;
     if ((target?.id ?? 0) !== this.liveHilite) {
       this.liveHilite = target?.id ?? 0;
@@ -1849,21 +1886,31 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
     if (!v) return false;
     if (this.overChild(x, y)) return true;
     winMgr.setCapture(this);
-    this.edge?.onMouseDownR(x, y, winMgr.isKeyDown("Shift"), () => this.rightClickSelect(x, y));
+    this.edge?.onMouseDownR(x, y, winMgr.isKeyDown("Shift"), () => this.rightClickSelect());
     return true;
   }
 
-  /** EdgeDetectScroller::OnMouseDownR's Live-mode part: Animator::PickedObject as a cXPerson. */
-  private rightClickSelect(x: number, y: number): boolean {
-    const sim = this.sim;
+  /**
+   * cObjPickerTool::Float (Mac 0x1017ce90): Animator::PickedObject, when it
+   * is a person (dynamic_cast cXPerson) on the current level
+   * (cTool::GetCurrentLevel), replaces the object MouseTrack found under the
+   * cursor (HouseViewer::PointToObjectID). People are picked by the pixels
+   * their meshes drew (Animator::Render), not by their tile.
+   */
+  private pickedPersonId(id: number): number {
+    const picked = this.people?.pickedObject ?? null;
     const v = this.viewer;
-    const p = this.placement;
-    const lot = this.lotObjects;
+    if (!picked || !v || !this.sim?.module.getObject(picked.objectId)?.person || picked.level !== (v.level || 1)) return id;
+    return picked.objectId;
+  }
+
+  /** EdgeDetectScroller::OnMouseDownR's Live-mode part: Animator::PickedObject as a cXPerson (not PointToObjectID). */
+  private rightClickSelect(): boolean {
+    const sim = this.sim;
     const st = this.ctx.state;
-    if (!sim || !v || !p || !lot || st.getMode() !== Mode.Live) return false;
-    const people = this.people;
-    const id = pointToObjectId(v, p, (r) => lot.renderer(r), x, y, v.level || 1, PickMode.Any, people ? (o) => people.screenRect(o, v) : null, sim.globals[G.modeFreeze]);
-    const picked = id ? sim.module.getObject(id) : null;
+    if (!sim || !this.viewer || st.getMode() !== Mode.Live) return false;
+    const pickedObj = this.people?.pickedObject ?? null;
+    const picked = pickedObj ? sim.module.getObject(pickedObj.objectId) : null;
     const selected = this.selectedPerson();
     if (!picked?.person || !selected) return false;
     const house = sim.globals[G.houseNumber]!;

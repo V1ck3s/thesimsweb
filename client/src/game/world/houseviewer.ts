@@ -180,7 +180,7 @@ export class HouseViewer {
    * objects, with the shared depth buffer; `censor` is
    * HouseViewer::RenderCensoredBlocks, run last.
    */
-  people: { draw(viewer: HouseViewer): void; censor?(viewer: HouseViewer): void } | null = null;
+  people: { draw(viewer: HouseViewer): void; censor?(viewer: HouseViewer): void; pickPoint?: { x: number; y: number } | null } | null = null;
   /** pointToTile's 3D camera (cAnimDeviceSub), rebuilt when the view moves. */
   private pickCamera: AnimDeviceCamera | null = null;
   private pickCameraKey = "";

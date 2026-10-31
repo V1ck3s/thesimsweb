@@ -20,7 +20,8 @@
  *  - BuildImage: GetCenterOnPt (the object's position, the average of its
  *    multi-tile group, the lot center without an object), the vertical
  *    shift (a person: 2 sqrt(6) x 2 << scale / 2 with the view's scale; an
- *    object: its damage rectangle's height, not ported here: 0), then
+ *    object: its damage rectangle's height (GetLastDamage(3)) >> (view scale
+ *    - picture scale + 3)), then
  *    HouseViewer::DrawPictureInPicture at the window's scale and the
  *    object's level; the caption (font table entry 12, DrawTextPara 5
  *    pixels in, bottom aligned) unless the picture goes to the scrapbook;
@@ -62,6 +63,8 @@ export interface PipHost {
   viewer(): HouseViewer | null;
   /** The parts of a multi-tile group (cXMTObject +0x190 / +0x18c chain). */
   groupOf(o: XObject): XObject[];
+  /** cXObject::GetLastDamage(3): the screen rectangle the object last drew into (null: none). */
+  damageRect(o: XObject): [number, number, number, number] | null;
   /** CPState::GetCPMode */
   cpMode(): number;
   /** cOptionsMgr::GetLivePIP */
@@ -213,6 +216,12 @@ export class WinPictureInPicture extends TSWin {
     const o = this.obj;
     let shift = 0;
     if (o?.isPerson) shift = -Math.trunc(Math.trunc(PERSON_HEIGHT * (2 << v.scale)) / 2);
+    else if (o) {
+      // The damage rectangle's height at the view's scale, brought to the picture's scale, / 8
+      // (bottom - top >> (scale - picture scale + 3)); an empty rectangle gives 0.
+      const r = this.host.damageRect(o);
+      if (r) shift = -((r[3] - r[1]) >> (v.scale - this.pipScale + 3));
+    }
     const level = o ? o.level : v.level;
     if (this.buffer?.width !== w || this.buffer.height !== h) {
       this.buffer = document.createElement("canvas");
@@ -303,7 +312,11 @@ function drawPictureInPicture(
   const n = v.world.fixed.size;
   if (cx >> 4 >= n || cy >> 4 >= n) return;
   const saved = { originX: v.originX, originY: v.originY, scale: v.scale, level: v.level, cursor: v.cursor };
+  // Animator::SetPickingObject(0) for the picture (the picked object is cleared), restored after.
+  const people = v.people;
+  const picking = people?.pickPoint ?? null;
   try {
+    if (people) people.pickPoint = null;
     v.scale = scale;
     v.level = level;
     v.cursor = null;
@@ -315,6 +328,7 @@ function drawPictureInPicture(
     g.clearRect(0, 0, w, h);
     g.drawImage(v.comp.canvas, Math.trunc((v.viewW - w) / 2), Math.trunc((v.viewH - h) / 2), w, h, 0, 0, w, h);
   } finally {
+    if (people) people.pickPoint = picking;
     v.originX = saved.originX;
     v.originY = saved.originY;
     v.scale = saved.scale;

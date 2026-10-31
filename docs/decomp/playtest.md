@@ -761,21 +761,279 @@ has no microwave on a counter; the sink in the counter is the same case.
 
 | # | Bug | Status |
 |---|---|---|
-| U37 | Numpad keys 0, 1, 2, 3 do not change the game speed | open |
-| U38 | Buy mode: the control panel's held-object picture has a white background; the original blends it in | open |
-| U39 | No change-clothes animation (e.g. leaving the shower), though there is one when going to bed; check every case against the original | open |
-| U40 | "Go here" (Venir ici) has no picture in its action queue icon | open |
-| U41 | Sims do not seem to get the "go to work" action automatically, as in the original (check the Windows build) | open |
-| U42 | No pixelated censor (toilet, shower...) | open |
-| U43 | A sim carrying something holds it unnaturally (missing carry animation?) | open |
-| U44 | A sim behind a window is drawn as if there were no glass | open |
-| U45 | Animation glitches when one animation starts, stops or chains to another; e.g. going to bed after changing clothes, the sim pops onto the bed for a few frames before the lie-down animation | open |
-| U46 | Family magic book: ingredients are offset from the background, their outline should turn white on hover and the background change on click | open |
-| U47 | "Se faire adresser la parole" (be talked to) action icon: the sim's portrait is all black (works on Windows) | open |
-| U48 | Depending on where a sim stands, clicking it gives the floor's / background's menu instead of the sim's (click depth?) | open |
-| U49 | The control panel corner between the left and right parts (next to camera / options buttons) does not match the Windows original: plainer color, the light band of the left part should run into the right part | open |
-| U50 | Objects sometimes turn invisible (a toilet the sim had used); Buy mode then says "impossible to pick up" | open |
-| U51 | Walls-down mode still shows doors and windows | open |
-| U52 | Pizza delivery guy's head (and maybe every sim's) does not show in the thought bubbles over our sim, nor in the "SimCity Pizza" dialog; check every dialog that shows a head | open |
-| U53 | Phone, call a taxi to downtown: the dialog shows two taxis instead of a single taxi picture | open |
-| U54 | The zoomed view (PIP) when a vehicle (taxi) arrives is not centered on the vehicle | open |
+| U37 | Numpad keys 0, 1, 2, 3 do not change the game speed | fixed: cDDDSimsView::TSOnCharacter ported (1/2/3, p/`/~, zoom, rotate, catalog pages); the original has no 0 key; see below |
+| U38 | Buy mode: the control panel's held-object picture has a white background; the original blends it in | fixed: the 0xffff fill is the Z-buffer's, not white; see below |
+| U39 | No change-clothes animation (e.g. leaving the shower), though there is one when going to bed; check every case against the original | not a bug: the original has no spin out of a shower / bath either (pixelated instead, U42); see below |
+| U40 | "Go here" (Venir ici) has no picture in its action queue icon | fixed: the icon object is the "Destination - For Go Here & Shoo" helper (GUID 0x7c4, Destination.iff), whose catalog BMP_ 2000 (DestinationIcon.bmp, footprints) is 45x45. Product::GenerateGraphics (Win FUN_004cbf52, Mac 102011F0) only drops a BMP_ that is not 74x37 when the selector has graphics; the port dropped it always. `generateGraphics` (cpanel/buy/objecticon.ts) keeps any size for a graphics-less object; the action icon also falls back to kItemUnknown (lbl_105BA784) like GenerateGraphics. Checked in Chrome (house 1): footprints in the queue icon. See below |
+| U41 | Sims do not seem to get the "go to work" action automatically, as in the original (check the Windows build) | fixed: global 30 (free will) was never set, so CarGlobals' "auto to work" tree never pushed the interaction (see below) |
+| U42 | No pixelated censor (toilet, shower...) | fixed: HouseViewer::RenderCensoredBlocks / Censor ported (see below) |
+| U43 | A sim carrying something holds it unnaturally (missing carry animation?) | fixed: SAnimator::UpdateCarryPractice ported; see below |
+| U44 | A sim behind a window is drawn as if there were no glass | fixed: people now drawn before the dynamic objects, as UpdateStaticDynamic (see below) |
+| U45 | Animation glitches when one animation starts, stops or chains to another; e.g. going to bed after changing clothes, the sim pops onto the bed for a few frames before the lie-down animation | fixed (skill loading); see below |
+| U46 | Family magic book: ingredients are offset from the background, their outline should turn white on hover and the background change on click | fixed: cPickSpellItem rows / ingredient layout and cPickSpellList::TSPaint ported; see below |
+| U47 | "Se faire adresser la parole" (be talked to) action icon: the sim's portrait is all black (works on Windows) | fixed: for a person not in CPState's family / known neighbors, the icon read the raw BMP_ 2002 of the file, whose middle face (the row cActionIcon shows) is saved black in User00109..174 (see U13). Every head now goes through PersonFinder's picture path (`cas/personpictures.ts`), see below. Checked: the queue picture of the 3 House01 sims through that path, middle faces drawn |
+| U48 | Depending on where a sim stands, clicking it gives the floor's / background's menu instead of the sim's (click depth?) | fixed: people are picked by the pixels their mesh drew (Animator::Render's PickedObject), which overrides PointToObjectID (see below) |
+| U49 | The control panel corner between the left and right parts (next to camera / options buttons) does not match the Windows original: plainer color, the light band of the left part should run into the right part | fixed: cWinCPanel::TSPaint draws kBackPatch, not kUniversalCPBkg; see below |
+| U50 | Objects sometimes turn invisible (a toilet the sim had used); Buy mode then says "impossible to pick up" | fixed (likely cause, not reproduced live): tile chains corrupted by the walk step (see below) |
+| U51 | Walls-down mode still shows doors and windows | fixed: RenderDynamicObjects' cutaway hiding ported (see below) |
+| U52 | Pizza delivery guy's head (and maybe every sim's) does not show in the thought bubbles over our sim, nor in the "SimCity Pizza" dialog; check every dialog that shows a head | fixed: balloons (GetSpeechIcon) and dialogs ("person": GetPictureBuffer, "rel": GetRelPictureBuffer) looked the person up as a neighbor and loaded `<nbhd>/Characters/<name>.iff`; the NPCs (PizzaDude, maid, officer...) live in GameData/Objects/People inside Objects.far, so nothing was found. They now read the person selector's own file, see below. Checked: dialog with the pizza dude head, rel dialog with the maid, 2002/2003/2005/2006 of 3 NPCs + lot sims + damaged neighbors |
+| U53 | Phone, call a taxi to downtown: the dialog shows two taxis instead of a single taxi picture | fixed: an object's dialog picture is Product::DrawIcon (sprites), not its catalog BMP_; see below |
+| U54 | The zoomed view (PIP) when a vehicle (taxi) arrives is not centered on the vehicle | fixed: the multi-tile group of the lead was empty (GetCenterOnPt took the lead's tile only); object vertical shift ported (see below) |
+
+### U41: carpool "go to work" (fixed)
+
+- The car (CarPortal "process" -> "Create Car" at the carpool hour, start - 1) runs CarGlobals'
+  "shared main", whose "auto to work" tree (0x200a) first tests global 30 == 1, then finds the
+  person the car is for and pushes "go to work" on them. Global 30 is the free will flag:
+  cXObject::SetFreeWill (Mac 0x100c0eb0) stores lbl_105BA218 and SetGlobal(0x1e, on);
+  cSimulator::DoStream (Mac 0x10130bd0) ends with +0x4a = CountDaysInMonth and +0x4c (global 30)
+  = lbl_105BA218; cOptionsMgr::Load / SetFreeWill call SetFreeWill. The port never set it (0),
+  so the car came and left alone.
+- Port: `Simulator.freeWill` / `setFreeWill`, `G.freeWill`, DoStream's two globals
+  (`sim/simulator.ts`); the lot view takes the flag from the options before the load and follows
+  option changes (`world/winlotview.ts`).
+- Checked in Chrome on house 56 (Gina, career 18 level 1, 7:00): clock set to 5:50, speed 3. At
+  6:01 the junk car is created, at 6:02 "Va au travail" is queued, the PIP opens on the car, she
+  walks to it and at 6:41 she is hidden (in the car). Before the fix the same run ended with the
+  car leaving and Gina reading a book.
+- U30 with a real departure: at 6:41, with Gina in the car and the four pets left, the speed goes
+  to 1000 with global 18 = 994 (the family-away fast speed), as described in U30.
+
+### U48: clicking people (fixed)
+
+- HouseViewer::PointToObjectID (Mac 0x101c9340, Windows 0x4aa923) was already ported faithfully
+  (z-buffer PointToTile, walk forward through 20 tiles, last hit wins). It misses a person whose
+  visible surface lies in the tile in front of the one they stand in (a pet or sim standing past
+  ~0.8 of its tile toward the viewer: the walk never goes back) and loses to an object later in the
+  same tile's list.
+- The original does not rely on it for people. Animator::Render (Mac 0x10475360, Windows
+  0x585fbd): while picking is on (Animator::SetPickingObject, lbl_105BADA4) and the cursor is in
+  the view, HouseViewer::PointToZ (Mac 0x101cb540, Windows 0x4a994a) is read before and after the
+  dressings are drawn; when the value changed (neither read empty) the object becomes
+  Animator::PickedObject (lbl_105BADA0), otherwise picking off / cursor out clears it.
+  HouseViewer clears it (SetPickedObject(0)) before the Render3DObject loop.
+  cObjPickerTool::Float (Mac 0x1017ce90; TryClick calls Float first) turns picking on with a
+  selected person and replaces MouseTrack's PointToObjectID result by PickedObject when it is a
+  cXPerson on the current level. EdgeDetectScroller::OnMouseDownR (right-press selection) uses
+  only PickedObject. HouseViewer::DrawPictureInPicture turns picking off for the picture (so it
+  clears the picked object) and restores it.
+- Port: `HouseViewer.pointToZ`, `LotPeople.pickPoint` / `pickedObject` and the probe around each
+  person and head object (`world/lotpeople.ts`), `WinLotView.pickedPersonId` in liveFloat /
+  liveClick, rightClickSelect on the picked object (`world/winlotview.ts`), picking off in
+  drawPictureInPicture.
+- Checked in Chrome on house 56 (one Sim, four pets), zooms 1 and 3 x four rotations, sampling
+  the visible pixels of each person: PointToObjectID alone 194 / 202 right, with the picked object
+  201 / 202 (the remaining miss: a pet that moved between two frames). A real click on a dog pixel
+  where PointToObjectID gave 0 shows the dog's pie (Jouer avec..., Tours..., Au pied). House 1's
+  sims (standing at tile centers) were already picked everywhere.
+
+### U54: vehicle PIP centering (fixed)
+
+- cWinPictureInPicture::GetCenterOnPt (Mac 0x1028ffc0) averages a multi-tile group from its
+  lead (+0x190, or the object itself) along the +0x18c chain. The PIP opens on the car's lead
+  (Row 0 Tile 0), whose lead id is 0: the port's group lookup (`o.mtLeadId !== 0 && ...`) returned
+  nothing, so the picture was centered on the lead's tile, the car's back corner. The group is now
+  the lead and the parts naming it.
+- BuildImage (Mac 0x10290230): an object's vertical shift is -((bottom - top of GetLastDamage(3))
+  >> (view scale - picture scale + 3)); it was left at 0. Ported with the host's `damageRect`.
+- Checked in Chrome on house 56 (zoom 3, carpool at 6:01): the junk car (18 parts) sits in the
+  middle of the picture; before, it was off to the right and below.
+
+### U37: speed keys (fixed)
+
+Only F1..F5 of cDDDSimsView::TSOnKeyDown were ported; `TSOnCharacter`
+(Windows 004d108f, Mac 1020f000) was missing. Ported in `cpanel/modekeys.ts`
+(`characterBeforeTool` / `characterAfterTool`, called by the lot view's key
+handler; none while Ctrl or Alt is down, no WM_CHAR then):
+the character is first remapped through the hotkey table built by
+cDDDSimsView::Init (Windows 004d0c4d: UIText STR# 0xa1 entries 1..0x14 and
+0x1a..0x1c, localized vs US first character; French: `z` -> `~`, `o` -> `y`),
+then `1` `2` `3` -> cWinViewControl::SpoofSpeedChange (Windows 0053bae0),
+`` ` `` `p` `~` -> pause unless the taxi splash is up (cSimsApp+0x7c), `+` `=`
+zoom in, `-` `_` zoom out, `x` / `z` next / previous catalog page (Build:
+cWinArch, Buy: cWinCatalog::PageRight / PageLeft, added); then the tool's
+OnChar, then `,` `<` / `.` `>` rotate. Numpad digits give the same characters
+(with NumLock on); there is no `0` key in the original (French: `z` pauses).
+`q` quit, `s` shadows, `t` frame rate, `v` version are not ported.
+`res/strings.ts` gained `getUS` (StringSetBase::GetString(i, 0)). Verified in
+Chrome: `3` -> speed 3, `1` -> 1, `p` toggles pause, `=` zooms in.
+
+### U38: held object picture (fixed)
+
+cWinDisposePopup::BuildMyBuffer (Windows 0050cca5, Mac BuildMyBuffer) fills
+(0, 0, 0xa8, 100) with 0xffff through the buffer's +0x5c, which is the
+Z-buffer made by CreateZBuffer (far depth for DrawDefaultObjectIcon), not the
+color: the picture is drawn over kUniversalCPBkg. The port filled white.
+`cpanel/disposepopup.ts`. Verified: a shrub picked up in Buy mode shows on the
+panel's gradient.
+
+### U46: magic book (fixed)
+
+cPickSpellItem (Windows 004ebd1d Init, 004ec1c8 CalcRowCol; Mac 10580680,
+10580250): a cTSWinBtn on kPickSpellItemBkg (1 column x 3 rows), +0xec = 1
+(command on press) and +0xf0 = 1 (toggle); CalcRowCol shows row 2 when
+selected, 1 while hovered (white outline), else 0, and enables the ingredient
+buttons only on the selected row. The ingredient buttons are tiled from
+(0x20, 6) (lbl_105BD264; Windows `mov [6f26a0], 0x20` / `[6f26a4], 6`) every
+0x44 px, 45 x row height, image at (0, (h - 45) / 2 - 5); the port placed them
+at (0, 0) and never changed the row. cPickSpellList::TSPaint (Windows 004ecbce)
+on a page of fewer than 4 items: kMagicBookBkg (the book's +0x120) cut at the
+list's area, drawn at (3, 10) in the list, then frame 0 of kPickSpellItemBkg
+in each empty row. `ui/magicbook.ts` (`PickSpellItem`). Verified (House01 in a
+throwaway neighborhood, book opened on Fez): ingredients centered in their
+rows, hover outline, selected row light, last page with empty rows.
+
+### U49: control panel corner (fixed)
+
+cWinCPanel::TSPaint (Windows 0050a673, Mac 10266680) blits kBackPatch (0x7f4,
+BackPatch.bmp 52 x 100, +0x100 / Mac +0xf8) at (168, 50) (DAT_006f35e0 /
+lbl_105BC3D0); kUniversalCPBkg (+0x104 / +0xfc) only goes to the subpanels.
+The port painted kUniversalCPBkg there (its left gradient). Same on Mac and
+Windows. `cpanel/cpanel.ts`. Verified: the corner is plain navy with the view
+control's light band running into it, in Live, Buy and Options modes.
+
+### U53: taxi dialog picture (fixed)
+
+ObjectDialog::SetParams, picture mode 0 (Windows 004360c1, Mac
+100c3bc0): a non-person selector's Product (+0x84) is drawn with
+Product::DrawIcon -> DrawDefaultObjectIcon (the object's sprites) into a
+0x7d x 0x7f buffer filled with (0, 0, 0x52) (DAT_006f2a54 / lbl_105BA25C),
+rectangle (0, 0, 0x78, 0x78), which is the part shown. The port showed the
+catalog BMP_ (74 x 37, two taxis for CarTaxi.iff). `world/objectdialogshow.ts`.
+Verified by drawing the "*Car - Taxi" selector both ways (one taxi on navy
+now); the phone call itself was not replayed.
+
+### U39: change-clothes spin (not a bug)
+
+The spin is `a2o-clotheschange` (Global.iff STR# 0x9c entry 2), played by
+Animate Sim (operand `02 00 01 00 03 00 05 00`, source 3) in the global dress
+trees: 0x154 "dress normal", 0x178 Formal, 0x179 Swimsuit, 0x17a Work, 0x19c
+"Dress for Bed", 0x1af Winter, 0x1e2 High Fashion, 0x1e6 "dress in specified
+outfit"; the outfit (person data 8) changes on the anim's event 2. Two paths
+have no spin, in the original too:
+
+- 0x153 "dress naked" (shower, bath: censor on, person data 30 = 128, idle 10
+  ticks, Change Suit 1, idle, censor off);
+- 0x154 "dress normal" from naked (person data 8 == 1, instruction 6 → 11):
+  censor on, idle 10, the outfit set, idle 10, censor off, no Animate. The
+  showers (ShowerC.iff 0x1002 "Take Shower", instruction 46) and tubs call it
+  so: stepping out, the sim is pixelated while it dresses. What the port lacks
+  there is the pixelation (U42), not an animation.
+
+Every other caller runs the same BHAVs in the port and spins (checked: Beds.iff
+"get in" → 0x19c plays `a2o-clotheschange`, then the get-in).
+
+### U43: carry pose (fixed)
+
+`SAnimator::UpdateCarryPractice` (Mac 0x1034e5c0, Windows 0x005903a7, called
+first thing by SAnimator::Tick) was missing. Unless the trees own the carry
+practice (+0x1a0 = 6), a person with an object in slot 1 (Windows 0x00589fd2)
+and not in a reach / full-body animation (+0x19c) plays StdAnimIdx 0x26
+`a2o-rarm-carry-loop` on the carry practice (+0x134, priority 10, over the walk
+and the main animation); it stops when the hand empties (+0x1a4 the running
+index). The state is kept as in SAnimator::TryAnimate (flag 0x10 alone: +0x1a0
+= 6, anim 0 gives it back; flags 1|0x10: carry stopped, +0x19c = 1; main anim
+end / stop: +0x19c = 0), StartReachAnimation / StopReachAnimation (+0x19c) and
+SAnimator::Reset (+0x1a0 = 0, +0x1a4 = -1; now `PersonAnimator.reset()`,
+called by cXPerson::Reset and Cleanup). Files: `sim/personanim.ts`,
+`sim/person.ts`. Verified (House01, Jada "Apporter" the newspaper): after
+`a2o-reach-floorht` the carry loop starts with the paper in slot 1, the sim
+walks with the forearm up holding it, the loop stops once the paper is put down.
+
+### U45: animation start glitches (fixed)
+
+Cause: the port loads skills asynchronously; an Animate (or Reach) primitive
+whose skill is not loaded yet waits (PRIM_WAIT) for a few ticks, while the
+original's VBAnimMgr loads it in the same tick. Beds.iff 0x100e "get in" runs
+Snap (onto the bed) then Animate get-in in one tick: the port drew the sim
+standing on the bed for ~10 ticks (traced: snap at tick 767229, `a2o-bed-getinl`
+at 767239). Fix: while the main skill loads (`PersonAnimator.loadWait`, set by
+tryAnimate / startReachAnimation), the person stays drawn where it was before
+that tick (`settleLoadHold`: followPos / followDir return the held place), like
+a synchronous load's stall; besides, a person starting an object's tree
+requests the skills of that object's anim tables (STR# 0x81..0x84,
+`prefetchSkills`), and BeginFollow also requests the carry loop, so the waits
+are rare. Verified: the sim spins at the bedside, then the snap and
+`a2o-bed-getinl` come in the same tick (no frame on the bed); get-out (Snap +
+`a2o-bed-getoutl-lazy`) same tick; other chains traced (talk, idle
+transitions, walk → turn, turn → reach) keep the pose continuous.
+
+### U40 / U47 / U52: action icon and person pictures (fixed)
+
+PersonFinder::ConvertAction (Mac 10238b30) pictures an action by its icon object
+(Interaction +0xc): a person (OBJD type 2) gets GetPictureBuffer of its PersonFinder entry,
+anything else Product::ComposeBtnImage of its master selector's product (Catalog::Init makes
+one for every selector that has graphics or interactions). ComposeBtnImage runs
+GenerateGraphics, which keeps the object file's BMP_ (catalog strings id) and drops it unless
+74x37 only when the selector has graphics (both builds); when nothing is left it uses
+kItemUnknown. Go Here's helper has no graphics and a 45x45 BMP_ 2000, centered on the
+catalog template.
+
+PersonFinder::Init / Update (Mac 1023d010 / 1023ce70) list every person selector of the object
+folder (family, neighbors and townies of `<nbhd>/Characters/`, and the NPCs of
+GameData/Objects/People). GetPictureBuffer (1023bf50), GetRelPictureBuffer and GetSpeechIcon
+(1023c1c0) read BMP_ 2002 / 2003 / 2005-2006 from the selector's own file (ObjSelector +0) and,
+without one, call GenerateBitmaps(i, type, 1) (1023c660): the person instance on the lot, or
+CreateInstance, rendered by MakePersonBtnImage / MakeRelationshipBtnImage / MakeSpeakingIcon,
+then saved into the file. `cas/personpictures.ts` (`personBitmap`, `personSelector`) does
+this for any person selector: its own BMP_, else the pictures rendered from its body strings
+(kept in memory: game and user files are not written). A 2002 / 2003 with a blank head cell
+(MakePersonBtnImage / MakeRelationshipBtnImage do not clear their buffer) is treated as
+missing; `loadCharacter` now repairs 2003 the same way as 2002 (`blankHeadIds`,
+data/neighborhood.ts), so the relationship panel no longer shows black heads either. Users:
+the action icons (world/actionicons.ts), the balloons (world/balloons.ts) and the dialog
+pictures (world/objectdialogshow.ts). Not changed: the phone book and CPState's family /
+neighbor faces (`personFromNeighbor`) still read `<nbhd>/Characters/`, so an NPC the family
+knows would still have no face in the relationship panel (not observed).
+
+### U42 / U44 / U50 / U51: world rendering (fixed)
+
+- **U42 censor.** Mac `HouseViewer::RenderCensoredBlocks` 101c5720 / `Censor` 101c5a00
+  (Windows 004ac916 / 004ac510), `SAnimator::Render` 1034d110 (Windows 00590c09),
+  `SAnimator::UpdateCensorDressing` 1034ef70. Person data 30 (the animations' `censor`
+  event, `SAnimator::GetPixelated`) non-zero: the censor suit `<skeleton>-needs`
+  (format `%s-needs`, SAnimator +0x244; the suit lives in ExpansionShared.far, type 1,
+  skins PELVIS 1, chest 2, head 4, L hand 8, R hand 16, L foot 32, R foot 64) is dressed
+  with the flags as the skin mask (bit 0x80 = 0x7f), never drawn; Render projects its
+  deformed vertices to a screen box (ftol(min), ftol(max + 0.999), y moved by
+  -3 << (scale - 1)). RenderCensoredBlocks (after RenderCursorObject in UpdateWorld) grows
+  it by 1/2/4 px and moves it down 3/6/12 (scale 1/2/3) and Censor averages blocks of
+  2/4/8 px, only the pixels behind the vertical plane through the PELVIS bone moved 1 unit
+  toward the camera (cAnimDeviceSub +0x180 = view direction * lbl_105BBEA8[9] = 1; depth =
+  RenderParam +0x28 + vertical lookup at +0x24), each channel + (GetNextRandomNumber & 15) - 8,
+  565 colors. Port: `VitaBoy.dressCensor`, `SAnimator.updateCensorDressing`,
+  `LotPeople.censor`, `HouseViewer.censor`, `Compositor.readRegion` / `writeRegion`
+  (readDepth now goes through readRegion). Verified on House01 (UserData8 copy) with person
+  data 30 forced: 0x7f pixelates the whole body, 3 the chest + pelvis, blocks of 8 at
+  scale 3, the sofa behind pixelated too, nearer pixels untouched.
+- **U44 windows.** `HouseViewer::UpdateStaticDynamic` 101cba20 draws the 3D objects of
+  list +0x1dc (people) between the static layer and `RenderDynamicObjects`, then the 3D
+  objects with OBJD render flag 2 (list +0x1e4), then the popup head; UpdateWorld then draws
+  the cursor object and the censor blocks. We drew the people last, so a dynamic window's
+  glass (SPR2 alpha pixels: depth tested, not written, `Spr2Decoder565` cmd 2) never
+  blended over a person behind it. `HouseViewer.render` now follows that order. Note: a
+  window that settled on the static layer (OBJD render flags bit 0 clear, e.g. "Single
+  Pane", "Retro 1", "Federal") is drawn before the people in the original too, so a person
+  behind it is drawn over its glass there as well; "Mod A" / "Music A" (render flags 1)
+  stay dynamic. Verified: a sim behind a "Mod A" window shows through the glass.
+- **U50 invisible objects.** The walk step (SAnimator Walking, 1035104c: CanPlace then
+  `cXPerson::Place` 10100540 -> `cXObject::Place` 100be7a0) always takes the person out of
+  its old site (TestAndPlace) before placing it on the new tile. Our `moveTo` hook skipped
+  that when the person had a parent, i.e. when it was chained in slot 0 of another object
+  of its tile (two people on one tile): the person stayed linked at the old tile and its
+  next removal re-sited its chain at its current tile, clearing that tile's head (the
+  object there lost: not drawn by RenderStaticRow, not found by tile lookups) and leaving
+  the old tile's head on a person who is elsewhere. Now the removal runs for any person
+  whose placement hierarchy ends on a tile (not for one in a container's slot). Verified by
+  a scripted walk (two people across the toilet's tile): before, the toilet's tile chain
+  head became the stale person; after, the chain stays intact. The in-use refusal itself
+  (error 0x26: object data 62 or flag 0x20) clears normally after a toilet use, also when
+  the action is cancelled midway (tested); the user's exact case was not reproduced.
+- **U51 walls down.** `RenderDynamicObjects` 101c9bc0 hides (object data 34 set for the
+  draw) a wall object (object flags 0x400) on the current level when walls are down (+0x48)
+  or the dynamic cutaway (+0x49) cuts its tile and the tile across its required segment,
+  unless CPState::ShouldAlwaysShowWallStuff; the same rule as RenderStaticRow but without
+  the roof test. Doors and windows are dynamic until they settle, and only the static rows
+  applied it. `ObjectModuleDrawer.drawDynamicObjects` now does. Verified: House01 walls
+  down shows no doors or windows.
+

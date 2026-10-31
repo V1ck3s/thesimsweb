@@ -57,6 +57,8 @@ export const G = {
   lotSize: 23,
   daysRunning: 28,
   daysInMonth: 29,
+  /** cXObject::SetFreeWill's flag (the CarGlobals "auto to work" tree tests it). */
+  freeWill: 30,
   freeFunds: 32,
   machineLevel: 33,
 } as const;
@@ -137,6 +139,8 @@ export class Simulator {
   /** The lot's tile arrays (routing). */
   world: FixedWorld | null = null;
   /** Tick the people (cXPerson); false keeps them frozen (debug). */
+  /** cXObject::SetFreeWill's flag (lbl_105BA218), from the options (cOptionsMgr::Load / SetFreeWill). */
+  static freeWill = true;
   static simulatePeople = true;
   /**
    * lbl_105BA214 (byte 1 in the data section; a cheat command stores into
@@ -257,6 +261,16 @@ export class Simulator {
     // Versions < 0x15 store the speed button; later ones the speed itself.
     const speed = this.globals[G.speed]!;
     this.setSpeed(speed > 0 ? speed : Math.trunc(0.5 + SPEED_SCALE * SPEED_BUTTONS[0]));
+    // DoStream (read) ends with global 29 := GameTime::CountDaysInMonth and
+    // global 30 := the free will flag (+0x4a / +0x4c, Mac 0x10130bd0).
+    this.globals[G.daysInMonth] = countDaysInMonth();
+    this.globals[G.freeWill] = Simulator.freeWill ? 1 : 0;
+  }
+
+  /** cXObject::SetFreeWill (Mac 0x100c0eb0): the flag, and global 30 of the running simulator. */
+  setFreeWill(on: boolean): void {
+    Simulator.freeWill = on;
+    this.globals[G.freeWill] = on ? 1 : 0;
   }
 
   /**

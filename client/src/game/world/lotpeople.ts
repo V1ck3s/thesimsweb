@@ -268,7 +268,7 @@ export class LotPeople {
   }
 
   /**
-   * Animator::Render's picking (Mac 0x10475360, Windows 0x5865xx): while
+   * Animator::Render's picking (Mac 0x10475360, Windows 0x585fbd): while
    * picking is on and the cursor is in the view, the z-buffer value under the
    * cursor is read (HouseViewer::PointToZ) before and after the dressings are
    * drawn; when it changed, neither read being empty, the object becomes the
