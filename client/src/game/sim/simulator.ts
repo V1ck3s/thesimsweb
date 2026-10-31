@@ -342,13 +342,62 @@ export class Simulator {
 
   // --- clock / speed ----------------------------------------------------------------
 
-  /** cSimulator::SetSpeed (0..1000). */
+  /**
+   * cSimulator::SetSpeed (0..1000). While the speed is suspended (global 18
+   * >= 0, see `simulate`) the new speed also becomes the one restored later.
+   */
   setSpeed(speed: number): void {
     const s = Math.min(1000, Math.max(0, speed));
     this.globals[G.speed] = s;
     this.period = Math.trunc(0.5 + (PERIOD_SLOWEST - (s / SPEED_SCALE) * PERIOD_RANGE));
+    this.resetTiming();
+    if (this.globals[G.suspendedSpeed]! >= 0) this.globals[G.suspendedSpeed] = s;
+  }
+
+  /** +0xb8 / +0xbc = 0: no catching up on the time elapsed so far. */
+  resetTiming(): void {
     this.accumulated = 0;
     this.lastMs = 0;
+  }
+
+  /** cSimulator::IsSuspended: the family is away and the speed is forced to 1000. */
+  isSuspended(): boolean {
+    return this.globals[G.suspendedSpeed]! >= 0;
+  }
+
+  /** cSimulator::GetSuspendedSpeed: the speed restored when someone is back. */
+  getSuspendedSpeed(): number {
+    return this.globals[G.suspendedSpeed]!;
+  }
+
+  /**
+   * GlobalDispatch(0x109, suspended): cSimsApp::DoCommand sets cWinViewControl
+   * +0x1bc and runs UpdateSpeedMode(2) (the lot view hooks it).
+   */
+  onSuspendChange: ((suspended: boolean) => void) | null = null;
+
+  /**
+   * cSimulator::Simulate's head: on a residential lot (zoning type 1), when
+   * no family member is awake and visible (ObjectModule::IsFamilyMemberAwakeAndVisible)
+   * the speed is saved in global 18 and forced to 1000 (1 ms per tick); when
+   * one is again, the saved speed comes back and global 18 is -1.
+   */
+  private updateSuspendedSpeed(): void {
+    const g = this.globals;
+    if (this.module.getZoningType(g[G.houseNumber]!) !== 1) return;
+    if (!this.module.isFamilyMemberAwakeAndVisible()) {
+      if (g[G.suspendedSpeed]! < 0) {
+        const saved = g[G.speed]!;
+        this.setSpeed(1000);
+        g[G.suspendedSpeed] = saved;
+        this.onSuspendChange?.(true);
+      }
+    } else if (g[G.suspendedSpeed]! >= 0) {
+      const saved = g[G.suspendedSpeed]!;
+      this.setSpeed(saved);
+      g[G.suspendedSpeed] = -1;
+      this.onSuspendChange?.(false);
+    }
   }
 
   /** The speed for a CPState speed button (1..3). */
@@ -437,6 +486,9 @@ export class Simulator {
 
   // --- ticking ----------------------------------------------------------------------
 
+  /** CPState.speedSerial as of the last syncFromState (-1: never synced). */
+  private syncedSpeedSerial = -1;
+
   /** CPState -> simulator (CPState::UpdateWorldFromCPState's speed / pause / mode part). */
   syncFromState(): void {
     const s = this.state;
@@ -446,8 +498,13 @@ export class Simulator {
     // House::EnterLiveMode: ObjectModule::InvalidateAllRoutes.
     if (freeze === 0 && this.globals[G.modeFreeze] !== 0) invalidateAllRoutes(this.module);
     this.globals[G.modeFreeze] = freeze;
-    const speed = Simulator.speedForButton(s.getSpeed());
-    if (speed !== this.globals[G.speed]) this.setSpeed(speed);
+    // Only when CPState's speed was set (dirty 0x40): the fast speed of a suspension stays
+    // until a speed button is pressed.
+    if (s.speedSerial !== this.syncedSpeedSerial) {
+      this.syncedSpeedSerial = s.speedSerial;
+      const speed = Simulator.speedForButton(s.getSpeed());
+      if (speed !== this.globals[G.speed]) this.setSpeed(speed);
+    }
     if (s.isPaused()) this.pause();
     else this.resume();
     // ObjectModule::SetSelectedPerson -> GlobalDispatch(0xe4, id) -> cSimulator::DoCommand: global 3.
@@ -461,6 +518,7 @@ export class Simulator {
    * `period` milliseconds, PulseGenerator capping a burst at 30).
    */
   simulate(nowMs: number): number {
+    this.updateSuspendedSpeed();
     if (this.lastMs === 0) this.accumulated = this.period;
     else this.accumulated += nowMs - this.lastMs;
     this.lastMs = nowMs;

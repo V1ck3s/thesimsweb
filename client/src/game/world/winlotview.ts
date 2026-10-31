@@ -6,7 +6,8 @@
  *
  * Input follows EdgeDetectScroller: arrow keys scroll by one tile width
  * horizontally / half a tile width vertically (AsyncScroll), a right click
- * centers the view on the clicked tile (CenterView).
+ * centers the view on the clicked tile (CenterView), a right drag scrolls
+ * around an anchor (OnMouseDownR / OnMouseMove / OnMouseUpR).
  */
 
 import { computeCameraFrame, drawCameraFrame, takeCameraSnapshot } from "../cpanel/camsnapshot.js";
@@ -16,7 +17,7 @@ import { soundPlayer, UI_SOURCE } from "../audio/index.js";
 import { getOptionsMgr } from "../optionsmgr.js";
 import { ArchTool, DIRTY_ARCH_SUBTOOL, DIRTY_ARCH_TOOL, DIRTY_ARCH_UNDO, DIRTY_LEVEL, DIRTY_SHOP_ITEM, Mode, type CPState, type HouseViewerHooks, type WallState } from "../cpstate.js";
 import { DefaultTTWindow } from "../ui/ttwindow.js";
-import { Gfx, TSWin } from "../ui/tswin.js";
+import { Gfx, TSWin, WF_GLOBAL_CURSOR } from "../ui/tswin.js";
 import { Compositor } from "./compositor.js";
 import { DynamicCutaway } from "./cutaway.js";
 import { EdgeDetectScroller } from "./edgescroll.js";
@@ -147,6 +148,9 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
   /** `frame` is older than the last render. */
   private frameStale = false;
   private edge: EdgeDetectScroller | null = null;
+  /** cDDDSimsView+0x14c: kExploreAnchor; +0x150 / +0x160: where it shows while right-dragging (SetAnchorPoint). */
+  private exploreAnchor: ImageBitmap | null = null;
+  private anchor: { x: number; y: number } | null = null;
   /** The wall graph when this view created it (no `parts.walls`). */
   wallManager: WallManager | null = null;
   /** The lot objects when this view loaded them (no `parts.objects`). */
@@ -192,6 +196,8 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
   ) {
     super();
     this.actionIcons = new ActionIcons(ctx, this);
+    // cSimsApp::WindowSetup: SetFlag(0x20000), unforced global cursors (the scroller's) show over the view.
+    this.setFlag(WF_GLOBAL_CURSOR, true);
   }
 
   override async init(): Promise<boolean> {
@@ -304,7 +310,14 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
     if (this.lotObjects && this.sim && this.placement) await makeTutorialObject(this.placement, this.lotObjects.folder, this.sim.module, this.housePath.split("/")[0] ?? "UserData");
     if (this.lotObjects && this.sim) await this.bringInFamily(v, this.lotObjects);
     if (this.lotObjects && this.sim && this.placement) await this.initPlumbBobs(this.lotObjects, this.sim, this.placement);
-    this.edge = new EdgeDetectScroller(v, this.ctx.width, this.ctx.height);
+    this.exploreAnchor = await this.ctx.res.image("kExploreAnchor");
+    this.edge = new EdgeDetectScroller(v, this.ctx.width, this.ctx.height, {
+      setAnchor: (p) => {
+        this.anchor = p;
+        v.dirty = true;
+      },
+      setCursor: (id) => winMgr.setGlobalCursor(id === null ? null : getCursor(id), false),
+    });
     const st = this.ctx.state;
     st.viewer = this;
     st.setZoom(v.scale);
@@ -352,6 +365,8 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
     let sel = st.selectedIndex();
     this.listen(() => {
       if (st.getMode() === mode && st.selectedIndex() === sel) return;
+      // CPState::UpdateWorldFromCPState: entering options (3) or camera (4) mode puts the arrow back.
+      if (st.getMode() !== mode && (st.getMode() === Mode.Options || st.getMode() === Mode.Camera)) this.setToolCursor(0);
       mode = st.getMode();
       sel = st.selectedIndex();
       cut.onModeChange();
@@ -400,6 +415,12 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
       shiftDown: () => this.shift,
       ctrlDown: () => this.ctrl,
       setToolCursor: (id) => this.setToolCursor(id),
+      // FixFloorForStairs: CPState::ArchGetCurrentFloorStyle, then GlobalDispatch(0x91, 0) on Release.
+      currentFloorStyle: () => st.archGetCurrentFloorStyle(),
+      computeRooms: () => {
+        this.wallsChanged(1);
+        this.wallsChanged(2);
+      },
       invalidate: () => {
         v.dirty = true;
         const c = tool.cursor;
@@ -1413,6 +1434,10 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
    */
   private initBudgetSource(sim: Simulator, lot: LotObjects): void {
     WinViewControl.holdSimulator = () => holdSimulator(sim);
+    // GlobalDispatch(0x109): cSimsApp::DoCommand -> the view control (cWinCPanel::PostInit put it here).
+    sim.onSuspendChange = (on) => {
+      for (const c of this.children) if (c instanceof WinViewControl) c.simulatorSuspended(on);
+    };
     WinViewControl.simulatorGlobal32 = () => sim.globals[32]!;
     WinBudgetDlg.source = {
       prepareForBudgetWindow: async () => {
@@ -1615,7 +1640,32 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
     super.pump(nowMs);
   }
 
+  /** cDDDSimsView+0x11b4: the global cursor StartWatchCursor replaced; +0x11b8: the watch is on. */
+  private watchSaved: string | null = null;
+  private watchOn = false;
+  /** The work under the watch is over: the next paint ends it (the original paints only once it returns). */
+  private watchDone = false;
+
+  /** cDDDSimsView::StartWatchCursor: the hourglass everywhere until the view paints again. */
+  startWatchCursor(): void {
+    if (!this.watchOn) this.watchSaved = winMgr.getGlobalCursor();
+    winMgr.setGlobalCursor(getCursor(3), true);
+    this.watchOn = true;
+    this.watchDone = false;
+  }
+
+  /** The synchronous work of the original is done: let TSPaint end the watch cursor. */
+  endWatchCursor(): void {
+    this.watchDone = true;
+  }
+
   override tsPaint(g: Gfx): void {
+    // cDDDSimsView::TSPaint: the watch cursor ends (SetGlobalCursor(0, true), then the saved one unforced).
+    if (this.watchOn && this.watchDone) {
+      winMgr.setGlobalCursor(null, true);
+      winMgr.setGlobalCursor(this.watchSaved, false);
+      this.watchOn = false;
+    }
     const v = this.viewer;
     if (!v) {
       g.fill(0, 0, this.getW(), this.getH(), "#000");
@@ -1641,6 +1691,10 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
     const loc = getPopupHeadLocation();
     if (loc) renderRoundShadow(g.ctx, clip, loc.x, loc.y, loc.z);
     renderPopupHead(g.ctx, clip);
+    // cDDDSimsView::TSPaint: the anchor buffer, centered on the anchor point (SetAnchorPoint).
+    const a = this.anchor;
+    const img = this.exploreAnchor;
+    if (a && img) g.blit(img, a.x - Math.trunc(img.width / 2), a.y - Math.trunc(img.height / 2));
     // HouseViewer::UpdateWorld: the camera frame on the cursor in camera mode.
     if (this.cursor && this.ctx.state.getMode() === Mode.Camera) drawCameraFrame(g, computeCameraFrame(this.ctx, this.cursor.x, this.cursor.y, v.viewW, v.viewH));
   }
@@ -1684,11 +1738,18 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
     }
   }
 
-  /** EdgeDetectScroller::OnMouseUpR -> CenterView: scroll the clicked tile to the center. */
+  /**
+   * cDDDSimsView::TSOnMouseUpR -> EdgeDetectScroller::OnMouseUpR: ends a
+   * right drag, or (a click, the left button up) CenterView: scroll the
+   * clicked tile to the center. Releases the capture.
+   */
   override tsOnMouseUpR(x: number, y: number): boolean {
     const v = this.viewer;
     if (!v) return false;
-    if (this.overChild(x, y)) return true;
+    const edge = this.edge;
+    if (!edge) return true;
+    winMgr.releaseCapture(this);
+    if (!edge.onMouseUpR(winMgr.isLeftButtonDown())) return true;
     const w = v.world;
     const t = v.pointToWholeTile(x, y, v.level);
     const n = w.size - 2;
@@ -1776,7 +1837,42 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
     this.activeTools()?.exitWorld();
   }
 
-  override tsOnMouseDownR(_x: number, _y: number): boolean {
-    return this.viewer !== null;
+  /**
+   * cDDDSimsView::TSOnMouseDownR -> EdgeDetectScroller::OnMouseDownR: the
+   * view takes the capture; in Live mode a press on a member of the selected
+   * person's family (person data 0x3d) who is not a guest (person data 77 <
+   * 1) selects them (CPState::SetSelectedPerson), except on houses 21..30;
+   * otherwise the press may become a drag (see EdgeDetectScroller).
+   */
+  override tsOnMouseDownR(x: number, y: number): boolean {
+    const v = this.viewer;
+    if (!v) return false;
+    if (this.overChild(x, y)) return true;
+    winMgr.setCapture(this);
+    this.edge?.onMouseDownR(x, y, winMgr.isKeyDown("Shift"), () => this.rightClickSelect(x, y));
+    return true;
+  }
+
+  /** EdgeDetectScroller::OnMouseDownR's Live-mode part: Animator::PickedObject as a cXPerson. */
+  private rightClickSelect(x: number, y: number): boolean {
+    const sim = this.sim;
+    const v = this.viewer;
+    const p = this.placement;
+    const lot = this.lotObjects;
+    const st = this.ctx.state;
+    if (!sim || !v || !p || !lot || st.getMode() !== Mode.Live) return false;
+    const people = this.people;
+    const id = pointToObjectId(v, p, (r) => lot.renderer(r), x, y, v.level || 1, PickMode.Any, people ? (o) => people.screenRect(o, v) : null, sim.globals[G.modeFreeze]);
+    const picked = id ? sim.module.getObject(id) : null;
+    const selected = this.selectedPerson();
+    if (!picked?.person || !selected) return false;
+    const house = sim.globals[G.houseNumber]!;
+    const pd = picked.person.personData;
+    if (pd[PDX.familyNumber] !== selected.pd[PDX.familyNumber] || pd[77]! >= 1 || (house > 0x14 && house < 0x1f)) return false;
+    const guid = picked.obj.selector.guid | 0;
+    const i = st.family.findIndex((f) => ((f.guid ?? 0) | 0) === guid);
+    if (i < 0) return false;
+    st.setSelectedPerson(i);
+    return true;
   }
 }

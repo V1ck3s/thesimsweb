@@ -27,6 +27,7 @@ import type { FfnFont } from "../res/ffn.js";
 import { TSWinBtn } from "./btn.js";
 import { Gfx, TSWin } from "./tswin.js";
 import { winMgr } from "./winmgr.js";
+import { getStandardCursor } from "./cursor.js";
 
 /** Messages posted to the target (PostMessageToTarget(target, 3, msg, this)). */
 export const TE_CHANGED = 0x16;
@@ -57,6 +58,8 @@ export class TSWinTextEdit2 extends TSWin {
   filterFileChars = false;
   /** +0x50: the window that receives the notifications (the parent when null). */
   target: TSWin | null = null;
+  /** cTSWinTextEdit2::Init: SetCursor(GetStandardCursor(2)), the I-beam. */
+  override winCursor: string | null = getStandardCursor(2);
   private cursor = 0;
   private overwrite = false;
   private blink = true;

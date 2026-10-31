@@ -78,6 +78,32 @@ interface FPt {
   fy: number;
 }
 
+/** cNewFloorTool::TileIsUnfloorable: every object on the (view) tile lets its floor go. */
+export function tileIsUnfloorable(w: RotatableWorld, placement: Placement, x: number, y: number, level: number): boolean {
+  const [wx, wy] = w.toWorld(x, y);
+  for (const o of placement.tileObjects(wx, wy, level)) {
+    const f = Placement.od(o, OD.placementFlags);
+    if (!(f & 2) || (level > 1 && !(f & 0x200))) return false;
+  }
+  return true;
+}
+
+/** cNewFloorTool::TileIsFloorable: editable, no pool, flat, floorable flag, objects allow floors. */
+export function tileIsFloorable(w: RotatableWorld, placement: Placement, x: number, y: number, level: number): boolean {
+  const [wx, wy] = w.toWorld(x, y);
+  const fixed = w.fixed;
+  if (fixed.flags[0]!.u8(wx, wy) & 0x20) return false;
+  if (fixed.hasPool(wx, wy, level)) return false;
+  const o = fixed.alt.offset(wx, wy);
+  const a = fixed.alt.data;
+  if (a[o] !== a[o + 2] || a[o] !== a[o + 1] || a[o] !== a[o + 3]) return false;
+  if (!(w.getFlags(x, y, level) & 1)) return false;
+  for (const obj of placement.tileObjects(wx, wy, level)) {
+    if (!(Placement.od(obj, OD.placementFlags) & 1)) return false;
+  }
+  return true;
+}
+
 export class NewFloorTool extends Tool implements FloorUndoTool {
   /** +0x30 */
   private undoable: FloorUndoable;
@@ -476,31 +502,12 @@ export class NewFloorTool extends Tool implements FloorUndoTool {
     return true;
   }
 
-  /** cNewFloorTool::TileIsUnfloorable: every object on the (view) tile lets its floor go. */
   private tileIsUnfloorable(x: number, y: number, level: number): boolean {
-    const [wx, wy] = this.host.world.toWorld(x, y);
-    for (const o of this.host.placement.tileObjects(wx, wy, level)) {
-      const f = Placement.od(o, OD.placementFlags);
-      if (!(f & 2) || (level > 1 && !(f & 0x200))) return false;
-    }
-    return true;
+    return tileIsUnfloorable(this.host.world, this.host.placement, x, y, level);
   }
 
-  /** cNewFloorTool::TileIsFloorable: editable, no pool, flat, floorable flag, objects allow floors. */
   private tileIsFloorable(x: number, y: number, level: number): boolean {
-    const w = this.host.world;
-    const [wx, wy] = w.toWorld(x, y);
-    const fixed = w.fixed;
-    if (fixed.flags[0]!.u8(wx, wy) & 0x20) return false;
-    if (fixed.hasPool(wx, wy, level)) return false;
-    const o = fixed.alt.offset(wx, wy);
-    const a = fixed.alt.data;
-    if (a[o] !== a[o + 2] || a[o] !== a[o + 1] || a[o] !== a[o + 3]) return false;
-    if (!(w.getFlags(x, y, level) & 1)) return false;
-    for (const obj of this.host.placement.tileObjects(wx, wy, level)) {
-      if (!(Placement.od(obj, OD.placementFlags) & 1)) return false;
-    }
-    return true;
+    return tileIsFloorable(this.host.world, this.host.placement, x, y, level);
   }
 
   /** The refund of a deleted floor: -trunc(0.8 * price + 0.5). */

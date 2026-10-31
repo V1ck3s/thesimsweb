@@ -17,7 +17,7 @@
 
 import type { GameContext } from "../context.js";
 import type { FfnFont } from "../res/ffn.js";
-import { Gfx, TSWin } from "../ui/tswin.js";
+import { Gfx, TSWin, WF_HIDE_CURSOR } from "../ui/tswin.js";
 
 /** cSimsApp splash stage tags, in STR# 155 order (entry index = position + 1). */
 const STAGES = [
@@ -44,6 +44,8 @@ export class TSWinSplashScreen extends TSWin {
   override async init(): Promise<boolean> {
     const { ctx } = this;
     this.setArea(0, 0, ctx.width, ctx.height);
+    // cTSWinSplashScreen::Init: cTSWin::HideCursor (Shutdown shows it again; the window goes away).
+    this.setFlag(WF_HIDE_CURSOR, true);
     this.frame = await ctx.res.image("kSimsLogo");
     this.caption = ctx.strings.get("UIText", 154, 5);
     // The game passes a font from its global font table (index 18); its size is

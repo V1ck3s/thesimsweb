@@ -252,6 +252,7 @@ export class WinArch extends TSWin {
     if (!image) return null;
     b = new ProductButton(p, image, cols);
     b.id = CMD_BUTTON;
+    b.funds = () => this.ctx.state.getFunds();
     if (p.kind !== ProductKind.Tool && this.unknownItem) b.setFallbackIcon(this.unknownItem, this.template);
     b.hideWindow();
     this.buttons.set(p, b);

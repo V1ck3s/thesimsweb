@@ -55,6 +55,7 @@ import { winMgr, type ToolTipWindow, type ToolTipsWindowSource } from "../ui/win
 import type { CasPerson, CasSession } from "./personfinder.js";
 import { PickFamilyPersonInfo } from "./personinfo.js";
 import { WinDesignCharacter } from "./windesigncharacter.js";
+import { getStandardCursor } from "../ui/cursor.js";
 
 const STRINGS = 129;
 const S = {
@@ -168,6 +169,8 @@ export class WinDesignFamily extends TSWinGenDlg {
     private readonly session: CasSession,
   ) {
     super(ctx, GENDLG_FILL);
+    // cWinDesignFamily::cWinDesignFamily (Mac): SetCursor(GetStandardCursor(0)).
+    this.winCursor = getStandardCursor(0);
   }
 
   setMessageTarget(t: DesignFamilyTarget): void {

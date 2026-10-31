@@ -7,7 +7,8 @@
  * scaled by CSS to fit the browser window with integer-free nearest scaling.
  */
 
-import { setFocusLostHook, TSWin, WF_MODAL, WF_NO_FOCUS, type Rect } from "./tswin.js";
+import { getStandardCursor, HIDDEN_CURSOR } from "./cursor.js";
+import { setFocusLostHook, TSWin, WF_GLOBAL_CURSOR, WF_HIDE_CURSOR, WF_MODAL, WF_NO_FOCUS, type Rect } from "./tswin.js";
 import type { DefaultTTWindow } from "./ttwindow.js";
 
 /** Tooltip states (cTSWinMgrW95+0x198). */
@@ -24,6 +25,14 @@ export type ToolTipWindow = TSWin & { unfurlToolTip(rect: Rect, t: number): void
 /** A window with its own tooltip window (an override of cTSWin::GetToolTipsWindow). */
 export interface ToolTipsWindowSource {
   getToolTipsWindow(): ToolTipWindow | null;
+}
+
+/**
+ * A window whose GetToolTipsWindow override recolors the default tooltip
+ * (cDefaultTTWindow::SetColor: 0 black, 1 red), e.g. ProductButton.
+ */
+export interface ToolTipColorSource {
+  toolTipColor(): number;
 }
 
 /** The single window manager, like the game's global cTSWinMgrW95 pointer. */
@@ -100,6 +109,11 @@ export class WinMgr {
   /** GetKeyState(VK_LBUTTON / VK_RBUTTON) < 0 */
   isMouseButtonDown(): boolean {
     return this.buttons !== 0;
+  }
+
+  /** GetKeyState(VK_LBUTTON) < 0 */
+  isLeftButtonDown(): boolean {
+    return (this.buttons & 1) !== 0;
   }
 
   /** GetKeyState(key) < 0, by KeyboardEvent.key ("Shift", "Control", ...). */
@@ -179,6 +193,10 @@ export class WinMgr {
     parent.childAdd(win);
     win.setFlag(WF_MODAL, true);
     if (this.capture && this.capture !== win) this.capture = null;
+    // DoModalWin: the global cursor (+0x1c4 / +0x1c8) is cleared for the loop and restored after.
+    const global = this.globalCursor;
+    const globalForced = this.globalForced;
+    this.setGlobalCursor(null, true);
     // DoModalWin: the modal window becomes +0x38 and the focus (+0x34, set directly).
     const focus = this.focus;
     const outer = this.modalWin;
@@ -189,6 +207,7 @@ export class WinMgr {
       this.modal.set(win, (result) => {
         // The outer loop's window comes back, and the old focus if it still exists.
         this.modalWin = outer;
+        this.setGlobalCursor(global, globalForced);
         this.setFocus(focus && this.isAttached(focus) ? focus : outer);
         resolve(result);
       });
@@ -232,7 +251,7 @@ export class WinMgr {
   private getToolTipsWindow(w: TSWin): ToolTipWindow | null {
     const custom = (w as Partial<ToolTipsWindowSource>).getToolTipsWindow?.();
     if (custom) return custom;
-    this.ttDefault?.setToolTip(w.tooltip, 0);
+    this.ttDefault?.setToolTip(w.tooltip, (w as Partial<ToolTipColorSource>).toolTipColor?.() ?? 0);
     return this.ttDefault;
   }
 
@@ -361,6 +380,8 @@ export class WinMgr {
       this.main.plot(this.ctx, 0, 0);
       // cTSWinMgrW95::Plot: the tooltip is drawn over everything.
       if (this.setupToolTipsWindow(t)) this.ttWindow?.plot(this.ctx, 0, 0);
+      // cTSWin::SetCursor pumps a mouse move (PumpMouseMoveMsg): a window's new cursor shows at once.
+      this.applyCursor();
       requestAnimationFrame(frame);
     };
     requestAnimationFrame(frame);
@@ -395,18 +416,55 @@ export class WinMgr {
     return { win, x: x - o.x, y: y - o.y };
   }
 
-  /** cTSWinMgrW95::SetGlobalCursor: a cursor shown everywhere (null = the windows' own). */
+  /** cTSWinMgrW95+0x1c4: the global cursor; +0x1c8: it was set forced. */
   private globalCursor: string | null = null;
+  private globalForced = false;
 
-  setGlobalCursor(cursor: string | null): void {
-    this.globalCursor = cursor;
+  /**
+   * cTSWinMgrW95::SetGlobalCursor(cursor, forced): a cursor over the windows'
+   * own (null = theirs again). A forced one shows everywhere and can only be
+   * replaced or cleared by another forced call; an unforced one only over
+   * windows flagged WF_GLOBAL_CURSOR (the lot view).
+   */
+  getGlobalCursor(): string | null {
+    return this.globalCursor;
+  }
+
+  setGlobalCursor(cursor: string | null, forced = true): void {
+    if (!this.globalForced) {
+      this.globalCursor = cursor;
+      this.globalForced = cursor !== null && forced;
+    } else if (forced) {
+      this.globalCursor = cursor;
+      if (cursor === null) this.globalForced = false;
+    }
     this.applyCursor();
   }
 
-  /** The hovered window's cursor (cTSWin::SetCursor, inherited from the parents), or the global one. */
+  /**
+   * cTSWin::UpdateCursor on the capture window, else on the window under the
+   * mouse: the first cursor up the parent chain (cTSWin::SetCursor), the
+   * main window's being the standard arrow; hidden (cTSWin::HideCursor,
+   * flag 0x800) on the way; then cTSWinMgrW95::SetCursor puts the global
+   * cursor over it when forced or when that window takes it (0x20000).
+   */
   applyCursor(): void {
-    let c = this.globalCursor;
-    for (let w = this.hover; !c && w; w = w.parent) c = w.winCursor;
+    let c: string | null = null;
+    let owner: TSWin | null = null;
+    for (let w = this.capture ?? this.hover; w; w = w.parent) {
+      if (w.getFlag(WF_HIDE_CURSOR)) {
+        c = HIDDEN_CURSOR;
+        break;
+      }
+      if (w.winCursor) {
+        c = w.winCursor;
+        owner = w;
+        break;
+      }
+    }
+    if (c === null) c = getStandardCursor(0);
+    const g = this.globalCursor;
+    if (g && c !== HIDDEN_CURSOR && (this.globalForced || owner?.getFlag(WF_GLOBAL_CURSOR))) c = g;
     const v = c ?? "";
     if (this.canvas.style.cursor !== v) this.canvas.style.cursor = v;
   }
@@ -414,19 +472,13 @@ export class WinMgr {
   private updateHover(x: number, y: number): void {
     const t = this.route(x, y);
     const under = this.capture ? this.main.windowFromPoint(x, y) : (t?.win ?? null);
-    this.applyCursorFor(under);
-    if (under === this.hover) return;
-    this.hover?.tsOnMouseExit();
-    this.hover = under;
-    under?.tsOnMouseEnter();
-    this.toolTipHover(under);
-  }
-
-  private applyCursorFor(under: TSWin | null): void {
-    let c = this.globalCursor;
-    for (let w = under; !c && w; w = w.parent) c = w.winCursor;
-    const v = c ?? "";
-    if (this.canvas.style.cursor !== v) this.canvas.style.cursor = v;
+    if (under !== this.hover) {
+      this.hover?.tsOnMouseExit();
+      this.hover = under;
+      under?.tsOnMouseEnter();
+      this.toolTipHover(under);
+    }
+    this.applyCursor();
   }
 
   /** Deliver to the window, bubbling to parents until someone handles it. */

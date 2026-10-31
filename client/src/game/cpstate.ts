@@ -335,8 +335,12 @@ export class CPState {
     return this.speed;
   }
 
+  /** Bumped by every setSpeed (dirty 0x40): the simulator applies the speed only then (UpdateWorldFromCPState). */
+  speedSerial = 0;
+
   setSpeed(speed: number): void {
     this.speed = speed;
+    this.speedSerial++;
     this.touch(DIRTY_SPEED);
     this.updateMotivePulsePeriod();
   }

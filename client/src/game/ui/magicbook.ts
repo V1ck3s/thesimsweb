@@ -64,6 +64,7 @@ import { TSSystemButton } from "./systembutton.js";
 import { TSWinText, WTF_MULTILINE } from "./text.js";
 import { Gfx, type TSWin } from "./tswin.js";
 import { winMgr } from "./winmgr.js";
+import { getCursor } from "./cursor.js";
 
 const MAGIC = "magic";
 const STR_UI = 1;
@@ -142,6 +143,8 @@ export class CWinMagicBook extends TSWinDlg {
     cookbook: boolean,
   ) {
     super();
+    // CWinMagicBook::CWinMagicBook: SetCursor(GetCursor(0)).
+    this.winCursor = getCursor(0);
     const age = person.person?.personData[58] ?? 0;
     this.mode = cookbook ? Mode.Cook : age !== 0 && age < 0x12 ? Mode.Kid : Mode.Spells;
   }

@@ -284,6 +284,16 @@ export class WallUndoable extends Undoable {
     }
   }
 
+  /**
+   * GlobalDispatch(0x91, 0): ComputeRooms on every level (the level above
+   * walls takes its floorable tiles from them), the changed level first.
+   */
+  private recomputeRooms(): void {
+    const level = this.origin.level;
+    this.host.dirty.walls(level);
+    this.host.dirty.walls(level === 1 ? 2 : 1);
+  }
+
   /** WallUndoable::UndoSelf */
   protected undoSelf(): number {
     if (this.state === UndoState.New && !this.dirty) return 0;
@@ -292,7 +302,7 @@ export class WallUndoable extends Undoable {
     this.link.tool.refund(this.cost);
     if (this.state !== UndoState.New || this.link.cannotAfford()) {
       this.link.tool.finalizePurchase();
-      this.host.dirty.walls(this.origin.level);
+      this.recomputeRooms();
     }
     return this.undoPostSubs() ? 1 : 0;
   }
@@ -306,7 +316,7 @@ export class WallUndoable extends Undoable {
     this.link.tool.purchase(this.cost);
     if (this.state !== UndoState.New) {
       this.link.tool.finalizePurchase();
-      this.host.dirty.walls(this.origin.level);
+      this.recomputeRooms();
     }
     return r;
   }

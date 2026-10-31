@@ -623,7 +623,8 @@ export class WinNeighborhoodUL extends TSWin implements LotBtnOwner {
         );
         this.setButtonsEnabled([BTN_DOWNTOWN, BTN_VACATION, BTN_STUDIOTOWN, BTN_MAGICTOWN], true);
         void this.checkForNewImports();
-        cursor = getStandardCursor(4);
+        // The finger on the main screen (+0x111), the trolley in the picker.
+        cursor = this.picker ? getCursor(0x29) : getStandardCursor(4);
         break;
       case NbhdMode.MoveIn:
         cursor = getCursor(0x21);

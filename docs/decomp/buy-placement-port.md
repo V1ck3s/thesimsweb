@@ -74,6 +74,7 @@ other object id), `onKill`.
 ## Next steps
 
 - Build mode tools reuse `MoveTool` modes 3..9 (SetParameter's build lists,
-  ResetGrabPoint offsets for doors / windows, FixFloorForStairs, FlipPortal).
+  ResetGrabPoint offsets for doors / windows, FlipPortal). FixFloorForStairs is
+  ported (`movetool.ts`, U34).
 - Undo (ObjectUndoable / UndoManager) for Esc and the build tools.
 - Save: new objects only live in the session (ObjectModule save not ported).

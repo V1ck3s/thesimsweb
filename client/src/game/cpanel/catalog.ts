@@ -288,6 +288,7 @@ export class WinCatalog extends TSWin {
       const one = !p.hasAnySort();
       b = new ProductButton(p, (one ? this.template1 : this.template)!, one ? 1 : 4);
       b.id = CMD_BUTTON;
+      b.funds = () => this.ctx.state.getFunds();
       if (this.unknownItem) b.setFallbackIcon(this.unknownItem, this.template);
       b.hideWindow();
       this.buttons.set(p, b);

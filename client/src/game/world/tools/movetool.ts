@@ -9,24 +9,31 @@
  * button is down), button down -> Click, button up -> Release, plus
  * OnKeyDown / OnChar and OnEnterWorld / OnExitWorld.
  *
+ * Stairs (mode 5): FixFloorForStairs floors (or unfloors) the tiles the
+ * stairs need when they do not fit as they are; the change is the held
+ * object undoable's post sub-undoable, taken back on the next Float
+ * (FlushPostSubUndoables) and kept when the stairs are dropped.
+ *
  * Not ported: the undo manager (ObjectUndoable; Esc restores a picked-up
  * object to where it was instead of undoing), object hilites (SetHilite),
- * the flip cursor of portals (+0x7a), build mode modes 3..9 (doors,
- * windows, stairs, plants, fireplaces, columns, pool equipment) and their
- * ctrl-delete branch.
+ * the flip cursor of portals (+0x7a), the ctrl-delete branch of doors and
+ * windows.
  */
 
 import type { HouseViewer } from "../houseviewer.js";
 import type { ResFile } from "../iffres.js";
 import type { ObjectFolder } from "../objectfolder.js";
-import type { XObject } from "../objects.js";
+import { OD, type XObject } from "../objects.js";
 import type { ObjSelector } from "../objselector.js";
 import type { Renderer } from "../renderer.js";
 import { RotatableWorld } from "../world.js";
 import { getFrontDirection, XCursorObject } from "./cursorobject.js";
 import { killObject, makeNewOutOfWorldObject } from "./objectfactory.js";
 import { pointToObjectId, PickMode } from "./picking.js";
-import { Placement, type FPt, type PlacementSpec } from "./placement.js";
+import { Placement, tileOf, type FPt, type PlacementSpec } from "./placement.js";
+import { FloorUndoable, type FloorUndoTool } from "./floorundo.js";
+import { tileIsFloorable, tileIsUnfloorable } from "./floortool.js";
+import { setFloor } from "./worldedit.js";
 import type { DisposeItem } from "../../cpstate.js";
 
 /** cMoveTool+0x34. */
@@ -103,6 +110,10 @@ export interface MoveToolHost {
   stopDisposing?(): void;
   /** cDDDSimsView::SetToolCursor (ui/cursor.ts ids). */
   setToolCursor?(id: number): void;
+  /** CPState::ArchGetCurrentFloorStyle (FixFloorForStairs' floor); 1 when missing. */
+  currentFloorStyle?(): number;
+  /** GlobalDispatch(0x91, 0): cFixedWorld::ComputeRooms on every level (floors changed). */
+  computeRooms?(): void;
   /** The view needs repainting. */
   invalidate(): void;
 }
@@ -117,7 +128,7 @@ interface OrigSite {
   slot: number;
 }
 
-export class MoveTool {
+export class MoveTool implements FloorUndoTool {
   /** +0x34 */
   mode: number = MoveMode.Hand;
   /** +0x3c */
@@ -183,6 +194,10 @@ export class MoveTool {
   private orig: OrigSite | null = null;
   /** +0x4c: the hilited object (kept for the hand's hover; hilites are not drawn). */
   hiliteId = 0;
+  /** FixFloorForStairs' FloorUndoable, the post sub-undoable of the held object's undoable (+0x30). */
+  private stairFloor: FloorUndoable | null = null;
+  /** lbl_105BA4B8: floors changed since the last room computation. */
+  floorsChanged = false;
 
   constructor(private readonly host: MoveToolHost) {}
 
@@ -206,9 +221,23 @@ export class MoveTool {
   }
 
   /** cTool::FinalizePurchase: cSimulator::Spend(running total). */
-  private finalizePurchase(): void {
+  finalizePurchase(): void {
     if (this.runningTotal !== 0) this.host.spend(this.runningTotal, this.expenseType);
     this.runningTotal = 0;
+  }
+
+  /** cTool::Purchase / Refund (FloorUndoable's tool). */
+  purchase(n: number): void {
+    this.runningTotal += n;
+  }
+
+  refund(n: number): void {
+    this.runningTotal -= n;
+  }
+
+  /** GViewer::DirtyFloor. */
+  dirtyFloor(): void {
+    this.host.invalidate();
   }
 
   private cursorValid(): boolean {
@@ -312,6 +341,8 @@ export class MoveTool {
    */
   deselect(): void {
     const c = this.cursor;
+    // The held object's undoable goes with its stairs floors (they stay only with DropObject).
+    this.flushStairFloor();
     if (c) {
       const f = c.floater;
       c.pickup(true);
@@ -328,6 +359,7 @@ export class MoveTool {
 
   /** cMoveTool::Cancel (Esc): a picked-up object goes back where it was (UndoLastCommand). */
   cancel(): void {
+    this.flushStairFloor();
     const c = this.cursor;
     if (!this.newPurchase && c?.anchor && this.orig) {
       const o = this.orig;
@@ -484,7 +516,8 @@ export class MoveTool {
     const level = this.level();
     this.floatH = px;
     this.floatV = py;
-    // Back where it was, then maybe rotated by a drag.
+    // The previous Float's stairs floors go (FlushPostSubUndoables), then back where it was, maybe rotated by a drag.
+    this.flushStairFloor();
     c.place(last, level, slot);
     if (this.mouseRotate) {
       const dh = this.floatH - this.clickH;
@@ -498,6 +531,10 @@ export class MoveTool {
           c.faceDirection((want - Placement.getFrontFaceDirection(f)) & 7);
           this.lastValidFeedback = true;
           this.play(ToolSound.rotate);
+        }
+        if (!this.cursorValid() && this.mode === MoveMode.Stair && this.fixFloorForStairs()) {
+          if (c.canPlace(last, level, null)) c.place(last, level, 0);
+          if (!this.cursorValid()) this.flushStairFloor();
         }
         if (c.canPlace(last, level, null)) c.place(last, level, slot);
         this.updatePlacementFeedback();
@@ -522,15 +559,30 @@ export class MoveTool {
       return;
     }
     let invalid = false;
+    let error = 0;
     if (!c.canPlace(at, level, null)) invalid = true;
     else {
       c.place(at, level, slot);
-      if (!this.cursorValid() && !this.turnToWall() && !this.cursorValid()) invalid = true;
+      if (this.cursorValid()) {
+        // Fits as it is.
+      } else if (this.mode === MoveMode.Stair) {
+        // Stairs get the floors they need, else they do not fit (the first placement's error stays).
+        if (!this.fixFloorForStairs()) invalid = true;
+        else {
+          c.place(at, level, slot);
+          if (!this.cursorValid()) {
+            invalid = true;
+            error = this.p.error;
+            this.flushStairFloor();
+          }
+        }
+      } else if (!this.turnToWall() && !this.cursorValid()) invalid = true;
     }
     if (invalid) {
       // The cursor shows where the mouse is, unsnapped.
       if (c.canPlace(raw, level, null)) c.place(raw, level, 0);
       else c.pickup(true);
+      if (error !== 0) this.p.error = error;
     }
     this.updatePlacementFeedback();
     this.host.invalidate();
@@ -548,6 +600,85 @@ export class MoveTool {
       c.turn(-i);
     }
     return false;
+  }
+
+  /**
+   * cMoveTool::FixFloorForStairs: the floors under the stairs' parts as the
+   * parts want them. A part that can't stand on a floor (placement flags
+   * bit 0 clear) has the floor under it taken away (the tile must be
+   * unfloorable; refund trunc(0.8 * price + 0.5)); an upper level part not
+   * in the air (bit 0x200 clear) gets a floor of the build panel's floor
+   * style where there is none (the tile must be floorable, see
+   * cFixedWorld::ComputeRooms, and the family afford it with the stairs).
+   * True when nothing needs a change, or when every change was made: a
+   * FloorUndoable the next Float takes back unless the stairs are dropped.
+   * False (nothing changed) when a tile can't be fixed.
+   */
+  private fixFloorForStairs(): boolean {
+    const c = this.cursor;
+    if (!c) return false;
+    const w = this.host.viewer.world;
+    const fixed = w.fixed;
+    const gfx = this.host.viewer.floors;
+    const style = this.host.currentFloorStyle?.() || 1;
+    const funds = this.host.getFunds();
+    const size = this.p.world.size;
+    const tiles: Array<{ x: number; y: number; level: number; flags: number }> = [];
+    let count = 0;
+    let total = 0;
+    for (const part of c.parts()) {
+      const x = tileOf(c.headFx + part.ox * 16);
+      const y = tileOf(c.headFy + part.oy * 16);
+      const level = c.level + part.ol;
+      if (x < 1 || x >= size - 1 || y < 1 || y >= size - 1) return false;
+      if (!part.obj || level < 1 || level > fixed.floors.length) return false;
+      const flags = Placement.od(part.obj, OD.placementFlags) & 0xffff;
+      const floor = fixed.floors[level - 1]!.u16(x, y);
+      const [vx, vy] = w.toView(x, y);
+      if (!(flags & 1) && floor !== 0) {
+        count++;
+        total += gfx.getFloorCost(floor);
+        if (!tileIsUnfloorable(w, this.p, vx, vy, level)) return false;
+      }
+      if (!(flags & 0x200) && floor === 0 && level > 1) {
+        count++;
+        total += gfx.getFloorCost(style);
+        if (funds < total + this.price || !tileIsFloorable(w, this.p, vx, vy, level)) return false;
+      }
+      tiles.push({ x: vx, y: vy, level, flags });
+    }
+    if (count === 0) return true;
+    const undo = new FloorUndoable(w, this);
+    for (const t of tiles) {
+      const floor = w.getFloor(t.x, t.y, t.level);
+      if (!(t.flags & 1) && floor !== 0) {
+        const refund = -Math.trunc(Math.fround(BUILD_REFUND * gfx.getFloorCost(floor)) + 0.5);
+        undo.addChange(t.x, t.y, t.level, floor, false, refund);
+        setFloor(w, t.x, t.y, t.level, 0);
+        this.floorsChanged = true;
+        this.dirtyFloor();
+        this.purchase(refund);
+      }
+      if (!(t.flags & 0x200) && w.getFloor(t.x, t.y, t.level) === 0 && t.level > 1) {
+        const cost = gfx.getFloorCost(style);
+        undo.addChange(t.x, t.y, t.level, 0, false, cost);
+        setFloor(w, t.x, t.y, t.level, style);
+        this.floorsChanged = true;
+        this.dirtyFloor();
+        this.purchase(cost);
+      }
+    }
+    // AddPostSubUndoable on the held object's undoable.
+    this.stairFloor = undo;
+    return true;
+  }
+
+  /** The held object undoable's FlushPostSubUndoables: FixFloorForStairs' floors come back off. */
+  private flushStairFloor(): void {
+    const u = this.stairFloor;
+    if (!u) return;
+    this.stairFloor = null;
+    u.undoSelf();
   }
 
   /** cMoveTool::UpdatePlacementFeedback. */
@@ -690,6 +821,8 @@ export class MoveTool {
       this.updateCursor();
       return false;
     }
+    // SubmitUndoable: the stairs floors stay with the dropped object.
+    this.stairFloor = null;
     this.orig = null;
     this.stopDisposing();
     this.updateCursor();
@@ -764,6 +897,10 @@ export class MoveTool {
       }
     }
     this.float(px, py);
+    if (this.floorsChanged) {
+      this.host.computeRooms?.();
+      this.floorsChanged = false;
+    }
     this.host.invalidate();
   }
 

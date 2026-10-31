@@ -33,6 +33,7 @@ import { rgb, UI_FONT_COLOR } from "../ui/syscolors.js";
 import { TSWinText, WTF_MULTILINE } from "../ui/text.js";
 import { Gfx, TSWin } from "../ui/tswin.js";
 import { winMgr } from "../ui/winmgr.js";
+import { getCursor } from "../ui/cursor.js";
 
 /** lbl_105BCB24: the width / height ratio DoLayout aims at. */
 const TARGET_RATIO = 2.0;
@@ -65,6 +66,8 @@ export class WinProgressPictureDialog extends TSWin {
   override async init(): Promise<boolean> {
     const mgr = await TSWinCtrlMgr.get(this.ctx);
     this.frame = mgr.systemBMP(SYS_POPUP_TILES);
+    // Init (and TSBeginModal, TSPaint): SetCursor(GetCursor(3)), the hourglass.
+    this.winCursor = getCursor(3);
     this.font = mgr.systemFont(0);
     this.stub = await this.ctx.res.image("kPictureDialogStub").catch(() => null);
     return true;

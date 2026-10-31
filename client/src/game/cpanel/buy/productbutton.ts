@@ -8,7 +8,8 @@
  *    quick tips delay has passed (cTSWinBtn::GetDefaultAsyncTimeout, 250 ms by
  *    default) the button sends command 0x13 (cTSWinBtn::TSPaint); leaving it
  *    sends 0x14 (TSOnMouseExit);
- *  - tooltip: the price (lbl_105BA104 money string);
+ *  - tooltip: the price (lbl_105BA104 money string), red when the family
+ *    can't afford it (ProductButton::GetToolTipsWindow);
  *  - ProductButton::ForegroundBlt: the product's 74x37 icon, its left half
  *    normally, its right (highlighted) half when the button is down or
  *    hovered, centered on the button.
@@ -20,6 +21,7 @@ import { makeMoneyString } from "../../nbhd/nghinterface.js";
 import { LANG_FRENCH } from "../../res/uires.js";
 import { BTN_TOGGLE, TSWinBtn } from "../../ui/btn.js";
 import type { Gfx } from "../../ui/tswin.js";
+import type { ToolTipColorSource } from "../../ui/winmgr.js";
 
 export const CMD_ASYNC = 0x13;
 export const CMD_ASYNC_CANCEL = 0x14;
@@ -50,7 +52,9 @@ function renderedShot(p: Product, template: ImageBitmap): Promise<ImageBitmap | 
   return shot;
 }
 
-export class ProductButton<P extends ButtonProduct = Product> extends TSWinBtn {
+export class ProductButton<P extends ButtonProduct = Product> extends TSWinBtn implements ToolTipColorSource {
+  /** cSimulator::GetFunds, for the tooltip's color (set by the catalog that made the button). */
+  funds: (() => number) | null = null;
   private icon: ImageBitmap | null = null;
   private asyncPending = false;
   private asyncStart = 0;
@@ -78,6 +82,11 @@ export class ProductButton<P extends ButtonProduct = Product> extends TSWinBtn {
       const obj = this.product.catalogObject?.() ?? null;
       this.icon = (obj && template ? await renderedShot(obj, template) : null) ?? img;
     });
+  }
+
+  /** ProductButton::GetToolTipsWindow: cDefaultTTWindow::SetColor(1) (red) when funds < the price. */
+  toolTipColor(): number {
+    return this.funds && this.funds() < this.product.getPrice() ? 1 : 0;
   }
 
   override tsOnMouseDownL(): boolean {

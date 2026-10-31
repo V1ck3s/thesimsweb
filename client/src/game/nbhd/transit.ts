@@ -380,7 +380,7 @@ export function holdSimulator(sim: Simulator): () => void {
     holds.delete(sim);
     sim.simulate = cur.simulate;
     // No catching up on the time the dialog was up.
-    sim.setSpeed(sim.globals[G.speed]!);
+    sim.resetTiming();
   };
 }
 

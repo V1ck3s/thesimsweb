@@ -181,7 +181,7 @@ Reported by the user after playing. Each is assigned to an agent; mark fixed one
 | U9 | Hover popups (objects, motives, traits, anything) never open | fixed: plain tooltips already worked; the Live panel popups (cWinLivePopup) were missing. cTSWinBtn's async timer is ported (flags enter / down / up, 0x13 on timeout, 0x14 on exit), cWinPeople::SetQuickTips arms it from the quick tips option (0xfa / 0x14d ms) and 0x13 is a click. Popups: motives, personality (portrait crop), zodiac (sign text, compatible / incompatible signs), job (skills, career summary lines with the job composite picture, hours, salary, performance), house, interests, relationships (lifetime step text, sign, bio), gifts. The popup closes outside its page rect or when the page changes. In Live mode the lot view now shows the hovered person's first name (cObjPickerTool::Float). Not ported: object icon panes in the popups, the family portrait popup (person summary), the hilite outline of the hovered object. The catalog popup was already faithful (press / release, flags 6) |
 | U10 | Double-clicking the selected sim should center the camera on it | fixed as in the original: CPState::SetSelectedPerson on the person already selected calls cXObject::CenterHouseViewOnMe(p, 1) (smooth scroll), so clicking the selected portrait centers the view. A double-click in the world does not center in the original (cTool::DoubleClick is two Clicks); Space already centers. The click sound is not played |
 | U11 | Clicking an item in menus/lists (trait, object...) turns it light blue for good; the original does not | fixed: the list buttons are toggles whose state is reset by cWinLivePopupClient when the popup closes (DisablePopup -> target SetState(0)); popups never closed. Ported the popup toggle (open / close / switch target) for all the Live pages; checked on motives (state back to 0 once the mouse leaves) |
-| U12 | The cursor does not change during actions (e.g. picking up an object in Buy mode) | fixed: cDDDSimsView::SetToolCursor (id 5 = keep) and the tools' cursors: cMoveTool::UpdateCursor (hand 10, place 0xb, can't grab 0xc, rotate 0xd..0x10, Ctrl on doors / windows 6), wall tool (delete 6), floor / wallpaper (0 / 6), water (0x26), cTool::Select resets to 0; Live mode follows cObjPickerTool::Float (LiveNothing 0x1c / pet 0x2b, LivePerson 0x1d / pet 0x2a, object with interactions 0x1e, none or off the lot 0x1f). cWinCPanel sets the arrow (GetCursor(0)) so the tool cursor stops at the panel. Also: mouse downs on the panel's dead areas bubbled up to the lot view (the panel is its child) and clicked the world under it; they are now swallowed |
+| U12 | The cursor does not change during actions (e.g. picking up an object in Buy mode) | fixed: cDDDSimsView::SetToolCursor (id 5 = keep) and the tools' cursors: cMoveTool::UpdateCursor (hand 10, place 0xb, can't grab 0xc, rotate 0xd..0x10, Ctrl on doors / windows 6), wall tool (delete 6), floor / wallpaper (0 / 6), water (0x26), cTool::Select resets to 0; Live mode follows cObjPickerTool::Float (LiveNothing 0x1c / pet 0x2b, LivePerson 0x1d / pet 0x2a, object with interactions 0x1e, none or off the lot 0x1f). cWinCPanel sets the arrow (GetCursor(0)) so the tool cursor stops at the panel (the rest of the cursor audit, 2026-10-31: U36 and `cursors.md`). Also: mouse downs on the panel's dead areas bubbled up to the lot view (the panel is its child) and clicked the world under it; they are now swallowed |
 | U13 | Kyle and Jada (House01) have black portraits in the control panel | fixed (documented deviation): the data is damaged, not the port. Their BMP_ 2002 (User00109..User00174 in UserData, all of them) has a solid 0x000000 middle head: MakePersonBtnImage does not clear its buffer, so a head that failed to render was saved black, and cWinPeople shows that third (row 1) when the mood is above 25. The original only re-renders the faces when the thumbnails are dirty (PersonFinder::DirtyThumbnails -> GetPictureBuffer -> GenerateBitmaps(i, 1, 0), in memory). `loadCharacter` (data/neighborhood.ts) treats a blank third as such a dirty face and regenerates the 2002 in memory (never written), so every reader (control panel, phone book, dialogs, family picker) gets it. generatePortraits now leaves the faces buffer black, not magenta |
 | U14 | Clicking a sim standing in front of the sofa or the easel picks the furniture | fixed: HouseViewer::PointToObjectID starts its tile walk at HouseViewer::PointToTile(pt, false), which reads the z-buffer at the point, unprojects it through the 3D camera (cAnimDeviceSub+0xa4) and, when HouseViewer::WorldToLevel gives the viewed level, takes that surface's tile; the port started from the floor tile (PointToWholeTile), behind the sim. The compositor now renders into a framebuffer with a depth texture (Compositor.present / readDepth), the picking is otherwise unchanged (rectangles, last on the tile wins). House01 (Chrome and Firefox): points on Kyle and Jada in front of the sofa pick them, the sofa and easel around them still pick. Not ported: PointToObjectID's mode 1 fallback test of the app's +0x1c / +0x36 short and the object definition's +0xb6 bit |
 
@@ -671,10 +671,88 @@ The tall curtain windows of Charmant stay drawn full height in every mode (no ob
 
 | # | Bug | Status |
 |---|---|---|
-| U30 | When every sim is away at work, time does not switch to the temporary fast speed (x3) as in the original | open |
-| U31 | Holding the right mouse button and dragging should scroll the view (original), not implemented | open |
-| U32 | Chachat: the phone now sits on the table, but clicking it does nothing; you must click under it (the table) to get its actions | open |
-| U33 | Buy catalog hover price: objects you can't afford must show the price in red | open |
-| U34 | Placing stairs fails with "the stairs must connect to floor tiles of the second level" when they should be placeable | open |
-| U35 | Cancelling an action adds a "cancel interaction" action to the queue, which the original (Windows) does not show | open |
-| U36 | The action queue icon has a different cursor on hover than in the original; full cursor audit against the Windows build requested | open |
+| U30 | When every sim is away at work, time does not switch to the temporary fast speed (x3) as in the original | fixed: cSimulator::Simulate's family-away speed (see below) |
+| U31 | Holding the right mouse button and dragging should scroll the view (original), not implemented | fixed: EdgeDetectScroller's right drag (see below) |
+| U32 | Chachat: the phone now sits on the table, but clicking it does nothing; you must click under it (the table) to get its actions | fixed: PointToObjectID takes slot contents where they are drawn (see below) |
+| U33 | Buy catalog hover price: objects you can't afford must show the price in red | fixed: ProductButton::GetToolTipsWindow (Mac 0x102029f0) calls cDefaultTTWindow::SetColor(1) (red text) when cSimulator::GetFunds < the product's price, else 0; it is the only SetColor caller. The window manager now asks the hovered window for its color (`ToolTipColorSource`, `ui/winmgr.ts`) and ProductButton answers from the funds, for the Buy catalog and the Build catalog (`cpanel/buy/productbutton.ts`). cWinCatalogPopup only draws its red frame around the picture (already ported; the title's price keeps the font color) and cWinDisposePopup has no red. Checked in Chrome (house 6, stairs list): $850 red with funds 500, black with 5000 |
+| U34 | Placing stairs fails with "the stairs must connect to floor tiles of the second level" when they should be placeable | fixed: cMoveTool::FixFloorForStairs (Mac 0x1016c980) was not ported. A stair's upper parts are on level 2: the landing (placement flags 0x1) needs a floor, else TestAndPlace fails with 0x29 (UIText STR# 137 "Doit être relié aux carrés au sol du deuxième niveau"); the parts above the steps (0x202) need none. In Float (mode 5), when the stairs do not fit, FixFloorForStairs takes the floor away under parts without bit 0 (TileIsUnfloorable, refund trunc(0.8 x price + 0.5)) and lays the build panel's floor style (CPState::ArchGetCurrentFloorStyle) under level 2 parts without 0x200 (TileIsFloorable: the ComputeRooms floorable flag, so above a room or near a floor; funds >= cost + the stairs' price), then places again; the FloorUndoable is the held object undoable's post sub-undoable, taken back by the next Float (FlushPostSubUndoables), Cancel and Deselect, kept by DropObject; Release ends with GlobalDispatch(0x91, 0) when floors changed (`world/tools/movetool.ts`, TileIsFloorable / TileIsUnfloorable shared from `floortool.ts`). Also WallUndoable's undo / redo now recompute the rooms of both levels (GlobalDispatch(0x91, 0)) so the level 2 floorable flags follow undone walls (`wallundo.ts`). Checked in Chrome (bamboo stairs): house 6 (one storey) 34 valid spots, among them outside against the walls with the landing floored inside on level 2; house 1 inside the rooms; house 2 (two storeys) 344 spots; house 4 (empty lot) none, error 0x29; moving away leaves no floor behind; dropping keeps the landing floor and pays stairs + floor |
+| U35 | Cancelling an action adds a "cancel interaction" action to the queue, which the original (Windows) does not show | fixed: the original does queue it but hides it. cXPerson::RemoveAction (Windows FUN_0045d764, Mac 0x10101da0) on the current action: person data 33 = 0, interaction flag 0x100 (the icon's kQueueCancelOverlay red cross), then, unless ShouldInterrupt, Interaction(person, person, 0x21, 50) with its icon object (+0xc) cleared before AddAction; PersonFinder::ConvertAction skips an action without an icon object, so no icon appears. The port queued it with the person as icon object (a people-button icon). A queued action leaves the queue at once (its icon goes, the object's entry point 4 runs). Checked in Chrome (House01): 3 actions, cancel the third (icon gone), cancel the current (red cross, "Annuler interaction" queued with no icon, the sim drops the mailbox and goes on with the next one); one action alone: red cross, then the hidden 0x21 runs and the queue empties (`sim/person.ts`) |
+| U36 | The action queue icon has a different cursor on hover than in the original; full cursor audit against the Windows build requested | fixed: cActionIcon::cActionIcon (0x4caa64) sets `GetStandardCursor(4)`, and GetStandardCursor is the same map as GetCursor: id 4 is finger.cur, not the arrow the port's table gave (the neighborhood / town lots in regular mode and the lot tutorial highlight had the same bug). Full audit in `cursors.md`: the cursor files are now decoded at boot (`loadCursors`, PNG + the files' hotspots, edit.cur's XOR I-beam drawn), the root default is the game's arrow, the capture window keeps its cursor, global cursors are forced / unforced (0x20000 on the lot view) and cleared during modal loops, the splash hides the cursor, the pie menu / message box / view control / PIP / magic book / design family / text edit / personality widget / progress dialog set theirs, camera and options modes put the arrow back, SaveGame runs StartWatchCursor, the edge zones show their arrows |
+
+### U30: fast speed while the family is away (fixed)
+
+- cSimulator::Simulate, before the ticks, on a residential lot (Neighborhood::GetZoningType == 1):
+  when ObjectModule::IsFamilyMemberAwakeAndVisible is false and the speed is not suspended
+  (+0x34, global 18, < 0), the speed is saved in global 18 and SetSpeed(1000) (1 ms per tick,
+  above the speed 3 button's 994), then GlobalDispatch(0x109, 1); when a member is back, the
+  saved speed comes back, global 18 = -1, GlobalDispatch(0x109, 0).
+- IsFamilyMemberAwakeAndVisible: one of the lot's people that is not hidden (+0x8e, object
+  data 34: at work / school, in the car), a Sim (person data 65 < 2, not a pet), awake
+  (cXPerson::IsSleeping: motive 11 < 0.0) and a resident (person data 0x20 == 0). So the fast
+  speed also runs when everyone sleeps.
+- cSimulator::SetSpeed while suspended also stores the new speed in global 18: pressing a speed
+  button during the fast speed sets that speed at once (CPState::UpdateWorldFromCPState only
+  applies CPState's speed when it was set, dirty 0x40) and it is the one restored later.
+- cSimsApp::DoCommand(0x109, on): cWinViewControl +0x1bc = on, UpdateSpeedMode(2): speed mode 3,
+  the speed 3 button blinks every 500 ms (TSOnTimerMsg) unless speed 3 is the chosen one; the
+  chosen speed's button stays lit (UpdateViewFromCPState uses cSimulator::GetSuspendedSpeed).
+  A speed button press in Live mode clears +0x1bc (TSOnCommand). On return, mode 0 and the
+  speed 3 button is unlit unless chosen (CleanupSpeedMode(3)).
+- Port: `Simulator.updateSuspendedSpeed` / `isSuspended` / `getSuspendedSpeed` / `onSuspendChange`,
+  `SimModule.isFamilyMemberAwakeAndVisible`, `WinViewControl.simulatorSuspended`,
+  `CPState.speedSerial` (the simulator no longer forces the button speed every frame);
+  holdSimulator's release only resets the timing (it used to call SetSpeed).
+- Checked in Chrome on house 56 (one Sim, four pets): with the Sim hidden (object data 34 = 1,
+  what the carpool does) the speed goes to 1000 with global 18 = 760, view control speed mode 3,
+  the speed 1 button lit and the speed 3 button blinking; setting speed 2 meanwhile gives 924 at
+  once and global 18 = 924; unhidden, the speed is 924 again, global 18 = -1, mode 0, speed 3 unlit.
+  A real carpool departure was not observed: running the Chachat day at speed 3 from 8:09 to
+  18:29 the Sim never left for work (to recheck on a lot with a working adult).
+- Note: at load, the family members brought in by the lot (bringInFamily) are hidden for a moment,
+  so the fast speed starts and stops within the first frames, as the same check would do in the
+  original.
+
+### U31: right-button drag scrolling (fixed)
+
+cDDDSimsView's mouse handlers forward to its ScrollingStrategy (EdgeDetectScroller, vtable
++0x10 move, +0x20 / +0x24 right down / up):
+- OnMouseDownR (capture): in Live mode a press on a person of the selected person's family
+  (person data 0x3d) who is not a guest (person data 77 < 1), except on houses 21..30, selects
+  them (CPState::SetSelectedPerson) and the release does nothing (state 2). Otherwise, without
+  Shift, the press waits for a drag (+0x45, point +0x4c / +0x50).
+- OnMouseMove: more than 8 pixels (+0x48) from the press on either axis starts the drag (+0x44):
+  cDDDSimsView::SetAnchorPoint shows kExploreAnchor (4000) centered on the press point (drawn by
+  TSPaint), cursor EXPLORE (0x19), StartScrolling. While dragging the velocity is 5 x (anchor -
+  cursor) px/s (+0x5c = lbl_105BC0EC[8]), no ramp and no clamp (those are the edge zones'), and
+  the cursor is Classify(v): DEADEXPL (0x1a) below 100 px/s, else the 8 arrows (0x11..0x18) with
+  +-15 degree sectors around the axes. The edge zones are not checked while dragging.
+- PreDraw moves the offsets by 0.5 + 0.001 x dt x v (dt capped at 100 ms), like the edge scroll.
+- OnMouseUpR: a drag ends (StopScrolling: anchor released, global cursor cleared); a click that
+  never dragged, with the left button up, is CenterView (as before). The capture is released.
+- The cursors are SetGlobalCursor(..., 0) (not forced). cWinPeople::StopTracking /
+  Animator::SetTrackedObject are not ported (no tracking camera yet).
+- The neighborhood view has no right-button handler in the original (only cDDDSimsView,
+  cTSPieMenu, cActionIcon, cWinRelationship...): nothing to port there.
+- The pie menu takes the right button itself while open (cTSPieMenu), so it does not reach the view.
+- Checked in Chrome on house 56: press at (500, 300), 5 px: no drag; 40 px right: drag, RIGHT
+  cursor, the view scrolls ~200 px/s; up-left: UPLEFT cursor; release: drag off, cursor back;
+  a right click without drag still centers. The anchor shows at the press point.
+
+### U32: picking objects in slots (fixed)
+
+HouseViewer::PointToObjectID walks the tile with ObjectIterator: the tile's object, then the
+hierarchy depth first (slot 0 is the next object on the tile, slots 1.. the contents), and keeps
+the last object whose GetLastDamage rectangle holds the point. The rectangle of an object in a
+slot is where its container's DrawIso drew it (DrawObjectSlot: the container's position moved by
+the slot offset, turned by the container's direction, raised by the slot's z), with its own
+sprites. The port took the contained object's own location (the container's floor position), so
+the phone's rectangle was on the floor under the table. `picking.ts` now walks the tile with the
+drawing position (`tileObjectsDrawn`). The Live-mode leader rule (cXObject::GetInteractionLeader,
+multi-tile groups) was already in place; cObjPickerTool tests the picked object itself, so the
+phone on the table gives the phone's menu.
+Checked in Chrome on house 56 (walls down, rotated, zoom 3): hovering the phone hilites it (id
+11) and a click shows its pie (Services..., Appeler voisin, Appeler taxi..., Inviter à soirée);
+the French lamp on the gift shop table (301), the kitchen sink in its counter (276), the wand
+charger, the bird cage are picked over their tables (a screen scan of PointToObjectID). The lot
+has no microwave on a counter; the sink in the counter is the same case.
+

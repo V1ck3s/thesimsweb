@@ -18,8 +18,12 @@ export const WF_VISIBLE = 0x1;
 export const WF_ENABLED = 0x2;
 /** Hit testing skips the transparent pixels of the window's image (cTSWinBtn, cWinViewControl). */
 export const WF_HIT_ALPHA = 0x200;
+/** cTSWin::HideCursor: no cursor over the window (cTSWin::UpdateCursor). */
+export const WF_HIDE_CURSOR = 0x800;
 export const WF_NO_FOCUS = 0x2000;
 export const WF_MODAL = 0x10000;
+/** An unforced global cursor shows over the window (cTSWinMgrW95::SetCursor; cSimsApp::WindowSetup sets it on cDDDSimsView). */
+export const WF_GLOBAL_CURSOR = 0x20000;
 
 /**
  * Called when a window leaves the tree or hides (cTSWin::child_remove_absolute,

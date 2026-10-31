@@ -21,6 +21,7 @@
 import type { GameContext } from "../context.js";
 import type { FfnFont } from "../res/ffn.js";
 import { TSWinBtn } from "../ui/btn.js";
+import { getCursor } from "../ui/cursor.js";
 import { hiliteColor } from "../ui/syscolors.js";
 import type { Gfx } from "../ui/tswin.js";
 
@@ -112,6 +113,8 @@ export class WinPersonalityWidget extends TSWinBtn {
     if (this.value === 0) this.increase = true;
     else if (this.value === 10) this.increase = false;
     else this.increase = this.ledX - this.area.left + this.value * Math.trunc(ledW / 10) < x;
+    // TSOnMouseMove: the AddPts (0x20, Init's +0x1d0) or RemovePts (0x24, +0x1d4) cursor by the side; none when disabled.
+    this.winCursor = this.enabled ? getCursor(this.increase ? 0x20 : 0x24) : null;
     return super.tsOnMouseMove(x, y);
   }
 

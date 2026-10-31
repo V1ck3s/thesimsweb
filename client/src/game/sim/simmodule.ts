@@ -553,6 +553,19 @@ export class SimModule {
   }
 
   /**
+   * ObjectModule::IsFamilyMemberAwakeAndVisible: one of the lot's people
+   * (+0x8c / +0x90) is not hidden (object data 34, +0x8e: away at work, at
+   * school, in a car), is a Sim (person data 65, +0x60e, below 2: not a pet),
+   * is awake (cXPerson::IsSleeping: motive 11, +0x7b8, below 0.0,
+   * lbl_105BBB78 + 4) and is a resident (person data 0x20, +0x5cc, 0).
+   */
+  isFamilyMemberAwakeAndVisible(): boolean {
+    return this.persons.some(
+      (p) => !p.killed && p.obj.objectData[34] === 0 && p.pd[65]! < 2 && !(p.motives[11]! < 0) && p.pd[0x20] === 0,
+    );
+  }
+
+  /**
    * PersonFinder::GetPersonInHouseIndex(0) then GetInstance: the person of the
    * current family's first member (CPState's family), or null when it is not here.
    */

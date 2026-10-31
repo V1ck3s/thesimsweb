@@ -32,6 +32,7 @@ import { TSSystemButton } from "./systembutton.js";
 import { TSWinText, WTF_MULTILINE, WTF_PARENT_MOUSE } from "./text.js";
 import { Gfx, TSWin } from "./tswin.js";
 import { winMgr } from "./winmgr.js";
+import { getCursor } from "./cursor.js";
 
 export const MB_OK = 0;
 export const MB_OKCANCEL = 1;
@@ -79,6 +80,8 @@ export class TSWinMsgBox extends TSWinDlg {
     private readonly timeoutMs = 0,
   ) {
     super();
+    // cTSWinMsgBox::cTSWinMsgBox: SetCursor(GetCursor(0)).
+    this.winCursor = getCursor(0);
   }
 
   /** cTSWinMsgBox::GetButtonLabel(id): UIText STR# 152 (OK, Cancel, Yes, No). */

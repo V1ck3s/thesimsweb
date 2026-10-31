@@ -44,6 +44,7 @@ import { Gfx, TSWin } from "../ui/tswin.js";
 import type { HouseViewer } from "./houseviewer.js";
 import type { XObject } from "./objects.js";
 import { RotatableWorld } from "./world.js";
+import { getStandardCursor } from "../ui/cursor.js";
 
 /** lbl_105BC500: the three window sizes. */
 const SIZES: ReadonlyArray<[number, number]> = [
@@ -92,6 +93,8 @@ export class WinPictureInPicture extends TSWin {
   ) {
     super();
     this.hideWindow();
+    // cWinPictureInPicture::Init: SetCursor(GetStandardCursor(0)).
+    this.winCursor = getStandardCursor(0);
   }
 
   /** cWinPictureInPicture::Init */

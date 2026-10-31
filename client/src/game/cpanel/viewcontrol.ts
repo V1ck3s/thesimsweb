@@ -30,6 +30,7 @@ import { winMgr } from "../ui/winmgr.js";
 import { WinBudgetDlg } from "./budgetdlg.js";
 import type { WinCPanel } from "./cpanel.js";
 import { WinHelp } from "./help.js";
+import { getCursor } from "../ui/cursor.js";
 
 /** CPState dirty bits tested by UpdateViewFromCPState. */
 const DIRTY_MODE = 0x2;
@@ -219,6 +220,8 @@ export class WinViewControl extends TSWin {
 
   constructor(readonly ctx: GameContext) {
     super();
+    // cWinViewControl::Init: SetCursor(GetCursor(0)), the arrow over the lot view's tool cursor.
+    this.winCursor = getCursor(0);
   }
 
   override async init(): Promise<boolean> {
@@ -544,6 +547,16 @@ export class WinViewControl extends TSWin {
     } else if (this.speedMode === SpeedMode.Paused) {
       this.pauseBtn.row = this.pauseBtn.row === 0 ? 1 : 0;
     }
+  }
+
+  /**
+   * cSimsApp::DoCommand(0x109, suspended), sent by cSimulator::Simulate when
+   * the family leaves or comes back: +0x1bc, then UpdateSpeedMode(2) (the
+   * speed 3 button blinks while the simulator runs at its suspended speed).
+   */
+  simulatorSuspended(on: boolean): void {
+    this.speedThrottled = on;
+    this.updateSpeedMode(SpeedEvent.Throttle);
   }
 
   /** cWinViewControl::SpoofSpeedChange: keyboard shortcuts P/1/2/3 press the buttons. */

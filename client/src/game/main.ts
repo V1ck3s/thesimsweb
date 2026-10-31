@@ -30,6 +30,7 @@ import { UIRes } from "./res/uires.js";
 import { whileFrozen } from "./screens/frozen.js";
 import { G } from "./sim/simulator.js";
 import { TSWinSplashScreen } from "./screens/splash.js";
+import { loadCursors } from "./ui/cursor.js";
 import { DefaultTTWindow } from "./ui/ttwindow.js";
 import { WinMgr } from "./ui/winmgr.js";
 import { ObjectFolder } from "./world/objectfolder.js";
@@ -335,6 +336,8 @@ class Game {
 async function boot(): Promise<void> {
   const mgr = new WinMgr(document.getElementById("screen")!, SCREEN_W, SCREEN_H);
   const ctx = await createContext();
+  // cSimsApp::SetupWinCtrlMgr: the cursor files (UIGraphics/shared/cursors).
+  await loadCursors();
   mgr.setDefaultTTWindow(await DefaultTTWindow.create(ctx.fonts));
   const tick = (): void => {
     ctx.state.update();

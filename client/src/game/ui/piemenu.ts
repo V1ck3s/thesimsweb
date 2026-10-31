@@ -45,6 +45,7 @@ import { TSWinCtrlMgr, SYS_PIE_BKG } from "./ctrlmgr.js";
 import { rgb } from "./syscolors.js";
 import { Gfx, TSWin } from "./tswin.js";
 import { winMgr } from "./winmgr.js";
+import { getStandardCursor } from "./cursor.js";
 
 /** Commands sent to the owner (cTSPieMenu::SetSelection / TSOnMouseMove / TSOnKeyDown). */
 export const CMD_PIE_MOVE = 0xd;
@@ -141,6 +142,8 @@ export class TSPieMenu extends TSWin {
 
   constructor(private readonly ctx: GameContext) {
     super();
+    // cTSPieMenu::cTSPieMenu: SetCursor(GetStandardCursor(0)), the arrow over the lot view's tool cursor.
+    this.winCursor = getStandardCursor(0);
   }
 
   /** The Live mode pie as cWinPeople::Init configures it. */

@@ -78,6 +78,8 @@ export async function saveGame(ctx: GameContext, lv: WinLotView | null, nbhdDir:
   if (!lv || !house || !viewer || !lot || !walls) return false;
   const sim = lv.sim;
   const n = houseNumber(lv.housePath);
+  // cSimsApp::SaveGame: cDDDSimsView::StartWatchCursor (the hourglass until the view paints after the save).
+  lv.startWatchCursor();
   try {
     const store = await NeighborhoodStore.open(nbhdDir).catch(() => null);
     // SaveGame starts with Neighborhood +0x12e = 1: the tutorial lot loses its
@@ -147,6 +149,8 @@ export async function saveGame(ctx: GameContext, lv: WinLotView | null, nbhdDir:
     const str = (i: number): string => ctx.strings.get("UIText", SAVE_STRINGS, i);
     await TSWinMsgBox.show(ctx, str(SAVE_FAILED_MESSAGE), str(SAVE_FAILED_TITLE));
     return false;
+  } finally {
+    lv.endWatchCursor();
   }
 }
 
