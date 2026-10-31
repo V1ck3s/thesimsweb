@@ -67,6 +67,8 @@ export interface DrawableObject {
   graphic: number;
   /** +0x8e: non-zero hides the draw group. */
   hidden: number;
+  /** The wall cutaway set +0x8e for the last draw (its last damage is empty: not picked). */
+  cutawayHidden?: boolean;
   /** +0x15c: 0 = drawn by the static rows, 1 = dynamic. */
   isDynamic: boolean;
   /** +0x34 / +0x38: per-sprite visibility (relative to OBJD +0x80), or null. */
@@ -231,7 +233,9 @@ export class ObjectModuleDrawer implements ObjectDrawer {
     for (let o = this.byId(w.getTileObjectID(x, y, level)); o; o = o.next) {
       if (o.isDynamic) continue;
       rp.setGridCoords(o.fx, o.fy, level);
-      drawIso(o, viewer, comp, rp, this.hiddenByCutaway(o, viewer, x, y) ? 1 : o.hidden);
+      const cut = this.hiddenByCutaway(o, viewer, x, y);
+      o.cutawayHidden = cut;
+      drawIso(o, viewer, comp, rp, cut ? 1 : o.hidden);
     }
   }
 
@@ -247,7 +251,9 @@ export class ObjectModuleDrawer implements ObjectDrawer {
       if (!this.placeHeld?.(o, rp)) rp.setGridCoords(o.fx, o.fy, o.level);
       const [vx, vy] = viewer.world.toView(tx, ty);
       comp.ambient = viewer.ambientAtTile(vx, vy, o.level);
-      drawIso(o, viewer, comp, rp, this.hiddenByCutaway(o, viewer, vx, vy, true) ? 1 : o.hidden);
+      const cut = this.hiddenByCutaway(o, viewer, vx, vy, true);
+      o.cutawayHidden = cut;
+      drawIso(o, viewer, comp, rp, cut ? 1 : o.hidden);
     }
   }
 }

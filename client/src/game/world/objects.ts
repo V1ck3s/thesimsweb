@@ -103,6 +103,8 @@ export interface PlacedObject {
   parentId: number;
   /** +0x8e: non-zero skips the draw group (DrawIso) and the tile shadow. */
   hidden: number;
+  /** +0x8e was set by the wall cutaway for the last DrawIso (empty last damage). */
+  cutawayHidden: boolean;
   /** +0xb0: non-zero draws at full ambient light (except portals). */
   lightingContribution: number;
   /** +0x4a..+0xd8: all 0x48 object data fields. */
@@ -168,6 +170,13 @@ export class XObject implements PlacedObject {
   attributes: Int16Array;
   objFlags = 0x200;
   rect: [number, number, number, number] = [0, 0, 0, 0];
+  /**
+   * RenderStaticRow / RenderDynamicObjects set +0x8e for the object's last
+   * DrawIso because the wall cutaway hid it (walls down): ResetDamage then
+   * no draw group, so its last damage rectangle (+0x160) is empty and
+   * PointToObjectID cannot pick it.
+   */
+  cutawayHidden = false;
   spriteVisibility: Int16Array;
   objectSlots: ObjectSlot[] = [];
   spriteSlots: SpriteSlot[] = [];

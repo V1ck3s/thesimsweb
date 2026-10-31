@@ -51,6 +51,12 @@ class DrawableLotObject implements DrawableObject {
   get hidden(): number {
     return this.obj.hidden;
   }
+  get cutawayHidden(): boolean {
+    return this.obj.cutawayHidden;
+  }
+  set cutawayHidden(v: boolean) {
+    this.obj.cutawayHidden = v;
+  }
   get fullBright(): boolean {
     return this.obj.lightingContribution !== 0 && this.obj.selector.objd.objectType !== OBJ_TYPE_PORTAL;
   }

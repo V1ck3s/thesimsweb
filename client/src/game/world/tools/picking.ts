@@ -24,6 +24,11 @@
  * definition has +0xb6 bit 0. So the invisible parts of a big multi-tile
  * object (the Studio Town movie set draws from its 0,0 / 1,0 tiles) are not
  * picked: the walk goes on to the part drawn at the point.
+ *
+ * A wall object the cutaway hid at its last draw (RenderStaticRow /
+ * RenderDynamicObjects 101c9bc0: ResetDamage, then DrawIso with +0x8e set)
+ * has an empty last damage rectangle: with walls down, doors and windows
+ * are not picked.
  */
 
 import type { HouseViewer } from "../houseviewer.js";
@@ -54,7 +59,8 @@ export function objectScreenRect(obj: XObject, viewer: HouseViewer, renderer: Re
 
 /** The draw group's rectangle with the RenderParam already at the drawing position (DrawIso). */
 function drawnRect(obj: XObject, viewer: HouseViewer, renderer: Renderer, rp: RenderParam): [number, number, number, number] | null {
-  if (obj.hidden !== 0) return null;
+  // Drawn with +0x8e set (or hidden by the wall cutaway, walls down): ResetDamage, no draw group, an empty last damage.
+  if (obj.hidden !== 0 || obj.cutawayHidden) return null;
   const list = obj.selector.getDrawGroup(obj.graphic)?.getItemList((rp.rotation2 + obj.dir) & 7, viewer.scale)?.items;
   if (!list) return null;
   const mask = obj.spriteVisibility;
