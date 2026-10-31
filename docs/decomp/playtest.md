@@ -676,3 +676,5 @@ The tall curtain windows of Charmant stay drawn full height in every mode (no ob
 | U32 | Chachat: the phone now sits on the table, but clicking it does nothing; you must click under it (the table) to get its actions | open |
 | U33 | Buy catalog hover price: objects you can't afford must show the price in red | open |
 | U34 | Placing stairs fails with "the stairs must connect to floor tiles of the second level" when they should be placeable | open |
+| U35 | Cancelling an action adds a "cancel interaction" action to the queue, which the original (Windows) does not show | open |
+| U36 | The action queue icon has a different cursor on hover than in the original; full cursor audit against the Windows build requested | open |
