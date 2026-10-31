@@ -158,6 +158,23 @@ export const SCORE_CURVE_MOTIVES = [5, 6, 7, 8, 9, 3, 13, 14, 15] as const;
 /** SkillLookup's string tables (Global.iff STR# 150..160), loaded once. */
 const stdTables = new Map<number, string[] | null>();
 
+/** The object files whose animation tables were asked for (prefetchSkills). */
+const prefetched = new WeakSet<object>();
+
+/**
+ * Not in the original (its VBAnimMgr loads a skill synchronously when an
+ * Animate primitive starts it): when a person starts running an object's
+ * tree, the skills of the object's animation tables (STR# 0x81..0x84) start
+ * loading, so they are usually there by the time the person, done routing,
+ * animates with the object.
+ */
+function prefetchSkills(o: SimObject): void {
+  const sel = o.obj.selector;
+  if (o.isPerson || prefetched.has(sel)) return;
+  prefetched.add(sel);
+  for (const id of [0x81, 0x82, 0x83, 0x84]) for (const n of loadStringSet(sel.res, id) ?? []) if (n) requestSkill(n);
+}
+
 /** lbl_105BA328: 1 / (2 sqrt 6) (doubles of lbl_105BBB74), computed once by TryGetReachInfo. */
 const REACH_HEIGHT_SCALE = Math.fround(1 / (2 * Math.sqrt(6)));
 
@@ -235,6 +252,7 @@ export class PersonSim extends SimObject {
         return false;
       },
       setLocation: (fx, fy) => this.setLocation(fx, fy),
+      holding: () => (this.obj.objectSlots[1]?.containedId ?? 0) !== 0,
       animSound: (key, value, forward) => handleAnimSound(this, key, value, forward),
     });
     // What the lot renderer dresses (SAnimator::UpdateOutfitAndHands from SAnimator::Render).
@@ -282,8 +300,11 @@ export class PersonSim extends SimObject {
    * happiness. Room / lighting motive, layout ticks, head text: not ported.
    */
   override simulate(): boolean {
+    const a = this.animator;
+    const drawn = { ...(a.followPos ?? { fx: this.obj.fx, fy: this.obj.fy }), dir: this.renderDir ?? this.obj.dir };
     const r = super.simulate();
     if (r) {
+      a.settleLoadHold(drawn);
       const tick = this.module.sim.tickCount;
       const m = this.motives;
       if (this.lastMotiveTick + 0x3c <= tick) {
@@ -316,9 +337,8 @@ export class PersonSim extends SimObject {
     pd[32] = keep[0]!;
     pd[34] = keep[1]!;
     pd[35] = keep[2]!;
-    this.animator.stop("main");
-    this.animator.stop("carry");
-    this.animator.stop("background");
+    // SAnimator::Reset (vtable +0x14)
+    this.animator.reset();
     this.queue.length = 0;
     this.currentAction = null;
     this.objectRecords.length = 0;
@@ -338,6 +358,7 @@ export class PersonSim extends SimObject {
     if (!super.gosubObjectTree(other, params, treeId)) return false;
     this.objectRecords.push({ id: other.id, depth: this.getStackSize(), action });
     other.obj.objectData[62] = other.obj.objectData[62]! + 1;
+    prefetchSkills(other);
     return true;
   }
 
@@ -419,10 +440,8 @@ export class PersonSim extends SimObject {
           }
         }
         // SAnimator::SetPixelated(0) and the animator's vtable +0x14 / +0x1c (ResetSuits)
+        this.animator.reset();
         this.animator.resetSuits();
-        this.animator.stop("main");
-        this.animator.stop("carry");
-        this.animator.stop("background");
         this.routes.length = 0;
         for (const sl of this.obj.spriteSlots) sl.activeTicks = 0;
         this.putBackInWorld();
@@ -683,22 +702,36 @@ export class PersonSim extends SimObject {
     if (slot === "carry" || slot === "background") {
       if (anim === 0) {
         a.stop(slot);
+        // the trees give the carry practice back to UpdateCarryPractice (+0x1a0 = 0, +0x1a4 = -1)
+        if (slot === "carry") {
+          a.carryMode = 0;
+          a.carryAnim = -1;
+        }
         return PRIM_TRUE;
       }
       const skill = this.loadSkill(elem, anim, source, flags);
       if (skill === undefined) return PRIM_WAIT;
-      if (skill) a.start(slot, skill, backwards);
+      const t = skill ? a.start(slot, skill, backwards) : null;
+      // the trees own the carry practice (+0x1a0 = 6) until they stop it
+      if (t && slot === "carry") {
+        a.carryMode = 6;
+        a.carryAnim = -1;
+      }
       return PRIM_TRUE;
     }
     if (anim === 0) {
       a.stop("main");
       a.state = this.restState();
       this.pd[0x13] = 0;
+      a.carryBlocked = false;
       return PRIM_TRUE;
     }
     if (!a.animating) {
       const skill = this.loadSkill(elem, anim, source, flags);
-      if (skill === undefined) return PRIM_WAIT;
+      if (skill === undefined) {
+        a.loadWait = true;
+        return PRIM_WAIT;
+      }
       a.events.length = 0;
       a.stop("main");
       // A skill that does not start (missing: e.g. SocialChild.iff's adult table entry 73,
@@ -706,7 +739,12 @@ export class PersonSim extends SimObject {
       // animation tree" and plays StdAnimIdx 0x25 instead (SAnimator::TryAnimate).
       const t = skill ? a.start("main", skill, backwards) : this.startMissingAnimation(a);
       if (t) t.interruptible = (flags & 8) !== 0;
-      if (slot === "carry3") a.stop("carry");
+      // flags 1 | 0x10: a full-body animation, the carry practice stops until it ends (+0x19c = 1)
+      if (slot === "carry3") {
+        a.stop("carry");
+        a.carryBlocked = true;
+        a.carryAnim = -1;
+      }
       a.animating = true;
       a.eventCount = 0;
       a.state = 0;
@@ -724,6 +762,7 @@ export class PersonSim extends SimObject {
       }
       a.animating = false;
       a.state = this.restState();
+      a.carryBlocked = false;
       return PRIM_TRUE;
     }
     let ev = e;
@@ -892,7 +931,10 @@ export class PersonSim extends SimObject {
     const name = table?.[idx]?.toLowerCase();
     if (!name) return false;
     const skill = requestSkill(name);
-    if (skill === undefined) return undefined;
+    if (skill === undefined) {
+      this.animator.loadWait = true;
+      return undefined;
+    }
     if (!skill) {
       this.module.unportedValue(`missing skill ${name}`, 0);
       return false;
@@ -900,6 +942,7 @@ export class PersonSim extends SimObject {
     const a = this.animator;
     a.events.length = 0;
     if (!a.start("main", skill, false)) return false;
+    a.carryBlocked = true;
     a.state = 0;
     return true;
   }
@@ -908,6 +951,7 @@ export class PersonSim extends SimObject {
   private stopReachAnimation(): void {
     const a = this.animator;
     a.stop("main");
+    a.carryBlocked = false;
     a.events.length = 0;
     a.state = this.restState();
   }

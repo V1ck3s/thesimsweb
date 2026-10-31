@@ -259,6 +259,8 @@ export interface AnimatorHost {
   canPlace(fx: number, fy: number): boolean;
   /** cXObject::SetLocation (vtable +0x90). */
   setLocation(fx: number, fy: number): void;
+  /** cXPerson's slot 1 (the hand) holds an object (Windows 0x00589fd2). */
+  holding(): boolean;
   /** HandleVitaBoyAnimEvent's sound props (sim/animsound.ts); `forward`: the practice plays forward. */
   animSound(key: string, value: string, forward: boolean): void;
 }
@@ -340,6 +342,80 @@ export class PersonAnimator {
     this.accessories.clear();
   }
 
+  /**
+   * +0x19c: a reach animation (StartReachAnimation) or a main animation
+   * started with TryAnimate flags 1 | 0x10 plays: no carry practice.
+   */
+  carryBlocked = false;
+  /** +0x1a0: 0 empty-handed, 1 holding something (slot 1), 6 the carry practice is the trees' (TryAnimate flag 0x10). */
+  carryMode = 0;
+  /** +0x1a4: the carry practice UpdateCarryPractice runs (0 the standard carry loop, -1 none). */
+  carryAnim = -1;
+
+  /**
+   * SAnimator::Reset's practices: the main, carry and background ones
+   * stop, the carry state goes back to empty-handed (+0x1a0 = 0, +0x1a4 =
+   * -1: the next tick's UpdateCarryPractice restarts the carry loop when
+   * the person still holds something).
+   */
+  reset(): void {
+    this.stop("main");
+    this.stop("carry");
+    this.stop("background");
+    this.carryMode = 0;
+    this.carryAnim = -1;
+  }
+
+  /**
+   * SAnimator::UpdateCarryPractice (Mac 0x1034e5c0, Windows 0x005903a7),
+   * from SAnimator::Tick: unless the trees own the carry practice (+0x1a0
+   * = 6), a person holding something in slot 1 (and not reaching or
+   * playing a full-body animation, +0x19c) plays StdAnimIdx 0x26
+   * ("a2o-rarm-carry-loop") on the carry practice (+0x134, priority 10, on
+   * top of the walk and the main animation); it stops when the hand empties.
+   */
+  private updateCarryPractice(): void {
+    if (this.carryMode === 6) return;
+    let want = -1;
+    if (!this.carryBlocked) {
+      this.carryMode = this.host.holding() ? 1 : 0;
+      if (this.carryMode >= 1 && this.carryMode < 6) want = 0;
+    }
+    if (want === this.carryAnim) return;
+    this.carry = null;
+    if (want === 0) {
+      const n = this.host.stdSkillName(STD.carry);
+      const sk = n ? requestSkill(n) : null;
+      // The original loads the skill synchronously: until it is here, ask again next tick.
+      if (sk === undefined) return;
+      if (sk && !this.start("carry", sk, false, true)) return;
+    }
+    this.carryAnim = want;
+  }
+
+  /**
+   * Set by the Animate / Reach primitives while the main skill they start
+   * still loads (the original's VBAnimMgr loads it synchronously, in the
+   * same tick); see settleLoadHold.
+   */
+  loadWait = false;
+  /** Where the person is drawn while its main skill loads (null: where the simulation puts it). */
+  private hold: { fx: number; fy: number; dir: number } | null = null;
+
+  /**
+   * After the person's tick: while the primitive waits for its skill, the
+   * person stays drawn where it was before the tick (`drawn`), so a Snap
+   * that ran just before the Animate (e.g. Beds.iff "get in": Snap onto the
+   * bed, then the get-in animation) does not show the person on the bed in
+   * its standing pose until the skill arrives; the original runs both
+   * primitives and starts the animation in one tick.
+   */
+  settleLoadHold(drawn: { fx: number; fy: number; dir: number }): void {
+    if (this.loadWait) this.hold ??= drawn;
+    else this.hold = null;
+    this.loadWait = false;
+  }
+
   /** Uses `skeleton` (shared with the renderer's VitaBoy). */
   attach(skeleton: Skeleton): void {
     this.skeleton = skeleton;
@@ -378,8 +454,9 @@ export class PersonAnimator {
   /** Animator::Tick: advance the practices one tick and handle the crossed time props. */
   tick(): void {
     this.clock += MILS_PER_TICK;
+    if (this.skeleton) this.updateCarryPractice();
     this.tickMovement();
-    // Apply order: background (priority 10), main, carry (-10) on top.
+    // Apply order: background (priority -10), main, carry (10) on top.
     for (const slot of ["background", "main", "carry"] as const) {
       const t = this[slot];
       if (!t) continue;
@@ -497,8 +574,8 @@ export class PersonAnimator {
     this.pending = 0;
     this.stopAt = 0;
     this.stopping = false;
-    // The walk skills load asynchronously here: ask for them now.
-    for (const i of [STD.walkStart, STD.walkLoop, STD.runLoop, STD.runStart, 4, 5, 6, 7, 8, 9, 10]) {
+    // The walk skills (and the carry loop) load asynchronously here: ask for them now.
+    for (const i of [STD.walkStart, STD.walkLoop, STD.runLoop, STD.runStart, STD.carry, 4, 5, 6, 7, 8, 9, 10]) {
       const n = this.host.stdSkillName(i);
       if (n) requestSkill(n);
     }
@@ -548,11 +625,13 @@ export class PersonAnimator {
 
   /** The animator's facing for the renderer while it moves the person (null when idle). */
   get followDir(): number | null {
+    if (this.hold) return this.hold.dir;
     return this.followState === FOLLOW.neutral && (this.state < AS.standingTurn || this.state > AS.runningStop) ? null : wrap8f(this.dirF);
   }
 
   /** The animator's position for the renderer while it moves the person (null when idle). */
   get followPos(): FollowPt | null {
+    if (this.hold) return { fx: this.hold.fx, fy: this.hold.fy };
     return this.followState === FOLLOW.neutral && (this.state < AS.standingTurn || this.state > AS.runningStop) ? null : { fx: this.gridX, fy: this.gridY };
   }
 
