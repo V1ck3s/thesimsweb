@@ -756,3 +756,26 @@ the French lamp on the gift shop table (301), the kitchen sink in its counter (2
 charger, the bird cage are picked over their tables (a screen scan of PointToObjectID). The lot
 has no microwave on a counter; the sink in the counter is the same case.
 
+
+## User-reported bugs, round 4 (2026-10-31)
+
+| # | Bug | Status |
+|---|---|---|
+| U37 | Numpad keys 0, 1, 2, 3 do not change the game speed | open |
+| U38 | Buy mode: the control panel's held-object picture has a white background; the original blends it in | open |
+| U39 | No change-clothes animation (e.g. leaving the shower), though there is one when going to bed; check every case against the original | open |
+| U40 | "Go here" (Venir ici) has no picture in its action queue icon | open |
+| U41 | Sims do not seem to get the "go to work" action automatically, as in the original (check the Windows build) | open |
+| U42 | No pixelated censor (toilet, shower...) | open |
+| U43 | A sim carrying something holds it unnaturally (missing carry animation?) | open |
+| U44 | A sim behind a window is drawn as if there were no glass | open |
+| U45 | Animation glitches when one animation starts, stops or chains to another; e.g. going to bed after changing clothes, the sim pops onto the bed for a few frames before the lie-down animation | open |
+| U46 | Family magic book: ingredients are offset from the background, their outline should turn white on hover and the background change on click | open |
+| U47 | "Se faire adresser la parole" (be talked to) action icon: the sim's portrait is all black (works on Windows) | open |
+| U48 | Depending on where a sim stands, clicking it gives the floor's / background's menu instead of the sim's (click depth?) | open |
+| U49 | The control panel corner between the left and right parts (next to camera / options buttons) does not match the Windows original: plainer color, the light band of the left part should run into the right part | open |
+| U50 | Objects sometimes turn invisible (a toilet the sim had used); Buy mode then says "impossible to pick up" | open |
+| U51 | Walls-down mode still shows doors and windows | open |
+| U52 | Pizza delivery guy's head (and maybe every sim's) does not show in the thought bubbles over our sim, nor in the "SimCity Pizza" dialog; check every dialog that shows a head | open |
+| U53 | Phone, call a taxi to downtown: the dialog shows two taxis instead of a single taxi picture | open |
+| U54 | The zoomed view (PIP) when a vehicle (taxi) arrives is not centered on the vehicle | open |
