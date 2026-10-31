@@ -112,6 +112,11 @@ for a pie menu, queue interactions, see them as icons and cancel them.
 - `sim/floatconstants.ts` — FCNS loader (Global.iff FCNS 1, 2, 5, 6).
 - `world/actionicons.ts` — the selected sim's action icons (cDDDSimsView /
   cActionIcon): current + queued, (0x20 + 0x32 i, 0x20), click = cancel.
+  Cancelling the running action (cXPerson::RemoveAction) queues the
+  person's interaction 0x21 ("Cancel interaction", priority 50) unless
+  ShouldInterrupt, but with its icon object cleared (Interaction +0xc = 0,
+  Windows 0x45d764 / Mac 0x10101da0), so it never gets an action icon;
+  the cancelled icon keeps its red cross until the action ends.
 - `world/lotpeople.ts` — `bindSim` (the sim's animator poses the VitaBoy
   skeleton, facing from `PersonSim.renderDir`), `addPerson` (move-in).
 - `world/winlotview.ts` — sim hooks (`module.addObject` / `removeObject`),

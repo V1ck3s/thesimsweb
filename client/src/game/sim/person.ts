@@ -2119,7 +2119,11 @@ export class PersonSim extends SimObject {
    * action: priority (person data 33) drops to 0, the interaction is flagged
    * cancelled (0x100) and, unless something already interrupts, the
    * person's own interaction 0x21 is queued at priority 50 so the next
-   * Idle For Input lets go. A queued one: it leaves the queue and its
+   * Idle For Input lets go. That interaction is queued without an icon
+   * object (Interaction +0xc cleared before AddAction, Windows 0x45d764 /
+   * Mac 0x10101da0), so PersonFinder::ConvertAction gives it no action
+   * icon: the player only sees the cancelled icon's red cross until the
+   * current action ends. A queued one: it leaves the queue and its
    * object's entry point 4 check tree runs.
    */
   removeAction(i: Interaction): boolean {
@@ -2128,7 +2132,11 @@ export class PersonSim extends SimObject {
       i.flags |= 0x100;
       if (!this.shouldInterrupt()) {
         const e = this.module.treeTableOf(this.obj.selector)?.entries.find((x) => x.stringIndex === 0x21);
-        if (e) this.addAction(this.makeInteraction(this, e, 50));
+        if (e) {
+          const cancel = this.makeInteraction(this, e, 50);
+          cancel.icon = 0;
+          this.addAction(cancel);
+        }
       }
       this.module.onQueueChanged?.(this);
       return true;
