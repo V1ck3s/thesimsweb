@@ -1044,7 +1044,77 @@ Most round 4 fixes were checked by the user in game.
 
 | # | Bug | Status |
 |---|---|---|
-| U55 | Walls down: clicking the floor where windows stand (e.g. with the raise walls / build tools) is blocked, as if the hidden window still caught the mouse | open |
-| U56 | Charmant's front door: a wall runs through the door (visible with walls up); sims can pass one way but not the other | open |
-| U57 | Toilet censor works, but part of the body shows at times, as if the censor were not far enough forward | open |
-| U58 | With the cheat "move_objects on" you can delete a sim, then in Live mode bring it back by clicking its icon; not working | open |
+| U55 | Walls down: clicking the floor where windows stand (e.g. with the raise walls / build tools) is blocked, as if the hidden window still caught the mouse | fixed: PointToObjectID still picked the doors / windows the cutaway hides (their last damage is empty in the original); see below |
+| U56 | Charmant's front door: a wall runs through the door (visible with walls up); sims can pass one way but not the other | save damaged by the old U50 bug (fixed in 997924a): two door halves are off their tile chains; the user's House69 needs a repair, see below |
+| U57 | Toilet censor works, but part of the body shows at times, as if the censor were not far enough forward | fixed: Censor's depth plane row (see below) |
+| U58 | With the cheat "move_objects on" you can delete a sim, then in Live mode bring it back by clicking its icon; not working | fixed (see below) |
+
+### U55 / U56: walls-down picking, Charmant door (U55 fixed, U56 save damaged)
+
+- **U55.** `HouseViewer::PointToObjectID` 101c9340 tests `cXObject::GetLastDamage` (+0x160),
+  the rectangle the object's last `DrawIso` 100c6f70 covered. `RenderDynamicObjects` 101c9bc0
+  (and RenderStaticRow) call `cXObject::ResetDamage(1)` 100c5220, then draw a wall object the
+  cutaway cuts with +0x8e set: no draw group, so the rectangle stays empty and the hidden door
+  or window can no longer be picked (the tile's other objects, or the fallback, win). The port
+  recomputes the rectangle from the draw group (picking.ts `drawnRect`) and ignored the cutaway.
+  Now `ObjectModuleDrawer` records the cutaway decision of each draw (`XObject.cutawayHidden`)
+  and `drawnRect` returns nothing for such an object. Verified on a copy of the user's House69:
+  a 60 x 26 grid of PointToObjectID calls (Build mode tools' `event`) hit 36 doors / windows /
+  curtains with walls down before, none after; walls up still hits them all. The wall tool
+  itself never asks for an object (cNewWallTool: PointToTile only); a wall dragged over the
+  floor by the hidden kitchen windows was built before and after.
+- **U56.** Not a wall or routing bug: the user's `UserData/Houses/House69.iff` (saved 14:02,
+  before the U50 fix 997924a) has two door halves off their tile chains. Its "objects" Arry 3
+  names object 277 at tile (19, 21) (a person not in the save: the stale head the old walk
+  step left, see U50) instead of the front door's outside half 84 ("Door - Burgundy Street -
+  part 2", the game's file has 84 there), and tile (25, 18) is empty instead of 113 ("Door -
+  Wood 2 part 2", the hall / bathroom door). Walls (Arry 12) differ from the game's file only
+  by wallpaper and floor patterns. At load `ObjectModule::CheckIntegrity` 100dadf0 clears the
+  stale id (as the original does) but nothing relinks the halves: they are not drawn by the
+  static rows, not found by tile lookups, and routing through these doors fails from one side
+  (scripted Go Here: inside -> outside goes round through the back door; the game's House69
+  copy goes through the front door both ways). Repair: in Buy or Build mode pick each door up
+  with the hand tool and drop it back on the same spot (front door at world tiles
+  (20, 21) / (19, 21), the Wood 2 door at (25, 19) / (25, 18)), then save; verified on a copy
+  (userPickup + userPlace relinks both halves, no orphan left, the sim then walks in through
+  the front door). A walk soak through the front door on the game's House69 (in / out twice)
+  left no stale head nor orphan with the current code. The wall drawn through the door was
+  not reproduced after load (both copies render the same).
+
+### U58: deleting a sim with move_objects, bringing it back from its portrait
+
+Two missing pieces. (1) cMoveTool picks through GViewer::PointToObjectID, which reaches
+people, but the port's `MoveTool.objectUnder` passed no person rectangle, so people were
+skipped and the flowerbed behind the sim was grabbed. The host now gives the people's
+screen rectangles and global 19; with the cheat (lbl_105BA244) UserCanPickup /
+UserCanDelete pass, and Delete kills the person (DoDispose -> Deselect). (2)
+CPState::SetSelectedPerson(handle) starts with `if (!PersonFinder::GetInstance(h))
+PersonFinder::CreateInstance(h)`: MakeNewOutOfWorldObject of the character, then
+cXObject::FindGoodLocation from the view's centermost tile (the lot's center when off
+the interior), level 1, same room, empty tile, then cXPerson::Place; no place: KillObject.
+`CPState.setSelectedPerson` now calls the view's `createPersonInstance` (winlotview.ts),
+which shares that placement (`placeNewInstance`) with the lot-load `bringInFamily`; a
+member that had no instance counts as not selected (GetSelected -1), so it is selected
+rather than centered. Verified (UserData5 copy of House01): cheat typed in the console,
+Buy mode, pick the sim, Delete; Live mode, click its portrait: it reappears where the view
+is centered, is selected (plumbbob), takes a "S'asseoir" order; saved and reloaded with
+all three sims.
+
+### U57: censor not far enough forward (fixed)
+
+`HouseViewer::Censor` (Windows 004ac510, Mac 101c5a00) looks the plane's depth up
+(`FUN_0049a73d(rp, row)` = rp+0x28 + vertical[rp+0x24 + (8 << scale) - row]) with
+row = (row within the block) + (clipped rect top), in both builds and in both passes: the
+block row's offset is never added, so every block row is tested against the plane's depth
+of the rect's top rows. A vertical plane is nearer the camera higher up, so the lower blocks
+pixelate everything behind a plane well in front of the pelvis. We used the block's real
+row, so the legs / feet (and anything in front of the plane low in the rect) showed.
+`HouseViewer.censor` now uses `top + j`. The rest was re-checked against Windows and
+matches: rect from the `-needs` dressing's current deformed vertices (texture vertex count,
+root * view-projection, ftol min / max + 0.999, y + (-3 << (scale - 1)), x + 0), the
+1/2/4 px growth and 3/6/12 px drop, PELVIS (bone 1) point minus cAnimDeviceSub +0x184
+(the unit view direction), depth test `plane < z16`, pass after the people and the cursor.
+Verified (throwaway copy of UserData House01): toilet (flags 0x80 undressing) and shower
+(flags 0x80 then 1), zoom 3 and 2, all rotations, before / after toggled on the same frames:
+before, the feet and lower legs showed under the pixelation; after, the whole rect down to
+the feet is pixelated (as in the original, so are objects in front low in the rect).

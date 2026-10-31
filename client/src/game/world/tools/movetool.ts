@@ -90,6 +90,10 @@ export interface MoveToolHost {
   /** ObjectFolder::GetSelectorByName("Tile Cursor"). */
   readonly cursorSelector: ObjSelector;
   renderer(res: ResFile): Renderer;
+  /** A person's drawn rectangle (GViewer::PointToObjectID reaches people through it); none: people are not picked. */
+  personRect?(o: XObject): [number, number, number, number] | null;
+  /** Global 19 (the mode freeze: 0 Live, 1 Build, 2 Buy) PointToObjectID reads. */
+  modeFreeze?(): number;
   /** cSimulator::GetFunds / Spend. */
   getFunds(): number;
   spend(amount: number, expense?: number): void;
@@ -477,7 +481,8 @@ export class MoveTool implements FloorUndoTool {
 
   /** XViewer::MouseTrack's PointToObjectID (mode 1). */
   objectUnder(px: number, py: number, mode: number = PickMode.Any): number {
-    return pointToObjectId(this.host.viewer, this.p, (r) => this.host.renderer(r), px, py, this.level(), mode);
+    const h = this.host;
+    return pointToObjectId(h.viewer, this.p, (r) => h.renderer(r), px, py, this.level(), mode, h.personRect ? (o) => h.personRect!(o) : null, h.modeFreeze?.() ?? 1);
   }
 
   /** cMoveTool::Float (and Drag, which is Float with the button down). */

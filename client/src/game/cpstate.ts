@@ -231,6 +231,11 @@ export interface HouseViewerHooks {
   setWallState(state: WallState): void;
   /** cXObject::CenterHouseViewOnMe(selected person, smooth). */
   centerOnSelected?(): void;
+  /**
+   * PersonFinder::GetInstance / CreateInstance: the family member with this
+   * GUID gets a person on the lot when it has none; true when it had none.
+   */
+  createPersonInstance?(guid: number): boolean;
   /** HouseViewer::SetViewportHeight (cWinViewControl::SetMode). */
   setViewportHeight?(height: number): void;
 }
@@ -519,13 +524,18 @@ export class CPState {
   }
 
   /**
-   * CPState::SetSelectedPerson: selecting the person already selected
-   * centers the house view on them (cXObject::CenterHouseViewOnMe(p, 1),
-   * smooth; its click sound is not played).
+   * CPState::SetSelectedPerson: a member with no person on the lot gets one
+   * (PersonFinder::GetInstance == 0 -> CreateInstance). Selecting the person
+   * already selected (PersonFinder::GetSelected: -1 when the selected
+   * member had no person) centers the house view on them
+   * (cXObject::CenterHouseViewOnMe(p, 1), smooth; its click sound is not
+   * played).
    */
   setSelectedPerson(index: number): void {
     if (index < 0 || index >= this.family.length) return;
-    if (index === this.selected) {
+    const guid = this.family[index]!.guid;
+    const created = guid !== undefined && (this.viewer?.createPersonInstance?.(guid) ?? false);
+    if (index === this.selected && !created) {
       this.viewer?.centerOnSelected?.();
       return;
     }

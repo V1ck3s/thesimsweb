@@ -392,6 +392,8 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
       folder: lot.folder,
       cursorSelector: cursorSel,
       renderer: (res) => lot.renderer(res),
+      personRect: (o) => this.people?.screenRect(o, v) ?? null,
+      modeFreeze: () => this.sim?.globals[G.modeFreeze] ?? 1,
       // cSimulator::GetFunds / Spend (expense type 6, "furnishings") when the simulator runs.
       getFunds: () => this.sim?.getFunds() ?? st.getFunds(),
       spend: (n, expense = 6) => {
@@ -822,25 +824,7 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
         present.add(info.guid | 0);
         continue;
       }
-      const w = v.world;
-      const c = v.pointToWholeTile(v.viewW >> 1, v.viewH >> 1, 1);
-      const [cx, cy] = RotatableWorld.rotateCoords(c.x, c.y, (4 - w.rotation) & 3, 0x40);
-      let placed = false;
-      for (let r = 0; r < w.size && !placed; r++) {
-        for (let dy = -r; dy <= r && !placed; dy++) {
-          for (let dx = -r; dx <= r && !placed; dx++) {
-            if (Math.max(Math.abs(dx), Math.abs(dy)) !== r) continue;
-            const pos = { fx: ((cx + dx) << 4) | 8, fy: ((cy + dy) << 4) | 8 };
-            if (p.outOfBounds(cx + dx, cy + dy) || !p.canPlace(obj, pos, 1, null, 0)) continue;
-            p.place(obj, pos, 1, null, 0, true);
-            placed = true;
-          }
-        }
-      }
-      if (!placed) {
-        killObject(p, obj);
-        continue;
-      }
+      if (!this.placeNewInstance(v, p, obj)) continue;
       present.add(info.guid | 0);
       const ps = sim.module.persons.find((x) => x.obj === obj);
       if (ps && this.people && (await this.people.addPerson(nbhdDir, obj))) {
@@ -848,6 +832,54 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
       }
     }
     v.dirty = true;
+  }
+
+  /**
+   * PersonFinder::CreateInstance's placement of the person just made out of
+   * the world: cXObject::FindGoodLocation from the view's centermost tile
+   * (GViewer::GetCentermostTile; the lot's center when it is off the lot's
+   * interior), level 1, the start tile's room, an empty tile, direction -1;
+   * then cXPerson::Place there on level 1. With no place the object is
+   * killed (ObjectModule::KillObject).
+   */
+  private placeNewInstance(v: HouseViewer, p: Placement, obj: XObject): boolean {
+    const w = v.world;
+    const c = v.pointToWholeTile(v.viewW >> 1, v.viewH >> 1, 1);
+    let start = { fx: (c.x << 4) | 8, fy: (c.y << 4) | 8 };
+    if (!w.inInterior(c.x, c.y)) {
+      const half = w.size >> 1;
+      start = { fx: ((half + w.minX) << 4) | 8, fy: ((half + w.minY) << 4) | 8 };
+    }
+    const [fx, fy] = RotatableWorld.rotateCoords(start.fx, start.fy, (4 - w.rotation) & 3, 0x400);
+    const pos = p.findGoodLocation(obj, { fx, fy }, 1, { emptyTile: true, buildable: false, random: null, sameRoom: true });
+    if (!pos) {
+      killObject(p, obj);
+      return false;
+    }
+    p.place(obj, pos, 1, null, 0, true);
+    return true;
+  }
+
+  /**
+   * HouseViewerHooks: CPState::SetSelectedPerson's PersonFinder::GetInstance
+   * (the family member's character among the lot's objects); without one,
+   * PersonFinder::CreateInstance makes it (MakeNewOutOfWorldObject of the
+   * character's selector) and places it (placeNewInstance). This is how a
+   * member deleted with the move_objects cheat comes back on the lot.
+   * Returns true when the member had no instance.
+   */
+  createPersonInstance(guid: number): boolean {
+    const sim = this.sim;
+    const lot = this.lotObjects;
+    const v = this.viewer;
+    const p = this.placement;
+    if (!sim || !lot || !v || !p) return false;
+    if (sim.module.persons.some((q) => (q.obj.selector.guid | 0) === (guid | 0))) return false;
+    const sel = lot.folder.selectorByGUID(guid);
+    const obj = sel ? makeNewOutOfWorldObject(p, lot.folder, sel) : null;
+    if (obj) this.placeNewInstance(v, p, obj);
+    v.dirty = true;
+    return true;
   }
 
   /**
