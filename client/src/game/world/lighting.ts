@@ -19,8 +19,12 @@
  * Point lights (light source 1) are positioned on the LightLayer of their
  * level here too (lightmaps.ts); the floors and walls draw their pools.
  *
- * Not ported: the "overhead lights" flag (Room +0x73) and the score part of
- * ComputeRoom.
+ * A room marked by RoomLightingChanged / RoomScoreChanged (a lamp switched
+ * by its tree: Refresh "lighting", GlobalDispatch 0xf2 -> 0xf1) is computed
+ * again by the next RoomManager::UpdateRooms (updateRooms).
+ *
+ * Not ported: the "overhead lights" flag (Room +0x73, Room::SetOverheadLights
+ * from cXPerson::UpdateCurrentRoom) and the score part of ComputeRoom.
  */
 
 import { LightLayer } from "./lightmaps.js";
@@ -94,17 +98,64 @@ export class RoomLighting {
     // Every light is removed then positioned again below; starting from empty
     // also drops lights of objects that left (cXObject's RemoveLight).
     for (const l of this.layers) l.clear();
-    for (const r of this.rooms.inUseRooms()) {
-      const l: RoomLight = { area: 0, windowLight: 0, lampLight: 0, pool: false, ambient: 0 };
-      const first = r.tiles[0];
-      if (first) l.pool = this.fixed.hasPool(first.x, first.y, first.level);
-      for (const t of r.tiles) {
-        this.collectTileStats(r, l, t.x, t.y, t.level);
-        this.collectObjectStats(l, t.x, t.y, t.level);
-      }
-      this.computeRoom(r, l);
-      this.lights.set(r.id, l);
+    for (const r of this.rooms.inUseRooms()) this.computeRoomStats(r);
+    this.dirtyRooms.clear();
+    this.dirtyLevels = 0;
+  }
+
+  /** ComputeRooms for one room: Room::Clear, the pool flag (+0x75), the tile and object stats, Room::ComputeRoom. */
+  private computeRoomStats(r: Room): void {
+    const l: RoomLight = { area: 0, windowLight: 0, lampLight: 0, pool: false, ambient: 0 };
+    const first = r.tiles[0];
+    if (first) l.pool = this.fixed.hasPool(first.x, first.y, first.level);
+    for (const t of r.tiles) {
+      this.collectTileStats(r, l, t.x, t.y, t.level);
+      this.collectObjectStats(l, t.x, t.y, t.level);
     }
+    this.computeRoom(r, l);
+    this.lights.set(r.id, l);
+  }
+
+  /** Room +0x70: the rooms the next ComputeRooms takes again. */
+  private readonly dirtyRooms = new Set<number>();
+  /** RoomManager +0x40: bit 0 = rooms of level 1 are dirty, bit 1 = level 2. */
+  private dirtyLevels = 0;
+
+  /**
+   * RoomManager::RoomLightingChanged (House::DoCommand 0xf1: a lamp's
+   * "set object lighting" Refresh) and RoomScoreChanged (Refresh "room
+   * score"), same body: the room is marked (+0x70) and its level's bit set
+   * in +0x40 (1 for level 1, 2 for level 2).
+   */
+  roomChanged(id: number): void {
+    const r = this.rooms.getRoom(id);
+    if (!r) return;
+    this.dirtyRooms.add(id);
+    this.dirtyLevels |= r.level === 2 ? 2 : 1;
+  }
+
+  /**
+   * RoomManager::UpdateRooms (HouseViewer::PrepareWorldForUpdate, every
+   * frame): +0x40 = 1 / 2 runs ComputeRooms on that level, 3 on all. Its
+   * room loop takes again only the marked rooms in use of the level and
+   * clears their mark; the level's bits are cleared. True when a room's
+   * light (the pool level when it has a pool) changed, which ComputeRooms
+   * signals with GlobalDispatch(0xf1, room): the view is drawn again.
+   */
+  updateRooms(): boolean {
+    const d = this.dirtyLevels;
+    if (d === 0) return false;
+    const level = d === 3 ? 0 : d;
+    this.dirtyLevels = level === 0 ? 0 : d & ~level;
+    let changed = false;
+    for (const r of this.rooms.inUseRooms()) {
+      if ((level !== 0 && r.level !== level) || !this.dirtyRooms.has(r.id)) continue;
+      this.dirtyRooms.delete(r.id);
+      const before = this.roomAmbient(r.id);
+      this.computeRoomStats(r);
+      if (this.roomAmbient(r.id) !== before) changed = true;
+    }
+    return changed;
   }
 
   /** Room::CollectTileStats (area only). */

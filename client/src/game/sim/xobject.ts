@@ -1024,7 +1024,13 @@ export class SimObject extends TreeSim {
     return PRIM_WAIT;
   }
 
-  /** cXObject::TryUpdate (Refresh): who 0 me / 1 stack object; what 0 graphic, 1 UI, 2 room score. */
+  /**
+   * cXObject::TryUpdate (Refresh): who 0 me / 1 stack object; what 0 graphic
+   * (Dirty), 1 lighting (GlobalDispatch(0xf2, id): ObjectModule::DoCommand
+   * dispatches 0xf1 with the object's room, House::DoCommand ->
+   * RoomManager::RoomLightingChanged; what the "set object lighting" global
+   * of the lamps runs), 2 room score (RoomManager::RoomScoreChanged).
+   */
   protected tryUpdate(elem: StackElem, who: number, what: number): number {
     let o: SimObject | null = this;
     if (who === 1) {
@@ -1034,9 +1040,19 @@ export class SimObject extends TreeSim {
       simThrow(3);
     }
     if (what === 0) this.module.dirty(o);
-    else if (what === 1) this.module.record(o, "refreshUI", o.id);
+    else if (what === 1) {
+      this.module.record(o, "refreshLighting", o.id);
+      // ObjectModule::DoCommand(0xf2): GlobalDispatch(0xf1, +0x84) unless the room is -5.
+      const room = o.obj.objectData[OD.roomImpact]!;
+      if (room !== -5) this.module.roomHooks?.roomLightingChanged?.(room & 0xffff);
+    }
     else if (what === 2) {
-      if (o.obj.objectData[OD.roomImpact] !== -5) this.module.record(o, "roomScoreChanged", 0);
+      // RoomManager::RoomScoreChanged(+0x84, the object's room), unless -5.
+      const room = o.obj.objectData[OD.roomImpact]!;
+      if (room !== -5) {
+        this.module.record(o, "roomScoreChanged", room & 0xffff);
+        this.module.roomHooks?.roomScoreChanged?.(room & 0xffff);
+      }
     } else simThrow(3);
     return PRIM_TRUE;
   }

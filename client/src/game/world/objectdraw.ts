@@ -78,6 +78,8 @@ export interface DrawableObject {
   readonly flags?: number;
   /** cXObject::GetRequiredSegment: the wall segment the object needs (world space, absent / 0 = none). */
   readonly requiredSegment?: number;
+  /** +0x114 & 0x1f (cXObject::SetHilite): bit 1 = hilited (absent = 0). */
+  readonly hiliteFlags?: number;
   /** Lighting contribution (+0xb0) on a non-portal: DrawIso draws it at full light (SetMaxAmbient). */
   readonly fullBright?: boolean;
   /** ObjSelector +8: the object's sprite file. */
@@ -150,13 +152,19 @@ function drawObjectSlot(container: DrawableObject, s: SlotContent, viewer: House
   drawIso(s.obj, viewer, comp, q);
 }
 
-/** DrawIso's draw group part. */
+/**
+ * DrawIso's draw group part. Around each item, RenderParam +0x35 (Hilite)
+ * is set from the object's +0x114 bit 1 (the hilite cXObject::SetHilite
+ * keeps there), then restored.
+ */
 function drawGroup(obj: DrawableObject, viewer: HouseViewer, comp: Compositor, rp: RenderParam): void {
   const s = viewer.scale;
   const list = obj.items(obj.graphic, (rp.rotation2 + obj.dir) & 7, s);
   if (!list) return;
   const r = obj.renderer;
   const ambient = comp.ambient;
+  const hilite = rp.hilite;
+  rp.hilite = ((obj.hiliteFlags ?? 0) & 1) !== 0;
   if (obj.fullBright) comp.ambient = 1;
   for (const it of list) {
     const m = obj.spriteMask;
@@ -179,6 +187,7 @@ function drawGroup(obj: DrawableObject, viewer: HouseViewer, comp: Compositor, r
     r.drawShape(comp, q, it.sprId, it.frame, q.sx + it.xOff, q.sy + it.yOff - b.height, it.flags & 0xff);
   }
   comp.ambient = ambient;
+  rp.hilite = hilite;
 }
 
 /**

@@ -293,10 +293,14 @@ export class WinPictureInPicture extends TSWin {
  * the fixed-point world position (cx, cy) at the center of a w x h picture,
  * moved down by -shift (SetOffsets(x, y - shift)), the tool cursor left out.
  *
+ * The view's level is changed the way HouseViewer::SetLevel does when it
+ * differs (WallManager::SetCutaway, cCutawaySet::clear, ResetDynamicCutaway,
+ * RoomManager::ComputeCutaway for the new level, DoDynamicCutaway), and put
+ * back the same way after; the roof is not drawn (+0x51 cleared, restored).
+ *
  * Port: the lot view's own renderer draws the frame with its origin, scale
- * and level swapped (the cutaway is not recomputed for the level), the
- * picture is read from the middle of its canvas, then the view is restored
- * and drawn again for the screen.
+ * and level swapped, the picture is read from the middle of its canvas, then
+ * the view is restored and drawn again for the screen.
  */
 function drawPictureInPicture(
   v: HouseViewer,
@@ -311,14 +315,15 @@ function drawPictureInPicture(
 ): void {
   const n = v.world.fixed.size;
   if (cx >> 4 >= n || cy >> 4 >= n) return;
-  const saved = { originX: v.originX, originY: v.originY, scale: v.scale, level: v.level, cursor: v.cursor };
+  const saved = { originX: v.originX, originY: v.originY, scale: v.scale, level: v.level, cursor: v.cursor, drawRoof: v.drawRoof };
   // Animator::SetPickingObject(0) for the picture (the picked object is cleared), restored after.
   const people = v.people;
   const picking = people?.pickPoint ?? null;
   try {
     if (people) people.pickPoint = null;
     v.scale = scale;
-    v.level = level;
+    v.setLevel(level);
+    v.drawRoof = false;
     v.cursor = null;
     const [fx, fy] = RotatableWorld.rotateCoords(cx, cy, v.world.rotation, 0x400);
     const p = v.tileToPointF(fx, fy, level);
@@ -332,7 +337,8 @@ function drawPictureInPicture(
     v.originX = saved.originX;
     v.originY = saved.originY;
     v.scale = saved.scale;
-    v.level = saved.level;
+    v.setLevel(saved.level);
+    v.drawRoof = saved.drawRoof;
     v.cursor = saved.cursor;
     v.dirty = true;
   }

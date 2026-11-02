@@ -73,10 +73,36 @@ export class SpriteListInfo {
   }
 }
 
+/**
+ * BrightenColor(rgb, scale, offset): RGB -> YIQ, Y * scale + offset, back to
+ * RGB, each channel clamped to [0, 1] (lbl_105BBEAC / lbl_105BBEB0).
+ */
+function brightenColor(r: number, g: number, b: number, scale: number, offset: number): [number, number, number] {
+  const R = r / 255;
+  const G = g / 255;
+  const B = b / 255;
+  const y = scale * (0.114 * B + 0.299 * R + 0.587 * G) + offset;
+  const u = 0.434 * B - 0.146 * R - 0.288 * G;
+  const v = 0.617 * R - 0.517 * G - 0.1 * B;
+  const clamp = (x: number): number => Math.trunc(255 * Math.min(1, Math.max(0, x)) + 0.5);
+  return [clamp(1.136 * v - 0.001 * u + y), clamp(y - 0.396 * u - 0.578 * v), clamp(y + 2.041 * u - 0.002 * v)];
+}
+
+/**
+ * PalWrap::BuildCLUTs: CLUT 1 (+0x620, what DrawShape uses for
+ * RenderParam::Hilite) is BuildSpriteBriteClut(lbl_105BBFC4[0] = 1.0,
+ * LightingParameters +0x18 = 0.09).
+ */
+const SPRITE_BRITE_SCALE = 1.0;
+const SPRITE_BRITE_OFFSET = 0.09;
+
 export class Renderer {
   private readonly lists = new Map<number, SpriteListInfo | null>();
   private readonly palettes = new Map<number, Uint8Array>();
   private readonly textures = new Map<string, SpriteTex | null>();
+  /** PalWrap CLUT 1 (sprite brite) of each palette, and the frames uploaded with it. */
+  private readonly britePalettes = new Map<number, Uint8Array>();
+  private readonly briteTextures = new Map<string, SpriteTex | null>();
 
   constructor(readonly res: ResFile) {}
 
@@ -123,6 +149,23 @@ export class Renderer {
     return p;
   }
 
+  /** PalWrap::BuildSpriteBriteClut of a palette (the sprite brite CLUT, PalWrap +0x620). */
+  britePalette(id: number): Uint8Array {
+    let d = this.britePalettes.get(id);
+    if (!d) {
+      const src = this.palette(id);
+      d = new Uint8Array(src.length);
+      for (let i = 0; i + 2 < src.length; i += 3) {
+        const [r, g, b] = brightenColor(src[i]!, src[i + 1]!, src[i + 2]!, SPRITE_BRITE_SCALE, SPRITE_BRITE_OFFSET);
+        d[i] = r;
+        d[i + 1] = g;
+        d[i + 2] = b;
+      }
+      this.britePalettes.set(id, d);
+    }
+    return d;
+  }
+
   frame(id: number, i: number): SpriteFrame | null {
     return this.getListInfo(id)?.frame(i) ?? null;
   }
@@ -138,16 +181,38 @@ export class Renderer {
     return t;
   }
 
+  /** The frame's texture with the sprite brite CLUT (britePalette). */
+  private briteTexture(comp: Compositor, id: number, i: number): SpriteTex | null {
+    const key = `${id}:${i}`;
+    let t = this.briteTextures.get(key);
+    if (t !== undefined) return t;
+    const f = this.frame(id, i);
+    t = f && f.width > 0 && f.height > 0 ? comp.uploadSprite(f, this.britePalette(f.paletteId)) : null;
+    this.briteTextures.set(key, t);
+    return t;
+  }
+
   /**
    * cRenderer::DrawShape for z-sprites (SpriteListInfo::Render / ZSpriteBlit):
    * top-left at (x, y); depth = rp.depth + vertical[8 << scale] + zLookup[z].
-   * `flags & 1` mirrors the sprite.
+   * `flags & 1` mirrors the sprite. The CLUT: RenderParam::Hilite (+0x35)
+   * takes the sprite brite CLUT (PalWrap +0x620) as is, without
+   * PalWrap::ChooseBestCLUT's ambient level; otherwise the palette at the
+   * ambient level. (Monochrome +0x37, MonochromeDim +0x38 and DeHilite +0x36,
+   * tested first / last, are not set on this path.)
    */
   drawShape(comp: Compositor, rp: RenderParam, id: number, i: number, x: number, y: number, flags: number): void {
-    const tex = this.texture(comp, id, i);
+    const tex = rp.hilite ? this.briteTexture(comp, id, i) : this.texture(comp, id, i);
     if (!tex) return;
     const zb = rp.zbuf;
     const base = rp.depth + zb.verticalAt(rp.scale, rp.depthRow - rp.depthRow + (8 << rp.scale));
+    if (!rp.hilite) {
+      comp.drawZSprite(tex, x, y, (flags & 1) !== 0, base, rp.zLookupIndex);
+      return;
+    }
+    const ambient = comp.ambient;
+    comp.ambient = 1;
     comp.drawZSprite(tex, x, y, (flags & 1) !== 0, base, rp.zLookupIndex);
+    comp.ambient = ambient;
   }
 }

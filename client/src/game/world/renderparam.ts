@@ -5,7 +5,7 @@
  *
  * Field map (RenderLoc floats): [0] x, [1] y, [2] z (altitude units),
  * [3] level, [4] screen x, [5] screen y; RenderParam +0x1c rotation * 2,
- * +0x20 scale, +0x24 depth row, +0x28 depth, +0x44 ZBufferLookup.
+ * +0x20 scale, +0x24 depth row, +0x28 depth, +0x35 hilite, +0x44 ZBufferLookup.
  */
 
 import type { HouseViewer } from "./houseviewer.js";
@@ -25,6 +25,8 @@ export class RenderParam {
   depth = 0;
   /** Ambient light level (1 = full; lighting is not ported yet). */
   ambient = 1;
+  /** +0x35 (RenderParam::Hilite): cXObject::DrawIso sets it from the object's +0x114 bit 1. */
+  hilite = false;
 
   constructor(
     readonly viewer: HouseViewer,

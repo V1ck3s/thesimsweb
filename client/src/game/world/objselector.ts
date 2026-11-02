@@ -156,7 +156,7 @@ export function getSubIndex(x: number, y: number): number {
  * ShadowID::GenerateLookups (lbl_105BA340): a neighbour mask is a valid
  * multi-tile shadow id unless one of its four corners is a 2, 4 or 6 pattern.
  */
-const SHADOW_VALID = (() => {
+export const SHADOW_VALID = (() => {
   const t = new Uint8Array(256);
   for (let u = 0; u < 256; u++) {
     const c0 = ((u >> 2) & 4) + (u & 1) + (u & 0x80 ? 2 : 0);

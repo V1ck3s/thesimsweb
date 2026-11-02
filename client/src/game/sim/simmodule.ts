@@ -264,8 +264,15 @@ export class SimModule {
     livePIP(): boolean;
     pictureInPicture(o: SimObject, a: { open: boolean; window: boolean; ms: number; arg3: number; arg2: number; flag4: boolean; snapshot: boolean; caption: string }): void;
   } | null = null;
-  /** RoomManager::GetRoom for cXObject::InterpValue's scope 23 (the lot view's rooms and lighting). */
-  roomHooks: { room(id: number): { ambient: number; outside: boolean; level: number; area: number } | null } | null = null;
+  /**
+   * RoomManager::GetRoom for cXObject::InterpValue's scope 23 (the lot view's rooms and lighting),
+   * and RoomManager::RoomLightingChanged / RoomScoreChanged(room) for cXObject::TryUpdate.
+   */
+  roomHooks: {
+    room(id: number): { ambient: number; outside: boolean; level: number; area: number } | null;
+    roomLightingChanged?(id: number): void;
+    roomScoreChanged?(id: number): void;
+  } | null = null;
   /**
    * Neighborhood::GetNumCharacters: the neighbors whose definition comes from
    * the neighborhood's Characters folder (Neighbor::IsCharacter). Set by the

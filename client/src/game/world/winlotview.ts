@@ -48,6 +48,7 @@ import { G, Simulator } from "../sim/simulator.js";
 import { animSoundEnv } from "../sim/animsound.js";
 import type { WorldHooks } from "../sim/simmodule.js";
 import { SimObject } from "../sim/xobject.js";
+import { EP, ObjFnTable } from "../sim/objfntable.js";
 import type { MenuItem, PersonSim } from "../sim/person.js";
 import { PDX } from "../sim/person.js";
 import { buildPersonBtn } from "../cpanel/live/peoplebuttons.js";
@@ -374,6 +375,8 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
       if (st.getMode() !== mode && (st.getMode() === Mode.Options || st.getMode() === Mode.Camera)) this.setToolCursor(0);
       mode = st.getMode();
       sel = st.selectedIndex();
+      // Leaving live mode deselects its tool: cObjPickerTool::Deselect -> SetHiliteObject(0).
+      if (mode !== Mode.Live) this.setHiliteObject(0, null);
       cut.onModeChange();
     });
     cut.doDynamicCutaway(false);
@@ -1437,6 +1440,8 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
         if (this.viewer) this.viewer.dirty = true;
       };
       sim.module.onKill = (o): void => {
+        // cObjPickerTool::DeletingObject: the hilite goes with its object (SetHiliteObject(0)).
+        if (o.id === this.liveHilite) this.setHiliteObject(0, null);
         o.obj.objectData[34] = 1;
         if (this.viewer) this.viewer.dirty = true;
       };
@@ -1468,7 +1473,11 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
       // Neighborhood::GetNumCharacters for ObjectModule::AddObject's primitive limit.
       sim.module.numCharacters = (sim.module.nbhd?.neighbors ?? []).filter((n) => lot.folder.sourceOfGUID(n.guid) === 1).length;
       sim.module.updatePrimitiveLimit();
-      sim.module.roomHooks = { room: (id) => this.lighting?.roomInfo(id) ?? null };
+      sim.module.roomHooks = {
+        room: (id) => this.lighting?.roomInfo(id) ?? null,
+        roomLightingChanged: (id) => this.lighting?.roomChanged(id),
+        roomScoreChanged: (id) => this.lighting?.roomChanged(id),
+      };
       sim.module.userEventHooks = {
         livePIP: () => getOptionsMgr().getLivePIP(),
         pictureInPicture: (o, a) => {
@@ -1702,10 +1711,12 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
     this.updateHouseStats(nowMs);
     // cDDDSimsView::Draw -> UpdateActionIcons.
     this.actionIcons.update(this.sim ? this.selectedPerson() : null, !!this.sim && this.ctx.state.getMode() === Mode.Live, nowMs);
-    this.edge?.pump(nowMs);
+    this.edge?.pump(nowMs, winMgr.cursorInside);
     this.viewer?.pump(nowMs);
     this.cutaway?.updateWorld();
     this.updateTimeOfDay();
+    // HouseViewer::PrepareWorldForUpdate: RoomManager::UpdateRooms (a changed room light dispatches 0xf1: redraw).
+    if (this.lighting?.updateRooms() && this.viewer) this.viewer.dirty = true;
     if (this.sim && this.viewer) {
       this.sim.syncFromState();
       this.sim.simulate(nowMs);
@@ -1874,6 +1885,57 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
   private liveHiliteAvail = false;
 
   /**
+   * cObjPickerTool::SetHiliteObject(id): when `id` is not the hilite
+   * (+0x2e), the old hilite object loses +0x114 bits 1 and 8; BuildTreeList
+   * makes the selected person's interactions on the new object (on its
+   * interaction leader here, as TryClick's ObjTestSim); with entries, the
+   * first entry's object gets bit 1 (drawn brightened by DrawIso) and
+   * becomes the hilite, otherwise the object itself gets bit 8 (no look).
+   */
+  private setHiliteObject(id: number, person: PersonSim | null): void {
+    const sim = this.sim;
+    if (!sim || id === this.liveHilite) return;
+    const old = this.liveHilite ? sim.module.getObject(this.liveHilite) : null;
+    if (old) {
+      this.setHilite(old.obj, old.obj.objFlags & 0x1e);
+      this.setHilite(old.obj, old.obj.objFlags & 0x17);
+    }
+    let target = id ? sim.module.getObject(id) : null;
+    let entries = 0;
+    if (target) {
+      const leader = target.getInteractionLeader();
+      entries = person ? person.menuItemsFor(leader).length : 0;
+      let bit = 8;
+      if (entries > 0) {
+        bit = 1;
+        target = leader;
+      }
+      id = target.id;
+      this.setHilite(target.obj, bit | (target.obj.objFlags & 0x1f));
+    }
+    this.liveHilite = id;
+    this.liveHiliteAvail = entries > 0;
+  }
+
+  /**
+   * cXObject::SetHilite: +0x114 bits 0..4 become `flags`. A multi-tile
+   * object (OBJD master id) that is not dynamic (cXMTObject::IsDynamic: no
+   * entry point 8) sets every part of its chain from the lead. A changed
+   * object goes to the dynamic layer (SetRenderLayer(1) on the top of its
+   * placement hierarchy) so that it is drawn again: this port re-renders the
+   * whole view, the layer move stands as a redraw.
+   */
+  private setHilite(obj: XObject, flags: number): void {
+    const p = this.placement;
+    const parts = p && obj.selector.objd.masterId !== 0 && ObjFnTable.forSelector(obj.selector).getTreeID(EP.dynamicMultiTileUpdate) === 0 ? p.chain(obj) : [obj];
+    for (const o of parts) {
+      if ((o.objFlags & 0x1f) === (flags & 0x1f)) continue;
+      o.objFlags = (o.objFlags & ~0x1f) | (flags & 0x1f);
+      if (this.viewer) this.viewer.dirty = true;
+    }
+  }
+
+  /**
    * cObjPickerTool::Float (Live mode): the object under the mouse
    * (HouseViewer::PointToObjectID, on the current level) becomes the hilite
    * (SetHiliteObject builds its interaction list for the selected person);
@@ -1882,7 +1944,7 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
    * 0xFC697613), an object LiveObjectAvail when the selected person has
    * interactions on it, else LiveObjectUnavail; nothing is LiveNothing
    * (LiveNothingPet with a pet selected), or LiveObjectUnavail off the lot's
-   * edge. The hilite drawing (cXObject::SetHilite) is not ported.
+   * edge.
    */
   private liveFloat(x: number, y: number): void {
     const sim = this.sim;
@@ -1897,10 +1959,8 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
     if (people) people.pickPoint = person ? { x, y } : null;
     const id = person ? this.pickedPersonId(pointToObjectId(v, p, (r) => lot.renderer(r), x, y, v.level || 1, PickMode.Any, people ? (o) => people.screenRect(o, v) : null, sim.globals[G.modeFreeze])) : 0;
     const target = id ? sim.module.getObject(id) : null;
-    if ((target?.id ?? 0) !== this.liveHilite) {
-      this.liveHilite = target?.id ?? 0;
-      this.liveHiliteAvail = !!(person && target && person.menuItemsFor(target.getInteractionLeader()).length > 0);
-    }
+    // Float: an object hidden by +0x8e is no hilite.
+    this.setHiliteObject(target && target.obj.hidden === 0 ? target.id : 0, person);
     if (!target) {
       this.tip = null;
       const t = v.pointToWholeTile(x, y, v.level || 1);
