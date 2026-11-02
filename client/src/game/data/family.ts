@@ -1,9 +1,11 @@
 /**
  * Builds the CPState view of a family from the neighborhood save: members,
- * person data, faces and relationships, plus the neighbors they know.
+ * person data, faces and relationships, plus the neighbors they know (the
+ * faces through PersonFinder's selector, cas/personpictures.ts).
  * Motives are live simulation state (stored with the lot), left neutral here.
  */
 
+import { neighborSelector, personBitmap } from "../cas/personpictures.js";
 import type { CPState, PersonInfo } from "../cpstate.js";
 import { decodeImage } from "../res/bmp.js";
 import {
@@ -23,13 +25,15 @@ async function bitmap(bytes: Uint8Array | undefined): Promise<ImageBitmap | null
 }
 
 export async function personFromNeighbor(n: NeighborhoodData, nb: Neighbor, lastName: string): Promise<PersonInfo> {
-  const c = await loadCharacter(n.dir, nb.name).catch(() => null);
+  // PersonFinder's selector of the person: the NPCs of GameData/Objects/People have no file in Characters/.
+  const [c, sel] = await Promise.all([loadCharacter(n.dir, nb.name).catch(() => null), neighborSelector(n.dir, nb.guid)]);
   const pd = nb.personData ?? new Int16Array(256);
   const age = pd[PD.personAge] ?? 0;
   return {
     id: nb.id,
     guid: nb.guid,
-    firstName: c?.firstName ?? nb.name,
+    // PersonFinder::GetName: the selector's catalog name.
+    firstName: c?.firstName ?? sel?.getCatalogName() ?? nb.name,
     lastName,
     motives: new Array<number>(16).fill(0),
     skills: [PD.cookingSkill, PD.mechanicalSkill, PD.charismaSkill, PD.bodySkill, PD.logicSkill, PD.creativitySkill].map(
@@ -40,8 +44,9 @@ export async function personFromNeighbor(n: NeighborhoodData, nb: Neighbor, last
     isFemale: pd[PD.gender] === 1,
     personData: pd,
     neighborId: nb.id,
-    face: await bitmap(c?.bitmaps.get(2002)),
-    relFace: await bitmap(c?.bitmaps.get(2003)),
+    // PersonFinder::GetPictureBuffer / GetRelPictureBuffer.
+    face: await bitmap((sel ? await personBitmap(sel, 2002) : null) ?? c?.bitmaps.get(2002)),
+    relFace: await bitmap((sel ? await personBitmap(sel, 2003) : null) ?? c?.bitmaps.get(2003)),
     relationships: nb.relationships,
     bio: c?.bio ?? "",
   };

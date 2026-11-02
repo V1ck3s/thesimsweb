@@ -38,14 +38,16 @@
  *    face (45 x 45) at (10, 10);
  *  - GetSelected: 0 when cancelled, else the selected neighbor id.
  *
- * Port: the object selector and PersonFinder lookups are the neighbor's
- * character file: its first name is the person's catalog name, and
- * PersonFinder::GetPictureBuffer's picture is BuildPersonBtn(BMP_ 2002,
- * kPeopleTemplate), of which TSPaint shows the first 45 x 45 cell.
+ * Port: the person's name is its selector's catalog name
+ * (ObjSelector::GetCatalogName) and PersonFinder::GetPictureBuffer's picture
+ * is BuildPersonBtn of the selector's BMP_ 2002 (cas/personpictures.ts, which
+ * renders it when the file has none), of which TSPaint shows the first
+ * 45 x 45 cell.
  */
 
 import type { GameContext } from "../context.js";
-import { loadCharacter, PD, type Family, type Neighbor, type NeighborhoodData } from "../data/neighborhood.js";
+import { neighborSelector, personBitmap } from "../cas/personpictures.js";
+import { PD, type Family, type Neighbor, type NeighborhoodData } from "../data/neighborhood.js";
 import { buildPersonBtn } from "../cpanel/live/peoplebuttons.js";
 import { decodeImage } from "../res/bmp.js";
 import type { FfnFont } from "../res/ffn.js";
@@ -172,7 +174,7 @@ export class WinPhoneBook extends TSWinDlg {
     return this.people.get(guid >>> 0);
   }
 
-  /** Loads the character file of every family member and of the caller (the selector / PersonFinder lookups). */
+  /** ObjectFolder::GetSelectorByGUID + PersonFinder::GetPictureBuffer for every family member and the caller. */
   private async loadPeople(): Promise<void> {
     const template = await this.ctx.res.image("kPeopleTemplate");
     const guids = new Set<number>();
@@ -181,11 +183,10 @@ export class WinPhoneBook extends TSWinDlg {
     if (caller) guids.add(caller.guid >>> 0);
     await Promise.all(
       [...guids].map(async (guid) => {
-        const n = this.findNeighborByGUID(guid);
-        if (!n) return;
-        const c = await loadCharacter(this.nb.dir, n.name).catch(() => null);
-        if (!c) return;
-        this.people.set(guid, { name: c.firstName, picture: await loadPicture(c.bitmaps.get(2002), template).catch(() => null) });
+        const sel = await neighborSelector(this.nb.dir, guid);
+        if (!sel) return;
+        const bytes = await personBitmap(sel, 2002);
+        this.people.set(guid, { name: sel.getCatalogName(), picture: await loadPicture(bytes ?? undefined, template).catch(() => null) });
       }),
     );
   }

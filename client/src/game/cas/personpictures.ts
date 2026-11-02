@@ -17,6 +17,7 @@
 
 import { blankHeadIds } from "../data/neighborhood.js";
 import { loadStringSet } from "../sim/behavior.js";
+import { ObjectFolder } from "../world/objectfolder.js";
 import type { ObjSelector } from "../world/objselector.js";
 
 /** Rendered pictures by person GUID (GenerateBitmaps' results). */
@@ -55,4 +56,14 @@ export async function personSelector(from: ObjSelector, guid: number): Promise<O
   const folder = from.folder as typeof from.folder & { getSelectorByGUID?(guid: number): Promise<ObjSelector | null> };
   if (folder.getSelectorByGUID) return folder.getSelectorByGUID(guid).catch(() => null);
   return folder.selectorByGUID?.(guid) ?? null;
+}
+
+/**
+ * PersonFinder::GetHandle(guid) + its selector (PersonFinder entry +8,
+ * ObjectFolder::GetSelectorByGUID through the app's folder) for a
+ * neighborhood: the person's own file, in Characters/ or GameData/Objects.
+ */
+export async function neighborSelector(userDir: string, guid: number): Promise<ObjSelector | null> {
+  const folder = await ObjectFolder.get(userDir);
+  return folder.getSelectorByGUID(guid).catch(() => null);
 }
