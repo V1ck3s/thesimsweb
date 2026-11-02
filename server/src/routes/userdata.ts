@@ -46,9 +46,11 @@ export async function registerUserDataRoute(
     prefix: OVERLAY_PREFIX,
     decorateReply: false,
     acceptRanges: true,
-    // Saved files change: never let the browser reuse a stale copy.
+    // Saved files change: never let the browser reuse a stale copy (without a
+    // Cache-Control header browsers may reuse it heuristically, from Last-Modified).
     cacheControl: false,
     etag: true,
+    setHeaders: (res) => res.setHeader("cache-control", "no-cache"),
   });
 
   const target = (path: string): string | null => {
@@ -57,7 +59,8 @@ export async function registerUserDataRoute(
     return full && WRITABLE.test(full.slice(overlayDir.length + 1).split(sep).join("/")) ? full : null;
   };
 
-  // Bodies arrive as Buffers through the application/octet-stream parser of routes/saves.ts.
+  // Raw bytes content type so PUT bodies arrive as Buffers.
+  app.addContentTypeParser("application/octet-stream", { parseAs: "buffer" }, (_req, body, done) => done(null, body));
   app.put("/api/files/*", { bodyLimit: 128 * 1024 * 1024 }, async (req, reply) => {
     const path = (req.params as { "*": string })["*"];
     const full = target(path);
