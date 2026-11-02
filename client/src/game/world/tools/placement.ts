@@ -95,6 +95,10 @@ export interface ObjectBehaviorHooks {
   onKill?(obj: XObject): void;
   /** The person data (cXPerson +0x58c) of a person object, null for others. */
   personData?(obj: XObject): Int16Array | null;
+  /** cSimulator +0x36 (global 19, the mode freeze: 0 Live, 1 Build, 2 Buy); 0 when missing. */
+  modeFreeze?(): number;
+  /** GlobalDispatch(0xf3, room): an object with a room impact changed rooms (House::DoCommand -> RoomManager::RoomScoreChanged). */
+  roomChanged?(room: number): void;
 }
 
 /** FTilePt (fixed point, world space). */
@@ -196,6 +200,22 @@ export class Placement {
     if (this.outOfGrid(x, y) || level < 1 || level > 2) return;
     const a = this.world.flags[level - 1]!;
     a.data[a.offset(x, y)] = v & 0xff;
+  }
+
+  /**
+   * cXObject::GetObstacleAtLocation (100c0a00): the first object of the
+   * tile's list (the tile object, then slot 0 down) in the way; an object
+   * is not when flags 0x4 is set and 0x2 clear, or 0x4 clear and 0x10 set.
+   * Levels 1 and 2 only.
+   */
+  obstacleAtLocation(at: FPt, level: number): XObject | null {
+    for (let o = this.get(this.tileObjectId(tileOf(at.fx), tileOf(at.fy), level)), guard = 0; o && guard < 256; guard++) {
+      const f = Placement.uod(o, OD.flags);
+      const clear = f & 4 ? !(f & 2) : !!(f & 0x10);
+      if (!clear) return o;
+      o = this.get(o.objectSlots[0]?.containedId ?? 0);
+    }
+    return null;
   }
 
   /** ObjectIterator(House, tile): every object of the tile's hierarchy, depth first. */
@@ -341,8 +361,14 @@ export class Placement {
     obj.fy = p.fy;
     obj.level = level;
     obj.rect = this.computeRect(obj, p);
-    // ResolveRoomID into object data 29 (the room-changed dispatch 0xf3 is not ported).
-    Placement.setOd(obj, 29, resolveRoomID(this.world, p.fx, p.fy, level));
+    // ResolveRoomID into object data 29; an object with a room impact (object data 7) tells the old and the new room (0xf3).
+    const old = Placement.od(obj, 29);
+    const room = resolveRoomID(this.world, p.fx, p.fy, level);
+    Placement.setOd(obj, 29, room);
+    if (old !== room && Placement.od(obj, 7) !== 0) {
+      this.hooks.roomChanged?.(old);
+      this.hooks.roomChanged?.(room);
+    }
     if (depth > 64) return;
     for (const s of obj.objectSlots.slice(1)) {
       const c = this.get(s.containedId);
@@ -511,7 +537,17 @@ export class Placement {
     }
     const n = c.objectSlots.length;
     const height = slot.height;
-    // Simulator +0x36 (a sim global the build/buy modes set) is not ported: taken as 0.
+    // Simulator +0x36 (global 19): in buy mode an object goes only in the (0, 0) slot of a container with
+    // several slots (unless flag 0x2000); people's hands take nothing outside live mode.
+    const freeze = this.hooks.modeFreeze?.() ?? 0;
+    if (notPerson && !(flags & 0x2000) && freeze === 2 && (slot.x !== 0 || slot.y !== 0) && n - 1 > 1) {
+      this.error = 3;
+      return null;
+    }
+    if (c.selector.objd.objectType === TYPE_PERSON && freeze !== 0) {
+      this.error = 0xd;
+      return null;
+    }
     for (let i = n - 2; i >= 0; i--) {
       const other = c.objectSlots[i + 1]!;
       if (other.height !== height || other.containedId === 0 || other.containedId === obj.objectId) continue;

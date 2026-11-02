@@ -9,15 +9,26 @@
  * button is down), button down -> Click, button up -> Release, plus
  * OnKeyDown / OnChar and OnEnterWorld / OnExitWorld.
  *
+ * The held object has an ObjectUndoable (+0x30, objectundo.ts): a new
+ * purchase's (create) or a picked-up object's (move). DropObject submits
+ * it to cGameTools' UndoManager (+0x2c); Deselect turns a held object into
+ * a delete; Cancel (Esc) takes a picked-up object back with
+ * UndoLastCommand.
+ *
  * Stairs (mode 5): FixFloorForStairs floors (or unfloors) the tiles the
  * stairs need when they do not fit as they are; the change is the held
  * object undoable's post sub-undoable, taken back on the next Float
  * (FlushPostSubUndoables) and kept when the stairs are dropped.
  *
- * Not ported: the undo manager (ObjectUndoable; Esc restores a picked-up
- * object to where it was instead of undoing), object hilites (SetHilite),
- * the flip cursor of portals (+0x7a), the ctrl-delete branch of doors and
- * windows.
+ * Doors and windows (modes 3 / 4): with Ctrl held (+0x79) the tool deletes
+ * the door (window) under the mouse on release instead of placing; the
+ * cursor is the delete cursor and the cutaway opens around the hilited
+ * one (AdjustCutawayForTool).
+ *
+ * Not drawn: object hilites (SetHilite; the id is kept). FlipPortal and its
+ * cursor (0x23) are unreachable in both builds: Float (1016f3c0, Windows
+ * 485bb5) clears +0x7a and +0xac and nothing sets them, so they are not
+ * ported.
  */
 
 import type { HouseViewer } from "../houseviewer.js";
@@ -30,10 +41,14 @@ import { RotatableWorld } from "../world.js";
 import { getFrontDirection, XCursorObject } from "./cursorobject.js";
 import { killObject, makeNewOutOfWorldObject } from "./objectfactory.js";
 import { pointToObjectId, PickMode } from "./picking.js";
-import { Placement, tileOf, type FPt, type PlacementSpec } from "./placement.js";
+import { Placement, tileOf, type FPt } from "./placement.js";
 import { FloorUndoable, type FloorUndoTool } from "./floorundo.js";
 import { tileIsFloorable, tileIsUnfloorable } from "./floortool.js";
+import { ObjectAction, ObjectUndoable } from "./objectundo.js";
+import type { UndoManager } from "./undo.js";
 import { setFloor } from "./worldedit.js";
+import { adjustCutawayForTool, type CutawayTool } from "../cutaway.js";
+import type { CutawayMask } from "../walls.js";
 import type { DisposeItem } from "../../cpstate.js";
 
 /** cMoveTool+0x34. */
@@ -94,6 +109,8 @@ export interface MoveToolHost {
   personRect?(o: XObject): [number, number, number, number] | null;
   /** Global 19 (the mode freeze: 0 Live, 1 Build, 2 Buy) PointToObjectID reads. */
   modeFreeze?(): number;
+  /** cSimulator +0x44 (global 26): the tutorial lot (keep-buying products are bought one at a time there). */
+  tutorialLot?(): boolean;
   /** cSimulator::GetFunds / Spend. */
   getFunds(): number;
   spend(amount: number, expense?: number): void;
@@ -122,17 +139,11 @@ export interface MoveToolHost {
   invalidate(): void;
 }
 
-/** Where a picked-up object came from (for Esc). */
-interface OrigSite {
-  obj: XObject;
-  at: FPt;
-  level: number;
-  dir: number;
-  container: XObject | null;
-  slot: number;
-}
-
-export class MoveTool implements FloorUndoTool {
+export class MoveTool implements FloorUndoTool, CutawayTool {
+  /** +0x2c: cGameTools' UndoManager (set by the lot view with the build tools). */
+  undoManager: UndoManager | null = null;
+  /** +0x30: the held object's undoable. */
+  private objUndo: ObjectUndoable | null = null;
   /** +0x34 */
   mode: number = MoveMode.Hand;
   /** +0x3c */
@@ -167,6 +178,8 @@ export class MoveTool implements FloorUndoTool {
   expenseType = 6;
   /** cTool +0x24: doors and windows open the dynamic cutaway around the cursor. */
   adjustsCutaway = false;
+  /** +0x79: Ctrl is down in the door / window lists (ctrl-delete). */
+  private ctrlDelete = false;
   /** +0x7b: the button is down with an object (drag rotates); +0x7c: rotation quadrant. */
   private mouseRotate = false;
   private rotateDir = -1;
@@ -195,11 +208,8 @@ export class MoveTool implements FloorUndoTool {
   private mouseY = 0;
   /** cTool +0..+0x18: time of the last play of each tool sound (400 ms apart). */
   private readonly soundTimes = new Map<string, number>();
-  private orig: OrigSite | null = null;
   /** +0x4c: the hilited object (kept for the hand's hover; hilites are not drawn). */
   hiliteId = 0;
-  /** FixFloorForStairs' FloorUndoable, the post sub-undoable of the held object's undoable (+0x30). */
-  private stairFloor: FloorUndoable | null = null;
   /** lbl_105BA4B8: floors changed since the last room computation. */
   floorsChanged = false;
 
@@ -288,8 +298,8 @@ export class MoveTool implements FloorUndoTool {
     if (sel !== this.selector) {
       this.selector = sel;
       this.expenseType = sel && sel.objd.i16(0x8a) !== 0 ? 7 : 6;
-      // CPState +0x44 == 0: the simulator's "not in a community lot" check is assumed.
-      if (sel && sel.objd.i16(0xc0) === 1) this.keepBuying = true;
+      // OBJD +0xc0 == 1 keeps buying, but not on the tutorial lot (cSimulator +0x44, global 26).
+      if (sel && sel.objd.i16(0xc0) === 1 && !this.host.tutorialLot?.()) this.keepBuying = true;
     }
     this.grabV = 0;
     this.grabH = 0;
@@ -313,6 +323,9 @@ export class MoveTool implements FloorUndoTool {
     this.cursor = c;
     c.faceDirection(this.frontDir);
     this.price = c.getFloaterPrice();
+    this.objUndo = new ObjectUndoable(this.p, this.host.folder, obj.objectId, ObjectAction.Create, this.price, this);
+    this.objUndo.addRef();
+    if (this.mode === MoveMode.Door || this.mode === MoveMode.Window || this.mode === MoveMode.Stair) this.resetGrabPoint();
     this.inWorld = false;
     this.validFeedback = false;
     this.lastValidFeedback = false;
@@ -328,9 +341,9 @@ export class MoveTool implements FloorUndoTool {
   private updateCursor(): void {
     const set = this.host.setToolCursor;
     if (!set) return;
-    const ctrlDelete = !!this.host.ctrlDown?.() && (this.mode === MoveMode.Door || this.mode === MoveMode.Window);
+    this.readCtrl();
     let id: number;
-    if (this.buildItem && ctrlDelete) id = 6;
+    if (this.buildItem && this.ctrlDelete) id = 6;
     else if (this.cantGrab) id = 0xc;
     else if (!this.cursor) id = 10;
     else if (this.mouseRotate) id = ROTATE_CURSORS[this.rotateDir] ?? 0xc;
@@ -338,45 +351,67 @@ export class MoveTool implements FloorUndoTool {
     set.call(this.host, id);
   }
 
+  /** _GetKeyState(VK_CONTROL) in the door / window lists: +0x79. */
+  private readCtrl(): void {
+    this.ctrlDelete = !!this.host.ctrlDown?.() && (this.mode === MoveMode.Door || this.mode === MoveMode.Window);
+  }
+
   /**
-   * cMoveTool::Deselect: the cursor goes away. A new purchase that was not
-   * placed is destroyed; a picked-up object still held is deleted (the
-   * original submits it as a delete undoable; the refund was already given).
+   * cMoveTool::ResetGrabPoint (1016d1f0): doors and windows take a grab
+   * offset by zoom and facing from lbl_105BA53C..48 (Windows 0x6e5770..7c),
+   * which nothing writes: zero, like every other object.
+   */
+  private resetGrabPoint(): void {
+    if (!this.cursor) return;
+    this.grabV = 0;
+    this.grabH = 0;
+  }
+
+  /**
+   * cMoveTool::Deselect (1016d520): the cursor lets go of the floater. A
+   * picked-up object's undoable becomes a delete and is submitted (the
+   * object stays as it is: Cancel undoes it, the sale refunded it); a new
+   * purchase is picked up and goes with its undoable (ObjectState::
+   * RemoveEntry kills an object out of the world).
    */
   deselect(): void {
     const c = this.cursor;
-    // The held object's undoable goes with its stairs floors (they stay only with DropObject).
-    this.flushStairFloor();
     if (c) {
-      const f = c.floater;
-      c.pickup(true);
-      if (f) killObject(this.p, f);
+      const u = this.objUndo;
+      if (u) {
+        if (!this.newPurchase) {
+          u.setAction(ObjectAction.Delete);
+          this.undoManager?.submitUndoable(u);
+        } else {
+          c.pickup(true);
+        }
+        this.objUndo = null;
+        u.release();
+      }
       c.detachFloater();
     }
     this.cursor = null;
-    this.orig = null;
     this.hiliteId = 0;
     this.stopDisposing();
     this.host.invalidate();
     this.updateCursor();
   }
 
-  /** cMoveTool::Cancel (Esc): a picked-up object goes back where it was (UndoLastCommand). */
+  /**
+   * cMoveTool::Cancel (1016d3e0, Esc): the held object's post sub-undoables
+   * go (FlushPostSubUndoables); a picked-up object, deleted by Deselect with
+   * no refund, comes back where it was (UndoLastCommand, ReleaseRedoList).
+   */
   cancel(): void {
-    this.flushStairFloor();
+    this.objUndo?.flushPostSubUndoables();
     const c = this.cursor;
-    if (!this.newPurchase && c?.anchor && this.orig) {
-      const o = this.orig;
-      c.pickup(true);
-      c.detachFloater();
-      const head = this.p.chain(o.obj)[0]!;
-      for (let i = 0; i < 8 && o.obj.dir !== o.dir; i++) this.p.turnObject(head, 1);
-      this.p.assignOffsets(head);
-      for (const part of this.p.chain(head)) part.simFlags |= 1;
-      this.p.userPlace(o.obj, o.at, o.level, o.container, o.slot);
-      this.orig = null;
-    }
+    const back = !this.newPurchase && !!c?.anchor;
+    if (this.objUndo && back) this.objUndo.value = 0;
     this.deselect();
+    if (back && this.undoManager) {
+      this.undoManager.undoLastCommand();
+      this.undoManager.releaseRedoList();
+    }
     this.selector = null;
     this.mode = MoveMode.Hand;
     this.clicked = false;
@@ -407,6 +442,50 @@ export class MoveTool implements FloorUndoTool {
     this.cursor?.pickup(true);
     this.resetTip();
     this.host.invalidate();
+  }
+
+  /**
+   * cMoveTool::AdjustCutawayForTool (1016b270; HouseViewer::DoDynamicCutaway's
+   * tool hook, vtable +0x48): for doors and windows the tile given is not
+   * used; the cut goes around the held object: its part furthest down the
+   * view (largest x or y), each part at its floater's tile (the hilited
+   * object's during a ctrl-delete; the cursor's own tile when the floater is
+   * off the lot), then cTool::AdjustCutawayForTool there.
+   */
+  adjustCutawayForTool(_t: { x: number; y: number; level: number }, mask: CutawayMask): void {
+    const c = this.cursor;
+    if (!this.adjustsCutaway || !c) return;
+    const w = this.host.viewer.world;
+    const size = this.p.world.size;
+    const best = { x: 0, y: 0, level: this.level() };
+    const hilited = this.buildItem && this.ctrlDelete ? this.p.get(this.hiliteId) : null;
+    for (const part of c.parts()) {
+      let x: number;
+      let y: number;
+      let level: number;
+      if (hilited) {
+        x = hilited.tileX;
+        y = hilited.tileY;
+        level = hilited.level;
+      } else {
+        x = tileOf(part.obj ? part.obj.fx : -16);
+        y = tileOf(part.obj ? part.obj.fy : -16);
+        level = part.obj ? part.obj.level : c.level;
+      }
+      if (x < 1 || x >= size - 1 || y < 1 || y >= size - 1) {
+        x = tileOf(c.headFx + part.ox * 16);
+        y = tileOf(c.headFy + part.oy * 16);
+        level = c.level + part.ol;
+      }
+      if (x < 1 || x >= size - 1 || y < 1 || y >= size - 1) continue;
+      const [vx, vy] = w.toView(x, y);
+      if (best.x < vx || best.y < vy) {
+        best.x = vx;
+        best.y = vy;
+        best.level = level;
+      }
+    }
+    if (w.inInterior(best.x, best.y)) adjustCutawayForTool(this, w, best, mask);
   }
 
   // --- tips -----------------------------------------------------------------------
@@ -497,7 +576,15 @@ export class MoveTool implements FloorUndoTool {
   private floatTool(px: number, py: number): void {
     this.mouseX = px;
     this.mouseY = py;
+    this.readCtrl();
     const c = this.cursor;
+    if (this.buildItem && this.ctrlDelete) {
+      // Ctrl-delete: the cursor goes, the door (window) under the mouse is hilited.
+      if (c?.inWorld) c.pickup(true);
+      this.hiliteId = this.objectUnder(px, py, this.mode === MoveMode.Door ? PickMode.Flag8000 : PickMode.Flag4000);
+      this.host.invalidate();
+      return;
+    }
     if (!c) {
       const id = this.objectUnder(px, py);
       if (id === 0) {
@@ -522,7 +609,7 @@ export class MoveTool implements FloorUndoTool {
     this.floatH = px;
     this.floatV = py;
     // The previous Float's stairs floors go (FlushPostSubUndoables), then back where it was, maybe rotated by a drag.
-    this.flushStairFloor();
+    this.objUndo?.flushPostSubUndoables();
     c.place(last, level, slot);
     if (this.mouseRotate) {
       const dh = this.floatH - this.clickH;
@@ -539,7 +626,7 @@ export class MoveTool implements FloorUndoTool {
         }
         if (!this.cursorValid() && this.mode === MoveMode.Stair && this.fixFloorForStairs()) {
           if (c.canPlace(last, level, null)) c.place(last, level, 0);
-          if (!this.cursorValid()) this.flushStairFloor();
+          if (!this.cursorValid()) this.objUndo?.flushPostSubUndoables();
         }
         if (c.canPlace(last, level, null)) c.place(last, level, slot);
         this.updatePlacementFeedback();
@@ -578,7 +665,7 @@ export class MoveTool implements FloorUndoTool {
           if (!this.cursorValid()) {
             invalid = true;
             error = this.p.error;
-            this.flushStairFloor();
+            this.objUndo?.flushPostSubUndoables();
           }
         }
       } else if (!this.turnToWall() && !this.cursorValid()) invalid = true;
@@ -673,17 +760,8 @@ export class MoveTool implements FloorUndoTool {
         this.purchase(cost);
       }
     }
-    // AddPostSubUndoable on the held object's undoable.
-    this.stairFloor = undo;
+    this.objUndo?.addPostSubUndoable(undo);
     return true;
-  }
-
-  /** The held object undoable's FlushPostSubUndoables: FixFloorForStairs' floors come back off. */
-  private flushStairFloor(): void {
-    const u = this.stairFloor;
-    if (!u) return;
-    this.stairFloor = null;
-    u.undoSelf();
   }
 
   /** cMoveTool::UpdatePlacementFeedback. */
@@ -693,24 +771,35 @@ export class MoveTool implements FloorUndoTool {
     this.lastValidFeedback = this.validFeedback;
   }
 
-  /** cMoveTool::Click. */
+  /** cMoveTool::Click (1016ee00). */
   click(px: number, py: number): void {
     this.float(px, py);
+    this.readCtrl();
     this.clicked = true;
     this.attemptDrop = false;
     this.justGrabbed = false;
     this.moved = false;
     this.clickH = px;
     this.clickV = py;
-    this.mouseRotate = true;
-    this.rotateDir = -1;
     const c = this.cursor;
-    if (!c) {
+    if (this.buildItem && this.ctrlDelete) {
+      // Ctrl-delete happens on Release.
+      if (c?.inWorld) c.pickup(true);
+    } else if (!c) {
+      this.mouseRotate = true;
+      this.rotateDir = -1;
       const id = this.objectUnder(px, py);
       const obj = this.p.get(id);
       if (!obj) {
-        if (this.level() !== 1) {
-          // The upper floor has no floor under the mouse: "needs a floor" (0x1f) when GetFloor is empty (not checked here).
+        // An upper level without a floor under the mouse (GViewer::PointToTile(pt, false), cRotatableWorld::GetFloor).
+        const level = this.level();
+        if (level !== 1) {
+          const v = this.host.viewer;
+          const t = v.pointToWholeTile(px, py, level);
+          if (v.world.getFloor(t.x, t.y, level) === 0) {
+            this.p.error = PlacementErr.firstFloorOnly;
+            this.showPlacementTip(PlacementErr.firstFloorOnly);
+          }
         }
       } else if (!this.p.userCanPickup(obj)) {
         if (this.p.error !== 0) this.showPlacementTip(this.p.error);
@@ -730,6 +819,8 @@ export class MoveTool implements FloorUndoTool {
         this.lastValidFeedback = true;
       }
     } else {
+      this.mouseRotate = true;
+      this.rotateDir = -1;
       this.play(this.p.error === 0 ? ToolSound.movePlace : ToolSound.denied, false);
       if (c.anchor) {
         this.attemptDrop = true;
@@ -748,15 +839,15 @@ export class MoveTool implements FloorUndoTool {
     this.float(px, py);
   }
 
-  /** cMoveTool::GrabObject: pick up an object of the lot. */
+  /**
+   * cMoveTool::GrabObject (1016e130): pick up an object of the lot. Its
+   * undoable (a move) records it where the cursor put it back, i.e. where
+   * it stood.
+   */
   private grabObject(obj: XObject, px: number, py: number): void {
-    const head = this.p.chain(obj)[0]!;
-    const spec: PlacementSpec = this.p.getPlacementSpec(head);
-    const orig: OrigSite = { obj, at: { fx: obj.fx, fy: obj.fy }, level: obj.level, dir: obj.dir, container: spec.container, slot: spec.container ? spec.slot : 0 };
     const c = XCursorObject.makeMouseObject(this.p, obj, this.host.cursorSelector, obj.level, () => this.host.getFunds() - this.runningTotal, false);
     if (!c) return;
     this.cursor = c;
-    this.orig = orig;
     // The grab offset: mouse minus the object's tile top on screen.
     const v = this.host.viewer;
     const [vx, vy] = RotatableWorld.rotateCoords(c.lastAnchor.fx, c.lastAnchor.fy, v.world.rotation, 0x400);
@@ -764,6 +855,8 @@ export class MoveTool implements FloorUndoTool {
     this.grabV = py - pt.v;
     this.grabH = px - pt.h;
     this.updateSelector(obj.selector);
+    this.objUndo = new ObjectUndoable(this.p, this.host.folder, obj.objectId, ObjectAction.Move, 0, this);
+    this.objUndo.addRef();
     this.price = 0;
     this.runningTotal = 0;
     this.disposing = false;
@@ -827,22 +920,30 @@ export class MoveTool implements FloorUndoTool {
       return false;
     }
     // SubmitUndoable: the stairs floors stay with the dropped object.
-    this.stairFloor = null;
-    this.orig = null;
+    const u = this.objUndo;
+    if (u) {
+      this.undoManager?.submitUndoable(u);
+      this.objUndo = null;
+      u.release();
+    }
     this.stopDisposing();
     this.updateCursor();
     return true;
   }
 
-  /** cMoveTool::Release. */
+  /** cMoveTool::Release (1016e340). */
   release(px: number, py: number): void {
     this.float(px, py);
+    this.readCtrl();
     if (this.p.error === 0 && this.mode === MoveMode.Buy) this.play(ToolSound.place, false);
     const c = this.cursor;
     let shift = false;
     let placed = false;
     let price = 0;
-    if (c) {
+    if (this.buildItem && this.ctrlDelete) {
+      if (c?.inWorld) c.pickup(true);
+      this.ctrlDeleteAt(px, py);
+    } else if (c) {
       shift = this.host.shiftDown();
       const dh = px - this.releaseH;
       const dv = py - this.releaseV;
@@ -869,11 +970,7 @@ export class MoveTool implements FloorUndoTool {
           this.play(ToolSound.denied);
           const ch = px - this.clickH;
           const cv = py - this.clickV;
-          if (ch * ch + cv * cv > 4) {
-            // ResetGrabPoint: zero for everything but doors and windows.
-            this.grabV = 0;
-            this.grabH = 0;
-          }
+          if (ch * ch + cv * cv > 4) this.resetGrabPoint();
           this.resetTip();
           this.releaseH = px;
           this.releaseV = py;
@@ -909,9 +1006,43 @@ export class MoveTool implements FloorUndoTool {
     this.host.invalidate();
   }
 
+  /**
+   * Release's ctrl-delete (doors and windows): the door (window) under the
+   * mouse (PointToObjectID mode 2, 3 for windows), when it is one of the
+   * door or window lists, is hilited and, when it can be deleted, sold
+   * (80 % of its value) as a delete undoable, then taken out of the world.
+   */
+  private ctrlDeleteAt(px: number, py: number): void {
+    let id = this.objectUnder(px, py, this.mode === MoveMode.Door ? PickMode.Flag8000 : PickMode.Flag4000);
+    let obj = this.p.get(id);
+    if (obj) {
+      const list = buildModeOf(obj.selector.getMasterSelector());
+      if (list !== MoveMode.Door && list !== MoveMode.Window) {
+        obj = null;
+        id = 0;
+      }
+    }
+    this.hiliteId = obj ? id : 0;
+    if (!obj) return;
+    if (obj.selector.objd.i16(0x8a) === 6) this.floorsChanged = true;
+    if (!this.p.userCanDelete(obj)) return;
+    let refund = this.p.getCurrentValue(obj);
+    if (!this.refundable) refund = 0;
+    else if (this.buildItem) refund = Math.trunc(Math.fround(BUILD_REFUND * refund) + 0.5);
+    this.runningTotal -= refund;
+    this.finalizePurchase();
+    this.play(refund === 0 ? ToolSound.explode : ToolSound.refund);
+    const u = new ObjectUndoable(this.p, this.host.folder, id, ObjectAction.Delete, refund, this);
+    u.addRef();
+    this.undoManager?.submitUndoable(u);
+    u.release();
+    this.p.userPickup(obj);
+    this.stopDisposing();
+  }
+
   // --- keys ---------------------------------------------------------------------------
 
-  /** cMoveTool::OnKeyDown (Windows virtual keys as DOM key names). */
+  /** cMoveTool::OnKeyDown (1016df30; Windows virtual keys as DOM key names). */
   onKeyDown(key: string): boolean {
     switch (key) {
       case "Delete":
@@ -922,6 +1053,8 @@ export class MoveTool implements FloorUndoTool {
         this.cancel();
         return true;
       case "Control":
+        this.ctrlDelete = this.mode === MoveMode.Door || this.mode === MoveMode.Window;
+        return true;
       case "Shift":
         return true;
       default:
@@ -929,7 +1062,24 @@ export class MoveTool implements FloorUndoTool {
     }
   }
 
-  /** cMoveTool::OnChar (jump table lbl_105BBDB4 over ',' .. '?'): ',' '<' turn left, '.' '>' turn right. */
+  /** cMoveTool::OnKeyUp (1016ded0). */
+  onKeyUp(key: string): boolean {
+    switch (key) {
+      case "Control":
+        this.ctrlDelete = false;
+        return true;
+      case "Shift":
+        return true;
+      default:
+        return false;
+    }
+  }
+
+  /**
+   * cMoveTool::OnChar (1016dc80, jump table lbl_105BBDB4 over ',' .. '?'):
+   * ',' '<' turn left, '.' '>' turn right, '/' '?' the next slot of the
+   * held object's container that takes it.
+   */
   onChar(ch: string): boolean {
     const c = this.cursor;
     switch (ch) {
@@ -947,9 +1097,39 @@ export class MoveTool implements FloorUndoTool {
           this.afterTurn();
         }
         return true;
+      case "/":
+      case "?":
+        return this.nextSlot();
       default:
         return false;
     }
+  }
+
+  /** OnChar's '/' '?': the floater goes to the container's next slot (wrapping) its UserCanPlace accepts. */
+  private nextSlot(): boolean {
+    const c = this.cursor;
+    const f = c?.anchor;
+    if (!c || !f) return false;
+    const spec = this.p.getPlacementSpec(f);
+    const container = spec.container;
+    if (!container) return false;
+    const n = container.objectSlots.length - 1;
+    if (n < 2) return false;
+    c.pickup(true);
+    const at: FPt = { fx: container.fx, fy: container.fy };
+    let slot = spec.slot;
+    for (let i = 0; i < n; i++) {
+      slot = slot + 1 < n ? slot + 1 : 0;
+      if (this.p.userCanPlace(f, at, container.level, container, slot)) break;
+    }
+    c.place(at, container.level, slot);
+    this.updatePlacementFeedback();
+    if (this.floorsChanged) {
+      this.host.computeRooms?.();
+      this.floorsChanged = false;
+    }
+    this.host.invalidate();
+    return true;
   }
 
   private afterTurn(): void {
@@ -958,7 +1138,7 @@ export class MoveTool implements FloorUndoTool {
     this.host.invalidate();
   }
 
-  /** cMoveTool::DoDispose (Delete): sell the held object, or drop a new purchase. */
+  /** cMoveTool::DoDispose (1016b770, Delete): sell the held object (Deselect submits it as a delete), or drop a new purchase. */
   doDispose(): void {
     const c = this.cursor;
     if (!c) return;
@@ -970,13 +1150,13 @@ export class MoveTool implements FloorUndoTool {
     if (c.inWorld) c.pickup(true);
     if (!this.newPurchase) {
       let refund = this.p.getCurrentValue(f);
+      // The delete undoable charges the value back if it is undone.
+      if (this.objUndo) this.objUndo.value = refund;
       if (!this.refundable) refund = 0;
       else if (this.buildItem) refund = Math.trunc(Math.fround(BUILD_REFUND * refund) + 0.5);
       this.runningTotal -= refund;
       this.finalizePurchase();
       this.play(refund === 0 ? ToolSound.explode : ToolSound.refund);
-      // The object is gone (Deselect's delete undoable, not undone).
-      this.orig = null;
       this.deselect();
       this.cancel();
     } else {

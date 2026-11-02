@@ -10,23 +10,56 @@
  *
  * The mask lives in WallManager.cutawayMask; every change bumps maskVersion.
  *
- * Not ported: the held object hook (lbl_105BA4A8, buy-mode placement) and
- * ScrollingStrategy::IsWaitingForClick (assumed false). PointToTile(Point,
- * true) is approximated by HouseViewer.pointToWholeTile.
+ * The current tool (XViewer's lbl_105BA4A8) adds its own cut around the
+ * cursor: ModifyCursorPos (vtable +0x4c) on the point, then
+ * AdjustCutawayForTool (+0x48) on the tile 4 tiles back from it; cTool's
+ * opens that tile for tools with +0x24 set (doors, windows, wallpaper),
+ * cMoveTool's the tile of the door / window it holds.
+ *
+ * Not ported: ScrollingStrategy::IsWaitingForClick (assumed false).
+ * PointToTile(Point, true) is approximated by HouseViewer.pointToWholeTile.
  */
 
 import { Mode, WallState } from "../cpstate.js";
 import type { HouseViewer } from "./houseviewer.js";
 import type { RoomManager } from "./rooms.js";
 import { ROOM_DEGENERATE } from "./rooms.js";
-import type { WallManager } from "./walls.js";
-import { DIRS } from "./world.js";
+import { getViewWall } from "./tools/wallworld.js";
+import type { CutawayMask, WallManager } from "./walls.js";
+import { DIRS, type RotatableWorld, type TilePt } from "./world.js";
 
 /** A person the cutaway follows: world tile and level (cXObject +0xfc..+0xfe). */
 export interface CutawayPerson {
   x: number;
   y: number;
   level: number;
+}
+
+/** What DoDynamicCutaway asks of the current tool (cTool +0x24, vtable +0x4c / +0x48). */
+export interface CutawayTool {
+  /** cTool +0x24: the tool opens the cutaway around the cursor. */
+  readonly adjustsCutaway: boolean;
+  /** ModifyCursorPos (cTool's does nothing). */
+  modifyCursorPos?(p: { x: number; y: number }): void;
+  /** An AdjustCutawayForTool override; without one, cTool's (adjustCutawayForTool). */
+  adjustCutawayForTool?(t: TilePt, mask: CutawayMask): void;
+}
+
+/**
+ * cTool::AdjustCutawayForTool (10188a80): the view tile is cut when it is
+ * inside the lot; a wall on its top-left side (segment 1) keeps the tile at
+ * +x (lbl_105BA078 [3]) uncut, one on its top-right side (2) the tile at -y
+ * ([0]).
+ */
+export function adjustCutawayForTool(tool: CutawayTool, w: RotatableWorld, t: TilePt, mask: CutawayMask): void {
+  if (!tool.adjustsCutaway || !w.inInterior(t.x, t.y)) return;
+  const segs = getViewWall(w, t.x, t.y, t.level).segs;
+  mask.set(t.x, t.y);
+  const unset = (x: number, y: number): void => {
+    if (x >= 0 && y >= 0 && x < 64 && y < 64) mask.bits[y * 64 + x] = 0;
+  };
+  if ((segs & 1) === 1) unset(t.x + DIRS[3]![0], t.y + DIRS[3]![1]);
+  if ((segs & 2) === 2) unset(t.x + DIRS[0]![0], t.y + DIRS[0]![1]);
 }
 
 export interface CutawayHooks {
@@ -36,6 +69,8 @@ export interface CutawayHooks {
   selectedPerson(): CutawayPerson | null;
   /** Last mouse position in view coordinates, null when the cursor is not over the window. */
   cursor(): { x: number; y: number } | null;
+  /** XViewer's current tool (lbl_105BA4A8), null for none. */
+  tool?(): CutawayTool | null;
 }
 
 /** cCutawaySet capacity (HouseViewer constructor). */
@@ -107,7 +142,10 @@ export class DynamicCutaway {
     const c = this.hooks.cursor();
     if (c && c.x >= 0 && c.y >= 0) {
       const s = v.scale;
-      const t = v.pointToWholeTile(c.x, c.y + (8 << s) * 4, v.level);
+      const pt = { x: c.x, y: c.y + (8 << s) * 4 };
+      const tool = this.hooks.tool?.() ?? null;
+      tool?.modifyCursorPos?.(pt);
+      const t = v.pointToWholeTile(pt.x, pt.y, v.level);
       let tx = t.x;
       let ty = t.y;
       let ax = tx - 4;
@@ -122,7 +160,11 @@ export class DynamicCutaway {
         ay += DIRS[5]![1];
       }
       if (outside && w.inBounds(ax, ay)) this.cutRect(ax, ay, tx, ty);
-      // The held object (lbl_105BA4A8) would adjust the point and add its own tiles here: not ported.
+      if (tool && w.inBounds(ax, ay)) {
+        const at = { x: ax, y: ay, level: v.level };
+        if (tool.adjustCutawayForTool) tool.adjustCutawayForTool(at, mask);
+        else adjustCutawayForTool(tool, w, at, mask);
+      }
     }
     let changed = false;
     for (let i = 0; i < old.length; i++) {

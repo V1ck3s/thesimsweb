@@ -37,8 +37,9 @@ diagonal half-tile enables).
 ## Gaps
 
 - PointToTile(Point, true) is approximated by pointToWholeTile.
-- Held-object hook (lbl_105BA4A8 vtable +0x4c / +0x48 in DoDynamicCutaway) not ported:
-  belongs to the buy-mode placement tool.
+- Tool hook (lbl_105BA4A8 vtable +0x4c ModifyCursorPos / +0x48 AdjustCutawayForTool):
+  ported (`CutawayHooks.tool`, `adjustCutawayForTool` = cTool's, cMoveTool's in movetool.ts);
+  cNewWallpaperTool::ModifyCursorPos is not.
 - ScrollingStrategy::IsWaitingForClick assumed false.
 - Room tile lists contain duplicates (tiles re-pushed while queued), exactly like the
   original flood; harmless for the cutaway.

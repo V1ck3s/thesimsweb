@@ -103,6 +103,9 @@ export class MoveToolAdapter extends Tool {
   override onKeyDown(key: string): boolean {
     return this.move.onKeyDown(key);
   }
+  override onKeyUp(key: string): boolean {
+    return this.move.onKeyUp(key);
+  }
   override onChar(ch: string): boolean {
     return this.move.onChar(ch);
   }

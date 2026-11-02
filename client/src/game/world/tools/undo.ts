@@ -7,6 +7,10 @@
  * success. Pre / post sub-undoables are committed when added; an owner's
  * UndoSelf / RedoSelf runs them (Undoable::UndoPreSubs etc.), undoing in
  * reverse order.
+ *
+ * +8 is a reference count: the tool holding an undoable, the manager's
+ * lists and an owner's sub lists each hold one; the last release runs the
+ * virtual destructor (`destroy`, Undoable::~Undoable frees the subs).
  */
 
 export const enum UndoState {
@@ -19,6 +23,8 @@ export const enum UndoState {
 export abstract class Undoable {
   /** +4 */
   state: UndoState = UndoState.New;
+  /** +8 */
+  refs = 0;
   /** +0xc / +0x18 */
   private readonly preSubs: Undoable[] = [];
   private readonly postSubs: Undoable[] = [];
@@ -62,16 +68,59 @@ export abstract class Undoable {
     return r;
   }
 
+  /** Takes a reference (+8). */
+  addRef(): void {
+    this.refs++;
+  }
+
+  /** Drops a reference; the last one destroys the undoable. */
+  release(): void {
+    if (--this.refs <= 0) this.destroy();
+  }
+
+  /** The virtual destructor (+8): Undoable::~Undoable frees the sub-undoables. */
+  protected destroy(): void {
+    this.freeSubUndoables();
+  }
+
   /** Undoable::AddPreSubUndoable: committed now, undone after the owner. */
   addPreSubUndoable(u: Undoable): void {
+    u.addRef();
     u.commit();
     this.preSubs.push(u);
   }
 
   /** Undoable::AddPostSubUndoable: committed now, undone before the owner. */
   addPostSubUndoable(u: Undoable): void {
+    u.addRef();
     u.commit();
     this.postSubs.push(u);
+  }
+
+  /**
+   * Undoable::FlushPostSubUndoables (1018a750): the post sub-undoables are
+   * undone (last first, a new one committed before) and released; stops at
+   * the first failure. True when one was undone.
+   */
+  flushPostSubUndoables(): boolean {
+    let flushed = false;
+    for (let i = this.postSubs.length - 1; i >= 0; i--) {
+      const u = this.postSubs[i]!;
+      let r = 0;
+      if (u.state === UndoState.New) {
+        r = u.commitSelf();
+        u.state = r === 0 ? UndoState.Done : UndoState.Failed;
+      }
+      if (r === 0) {
+        r = u.undoSelf();
+        u.state = r === 0 ? UndoState.Undone : UndoState.Failed;
+      }
+      u.release();
+      if (r !== 0) break;
+      flushed = true;
+    }
+    this.postSubs.length = 0;
+    return flushed;
   }
 
   private static undoList(list: readonly Undoable[]): boolean {
@@ -110,8 +159,10 @@ export abstract class Undoable {
 
   /** Undoable::FreeSubUndoables */
   freeSubUndoables(): void {
+    const subs = [...this.preSubs, ...this.postSubs];
     this.preSubs.length = 0;
     this.postSubs.length = 0;
+    for (const u of subs) u.release();
   }
 }
 
@@ -154,6 +205,7 @@ export class UndoManager {
       return;
     }
     if (u.getState() === UndoState.Done) {
+      u.addRef();
       this.undoList.push(u);
       this.releaseRedoList();
     }
@@ -186,12 +238,16 @@ export class UndoManager {
     this.onChange?.();
   }
 
+  /** UndoManager::ReleaseRedoList: every undoable of the list is released. */
   releaseRedoList(): void {
-    this.redoList.length = 0;
+    const list = this.redoList.splice(0);
+    for (const u of list) u.release();
   }
 
+  /** UndoManager::ReleaseUndoList */
   releaseUndoList(): void {
-    this.undoList.length = 0;
+    const list = this.undoList.splice(0);
+    for (const u of list) u.release();
   }
 
   /** UndoManager::FlushCommandQueues */

@@ -37,6 +37,17 @@ const FRONT_DIRECTION = [2, 0, 6, 4];
 const HEIGHT_ORDER = [2, 3, 4, 8];
 /** ObjectSlot::SetHeight's z for those heights. */
 const HEIGHT_Z: Readonly<Record<number, number>> = { 2: 2.5, 3: 4, 4: 4.05, 8: 4 };
+/** Jump table lbl_105BB938 (AttemptFloaterPlacement): the tile next to a container on a side (direction), (dx, dy). */
+const SIDE_STEP: ReadonlyArray<readonly [number, number]> = [
+  [0, -1],
+  [1, -1],
+  [1, 0],
+  [1, 1],
+  [0, 1],
+  [-1, 1],
+  [-1, 0],
+  [-1, -1],
+];
 
 /** cXCursorObject::GetFrontDirection: the direction new objects face for a view rotation. */
 export function getFrontDirection(rotation: number): number {
@@ -167,9 +178,13 @@ export class XCursorObject {
   }
 
   /**
-   * cXCursorObject::AttemptFloaterPlacement: where the cursor is, else (an
-   * object in the way, single-tile floater) in a slot of an object on that
-   * tile whose height the floater accepts, facing like it.
+   * cXCursorObject::AttemptFloaterPlacement (10097a70): where the cursor is,
+   * else (an object in the way, single-tile floater) in a slot of an object
+   * on that tile whose height the floater accepts, facing like it. A
+   * multi-tile container's object faces the first side, from the
+   * container's direction on by quarter turns, whose next tile has no
+   * obstacle (cXObject::GetObstacleAtLocation); its own direction when all
+   * four have one.
    */
   private attemptFloaterPlacement(head: FPt, level: number): boolean {
     const f = this.floater;
@@ -184,9 +199,18 @@ export class XCursorObject {
         if (!this.p.userCanPlace(f, head, level, o, i)) continue;
         this.containerId = o.objectId;
         this.slot = i;
-        // Multi-tile containers pick a side without obstacle (jump table lbl_105BB938, not ported): face like the container.
+        let want = o.dir;
+        if (this.p.isMultiTile(o)) {
+          let side = 0;
+          for (; side < 4; side++, want += 2) {
+            const [dx, dy] = SIDE_STEP[want & 7]!;
+            if (!this.p.obstacleAtLocation({ fx: o.fx + dx * 16, fy: o.fy + dy * 16 }, level)) break;
+          }
+          if (side === 4) want = f.dir;
+        }
+        // The cursor's Turn (vtable +0x54); the floater is placed by Place afterwards.
         const notches = Placement.od(f, 23);
-        if (notches !== 0) this.p.turnObject(f, Math.trunc(((o.dir - f.dir) & 7) / notches));
+        this.turnFloater(notches !== 0 ? Math.trunc((want - f.dir) / notches) : 0);
         return true;
       }
     }
@@ -210,16 +234,23 @@ export class XCursorObject {
     const was = this.lastAnchor;
     const level = this.level + this.anchorOffsets()[2];
     this.pickup(true);
+    this.turnFloater(n);
+    if (this.canPlace(was, level, null)) this.place(was, level, this.slot);
+    else this.valid = false;
+  }
+
+  /** cXCursorObject::Turn's floater part: the floater, then the single-tile contents with 2 rotation notches (every part's). */
+  private turnFloater(n: number): void {
+    const f = this.floater;
+    if (!f) return;
     this.p.turnObject(f, n);
-    if (!this.p.isMultiTile(f)) {
-      for (const s of f.objectSlots.slice(1)) {
+    for (const part of this.p.chain(f)) {
+      for (const s of part.objectSlots.slice(1)) {
         const c = this.p.get(s.containedId);
         if (c && !this.p.isMultiTile(c) && Placement.od(c, 23) === 2) this.p.turnObject(c, n);
       }
     }
     this.p.assignOffsets(f);
-    if (this.canPlace(was, level, null)) this.place(was, level, this.slot);
-    else this.valid = false;
   }
 
   /** cXCursorObject::FaceDirection. */

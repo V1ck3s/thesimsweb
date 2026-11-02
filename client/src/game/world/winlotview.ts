@@ -345,6 +345,10 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
         return null;
       },
       cursor: () => this.cursor,
+      tool: () => {
+        const t = this.gameTools;
+        return t?.current === t?.moveTool ? this.buyTool : (t?.current ?? null);
+      },
     });
     this.rooms = rooms;
     this.cutaway = cut;
@@ -395,6 +399,7 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
       personRect: (o) => this.people?.screenRect(o, v) ?? null,
       modeFreeze: () => this.sim?.globals[G.modeFreeze] ?? 1,
       // cSimulator::GetFunds / Spend (expense type 6, "furnishings") when the simulator runs.
+      tutorialLot: () => (this.sim?.globals[26] ?? 0) !== 0,
       getFunds: () => this.sim?.getFunds() ?? st.getFunds(),
       spend: (n, expense = 6) => {
         if (this.sim) this.sim.spend(expense, n);
@@ -455,6 +460,7 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
     let pending = 0;
     this.listen(() => {
       if (st.getMode() !== mode) {
+        const prev = mode;
         mode = st.getMode();
         guid = null;
         // CPState::SetMode -> SetCurrentToolByID: buy mode's hand, build mode's arch tool, no tool elsewhere
@@ -468,6 +474,8 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
           tools.current?.cancel();
           tools.issueToolSelection(null);
         }
+        // CPState::SetMode: leaving any mode but live flushes the undo lists (UndoManager::FlushCommandQueues).
+        if (prev !== null && prev !== Mode.Live) tools.undo.flushCommandQueues();
       } else if (mode === Mode.Build && st.dirty & (DIRTY_ARCH_TOOL | DIRTY_ARCH_SUBTOOL)) {
         tools.archSetCurrentTool(st.archGetCurrentTool(), st.archGetCurrentSubtool());
       }
@@ -558,6 +566,7 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
       },
     };
     const tools = new GameTools(host, new MoveToolAdapter(host, move), (g) => this.selectorForPurchase(lot, g));
+    move.undoManager = undo;
     for (const [id, make] of BUILD_TOOLS) tools.tools[id] = make(host);
     undo.onChange = () => {
       this.editCount++;
@@ -671,6 +680,11 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
         this.sim?.module.removeObject(obj);
       },
       personData: (obj) => this.sim?.module.persons.find((p) => p.obj === obj)?.pd ?? null,
+      modeFreeze: () => this.sim?.globals[G.modeFreeze] ?? 0,
+      // House::DoCommand(0xf3): RoomManager::RoomScoreChanged unless 0xfffb.
+      roomChanged: (room) => {
+        if (room !== 0xfffb) this.lighting?.roomChanged(room);
+      },
     };
   }
 
