@@ -12,6 +12,15 @@
  * cursor) pixels per second (+0x5c, lbl_105BC0EC[8]), without the edge
  * ramp or clamp; the cursor (Classify) points the way, DEADEXPL within 100
  * px/s. A right click that never dragged centers the view (CenterView).
+ *
+ * Alt pan (OnKeyDown / OnKeyUp with VK_MENU, Mac 0x102123E0 / 0x10212310,
+ * Windows 0x4d503b / 0x4d5115): pressing Alt ends any scroll
+ * (StopScrolling), turns the pan on (+0x24), starts scrolling (state 1) and
+ * shows Pan.cur (cursor 0x1b, unforced global); releasing it ends the pan
+ * (StopScrolling). While it is on, OnMouseMove only records the mouse (no
+ * edge zones, no HouseViewer::MouseTrack), XViewer gets no clicks (state 1),
+ * and PreDraw moves the view offsets by the mouse's own move since the last
+ * frame (+0x28 - +0x3c), one pixel per pixel: the lot follows the mouse.
  */
 
 import type { HouseViewer } from "./houseviewer.js";
@@ -42,6 +51,8 @@ export const enum ScrollCursor {
   DownLeft = 0x18,
   Explore = 0x19,
   DeadExplore = 0x1a,
+  /** Pan.cur: the Alt pan (OnKeyDown). */
+  Pan = 0x1b,
 }
 
 /**
@@ -99,6 +110,16 @@ export class EdgeDetectScroller {
   private downY = 0;
   /** +4: 0 idle, 1 scrolling (StartScrolling), 2 the right press selected a person. */
   private state = 0;
+  /** +0x24: the Alt pan is on. */
+  private pan = false;
+  /** +0x28 / +0x2c: the last mouse position OnMouseMove got. */
+  private mouseX = 0;
+  private mouseY = 0;
+  /** +0x38: OnMouseMove calls since the last PreDraw. */
+  private moves = 0;
+  /** +0x3c / +0x40: the mouse position the pan last moved the view to. */
+  private panX = 0;
+  private panY = 0;
 
   constructor(
     private readonly viewer: HouseViewer,
@@ -110,6 +131,41 @@ export class EdgeDetectScroller {
   /** The right-button drag is scrolling (the anchor is up). */
   get dragging(): boolean {
     return this.rightDrag;
+  }
+
+  /** +0x24: the Alt pan is on (OnMouseMove skips MouseTrack, OnMouseDownL skips XViewer::MouseDown). */
+  get panning(): boolean {
+    return this.pan;
+  }
+
+  /**
+   * EdgeDetectScroller::OnKeyDown, VK_MENU (0x12): unless the pan is on
+   * already, StopScrolling, the pan on, StartScrolling when not scrolling
+   * (cWinPeople::StopTracking and Animator::SetTrackedObject(0) are not
+   * ported), the Pan cursor, then OnMouseMove at the last mouse position.
+   * The key is taken either way.
+   */
+  onAltDown(now = performance.now()): boolean {
+    if (!this.pan) {
+      this.stopScrolling();
+      // The port's edge zones scroll outside state 1: StopScrolling's +0x88 = 0 for them.
+      this.zone = 0;
+      this.pan = true;
+      if (this.state !== 1) {
+        this.state = 1;
+        this.last = now;
+        this.fx = this.fy = 0;
+      }
+      this.hooks?.setCursor(ScrollCursor.Pan);
+      this.onMouseMove(this.mouseX, this.mouseY, now);
+    }
+    return true;
+  }
+
+  /** EdgeDetectScroller::OnKeyUp, VK_MENU: StopScrolling when the pan is on; the key is taken either way. */
+  onAltUp(): boolean {
+    if (this.pan) this.stopScrolling();
+    return true;
   }
 
   /**
@@ -150,8 +206,16 @@ export class EdgeDetectScroller {
     return this.state === 0 && !leftDown;
   }
 
-  /** OnMouseMove: the right drag (threshold, velocity, cursor), else the edge zones. */
+  /** OnMouseMove: the mouse history, then (no pan) the right drag (threshold, velocity, cursor), else the edge zones. */
   onMouseMove(x: number, y: number, now = performance.now()): void {
+    if (this.moves === 0) {
+      this.panX = this.mouseX;
+      this.panY = this.mouseY;
+    }
+    this.moves++;
+    this.mouseX = x;
+    this.mouseY = y;
+    if (this.pan) return;
     if (this.rightPending && (Math.abs(x - this.downX) > DRAG_THRESHOLD || Math.abs(y - this.downY) > DRAG_THRESHOLD)) {
       this.rightPending = false;
       this.rightDrag = true;
@@ -173,10 +237,14 @@ export class EdgeDetectScroller {
     this.edgeMove(x, y, now);
   }
 
-  /** EdgeDetectScroller::StopScrolling (the right-drag part: anchor, cursor). */
+  /** EdgeDetectScroller::StopScrolling: state 1 ends, with the pan, the right drag, the zone, the anchor and the cursor. */
   private stopScrolling(): void {
     if (this.state !== 1) return;
     this.state = 0;
+    this.pan = false;
+    this.rightDrag = false;
+    this.rightPending = false;
+    this.zone = 0;
     this.vx = this.vy = 0;
     this.hooks?.setAnchor(null);
     this.hooks?.setCursor(null);
@@ -225,8 +293,26 @@ export class EdgeDetectScroller {
     this.vx = this.vy = 0;
   }
 
-  /** PreDraw: advance the view offsets. */
-  pump(now: number): void {
+  /**
+   * PreDraw: advance the view offsets. `inside`: the cursor is in the main
+   * window (GetCursorPos / ScreenToClient against the buffer size); scrolling
+   * (state 1) stops when it is not.
+   */
+  pump(now: number, inside = true): void {
+    this.moves = 0;
+    if (this.state === 1 && !inside) {
+      this.stopScrolling();
+      return;
+    }
+    if (this.pan) {
+      // +0x28 - +0x3c: the mouse's move since the last frame, added to the offsets as is.
+      const dx = this.mouseX - this.panX;
+      const dy = this.mouseY - this.panY;
+      if (dx || dy) this.viewer.setOffsets(this.viewer.originX + dx, this.viewer.originY + dy);
+      this.panX = this.mouseX;
+      this.panY = this.mouseY;
+      return;
+    }
     if (this.rightDrag) {
       if (this.state === 1) this.advance(now, this.vx, this.vy);
       return;

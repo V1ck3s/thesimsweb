@@ -20,7 +20,7 @@
  * soldItem(). A product the family cannot afford is refused.
  *
  * Not ported: the placement tool switches (cGameTools tool 7), the wait
- * cursor while thumbnails render, UI sounds, red tooltips for unaffordable
+ * cursor while thumbnails render, red tooltips for unaffordable
  * products (cDefaultTTWindow::SetColor), and the build mode products.
  */
 
@@ -398,7 +398,8 @@ export class WinCatalog extends TSWin {
         b.setState(1);
       } else {
         b.setState(0);
-        // sound: denied (cTool::DoDeniedSound)
+        // cGameTools::GetToolByID(7) -> cTool::DoDeniedSound ("UI_error", at most once per 400 ms).
+        s.placementToolDeniedSound?.();
       }
     });
     if (!picked) {

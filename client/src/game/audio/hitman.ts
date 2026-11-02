@@ -190,7 +190,9 @@ export class HitMan {
     this.globals.set(r, v | 0);
   }
 
+  /** cHitMan::AddToUpdateList: RemoveFromUpdateList, then push_back (the player goes last). */
   addToUpdateList(p: TrackPlayer): void {
+    this.updateList.delete(p);
     this.updateList.add(p);
   }
 

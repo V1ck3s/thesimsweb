@@ -305,6 +305,10 @@ export class TSWin {
   tsOnKeyDown(_key: string): boolean {
     return false;
   }
+  /** cTSWin::TSOnKeyUp: like TSOnKeyDown, false lets WinMgr try the parent next. */
+  tsOnKeyUp(_key: string): boolean {
+    return false;
+  }
   /** cTSWin::TSOnSetFocus (message 0x15, `prev` lost it). */
   tsOnSetFocus(_prev: TSWin | null): void {}
   /** Message 0x14: `next` takes the focus. */

@@ -176,7 +176,7 @@ function pickedPerson(sim: Simulator, o: SimObject): PickedPerson | null {
 async function showPersonPicker(ctx: GameContext, sim: Simulator, kind: 6 | 9 | 0xe, o: SimObject, type: number): Promise<number> {
   const person = pickedPerson(sim, o);
   if (!person) return 0xffff;
-  // sound: the dialog's two PlaySoundA (PostSim)
+  // (No sound here: PostSim's two PlaySoundA, "bkground_fade" and "kill_all_objectsounds", come only before the town pickers, nbhd/transit.ts.)
   const w = kind === 6 ? new WinClothingChoiceDlg(ctx, type, person) : kind === 0xe ? new WinTransformMeDlg(ctx, person) : new WinPetSelectDlg(ctx, person);
   return w.run();
 }

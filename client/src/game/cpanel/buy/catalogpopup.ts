@@ -23,6 +23,7 @@
  * (TSOnMouseEnter -> DisablePopup).
  */
 
+import { soundPlayer, UI } from "../../audio/index.js";
 import type { GameContext } from "../../context.js";
 import { OBJD, Product } from "../../data/catalog.js";
 import { makeMoneyString } from "../../nbhd/nghinterface.js";
@@ -161,7 +162,8 @@ export class WinCatalogPopup extends TSWin {
     const root = rootOf(owner);
     if (this.parent !== root) {
       root.childAdd(this);
-      // sound: UI_whoosh
+      // PlayBySource("UI_whoosh" lbl_105BC3B8 + 5, -4)
+      soundPlayer.playUISound(UI.whoosh);
       this.slideStart = performance.now();
     }
   }

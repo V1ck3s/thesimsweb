@@ -567,6 +567,8 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
     st.archRoofHooks = makeArchRoofHooks(undo, () => {
       v.dirty = true;
     });
+    // cWinCatalog::SetProduct on a product the family cannot afford.
+    st.placementToolDeniedSound = () => tools.getToolByID(ToolId.Move)?.doDeniedSound();
     st.archUndoHooks = {
       undo: () => undo.undoLastCommand(),
       redo: () => undo.redoLastCommand(),
@@ -1373,6 +1375,8 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
       void takeCameraSnapshot(this.ctx, v.comp.canvas, computeCameraFrame(this.ctx, x, y, v.viewW, v.viewH));
       return true;
     }
+    // EdgeDetectScroller::OnMouseDownL: XViewer::MouseDown only in state 0 (not while the Alt pan scrolls).
+    if (this.edge?.panning) return true;
     const tools = this.activeTools();
     if (!tools && this.viewer && this.ctx.state.getMode() === Mode.Live && this.sim) {
       void this.liveClick(x, y);
@@ -1767,6 +1771,8 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
   override tsOnKeyDown(key: string): boolean {
     const v = this.viewer;
     if (!v) return false;
+    // cDDDSimsView::TSOnKeyDown: the scrolling strategy (+0x16c) takes the key first (Alt: the pan).
+    if (key === "Alt" && this.edge?.onAltDown()) return true;
     // cDDDSimsView::TSOnKeyDown: F1..F5 switch the control panel mode.
     if (modeKeyDown(this.ctx.state, key)) return true;
     // cDDDSimsView::TSOnKeyDown: Escape is Neighborhood::CancelTutorial, then the tutorial arrow hides.
@@ -1809,6 +1815,11 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
     }
   }
 
+  /** cDDDSimsView::TSOnKeyUp: the scrolling strategy first (EdgeDetectScroller::OnKeyUp: Alt ends the pan). */
+  override tsOnKeyUp(key: string): boolean {
+    return key === "Alt" && !!this.edge?.onAltUp();
+  }
+
   /**
    * cDDDSimsView::TSOnMouseUpR -> EdgeDetectScroller::OnMouseUpR: ends a
    * right drag, or (a click, the left button up) CenterView: scroll the
@@ -1833,6 +1844,8 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
   override tsOnMouseMove(x: number, y: number): boolean {
     this.edge?.onMouseMove(x, y);
     this.cursor = { x, y };
+    // EdgeDetectScroller::OnMouseMove: no HouseViewer::MouseTrack while the Alt pan is on.
+    if (this.edge?.panning) return this.viewer !== null;
     this.cutaway?.mouseTrack(x, y);
     this.activeTools()?.mouseTrack(x, y);
     if (this.ctx.state.getMode() === Mode.Live) {

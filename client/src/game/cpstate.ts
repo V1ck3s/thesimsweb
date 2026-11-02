@@ -767,6 +767,8 @@ export class CPState {
   private readonly archSubtools: Array<ArchProduct | null> = Array.from({ length: 12 }, () => null);
   /** The lot view's undo manager (cGameTools +8). */
   archUndoHooks: ArchUndoHooks | null = null;
+  /** cGameTools::GetToolByID(7) (cMoveTool) -> cTool::DoDeniedSound, as cWinCatalog::SetProduct calls it; the lot view installs it. */
+  placementToolDeniedSound: (() => void) | null = null;
 
   /** CPState::ArchGetCurrentTool */
   archGetCurrentTool(): ArchTool {

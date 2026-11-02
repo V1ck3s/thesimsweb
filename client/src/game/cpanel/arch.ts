@@ -26,7 +26,8 @@
  * sub-tool's page is shown, and a tool without sub-tool gets its first
  * product (CPState::ArchSetCurrentSubtool).
  *
- * Not ported: UI sounds.
+ * Sounds: only the buttons' own (cTSWinBtn::PlayUISound, default mask:
+ * UI_click on a press, UI_error on a disabled one); cWinArch plays none.
  */
 
 import { ArchTool, DIRTY_ARCH_UNDO, type CPState } from "../cpstate.js";

@@ -102,6 +102,9 @@ export class WinMgr {
     if (this.capture === w) this.capture = null;
   }
 
+  /** The cursor is over the game canvas (EdgeDetectScroller::PreDraw's GetCursorPos / ScreenToClient test). */
+  cursorInside = false;
+
   cursorPosition(): { x: number; y: number } {
     return { x: this.mouseX, y: this.mouseY };
   }
@@ -500,6 +503,7 @@ export class WinMgr {
     const c = this.canvas;
     c.addEventListener("contextmenu", (e) => e.preventDefault());
     c.addEventListener("mousemove", (e) => {
+      this.cursorInside = true;
       const p = this.toLogical(e);
       this.mouseX = p.x;
       this.mouseY = p.y;
@@ -552,7 +556,18 @@ export class WinMgr {
       // every key); the game page has no text to search.
       if ((e.key === "/" || e.key === "'") && !e.ctrlKey && !e.altKey && !e.metaKey) e.preventDefault();
     });
+    window.addEventListener("keyup", (e) => {
+      if (this.inputBlocked) return;
+      // cTSWinMgrW95::ProcessSystemMessage: key up messages go to the focus too, up its parents.
+      for (let w = this.focus; w && w !== this.main; w = w.parent) {
+        if (w.tsOnKeyUp(e.key)) {
+          e.preventDefault();
+          return;
+        }
+      }
+    });
     c.addEventListener("mouseleave", () => {
+      this.cursorInside = false;
       this.hover?.tsOnMouseExit();
       this.hover = null;
     });

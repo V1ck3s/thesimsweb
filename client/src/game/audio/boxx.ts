@@ -582,6 +582,25 @@ export class BoxX {
     this.modes.unpause();
   }
 
+  /**
+   * cBoxX::CheckPriority (Mac 0x102DB550, Windows FUN_00574bdb), before a
+   * kSndobPlay: with 16 or more players in cHitMan's update list (+0x2c), a
+   * sound object whose register 0x19 (duckpri) is 0 does not start; past 16,
+   * the last listed player whose track is in control group 3 (vox) and whose
+   * register 0x7c reads below 0x400 is stopped (cTrackPlayer::Stop).
+   */
+  private checkPriority(sndob: number): boolean {
+    const players = this.hm.activePlayers();
+    if (players.length < 16) return true;
+    if ((this.hm.soundObject(sndob)?.registerVal(R.duckpri) ?? 0) === 0) return false;
+    if (players.length > 16) {
+      let victim: TrackPlayer | null = null;
+      for (const p of players) if (p.def.controlGroup === GROUP_VOX && p.registerVal(R.main_vol) < 0x400) victim = p;
+      victim?.stop();
+    }
+    return true;
+  }
+
   /** The kSndobPlay / kTurnOnTv body: play `t` for `source`, positioned from its instances. */
   private playPositioned(t: TrackPlayer, sndob: number, source: number, a4: number, a5: number): void {
     this.addToInstanceMap(sndob, source);
@@ -612,6 +631,7 @@ export class BoxX {
         const t = this.track(arg);
         if (!t) return false;
         if (!t.isActive()) this.instances.delete(arg);
+        if (!this.checkPriority(arg)) return false;
         if (t.def.argsType === ARGS_IDVOLPAN) {
           if (source === 0) return false;
           this.playPositioned(t, arg, source, a4, a5);
