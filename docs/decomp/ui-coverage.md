@@ -10,7 +10,7 @@ book, pets...) are all in the table below.
 Result of the 2026-10-29 audit: 13 classes were missing a port and are now ported or partial
 (budget, help, report card, pet skills, biography, delta meters, sell page, town lot
 description, tutorial arrow, cheat console and help, the Ask-for-Lot picker's filter toolbar).
-What is still missing is either debug-only or listed in the "partial" notes.
+What is still missing is either debug-only or listed in the "partial" notes. The open items are tracked in [`../TODO.md`](../TODO.md).
 
 Status: **ported** (the class and the behaviour a player sees), **partial** (the class exists,
 named parts missing), **missing**, **n/a** (OS / debug / IME plumbing replaced by the browser,
@@ -94,11 +94,11 @@ or developer-only tools).
 
 | Class | What it is | Status | Where |
 |---|---|---|---|
-| cWinNeighborhood, cWinNeighborhoodUL | Neighborhood screen (Unleashed layout) and the "Ask for Lot" destination picker (lot type filter toolbar, title, filter icons, residential lot message) | partial (Tutorial.FAM first-run import, import charset check, ReportMissingTextures, web pages export, move_lots and nessie cheats) | `nbhd/winneighborhoodul.ts` |
+| cWinNeighborhood, cWinNeighborhoodUL | Neighborhood screen (Unleashed layout) and the "Ask for Lot" destination picker (lot type filter toolbar, title, filter icons, residential lot message) | partial (import charset check, ReportMissingTextures, web pages export, move_lots and nessie cheats) | `nbhd/winneighborhoodul.ts` |
 | cWinNeighborhoodVC | Pre-Unleashed neighborhood layout | n/a (only used without Unleashed) | - |
 | cWinLotBtn | Lot button | ported | `nbhd/winlotbtn.ts` |
 | cWinLotPopup (+ CleanupVacationBuffers) | Lot info popup (family / house) | ported | `nbhd/winlotpopup.ts` |
-| cWinDowntown, cWinVacation, cWinStudiotown, cWinMagicland | Town screens of the expansions | partial (lot imports, Magic Town move in) | `nbhd/wintown.ts` |
+| cWinDowntown, cWinVacation, cWinStudiotown, cWinMagicland | Town screens of the expansions | ported (lot imports and Magic Town move in since 2026-10-30) | `nbhd/wintown.ts` |
 | cWinEditDTLotDesc | Town lot name / description editor (save prompt of an empty town lot) | ported (Quit's "No clears dirty" step) | `nbhd/wineditdtlotdesc.ts`, `cpanel/options.ts` |
 | cWinPickFamily, cPickFamilyList, cPickFamilyItem, cPickFamilyItemMember, cPickFamilyPersonInfo | Family bin (with the Shift smiley easter egg) | ported (Magic Town mode with the MagiCoins column and hints; the Magicland Move In flow that opens it is not) | `cas/winpickfamily.ts`, `cas/personinfo.ts` |
 | cWinDesignFamily, cWinDesignFamPeopleBtn | Create-a-Family | ported | `cas/windesignfamily.ts` |

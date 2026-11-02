@@ -1,5 +1,7 @@
 # Playtest: one family, one lot, one day (2026-10-28)
 
+The open items of every section below are consolidated in [`../TODO.md`](../TODO.md).
+
 End-to-end session driven through real UI clicks (Playwright on Chromium, `game.html`, dev
 servers on :5173 / :3000). The goal was a normal play session: boot, neighborhood, Create-a-Sim,
 move in, Buy / Build, a day of Live mode (needs, job, carpool, bills, phone, taxi, NPCs), save,
@@ -135,10 +137,10 @@ player meets were ported and checked in Chrome (screenshots in the local scratch
 
 | Keyboard focus (`ui/winmgr.ts`, `ui/tswin.ts`) | modal dialogs, edit fields | keys go only to the focused window and bubble to its parents (cTSWin::TSOnKeyDown), up to cTSMainWindowW95::TSOnKeyDown (Ctrl+Shift+C); a mouse down gives focus to the clicked window unless WF_NO_FOCUS; DoModalWin focuses the modal window and restores the old focus. Arrows no longer scroll the lot behind a modal window; the per-window key forwarding workarounds (bio, lot description, family / character design, help) are gone |
 | Family / lot imports (`nbhd/imports.ts`, `nbhd/winneighborhoodul.ts`) | neighborhood "Import" button | UserData9 copy: CycleThroughImports' dialog (STR# 143) for a .FAM in `Export/` and an uploaded one; imported families get new ids, character files (human / dog / cat templates by the uChr "dog" / "cat" entry), Gtab id remapping in the house file, portraits; lot 56 loaded with the imported family. Files can be dropped on the canvas or picked with a file input (web: written into the overlay's `Import/`); .rdt / .cmt lot imports follow CycleResidential / CommunityImports. Deviation: read-only `Export/` files cannot be deleted, so they are offered again on each cycle |
-| Magic Town family picker (`cas/winpickfamily.ts`) | Magicland "Move In" family bin | `?test=cas&magic=1`: background 0x13b3, MagiCoins column (token type 7, GUID 0x99e81bec), shifted tips, the two hints for the first runs. The Magicland Move In flow itself is not ported |
+| Magic Town family picker (`cas/winpickfamily.ts`) | Magicland "Move In" family bin | `?test=cas&magic=1`: background 0x13b3, MagiCoins column (token type 7, GUID 0x99e81bec), shifted tips, the two hints for the first runs. The Magicland Move In flow was ported on 2026-10-30 (see below) |
 
-Open points: the Magicland Move In flow, Tutorial.FAM's first-run import, the import charset
-check and ReportMissingTextures, imports from the town screens.
+Open points: the import charset check and ReportMissingTextures (the Magicland Move In flow,
+Tutorial.FAM's first-run import and the town imports were ported on 2026-10-30).
 
 ## Remaining problems
 
@@ -522,8 +524,8 @@ Throwaway copy of the game's UserData (`?nbhd=UserData21`, overlay, deleted afte
   vue générale..." with the arrow on the zoom button -> Zoom in -> "Voici le niveau moyen du
   zoom..."; Escape cancels (tutorial object killed, global 26 = 0).
 - Not ported: cTutorialIcon (the tutorial dialog's icon / close animation, SetupDialog's +0x3c
-  positioning), generic sim call 6 (Neighborhood::RemoveFromFamily of a neighbor, run at the
-  tutorial's start) and 4 (logged).
+  positioning) and generic sim call 4 (logged). Generic sim call 6 (Neighborhood::RemoveFromFamily
+  of a neighbor, run at the tutorial's start) was ported later (round 2).
 
 ## User-reported bugs, round 2 (2026-10-30)
 
