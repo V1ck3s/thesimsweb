@@ -10,21 +10,11 @@ sous `client/src/game/`).
 
 ## 1. Bugs observés
 
-- **Annuaire et relations sans visage pour les PNJ connus** (livreur, bonne…) : les têtes sont lues
-  dans `Characters/` au lieu du propre fichier de la personne (PersonFinder::GetPictureBuffer /
-  GetRelPictureBuffer). `ui/phonebook.ts`, `cpanel/live/relationship.ts` → utiliser
-  `cas/personpictures.ts` comme les bulles et les icônes d'action.
-- **Sim 194 de House01 sans tenue.** Cause non cherchée.
-- **Dialogues de rumeurs / d'aide en boucle sur la maison 56 quand le jeu est en pause.** Cause non
-  cherchée.
-- **Images du catalogue délavées et sans ombre** (ObjSelector::GetThumbnailHasShadow).
-  `cpanel/buy/objecticon.ts`.
+- **Sim 194 de House01 (Max) sans tenue.** Non reproduit (habillé au chargement et sur 14 h de jeu).
+  Piste : la tenue « mode » (0x23) des enfants est le nom provisoire `ADDED` (EditPerson::BeginFill) ;
+  une sauvegarde faite en tenue 0x12 le laisserait sans corps. Il faut le moment exact.
 - **$TokenNameLocal affiche le jeton brut** si le sélecteur de l'objet n'a pas encore été ouvert
   dans la session (ObjectFolder.selectorByGUID synchrone). `sim/xobject.ts`.
-- **Fenêtre PIP : un changement d'étage ne recalcule pas la découpe des murs.**
-  `world/winpictureinpicture.ts`.
-- **Lampe allumée / éteinte par le jeu : la lumière de la pièce ne change qu'au prochain changement
-  d'heure ou d'édition** (RoomManager::RoomLightingChanged). `world/lighting.ts`.
 - **Erreurs d'arbre rares, cause non trouvée, non reproduites** : erreur 62 dans « do new adult
   idle » (arbre 8330) en ville ; 0x15 de la bonne dans « get paper to read » du journal ; 0x15 du
   majordome / de la bonne au compacteur (deux nettoyeurs sur la même assiette ?) ; Kyle resté un
@@ -39,8 +29,6 @@ Live
 - **Popups au survol sans icône d'objet** (cWinLivePopup::SetObject / DrawObjectIcon) ; **page
   célébrité** : les aptitudes ne sont pas des objets de catalogue. `cpanel/livepopup.ts`,
   `cpanel/live/fame.ts`.
-- **Pas de surbrillance (contour) de l'objet survolé / sélectionné** (cXObject::SetHilite) : l'id
-  est suivi, seul le dessin manque. `world/winlotview.ts`.
 - **Arrivée de la famille en voiture à l'emménagement** : les sims apparaissent sur place.
   `world/winlotview.ts`.
 - **Score d'agencement de la maison figé** (House::AddLayoutTick, décalage de minuit) ; besoin
@@ -56,22 +44,12 @@ Live
 - **PIP** : pas de photo automatique dans l'album, pas de BoboVision. `world/winpictureinpicture.ts`.
 - **Tutoriel** : icône / animation de fermeture des dialogues (cTutorialIcon), Tut_CheckForEvents,
   appel générique 4. `ui/picturedialog.ts`, `ui/tutorialhighlight.ts`, `sim/xobject.ts`.
-- **Mode panoramique Alt** de la vue (EdgeDetectScroller, Pan.cur). `world/edgescroll.ts`.
 - **Repli du panneau Live** : pas de variante BoboVision (cWinViewControl::SetMode).
 - **« Aller ici »** : test de l'herbe pour le type de lot 99 (cObjPickerTool::TryClick).
 
 Achat / Construction
-- **Outil de déplacement** : Échap remet l'objet à la main au lieu d'annuler (ObjectUndoable) ;
-  pas de Ctrl+Suppr ni de retournement pour portes et fenêtres (FlipPortal, modes 3..9) ; pas de
-  `/` `?` pour changer d'emplacement dans un conteneur (cMoveTool::OnChar) ; les conteneurs
-  multi-cases ne choisissent pas le côté libre (AttemptFloaterPlacement) ; pas de test « il faut
-  un sol » (0x1f) aux étages. `world/tools/movetool.ts`, `world/tools/cursorobject.ts`.
-- **Découpe des murs** : ne s'adapte ni à l'outil porte / fenêtre (cTool::AdjustCutawayForTool) ni
-  à l'objet tenu (DoDynamicCutaway). `world/cutaway.ts`.
 - **Papiers peints en plugin sans image de catalogue** ; murs et papiers peints sans image sur la
   fiche produit (DrawWallIcon, WallManager::DrawIconic). `data/buildcatalog.ts`.
-- **Placement** : Simulator +0x36 pris à 0, message 0xf3 « pièce changée » non envoyé.
-  `world/tools/placement.ts`.
 
 Quartier / sauvegarde
 - **Vignettes du quartier sans les sims.** `world/thumbnail.ts`.
@@ -88,7 +66,13 @@ Quartier / sauvegarde
 - **Créer un Sim** : costumes d'animaux / de clown et recréation de l'instance au changement d'âge
   (ResetInstanceSuits, SetAge). `cas/editperson.ts`.
 
+- **Outil de déplacement** : la main du mode Achat ne pose pas le bit de surbrillance (+0x114 bit 1)
+  sur l'objet survolé (le dessin est porté, `world/tools/movetool.ts`).
+- **Papier peint** : cNewWallpaperTool::ModifyCursorPos (crochet de découpe des murs).
+
 Interface
+- **Touches de la vue** Tab, Page préc. / suiv., Début, Fin (cDDDSimsView::TSOnKeyDown, son
+  `UI_error` quand refusées). `world/winlotview.ts`.
 - **Champs de texte** : pas de sélection, presse-papiers, annulation ni barre de défilement
   (cTSWinTextEdit2). `ui/textedit.ts`.
 - **Options** : pas de fondu entre les sous-panneaux, astuces de la maison du didacticiel non
@@ -99,12 +83,7 @@ Interface
 
 ## 3. Son
 
-- Pas de « whoosh » à l'ouverture du popup du catalogue (`cpanel/buy/catalogpopup.ts`), pas de son
-  de refus sur un produit trop cher (cTool::DoDeniedSound, `cpanel/catalog.ts`), pas de sons dans
-  les sélecteurs tenue / transformation / animal (`world/objectdialogshow.ts`), pas de sons
-  d'interface dans le panneau de construction (`cpanel/arch.ts`).
-- Pas de limite de voix par liste de sons (CheckPriority), dérive de cHitTimer, kSndobUpdate /
-  SetPosition. `audio/`.
+- Dérive de cHitTimer, kSndobUpdate / SetPosition. `audio/`.
 
 ## 4. Animation
 
@@ -116,14 +95,22 @@ Interface
 
 ## 5. Performance
 
-- **Chargement** : les icônes du catalogue et une partie des lectures des fichiers d'objets ne
-  passent pas par le cache IndexedDB (`data/catalog.ts` readAssetRange, `RangedIff`).
+- **Fichiers de sauvegarde lus plusieurs fois par chargement** (`Neighborhood.iff` 5 fois, certains
+  personnages 2 à 4 fois) : non mis en cache exprès ; il faudrait un cache par chargement.
+- **Chargement à froid d'un lot sous Chrome** : environ 2 minutes d'attente sur les dernières requêtes.
 - **Mémoire** : +11 à 17 Mo par jour de jeu, ce sont des caches remplis au premier usage (comportements,
   tables d'arbres, chunks IFF) ; redescend au rechargement.
 - **Pics de tick** de 20 à 50 ms sur les échecs de route.
 
 ## 6. À vérifier (comparaison avec l'original à faire)
 
+- Survol à la souris d'un objet en Live : la surbrillance n'a pas pu être testée (sur la copie des
+  UserData du jeu, `selectedPerson()` rendait null : GUID de personne provisoire ?).
+- Le lot ne paraît pas plus sombre à 22 h qu'en journée.
+- Images du catalogue : la chaise de salon bon marché (ombre 0x10) a maintenant une ombre carrée
+  que l'image livrée n'a pas ; le bouleau (ombre 0 sur le maître, -1 sur les parties) n'en a pas.
+- Découpe des murs avec une porte tenue : le masque change, mais aucune différence visible aux
+  endroits testés.
 - Lot vide avec seulement un frigo : la famille meurt de faim (pas de plan de travail). Fidèle ?
 - Repas à 10 $ répétés au frigo cher du centre-ville. Fidèle ?
 - Le journal ne propose que « Recycler » l'après-midi. Probablement fidèle.

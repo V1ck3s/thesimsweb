@@ -136,8 +136,9 @@ Button overrides found in the code (OverrideUISound(enter, down, up, disabled)):
 cWinLotBtn::Init (house buttons) `UI_Nhood_rollover / UI_Nhood_click`, mask 5
 (enter + press) or 1; cWinDesignCharacter::Init `UI_CAC_CycleParts`,
 `UI_CAC_Cyclehead` (press); neighborhood screens (UL, VC, Downtown, Magicland,
-Studiotown, Vacation) Init + BuildFilterToolbar `UI_Nhood_click` (press);
-cWinArch and cWinCatalog set the mask to 0 (silent buttons).
+Studiotown, Vacation) Init + BuildFilterToolbar `UI_Nhood_click` (press).
+cWinArch and cWinCatalog keep the default button mask (press `UI_click`, disabled `UI_error`):
+the `param_1[0x52] = 0` once read as a mask is a field of the panel, not of a button.
 
 ## Lot ambience and positional sound (cBoxX::Event 52, cFreshPlayer, cAudioInfo)
 
