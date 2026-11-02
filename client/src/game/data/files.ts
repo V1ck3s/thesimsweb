@@ -11,6 +11,7 @@
  * (engine/assets.ts), so a reload sees them too.
  */
 
+import { invalidateManifest } from "../../engine/assets.js";
 import { clearIffFileCache } from "../nbhd/nghinterface.js";
 
 type Listener = (path: string) => void;
@@ -21,6 +22,8 @@ function url(path: string): string {
 }
 
 function changed(path: string): void {
+  // The manifest is fetched once per page (engine/assets.ts): it lists the new file from now on.
+  invalidateManifest();
   clearIffFileCache();
   for (const l of [...listeners]) l(path);
 }

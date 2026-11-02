@@ -16,6 +16,7 @@
  * Room lamps (point lights within 20 units) are not modelled.
  */
 
+import { readAssetFile } from "../../engine/assets.js";
 import type { AnimDeviceCamera } from "./camera.js";
 import { transformDir, vec3Normalize, type Vec3 } from "./math3d.js";
 
@@ -63,9 +64,9 @@ let stdLights: Promise<U3DLight[]> | null = null;
 /** The standard rig (U3DLightGroup::Load("stdlight")). */
 export function loadStdLights(): Promise<U3DLight[]> {
   stdLights ??= (async () => {
-    const res = await fetch("/assets/Sims/GameData/Lights/stdlight.lgt");
-    if (!res.ok) return [];
-    return readLightGroup(new Uint8Array(await res.arrayBuffer()));
+    const bytes = await readAssetFile("Sims/GameData/Lights/stdlight.lgt").catch(() => null);
+    if (!bytes) return [];
+    return readLightGroup(bytes);
   })();
   return stdLights;
 }

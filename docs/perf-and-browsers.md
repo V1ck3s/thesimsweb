@@ -148,6 +148,61 @@ House01 at speed 3 for ~22 sim days in headless Chrome (SwiftShader), details in
 | Ticks ≥ 100 ms | 30 in 2 sim days (route failures in the crowd) | none in 11 sim days; 5..40 of 20..50 ms per 4 days |
 | Save size | | House01.iff +17 KB in 11 sim days |
 
+## Warm loads: asset requests (2026-11-02)
+
+The devtools Network tab showed the same files many times on every load. Measured on a second load
+(IndexedDB filled) of `?nbhd=UserData34` (a throwaway copy of the game's UserData), of its lot 1
+(`&house=1`), and of every catalog icon (`loadCatalog()` then `icon()` of all 1209 products, what
+paging through Buy mode does). "Browser" = requests the page issued (what devtools lists, HTTP cache
+hits included); "network" = what reached the server (a counting proxy between vite and :3000).
+Headless Firefox 141 and Chrome (SwiftShader); the game was being edited by other sessions at the
+same time, so times vary by ~1 s.
+
+What was re-requested on every load:
+
+1. **`/api/manifest` (1.3..2 MB of JSON) on almost every asset lookup**: 6 calls for the
+   neighborhood, 32 for a lot, ~100 for a cold lot (150 MB). It is not cacheable (it lists the
+   save overlay). `fetchManifest` now fetches it once per page; `data/files.ts` invalidates it after
+   every write or delete of a game file (checked: a written file shows up, a deleted one goes away).
+2. **`UIRes.load` ran 24 times per lot** (once per family portrait, `cas/portraits.ts`): 24 x the
+   five `Res_*.RT` / `.h` tables and 96 x `Res_Languages.h`. It now loads once per language.
+3. **Catalog icons** were one uncached `Range` request each (`data/catalog.ts` `readAssetRange`).
+   Firefox does not serve byte ranges from its HTTP cache here: 1209 requests and 9.6 MB from the
+   server every time. They now go through `readAssetRangeCached` (engine/assets.ts): one batched
+   `POST /api/ranges` the first time, IndexedDB (new `ranges` store, `DB_VERSION` 3) after.
+4. **Loose files fetched without the IndexedDB cache**, served from the HTTP cache (`max-age` 1 h,
+   then revalidated): HIT sound tables (`.hot` / `.hsm` / `.hit`), loose UI bitmaps and tables,
+   VitaBoy skins, roof textures, cursors, `stdlight.lgt`, TemplateNPCs. They now use
+   `readAssetFile` (engine/assets.ts): IndexedDB for game-folder files up to 8 MB (music is left to
+   the HTTP cache), concurrent reads of one file share one request.
+5. FAR entry reads (`readFarEntry`) skip the HTTP cache (`cache: "no-store"`): their bytes are in
+   IndexedDB, and Chrome serializes cached requests to one URL. IndexedDB puts issued in one task
+   share one transaction (Chrome lost part of thousands of single-put transactions when the page
+   closed soon after a cold load, which the HTTP cache used to hide).
+
+The object folder scan was already skipped on warm loads (0 `POST /api/ranges`); the catalog's
+cold scan (`RangedIff`) now goes through the batcher (142 POSTs instead of ~3000 `Range` GETs).
+Files under `Sims/UserData*` are still never stored (they change when the game saves) and are always
+fetched `no-store`. Server side, `/assets` sends `Cache-Control: no-cache` for `Sims/UserData*`
+(originals and overlay copies; the overlay sent no header, so browsers could reuse a saved file
+heuristically) and keeps `public, max-age=3600` for the rest.
+
+| Warm load | Before: browser / network (bytes) / time | After: browser / network (bytes) / time |
+|---|---|---|
+| Neighborhood, Firefox | 144 / 50 (24 MB) / idle 8.9..11 s | 48 / 46 (16.5 MB) / idle 5.1..6.2 s |
+| Neighborhood, Chrome | 143 / 52 (24 MB + 6 MB music) / idle 7.2 s | 46 / 46 (16.5 MB) / idle 4.4 s |
+| Lot, Firefox | 518 / 124 (56 MB) / lot view 9.4 s | 96..114 / 95 (9.3 MB) / lot view 6.7..8.2 s |
+| Lot, Chrome | 513 / 126 (56 MB) / lot view 11.3 s | 113 / 95 (9.3 MB) / lot view 5.4..6.8 s |
+| 1209 catalog icons, Firefox | 1209 / 1209 (9.6 MB) / 6.0..7.4 s, every time | first: 2 POSTs (9.4 MB) / 0.6..1.2 s; then 0 / 0.36 s |
+| 1209 catalog icons, Chrome | 1358 / 420 (4.8 MB) / 3.2 s (first 14 s) | first: 3 POSTs / 0.85..1.0 s; then 0 / 0.26 s |
+
+What is left on a warm load is the save data: 44 (neighborhood) or 93 (lot) requests for ~38
+distinct `UserData34` files (7.5..15 MB; `Neighborhood.iff` 5 times, some characters 2..4 times, read
+by different modules), one manifest, and `UserData/Neighborhood.iff` (the neighborhood list). They
+are uncached on purpose; sharing one read between modules would need a per-load cache of writable
+files. Music streams through `<audio>` (HTTP cache). Cold loads are unchanged within noise (Firefox
+lot ~23 s to the lot view; Chrome's cold lot still waits ~2 min on its last requests).
+
 ## Remaining issues
 
 - **Firefox: WebGL -> 2D readback, ~7 ms per frame.** The lot is rendered in a WebGL canvas and

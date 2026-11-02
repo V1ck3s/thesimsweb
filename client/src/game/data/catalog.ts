@@ -29,11 +29,12 @@
  * fields): field index = (offset - 4) / 2.
  *
  * Object files are big (sprites); the scan only reads each file's header and
- * resource map (rsmp) and then the chunks it needs, with Range requests. The
- * result is cached in IndexedDB, keyed by the archives' sizes.
+ * resource map (rsmp) and then the chunks it needs, with batched range reads.
+ * The result is cached in IndexedDB, keyed by the archives' sizes; so are the
+ * catalog icons' bytes (engine/assets.ts readAssetRangeCached).
  */
 
-import { fetchManifest, readAssetRange, readFarManifest } from "../../engine/assets.js";
+import { fetchManifest, readAssetRangeBatched, readAssetRangeCached, readFarManifest } from "../../engine/assets.js";
 import { idbGetFarManifest, idbPutFarManifest } from "../../engine/idb.js";
 import { engine } from "../../engine/wasm.js";
 import { decodeImage } from "../res/bmp.js";
@@ -223,7 +224,7 @@ async function loadIcon(rec: ProductRecord): Promise<ImageBitmap | null> {
   if (!rec.icon) return null;
   const [off, size] = rec.icon;
   const path = `Sims/${rec.file.far ?? rec.file.entry}`;
-  const bytes = await readAssetRange(path, off + 76, off + size).catch(() => null);
+  const bytes = await readAssetRangeCached(path, off + 76, off + size).catch(() => null);
   if (!bytes) return null;
   try {
     const img = decodeImage(bytes, "catalog.bmp");
@@ -301,7 +302,7 @@ function parseRsmp(map: Uint8Array, fileSize: number): RsmpEntry[] {
   return out;
 }
 
-/** One object file read through Range requests. */
+/** One object file read through batched range reads (RangeBatcher). */
 class RangedIff {
   private head: Uint8Array | null = null;
 
@@ -318,11 +319,11 @@ class RangedIff {
     end = Math.min(end, this.size);
     const head = this.head;
     if (head && end <= head.length) return head.subarray(start, end);
-    return readAssetRange(this.path, this.ref.base + start, this.ref.base + end);
+    return readAssetRangeBatched(this.path, this.ref.base + start, this.ref.base + end);
   }
 
   async map(): Promise<RsmpEntry[] | null> {
-    this.head = await readAssetRange(this.path, this.ref.base, this.ref.base + Math.min(this.size, HEAD_BYTES));
+    this.head = await readAssetRangeBatched(this.path, this.ref.base, this.ref.base + Math.min(this.size, HEAD_BYTES));
     if (this.head.length < 64) return null;
     const hv = new DataView(this.head.buffer, this.head.byteOffset, this.head.byteLength);
     const at = hv.getUint32(60, false);
@@ -456,6 +457,9 @@ async function objectFiles(): Promise<{ files: Array<{ ref: ObjectFileRef; size:
   return { files, signature: sig.sort().join("|") };
 }
 
+/** Object files scanned at once (results keep the scan order). */
+const SCAN_CONCURRENCY = 64;
+
 async function scanAll(): Promise<ProductRecord[]> {
   const { files, signature } = await objectFiles();
   const cached = (await idbGetFarManifest(CACHE_KEY).catch(() => null)) as { signature: string; records: ProductRecord[] } | null;
@@ -469,7 +473,8 @@ async function scanAll(): Promise<ProductRecord[]> {
       results[i] = await scanFile(f.ref, f.size).catch(() => []);
     }
   };
-  await Promise.all(Array.from({ length: 8 }, worker));
+  // The reads of all files in flight go out together (one batch per round trip).
+  await Promise.all(Array.from({ length: SCAN_CONCURRENCY }, worker));
   const records = results.flat();
   void idbPutFarManifest(CACHE_KEY, { signature, records });
   return records;

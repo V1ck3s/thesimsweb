@@ -27,6 +27,7 @@
  * texture * min(1, max(0, N . -L)).
  */
 
+import { readAssetFile } from "../../engine/assets.js";
 import { AnimDeviceCamera, type SimView } from "../sims/camera.js";
 import { mat4Mul, rotationTf, transformDir, transformPoint, translationTf, vec3Normalize, type Mat4, type Vec3 } from "../sims/math3d.js";
 import { DEFAULT_DEPTH } from "../sims/renderer.js";
@@ -225,9 +226,8 @@ export class RoofRenderer {
 async function loadRoofImage(name: string): Promise<RgbaImage | null> {
   if (!name) return null;
   try {
-    const r = await fetch(`/assets/Sims/GameData/Roofs/${encodeURIComponent(name)}.bmp`);
-    if (!r.ok) return null;
-    return decodeImage(new Uint8Array(await r.arrayBuffer()), `${name}.bmp`);
+    const bytes = await readAssetFile(`Sims/GameData/Roofs/${name}.bmp`);
+    return decodeImage(bytes, `${name}.bmp`);
   } catch {
     return null;
   }

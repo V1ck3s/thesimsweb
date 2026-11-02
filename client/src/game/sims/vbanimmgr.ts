@@ -16,7 +16,7 @@
  * are looked up by file name, case-insensitively, ignoring their folder.
  */
 
-import { fetchManifest, readFarEntry, readFarManifest } from "../../engine/assets.js";
+import { fetchManifest, readAssetFile, readFarEntry, readFarManifest } from "../../engine/assets.js";
 import { decodeBmp, type RgbaImage } from "../res/bmp.js";
 import { loadAnimationFromFile, loadAnimationFromStream, loadIndexFromFile, type AnimFile } from "./animfile.js";
 import { DeformableMesh } from "./deformablemesh.js";
@@ -137,8 +137,7 @@ export class VBAnimMgr {
     const src = this.files.get(name.toLowerCase());
     if (!src) return null;
     if ("far" in src) return readFarEntry(src.far, src.entry);
-    const res = await fetch(`/assets/${src.path}`);
-    return res.ok ? new Uint8Array(await res.arrayBuffer()) : null;
+    return readAssetFile(src.path).catch(() => null);
   }
 
   /** VBAnimMgr::LoadAnimation: "x.cmx" -> binary "x.cmx.bcf" if present, else the text file. */

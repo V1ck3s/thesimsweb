@@ -15,7 +15,7 @@
  * loose file served under /assets/Sims/.
  */
 
-import { fetchManifest, readFarEntry, type Manifest } from "../../engine/assets.js";
+import { fetchManifest, readAssetFile, readFarEntry, type Manifest } from "../../engine/assets.js";
 import { engine } from "../../engine/wasm.js";
 
 export const GAME_ROOT = "Sims/";
@@ -137,6 +137,18 @@ export async function looseUrl(path: string): Promise<string | null> {
   return orig ? `/assets/${GAME_ROOT}${orig.split("/").map(encodeURIComponent).join("/")}` : null;
 }
 
+/** Path under /assets/ of a loose game file ("Sims/..."), or null when the install has no such file. */
+export async function loosePath(path: string): Promise<string | null> {
+  const orig = (await files()).get(toSlash(path).toLowerCase());
+  return orig ? GAME_ROOT + orig : null;
+}
+
+/** Bytes of a loose game file (cached across loads, engine/assets.ts readAssetFile), null when missing. */
+export async function readLooseFile(path: string): Promise<Uint8Array | null> {
+  const p = await loosePath(path);
+  return p ? readAssetFile(p).catch(() => null) : null;
+}
+
 /** Raw bytes of a game sample, from its FAR archive or as a loose file. */
 export async function readGameFile(path: string): Promise<Uint8Array> {
   const lower = path.replace(/\//g, "\\").toLowerCase();
@@ -148,11 +160,9 @@ export async function readGameFile(path: string): Promise<Uint8Array> {
       break; // fall back to a loose file
     }
   }
-  const url = await looseUrl(path);
-  if (!url) throw new Error(`sound file not found: ${path}`);
-  const res = await fetch(url);
-  if (!res.ok) throw new Error(`${url}: ${res.status}`);
-  return new Uint8Array(await res.arrayBuffer());
+  const p = await loosePath(path);
+  if (!p) throw new Error(`sound file not found: ${path}`);
+  return readAssetFile(p);
 }
 
 function isXa(bytes: Uint8Array): boolean {

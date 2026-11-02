@@ -18,6 +18,8 @@
  * explicit hotspots; before that, getCursor() answers with the .cur file.
  */
 
+import { readAssetFile } from "../../engine/assets.js";
+
 const CURSOR_DIR = "/assets/Sims/UIGraphics/Shared/cursors/";
 
 /** cSimsApp::SetupWinCtrlMgr: AddCursor(file, id). */
@@ -115,9 +117,7 @@ export async function loadCursors(): Promise<void> {
     Object.entries(CURSOR_FILES).map(async ([key, file]) => {
       const id = Number(key);
       try {
-        const res = await fetch(CURSOR_DIR + file);
-        if (!res.ok) return;
-        const url = decodeCursor(new Uint8Array(await res.arrayBuffer()));
+        const url = decodeCursor(await readAssetFile(CURSOR_DIR.slice("/assets/".length) + file));
         if (url) decoded.set(id, `url("${url.png}") ${url.x} ${url.y}, ${fallback(id)}`);
       } catch {
         // Keep the .cur fallback.

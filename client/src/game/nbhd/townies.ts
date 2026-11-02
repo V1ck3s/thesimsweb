@@ -38,7 +38,7 @@
  * first designed); like a Create-a-Sim person it gets RandomizeAllInterests.
  */
 
-import { fetchManifest } from "../../engine/assets.js";
+import { fetchManifest, readAssetFile } from "../../engine/assets.js";
 import { CasSession, type CasPerson } from "../cas/personfinder.js";
 import { EditPerson, PERSON_GENDER_MALE, type PersonColor } from "../cas/editperson.js";
 import type { GameContext } from "../context.js";
@@ -95,9 +95,9 @@ function townieTemplates(): Promise<Template[]> {
       .sort((a, b) => a.toLowerCase().localeCompare(b.toLowerCase()));
     const out: Template[] = [];
     for (const path of files) {
-      const res = await fetch(`/assets/${encodeURI(path)}`);
-      if (!res.ok) continue;
-      const chunks = parseIffMapOrder(new Uint8Array(await res.arrayBuffer()));
+      const bytes = await readAssetFile(path).catch(() => null);
+      if (!bytes) continue;
+      const chunks = parseIffMapOrder(bytes);
       const objd = chunks.find((c) => c.type === "OBJD");
       if (!objd) continue;
       const v = new DataView(objd.data.buffer, objd.data.byteOffset, objd.data.byteLength);

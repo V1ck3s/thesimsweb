@@ -4,6 +4,11 @@
  * Talks to the dev server (`/api/manifest`, `/assets/*` with `Range`) and uses the WASM
  * parsers to pull individual entries out of FAR archives without downloading the whole
  * archive. Decoded payloads are cached in memory by `(farPath, entryName)`.
+ *
+ * Game-folder data read here (FAR tables and entries, whole files, byte
+ * ranges) is also kept in IndexedDB (engine/idb.ts), so a reload does not
+ * download it again. Files the game writes (Sims/UserData*, served from the
+ * save overlay) change and are always read from the server, never cached.
  */
 
 import { engine } from "./wasm.js";
@@ -11,9 +16,11 @@ import {
   idbGetFarEntry,
   idbGetFarManifest,
   idbGetIffFile,
+  idbGetRange,
   idbPutFarEntry,
   idbPutFarManifest,
   idbPutIffFile,
+  idbPutRange,
 } from "./idb.js";
 
 export interface ManifestFile {
@@ -41,16 +48,90 @@ const ASSETS_BASE = "/assets/";
 const farManifestCache = new Map<string, Promise<FarEntryInfo[]>>();
 const entryCache = new Map<string, Promise<Uint8Array>>();
 
-export async function fetchManifest(): Promise<Manifest> {
-  const res = await fetch("/api/manifest");
-  if (!res.ok) throw new Error(`manifest ${res.status}`);
-  return (await res.json()) as Manifest;
+let manifest: Promise<Manifest> | null = null;
+
+/**
+ * The asset manifest, fetched once per page (it lists ~10 000 files, 1.5 MB)
+ * and fetched again after invalidateManifest (data/files.ts calls it after
+ * every write or delete of a game file). Callers must not mutate it.
+ */
+export function fetchManifest(): Promise<Manifest> {
+  if (!manifest) {
+    const p = (async () => {
+      const res = await fetch("/api/manifest", { cache: "no-store" });
+      if (!res.ok) throw new Error(`manifest ${res.status}`);
+      return (await res.json()) as Manifest;
+    })();
+    manifest = p;
+    p.catch(() => {
+      if (manifest === p) manifest = null;
+    });
+  }
+  return manifest;
+}
+
+/** The next fetchManifest asks the server again (the game files changed). */
+export function invalidateManifest(): void {
+  manifest = null;
+}
+
+/** Paths the save overlay can write (server/src/routes/userdata.ts). */
+const WRITABLE_PATH = /^Sims\/UserData\d*\//i;
+
+/** Whether `path` (relative to /assets/) is a file the game can write, which is never cached. */
+export function isWritableAssetPath(path: string): boolean {
+  return WRITABLE_PATH.test(path);
+}
+
+function assetUrl(path: string): string {
+  return ASSETS_BASE + path.split("/").map(encodeURIComponent).join("/");
+}
+
+const fileReads = new Map<string, Promise<Uint8Array>>();
+/** Bigger loose files (music tracks) are left to the HTTP cache. */
+const PERSIST_MAX_BYTES = 8 * 1024 * 1024;
+
+/**
+ * The whole file `path` (relative to /assets/, e.g. "Sims/UIGraphics/Res_CPanel.RT").
+ * Game-folder files come from the IndexedDB cache when present (stored after
+ * the first download); concurrent reads of the same file share one request.
+ * Files the game writes (Sims/UserData*) are always fetched, uncached.
+ * Rejects when the server has no such file.
+ */
+export function readAssetFile(path: string): Promise<Uint8Array> {
+  if (isWritableAssetPath(path)) {
+    return (async () => {
+      const res = await fetch(assetUrl(path), { cache: "no-store" });
+      if (!res.ok) throw new Error(`${path}: ${res.status}`);
+      return new Uint8Array(await res.arrayBuffer());
+    })();
+  }
+  const pending = fileReads.get(path);
+  // A read joining one in flight gets its own copy, as if it had fetched the file itself.
+  if (pending) return pending.then((b) => b.slice());
+  const p = (async () => {
+    const persisted = await idbGetIffFile(path);
+    if (persisted) return persisted;
+    const res = await fetch(assetUrl(path));
+    if (!res.ok) throw new Error(`${path}: ${res.status}`);
+    const data = new Uint8Array(await res.arrayBuffer());
+    if (data.length <= PERSIST_MAX_BYTES) void idbPutIffFile(path, data.slice());
+    return data;
+  })();
+  // Only in-flight reads are shared; callers keep what they need.
+  fileReads.set(path, p);
+  const settled = (): void => void fileReads.delete(path);
+  p.then(settled, settled);
+  return p;
 }
 
 async function fetchRange(path: string, start: number, endInclusive: number): Promise<Uint8Array> {
   const url = `${ASSETS_BASE}${path}`;
+  // Not through the HTTP cache: the bytes are kept in IndexedDB, and Chrome
+  // serializes cached requests to one URL (a FAR archive), which stalled cold loads.
   const res = await fetch(url, {
     headers: { Range: `bytes=${start}-${endInclusive}` },
+    cache: "no-store",
   });
   if (res.status !== 206 && res.status !== 200) {
     throw new Error(`range fetch ${path} ${start}-${endInclusive}: ${res.status}`);
@@ -61,6 +142,43 @@ async function fetchRange(path: string, start: number, endInclusive: number): Pr
 /** Bytes [start, end) of a file under /assets (one Range request, not cached). */
 export function readAssetRange(path: string, start: number, end: number): Promise<Uint8Array> {
   return fetchRange(path, start, end - 1);
+}
+
+let sharedBatcher: RangeBatcher | null = null;
+
+/**
+ * Bytes [start, end) of a file under /assets, not cached, read through a
+ * shared RangeBatcher: the reads issued in one task go out in one request.
+ * The result is a copy (the batch response buffer is not kept alive).
+ */
+export async function readAssetRangeBatched(path: string, start: number, end: number): Promise<Uint8Array> {
+  sharedBatcher ??= new RangeBatcher();
+  return (await sharedBatcher.read(path, start, end)).slice();
+}
+
+const rangeReads = new Map<string, Promise<Uint8Array>>();
+
+/**
+ * Like readAssetRangeBatched, with the range kept in IndexedDB for game-folder
+ * files (never for Sims/UserData*). For small ranges read again on later
+ * loads (catalog icons).
+ */
+export function readAssetRangeCached(path: string, start: number, end: number): Promise<Uint8Array> {
+  if (isWritableAssetPath(path)) return readAssetRangeBatched(path, start, end);
+  const key = `${path}|${start}|${end}`;
+  const pending = rangeReads.get(key);
+  if (pending) return pending.then((b) => b.slice());
+  const p = (async () => {
+    const persisted = await idbGetRange(path, start, end);
+    if (persisted) return persisted;
+    const bytes = await readAssetRangeBatched(path, start, end);
+    void idbPutRange(path, start, end, bytes.slice());
+    return bytes;
+  })();
+  rangeReads.set(key, p);
+  const settled = (): void => void rangeReads.delete(key);
+  p.then(settled, settled);
+  return p;
 }
 
 /**
@@ -128,7 +246,8 @@ export async function readFarEntry(farPath: string, entryName: string): Promise<
       const start = target.offset;
       const end = start + target.sizeCompressed - 1;
       const bytes = await fetchRange(farPath, start, end);
-      void idbPutFarEntry(farPath, entryName, bytes);
+      // (a copy: the put is queued, the caller may change its bytes meanwhile)
+      void idbPutFarEntry(farPath, entryName, bytes.slice());
       return bytes;
     })();
     entryCache.set(cacheKey, cached);
@@ -161,24 +280,14 @@ export interface IffChunkInfo {
   dataLen: number;
 }
 
-/** Paths the save overlay can write (server/src/routes/userdata.ts). */
-const WRITABLE_PATH = /^Sims\/UserData\d*\//i;
-
 /** Open a standalone .iff/.flr/.wll file on disk (no FAR wrapping). */
 export async function readStandaloneIff(
   path: string,
 ): Promise<{ data: Uint8Array; chunks: IffChunkInfo[] }> {
   const wasm = await engine();
   // Files the game writes (UserData*, served from the save overlay) change:
-  // they are never kept in the persistent cache.
-  const writable = WRITABLE_PATH.test(path);
-  let data = writable ? null : await idbGetIffFile(path);
-  if (!data) {
-    const res = await fetch(`${ASSETS_BASE}${path}`, writable ? { cache: "no-store" } : {});
-    if (!res.ok) throw new Error(`${path}: ${res.status}`);
-    data = new Uint8Array(await res.arrayBuffer());
-    if (!writable) void idbPutIffFile(path, data);
-  }
+  // readAssetFile never keeps them in the persistent cache.
+  const data = await readAssetFile(path);
   const chunks = wasm.parseIffChunks(data) as IffChunkInfo[];
   return { data, chunks };
 }

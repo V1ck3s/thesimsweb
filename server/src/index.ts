@@ -28,15 +28,22 @@ const app = Fastify({
 
 await app.register(fastifyCors, { origin: true });
 
+// The game folder is read-only: its files may be reused for an hour (then
+// revalidated by ETag; the client keeps most of them in IndexedDB anyway).
+// UserData* files change when the game saves (a saved copy then shadows the
+// original through the overlay): always revalidated.
+const USERDATA_FILE = /^Sims[\\/]UserData\d*[\\/]/i;
 await app.register(fastifyStatic, {
   root: assetsDir,
   prefix: "/assets/",
   decorateReply: false,
   acceptRanges: true,
-  cacheControl: true,
-  maxAge: "1h",
+  cacheControl: false,
   etag: true,
-  immutable: false,
+  setHeaders: (res, path) => {
+    const rel = path.startsWith(assetsDir) ? path.slice(assetsDir.length + 1) : path;
+    res.setHeader("cache-control", USERDATA_FILE.test(rel) ? "no-cache" : "public, max-age=3600");
+  },
 });
 
 app.get("/api/health", async () => ({ ok: true }));

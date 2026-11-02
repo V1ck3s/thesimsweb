@@ -8,7 +8,7 @@
  * table) or by event code (Event, a switch on the kSndob... and k... codes).
  */
 
-import { listDir, looseUrl } from "./audiosys.js";
+import { listDir, readLooseFile } from "./audiosys.js";
 import { getAudioInfo } from "./audioinfo.js";
 import { FreshPlayer, FreshTimer } from "./fresh.js";
 import { checkHit, parseHot, parseHsm, type HitCode, type MappedEvent } from "./hitdata.js";
@@ -179,17 +179,13 @@ const DATA_DIRS = [
 ];
 
 async function fetchText(path: string): Promise<string | null> {
-  const url = await looseUrl(path);
-  if (!url) return null;
-  const res = await fetch(url);
-  return res.ok ? res.text() : null;
+  const bytes = await readLooseFile(path);
+  // (UTF-8, as Response.text() decoded it)
+  return bytes ? new TextDecoder().decode(bytes) : null;
 }
 
-async function fetchBytes(path: string): Promise<Uint8Array | null> {
-  const url = await looseUrl(path);
-  if (!url) return null;
-  const res = await fetch(url);
-  return res.ok ? new Uint8Array(await res.arrayBuffer()) : null;
+function fetchBytes(path: string): Promise<Uint8Array | null> {
+  return readLooseFile(path);
 }
 
 /**

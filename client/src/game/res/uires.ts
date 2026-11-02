@@ -13,7 +13,7 @@
  * present, otherwise from UIGraphics.far.
  */
 
-import { fetchManifest, readFarEntry } from "../../engine/assets.js";
+import { fetchManifest, readAssetFile, readFarEntry } from "../../engine/assets.js";
 import { decodeImage, type RgbaImage } from "./bmp.js";
 
 const ROOT = "Sims/UIGraphics/";
@@ -37,7 +37,20 @@ export class UIRes {
 
   private constructor(private readonly lang: number) {}
 
-  static async load(lang = LANG_FRENCH): Promise<UIRes> {
+  private static readonly loaded = new Map<number, Promise<UIRes>>();
+
+  /** The tables of a language, read once (later calls share the instance). */
+  static load(lang = LANG_FRENCH): Promise<UIRes> {
+    let p = UIRes.loaded.get(lang);
+    if (!p) {
+      p = UIRes.read(lang);
+      UIRes.loaded.set(lang, p);
+      p.catch(() => UIRes.loaded.delete(lang));
+    }
+    return p;
+  }
+
+  private static async read(lang: number): Promise<UIRes> {
     const res = new UIRes(lang);
     const manifest = await fetchManifest();
     for (const f of manifest.files) {
@@ -99,8 +112,8 @@ export class UIRes {
   private async readBytes(rel: string): Promise<Uint8Array> {
     const loose = this.looseFiles.get((ROOT + rel.replace(/\\/g, "/")).toLowerCase());
     if (loose) {
-      const r = await fetch(`/assets/${loose}`);
-      if (r.ok) return new Uint8Array(await r.arrayBuffer());
+      const bytes = await readAssetFile(loose).catch(() => null);
+      if (bytes) return bytes;
     }
     return readFarEntry(FAR, rel.replace(/\//g, "\\"));
   }
