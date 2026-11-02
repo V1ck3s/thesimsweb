@@ -644,15 +644,20 @@ export class SimModule {
   }
 
   /**
-   * ObjectFolder::GetTypeAttrBlock: one block of shorts per type, keyed by the
-   * OBJD type-attribute GUID (+0xb8, else the GUID), OBJD +0xb4 shorts, zeroed
-   * at load. The original saves them with the neighborhood; here they live
-   * for the session only.
+   * ObjSelector::GetTypeAttributes (Mac 100f9e20): the ObjectFolder's block
+   * (ObjectFolder::GetTypeAttrBlock) of the OBJD type-attribute GUID (+0xb8,
+   * else the GUID). The folder keeps the blocks for the session and the
+   * neighborhood file saves them (TATT); a block is the size AddSelector gives
+   * it, the OBJD +0xb4 of the selector with that GUID (this one's when that
+   * selector is not opened yet). A folder without blocks (tests) keeps them
+   * in the module.
    */
   typeAttributes(sel: ObjSelector): Int16Array | null {
-    const count = sel.objd.i16(0xb4);
-    if (count <= 0 || count > 31999) return null;
     const key = sel.objd.u32(0xb8) || sel.objd.u32(0x1c);
+    const owner = key === sel.objd.u32(0x1c) ? sel : (sel.folder.selectorByGUID?.(key) ?? sel);
+    const count = owner.objd.i16(0xb4);
+    if (sel.folder.getTypeAttrBlock) return sel.folder.getTypeAttrBlock(key, count);
+    if (count <= 0 || count > 31999) return null;
     let b = this.typeAttrs.get(key);
     if (!b) {
       b = new Int16Array(count);

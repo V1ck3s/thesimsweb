@@ -31,9 +31,11 @@
 import { fetchManifest, RangeBatcher, readFarManifest, type FarEntryInfo } from "../../engine/assets.js";
 import { idbGetFarManifest, idbPutFarManifest } from "../../engine/idb.js";
 import { engine } from "../../engine/wasm.js";
+import { parseIff } from "../data/iff.js";
 import { ResFile } from "./iffres.js";
 import { getSubIndex, ObjDefinition, ObjSelector, type SelectorFolder } from "./objselector.js";
 import { ReconBuffer } from "./reconbuffer.js";
+import { compactRecon, type ReconOut } from "./reconwriter.js";
 
 /** Placeholder GUIDs (ObjectFolder::Get*Placeholder). */
 export const GUID_STANDARD_PLACEHOLDER = 0x3c08965f;
@@ -279,14 +281,112 @@ export class ObjectFolder implements SelectorFolder {
     return this.index.packs;
   }
 
-  /** The folder for a neighborhood (scanned once, then cached). */
+  /**
+   * ObjectFolder +0x1250: the ObjectTypeAttrBlocks by GUID. AddSelector makes
+   * one for every selector whose OBJD +0xb4 (attribute count) is not 0, keyed
+   * by its OBJD GUID (+0x1c); here a block is made when first asked for
+   * (getTypeAttrBlock) or read from the neighborhood's TATT chunk.
+   */
+  private readonly typeAttrBlocks = new Map<number, Int16Array>();
+
+  /**
+   * The folder for a neighborhood (scanned once, then cached). Its type
+   * attributes come from the neighborhood file then (Neighborhood::Load ->
+   * ObjectFolder::Load).
+   */
   static get(userDir = "UserData"): Promise<ObjectFolder> {
     let f = ObjectFolder.folders.get(userDir);
     if (!f) {
-      f = ObjectFolder.scan(userDir).then((index) => new ObjectFolder(userDir, index));
+      f = ObjectFolder.scan(userDir).then(async (index) => {
+        const folder = new ObjectFolder(userDir, index);
+        await folder.load();
+        return folder;
+      });
       ObjectFolder.folders.set(userDir, f);
     }
     return f;
+  }
+
+  /** The folder of `userDir` if it was made in this session (Neighborhood::Save's ObjectFolder::Save), else null. */
+  static loaded(userDir: string): Promise<ObjectFolder> | null {
+    return ObjectFolder.folders.get(userDir) ?? null;
+  }
+
+  /**
+   * ObjectFolder::Load (Mac 100ca320): ReconLoadObject of the neighborhood's
+   * TATT chunk 1 (ObjectFolder::DoStream). A missing file or chunk leaves the
+   * blocks zeroed.
+   */
+  private async load(): Promise<void> {
+    const res = await fetch(`/assets/Sims/${this.userDir}/Neighborhood.iff`, { cache: "no-store" }).catch(() => null);
+    if (!res?.ok) return;
+    const chunk = parseIff(new Uint8Array(await res.arrayBuffer())).find((c) => c.type === "TATT" && c.id === 1);
+    if (!chunk) return;
+    try {
+      this.doStreamIn(ReconBuffer.fromChunk(chunk.data).buf);
+    } catch (e) {
+      console.warn("TATT", e);
+    }
+  }
+
+  /**
+   * ObjectFolder::DoStream (Mac 100ca140), read side: a compression bool,
+   * the block count, then per block its GUID, its count and that many
+   * shorts; the rest of a longer block is zeroed. A GUID with no block reads
+   * into a 0x80-short scratch buffer (dropped); a count above the block's
+   * size ends the stream. The port's blocks are made here at the stored size
+   * when the folder knows the GUID (AddSelector's size is OBJD +0xb4, which
+   * the original saved as the count).
+   */
+  private doStreamIn(buf: ReconBuffer): void {
+    if (buf.reconBool()) buf.enableCompression();
+    const count = buf.recon32();
+    for (let i = 0; i < count; i++) {
+      const guid = buf.recon32() >>> 0;
+      let block = this.typeAttrBlocks.get(guid) ?? null;
+      const n = buf.recon32();
+      if (!block && this.byGuid.has(guid) && n > 0) {
+        block = new Int16Array(n);
+        this.typeAttrBlocks.set(guid, block);
+      }
+      const size = block ? block.length : 0x80;
+      if (size < n) return;
+      const values = buf.recon16s(n);
+      if (block) {
+        block.fill(0);
+        block.set(values);
+      }
+    }
+  }
+
+  /** ObjectFolder::Save (Mac 100ca390): the TATT chunk payload (ReconSaveObject, id 1, version 0). */
+  saveTypeAttributes(): Uint8Array {
+    const blocks = [...this.typeAttrBlocks];
+    return compactRecon(0, "TATT", (w: ReconOut) => {
+      // ObjectFolder::DoStream, write side.
+      w.reconBool(true);
+      w.enableCompression();
+      w.recon32(blocks.length);
+      for (const [guid, block] of blocks) {
+        w.recon32(guid | 0);
+        w.recon32(block.length);
+        w.recon16s(block);
+      }
+    });
+  }
+
+  /**
+   * ObjectFolder::GetTypeAttrBlock (Mac 100ca400): the block of `guid`;
+   * `size` (the OBJD +0xb4 of the selector with that GUID) makes it when the
+   * folder has none yet.
+   */
+  getTypeAttrBlock(guid: number, size: number): Int16Array | null {
+    let b = this.typeAttrBlocks.get(guid >>> 0);
+    if (!b && size > 0 && size <= 31999) {
+      b = new Int16Array(size);
+      this.typeAttrBlocks.set(guid >>> 0, b);
+    }
+    return b ?? null;
   }
 
   /** ScanForNewFiles over the asset manifest. */

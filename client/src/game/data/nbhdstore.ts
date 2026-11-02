@@ -7,7 +7,8 @@
  * vector) is parsed losslessly, so re-serializing it reproduces the file's
  * bytes; FAMI chunks are parsed and only the families changed here are
  * written back. Neighborhood::Save rewrites every chunk (NGBH, NBRS, all
- * families, ObjectFolder's data) in the current version; we keep the chunks
+ * families, ObjectFolder's data: TATT, written from the folder when it is
+ * open) in the current version; we keep the chunks
  * we do not touch verbatim and write NBRS in the version the file already has
  * (Neighbor::DoStream picks the neighbor stream version from it), FAMI in
  * version 9 (Family::SaveFamily always saves 9) with its FAMs name.
@@ -879,6 +880,12 @@ export class NeighborhoodStore {
       const ngbh = this.chunks.find((c) => c.type === "NGBH");
       this.put({ type: "NGBH", id: ngbh?.id ?? 1, flags: ngbh?.flags ?? 0x10, label: ngbh?.label ?? "", data: serializeNgbh(this.ngbhRaw, NGBH_CURRENT_VERSION) });
       this.ngbhRaw.dirty = false;
+    }
+    // ObjectFolder::Save: the type attribute blocks (TATT 1) of this neighborhood's folder, when it is open.
+    const folder = await (await import("../world/objectfolder.js")).ObjectFolder.loaded(this.dir)?.catch(() => null);
+    if (folder) {
+      const tatt = this.chunks.find((c) => c.type === "TATT" && c.id === 1);
+      this.put({ type: "TATT", id: 1, flags: tatt?.flags ?? 0x10, label: tatt?.label ?? "", data: folder.saveTypeAttributes() });
     }
     await writeGameFile(`${this.dir}/Neighborhood.iff`, buildIff(this.chunks));
   }
