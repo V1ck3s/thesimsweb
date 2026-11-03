@@ -18,10 +18,24 @@
  * when the mouse leaves the page (TSOnMouseMove / TSOnMouseExit) or the page
  * changes (SetPanel), which releases the button it belongs to.
  *
- * Not ported (no simulation yet or out of scope): pie menus (cTSPieMenu,
- * kPieFaceBkg), sounds, sim tracking (kTrackingTarget foreground, command
- * 0x1b), the family portrait popup (command 0x13 on a portrait), at-work /
- * frog portrait overlays (UpdateAtWorkStatus).
+ * The portraits (cWinPeople+0xf0): a click selects the person
+ * (CPState::SetSelectedPerson, which centers the view when the person was
+ * selected already), Ctrl+click edits the bio; holding one (async timeout,
+ * command 0x13) opens the person popup (+0x230): no name but " (sign)"
+ * (PersonFinder::GetName fills a temporary the code drops, then the name is
+ * set to "" plus " (", GetZodiacName and ")" when the zodiac sign is set)
+ * and PersonFinder::GetDescription; it closes when the mouse leaves the
+ * portrait area (lbl_105BC4CC) and moves to another portrait the mouse
+ * enters (TSOnMouseEnterChild). A right press (cTSWinBtn::TSOnMouseDownR,
+ * command 0x1b) is TrackPerson: the lot view follows the person
+ * (world/tracking.ts), kTrackingTarget over the portrait; on the tracked
+ * person it stops. UpdateAtWorkStatus (each TSPaint) draws over a portrait
+ * the career icon of a person at work (a child: the school's), the toad
+ * icon of a toad, else the tracking target or nothing.
+ *
+ * The two cTSPieMenu cWinPeople::Init makes on kPieFaceBkg are the lot's
+ * interaction pies (GetPeoplePie / GetPeopleSubPie for cObjPickerTool, see
+ * ui/piemenu.ts TSPieMenu.forLiveMode); the portraits have no pie menu.
  */
 
 import type { GameContext } from "../context.js";
@@ -45,6 +59,8 @@ import { WinSubpanelReportCard } from "./live/reportcard.js";
 import { WinEditBio } from "./live/editbio.js";
 import { GiftsPanel } from "./live/gifts.js";
 import { popupClick, WinLivePopup, WinLivePopupClient } from "./livepopup.js";
+import type { PlacedObject } from "../world/objects.js";
+import { getTrackedObject, setTrackedObject, setTrackingPanel, type TrackingPanel } from "../world/tracking.js";
 
 export const enum LivePanel {
   None = 0,
@@ -104,6 +120,18 @@ const TRAITS = [7, 6, 3, 5, 2];
 const PD_AGE = 58;
 /** Person data 70: zodiac sign (1..12, 0 = not computed yet). */
 const PD_ZODIAC = 70;
+/** Person data 56: career id (PersonFinder::GetCareer, cCareer::GetID). */
+const PD_JOB_TYPE = 56;
+/** Person data 86 "Is Toad" (cXPerson+0x638): the toad object's id; 87 (+0x63a): at work or school. */
+const PD_TOAD = 86;
+const PD_AT_WORK = 87;
+/** cTSWinBtn::TSOnMouseDownR: the command a right press sends. */
+const CMD_RIGHT_DOWN = 0x1b;
+/** UpdateAtWorkStatus: kJobIconGeneric's 22 rows (one per career id), column 2, scaled by lbl_105BC4C8 (0.75). */
+const AT_WORK_ICONS = 0x16;
+const AT_WORK_SCALE = 0.75;
+/** The school icon (+0x378 + 0x2c) of a child (PersonFinder::GetAge == 1: person data 58 < 18). */
+const AT_WORK_CHILD_ICON = 11;
 
 /** STR# ids in Live.iff / UIText.iff. */
 const STR_MOTIVES = 0x82;
@@ -184,7 +212,7 @@ export function findPersonPanelButton(win: TSWin, guid: number): TSWinBtn | null
   return null;
 }
 
-export class WinPeople extends TSWin {
+export class WinPeople extends TSWin implements TrackingPanel {
   /** cWinPeople+0x3d: shown page. */
   private panel = LivePanel.None;
   /** cWinPeople+0x38: family slot of the person shown, -1 = none. */
@@ -198,6 +226,15 @@ export class WinPeople extends TSWin {
   private readonly pageBtns: TSWinBtn[] = [];
   /** Family portrait images (PersonFinder::GetPictureBuffer cache). */
   private readonly pictures = new Map<PersonInfo, ImageBitmap>();
+  /** +0x240: kTrackingTarget; +0x244: the portrait showing it (TrackPerson). */
+  private trackingTarget: ImageBitmap | null = null;
+  private trackedBtn: TSWinBtn | null = null;
+  /** +0x230: the person popup's client; +0x23c the portrait it belongs to. */
+  private readonly personClient = new WinLivePopupClient();
+  private personPopupBtn: TSWinBtn | null = null;
+  /** +0x378: the career icons (UpdateAtWorkStatus); +0x380: kFrogIconGeneric. */
+  private readonly atWorkIcons: ImageBitmap[] = [];
+  private frogIcon: ImageBitmap | null = null;
 
   private readonly motivesWin = new TSWin();
   private readonly petMotivesWin = new TSWin();
@@ -240,7 +277,7 @@ export class WinPeople extends TSWin {
       res.image("kRedBars"),
       res.image("kPeopleTemplate"),
     ]);
-    // Pie menus (cTSPieMenu x2 on kPieFaceBkg): not ported.
+    // The two pie menus (cTSPieMenu on kPieFaceBkg) are the lot view's (TSPieMenu.forLiveMode).
 
     for (let i = 0; i < MAX_FAMILY; i++) {
       const b = new TSWinBtn();
@@ -399,12 +436,23 @@ export class WinPeople extends TSWin {
       page.livePopup = this.popup;
     }
 
+    // kTrackingTarget (+0x240), magenta transparent.
+    this.trackingTarget = await res.image("kTrackingTarget");
+    await this.loadAtWorkIcons();
+    setTrackingPanel(this);
+
     this.setPerson(-1);
     this.setPanel(LivePanel.Mood);
     const options = getOptionsMgr();
     this.setQuickTips(options.getQuickTips());
     options.onChange((o) => this.setQuickTips(o.getQuickTips()));
     return true;
+  }
+
+  /** ~cWinPeople: lbl_105BA254 no longer points to it. */
+  override shutdown(): void {
+    setTrackingPanel(null, this);
+    super.shutdown();
   }
 
   /**
@@ -656,6 +704,11 @@ export class WinPeople extends TSWin {
   /** The family part of UpdateViewFromCPState (dirty 0x20080000). */
   private updateFamilyButtons(): void {
     for (const b of this.familyBtns) b.hideWindow();
+    // The tracking target leaves its portrait (+0x244); the tracked object stays.
+    if (this.trackedBtn) {
+      this.trackedBtn.setForeground(null);
+      this.trackedBtn = null;
+    }
     const family = this.ctx.state.family;
     const n = Math.min(family.length, MAX_FAMILY);
     for (let i = 0; i < n; i++) {
@@ -681,13 +734,22 @@ export class WinPeople extends TSWin {
 
   /**
    * cWinPeople::TSOnCommand: command 1 (button pressed); 0x13 (async
-   * timeout) is a click for everything but the portraits, whose person
-   * popup is not ported; 0x14 is ignored.
+   * timeout) opens a portrait's person popup and is a click for everything
+   * else; 0x14 is ignored; 0x1b (right press) on a portrait is TrackPerson.
    */
   override tsOnCommand(cmd: number, source: TSWin): boolean {
     if (cmd === CMD_ASYNC_EXIT) return true;
     const slot = this.familyBtns.indexOf(source as TSWinBtn);
-    if (cmd === CMD_ASYNC_TIMEOUT && slot >= 0) return true;
+    if (cmd === CMD_RIGHT_DOWN) {
+      // TrackPerson(PersonFinder::GetInstance(GetPersonInHouseIndex(i))).
+      const guid = slot >= 0 ? this.personAt(slot)?.guid : undefined;
+      if (guid !== undefined) this.trackPerson(this.ctx.state.viewer?.getPersonInstance?.(guid) ?? null);
+      return true;
+    }
+    if (cmd === CMD_ASYNC_TIMEOUT && slot >= 0) {
+      this.showPersonPopup(slot);
+      return true;
+    }
     if (this.popupCommand(source)) return true;
     if (slot >= 0) {
       if (winMgr.isKeyDown("Control")) {
@@ -793,13 +855,162 @@ export class WinPeople extends TSWin {
     let root: TSWin = this;
     while (root.parent) root = root.parent;
     let inside = false;
-    for (let w = root.windowFromPoint(x, y); w; w = w.parent) if (w === this) inside = true;
+    const under = root.windowFromPoint(x, y);
+    for (let w = under; w; w = w.parent) if (w === this) inside = true;
     const o = this.absOrigin();
     const lx = x - o.x;
     const ly = y - o.y;
+    if (popup.getClient() === this.personClient) {
+      // The person popup stays while the mouse is over the portraits (lbl_105BC4CC)
+      // and follows it to another portrait (TSOnMouseEnterChild: TSOnCommand 0x13).
+      const f = FAMILY_AREA;
+      if (!inside || lx < f.left || ly < f.top || lx >= f.right || ly >= f.bottom) popup.disablePopup();
+      else {
+        const slot = this.familyBtns.indexOf(under as TSWinBtn);
+        if (slot >= 0 && this.familyBtns[slot] !== this.personPopupBtn) this.tsOnCommand(CMD_ASYNC_TIMEOUT, this.familyBtns[slot]!);
+      }
+      return;
+    }
     const right = PAGE_ORIGIN.x + PAGE_AREA.right + (this.ctx.width === 0x400 ? WIDE_SCREEN_EXTRA : 0);
     const inPage = lx >= PAGE_ORIGIN.x && ly >= PAGE_AREA.top && lx < right && ly < PAGE_AREA.bottom;
     if (!inside || !inPage) popup.disablePopup();
+  }
+
+  /**
+   * cTSWinBtn::TSOnMouseDownR on a portrait: entered and enabled, it sends
+   * 0x1b to the panel; cWinPeople::TSOnMouseDownR then takes the press.
+   */
+  override tsOnMouseDownR(): boolean {
+    const b = this.familyBtns.find((x) => x.isVisible() && x.entered && x.enabled);
+    if (b) this.tsOnCommand(CMD_RIGHT_DOWN, b);
+    return true;
+  }
+
+  /** cTSWinBtn::TSOnMouseUpR takes the release over a button; cWinPeople's (cTSWin's) does not. */
+  override tsOnMouseUpR(): boolean {
+    return this.familyBtns.some((b) => b.isVisible() && b.entered);
+  }
+
+  // --- person popup ----------------------------------------------------------
+
+  /**
+   * The 0x13 part of TSOnCommand for portrait `slot`: name "" (+ " (" sign
+   * ")" when person data 70 is set), description PersonFinder::GetDescription,
+   * then SetClient when the popup is up, else EnablePopup(client, this).
+   */
+  private showPersonPopup(slot: number): void {
+    const p = this.personAt(slot);
+    const popup = this.popup;
+    if (!p || !popup) return;
+    const c = this.personClient;
+    c.setDesc(p.bio ?? "");
+    const sign = p.personData?.[PD_ZODIAC] ?? 0;
+    // GetZodiacName clamps to 1..12.
+    c.setName(sign !== 0 ? ` (${this.ctx.strings.get("UIText", STR_SIGNS, Math.min(12, Math.max(1, sign)) - 1)})` : "");
+    if (popup.isEnabled()) popup.setClient(c);
+    else popup.enablePopup(c, this);
+    this.personPopupBtn = this.familyBtns[slot] ?? null;
+  }
+
+  // --- tracking --------------------------------------------------------------
+
+  /** cWinPeople::StopTracking: the portrait's tracking target off, SetTrackedObject(0). */
+  stopTracking(): void {
+    if (this.trackedBtn) {
+      this.trackedBtn.setForeground(null);
+      this.trackedBtn = null;
+    }
+    setTrackedObject(null);
+  }
+
+  /**
+   * cWinPeople::TrackPerson: the tracking target off its portrait; tracking
+   * the tracked person stops it; otherwise a family member who is not a
+   * toad gets kTrackingTarget on their portrait and becomes the tracked
+   * object; a toad's view centers on the toad object (person data 86,
+   * cXObject::CenterHouseViewOnMe(true)).
+   */
+  trackPerson(person: PlacedObject | null): void {
+    if (this.trackedBtn) {
+      this.trackedBtn.setForeground(null);
+      this.trackedBtn = null;
+    }
+    if (person === getTrackedObject()) {
+      setTrackedObject(null);
+      return;
+    }
+    if (!person) return;
+    const slot = this.ctx.state.family.findIndex((p) => p.guid !== undefined && (p.guid | 0) === (person.guid | 0));
+    const p = this.personAt(slot);
+    if (!p) return;
+    const toad = p.personData?.[PD_TOAD] ?? 0;
+    if (toad <= 0) {
+      if (slot >= MAX_FAMILY) return;
+      this.trackedBtn = this.familyBtns[slot]!;
+      this.trackedBtn.setForeground(this.trackingTarget);
+      setTrackedObject(person);
+    } else {
+      this.ctx.state.viewer?.centerOnObjectId?.(toad, true);
+    }
+  }
+
+  // --- at work ---------------------------------------------------------------
+
+  /**
+   * The +0x378 part of UpdateAtWorkStatus: the third column of each of the
+   * 22 rows of kJobIconGeneric (the job page's +0x170), ScaleBitmap(0.75)
+   * (ceil of the scaled size; here the canvas' smoothing), and +0x380
+   * kFrogIconGeneric.
+   */
+  private async loadAtWorkIcons(): Promise<void> {
+    const [icons, frog] = await Promise.all([this.ctx.res.image("kJobIconGeneric"), this.ctx.res.image("kFrogIconGeneric")]);
+    this.frogIcon = frog;
+    if (!icons) return;
+    const cw = Math.trunc(icons.width / 4);
+    const ch = Math.trunc(icons.height / AT_WORK_ICONS);
+    const w = Math.ceil(cw * AT_WORK_SCALE);
+    const h = Math.ceil(ch * AT_WORK_SCALE);
+    for (let i = 0; i < AT_WORK_ICONS; i++) {
+      const c = new OffscreenCanvas(w, h);
+      const g = c.getContext("2d")!;
+      g.imageSmoothingEnabled = true;
+      g.drawImage(icons, 2 * cw, i * ch, cw, ch, 0, 0, w, h);
+      this.atWorkIcons.push(await createImageBitmap(c));
+    }
+  }
+
+  /**
+   * cWinPeople::UpdateAtWorkStatus: per portrait, a person at work
+   * (PersonFinder::AtWork: on the lot with person data 87 > 0) gets their
+   * career's icon (a child the school's; a career id outside 0..21 or no
+   * career leaves the portrait as it is) 4 px inside its bottom right
+   * corner; a toad (person data 86 > 0) kFrogIconGeneric 1 px inside it;
+   * anyone else kTrackingTarget at (0, 0) when tracked, else nothing.
+   */
+  private updateAtWorkStatus(): void {
+    const family = this.ctx.state.family;
+    const viewer = this.ctx.state.viewer;
+    const tracked = getTrackedObject();
+    for (let i = 0; i < Math.min(family.length, this.familyBtns.length); i++) {
+      const p = family[i]!;
+      const b = this.familyBtns[i]!;
+      const instance = p.guid === undefined ? null : (viewer?.getPersonInstance?.(p.guid) ?? null);
+      const data = instance ? p.personData : undefined;
+      if ((data?.[PD_AT_WORK] ?? 0) > 0) {
+        let icon: ImageBitmap | null = null;
+        if ((data![PD_AGE] ?? 0) < 18) icon = this.atWorkIcons[AT_WORK_CHILD_ICON] ?? null;
+        else {
+          const career = data![PD_JOB_TYPE] ?? 0;
+          if (career !== 0 && career >= 0 && career < AT_WORK_ICONS) icon = this.atWorkIcons[career] ?? null;
+        }
+        if (icon) b.setForeground(icon, b.getW() - icon.width - 4, b.getH() - icon.height - 4);
+      } else if ((data?.[PD_TOAD] ?? 0) > 0) {
+        const frog = this.frogIcon;
+        if (frog) b.setForeground(frog, b.getW() - frog.width - 1, b.getH() - frog.height - 1);
+      } else {
+        b.setForeground(instance !== null && instance === tracked ? this.trackingTarget : null);
+      }
+    }
   }
 
   /** cWinPeople::IsPointInWindowWindowCoordinates: the top 50 px let clicks through. */
@@ -811,6 +1022,7 @@ export class WinPeople extends TSWin {
 
   /** cWinPeople::TSPaint: background band, mood gauge and mood bars. */
   override tsPaint(g: Gfx): void {
+    this.updateAtWorkStatus();
     if (this.background) g.blitPart(this.background, 0, 0, this.getW(), this.getH() - 50, 0, 50);
     const gauge = this.gauge;
     if (!gauge) return;

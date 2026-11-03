@@ -15,7 +15,7 @@
  */
 
 import type { FfnFont } from "../res/ffn.js";
-import { Gfx, TSWin, WF_HIT_ALPHA } from "./tswin.js";
+import { Gfx, TSWin, WF_HIT_ALPHA, type Rect } from "./tswin.js";
 import { winMgr } from "./winmgr.js";
 
 export const BTN_PUSH = 0;
@@ -117,6 +117,18 @@ export class TSWinBtn extends TSWin {
     this.setArea(this.area.left, this.area.top, this.area.left + w, this.area.top + h);
   }
 
+  /** +0xd4 foreground bitmap, +0x124 its offset, +0x12c..+0x138 its source rectangle (all of it by default). */
+  private foreground: { image: ImageBitmap; x: number; y: number; src: Rect } | null = null;
+
+  /**
+   * cTSWinBtn::SetForeground(buffer, point): a bitmap drawn over the frame at
+   * `point` (ForegroundBlt, after the image and the caption); null removes it.
+   * `src` is the part shown (the caller's +0x12c..+0x138), the whole bitmap by default.
+   */
+  setForeground(image: ImageBitmap | null, x = 0, y = 0, src: Rect | null = null): void {
+    this.foreground = image ? { image, x, y, src: src ?? { left: 0, top: 0, right: image.width, bottom: image.height } } : null;
+  }
+
   /** cTSWinBtn::OverrideUISound (enter, down, up, disabled). */
   overrideUISound(enter?: string | null, down?: string | null, up?: string | null, disabled?: string | null): void {
     this.uiSounds = { enter: enter ?? null, down: down ?? null, up: up ?? null, disabled: disabled ?? null };
@@ -183,6 +195,12 @@ export class TSWinBtn extends TSWin {
       const y = (this.getH() - this.font.height) >> 1;
       const color = this.hiliteColors?.[this.frameColumn()] ?? this.captionColor;
       this.font.drawText(g.ctx, this.caption, g.ox + x, g.oy + y, color);
+    }
+    // cTSWinBtn::ForegroundBlt
+    const fg = this.foreground;
+    if (fg) {
+      const { src } = fg;
+      g.blitPart(fg.image, src.left, src.top, src.right - src.left, src.bottom - src.top, fg.x, fg.y);
     }
   }
 

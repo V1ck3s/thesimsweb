@@ -67,6 +67,8 @@ export interface CutawayHooks {
   mode(): Mode;
   /** ObjectModule::GetSelectedPerson. */
   selectedPerson(): CutawayPerson | null;
+  /** lbl_105BA3A8 (Animator::SetTrackedObject) as a person (null when it is not one), undefined when nothing is tracked. */
+  trackedPerson?(): CutawayPerson | null | undefined;
   /** Last mouse position in view coordinates, null when the cursor is not over the window. */
   cursor(): { x: number; y: number } | null;
   /** XViewer's current tool (lbl_105BA4A8), null for none. */
@@ -120,7 +122,9 @@ export class DynamicCutaway {
     }
     const size = w.size;
     if (this.hooks.mode() === Mode.Live) {
-      const p = this.hooks.selectedPerson();
+      // The tracked object (lbl_105BA3A8) when there is one, else the selected person.
+      const tracked = this.hooks.trackedPerson?.();
+      const p = tracked === undefined ? this.hooks.selectedPerson() : tracked;
       const id = p ? w.fixed.rooms[p.level - 1]?.u16(p.x, p.y) : undefined;
       if (p && id !== undefined && p.level === v.level && id < ROOM_DEGENERATE) {
         const room = this.rooms.getRoom(id);
@@ -282,6 +286,11 @@ export class DynamicCutaway {
   onScale(): void {
     if (this.walls.dynamicCutaway) this.doDynamicCutaway(this.valid);
     this.pumpMouseMove();
+  }
+
+  /** HouseViewer::DoCommand(0xf7), e.g. from Animator::SetTrackedObject: DoDynamicCutaway(+0x1f8). */
+  onTrackedChanged(): void {
+    this.doDynamicCutaway(this.valid);
   }
 
   /** CPState::UpdateWorldFromCPState (mode change, bit 2). */

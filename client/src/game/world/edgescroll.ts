@@ -24,6 +24,7 @@
  */
 
 import type { HouseViewer } from "./houseviewer.js";
+import { setTrackedObject, stopTracking } from "./tracking.js";
 
 const EDGE = 5;
 const SPEED = -562.5;
@@ -141,8 +142,8 @@ export class EdgeDetectScroller {
   /**
    * EdgeDetectScroller::OnKeyDown, VK_MENU (0x12): unless the pan is on
    * already, StopScrolling, the pan on, StartScrolling when not scrolling
-   * (cWinPeople::StopTracking and Animator::SetTrackedObject(0) are not
-   * ported), the Pan cursor, then OnMouseMove at the last mouse position.
+   * (with cWinPeople::StopTracking and Animator::SetTrackedObject(0)), the
+   * Pan cursor, then OnMouseMove at the last mouse position.
    * The key is taken either way.
    */
   onAltDown(now = performance.now()): boolean {
@@ -155,6 +156,8 @@ export class EdgeDetectScroller {
         this.state = 1;
         this.last = now;
         this.fx = this.fy = 0;
+        stopTracking();
+        setTrackedObject(null);
       }
       this.hooks?.setCursor(ScrollCursor.Pan);
       this.onMouseMove(this.mouseX, this.mouseY, now);
@@ -227,10 +230,12 @@ export class EdgeDetectScroller {
       this.vy = Math.trunc(DRAG_FACTOR * (this.downY - y));
       this.hooks?.setCursor(classify(this.vx, this.vy));
       if (this.state === 0) {
-        // StartScrolling (cWinPeople::StopTracking and Animator::SetTrackedObject(0) are not ported).
+        // StartScrolling, cWinPeople::StopTracking, Animator::SetTrackedObject(0).
         this.state = 1;
         this.last = now;
         this.fx = this.fy = 0;
+        stopTracking();
+        setTrackedObject(null);
       }
       return;
     }
@@ -275,6 +280,11 @@ export class EdgeDetectScroller {
       [zone, vx] = [8, SPEED];
     }
     if (zone !== this.zone) {
+      // OnMouseMove: an edge zone starts the scrolling (StartScrolling, cWinPeople::StopTracking, SetTrackedObject(0)).
+      if (zone && !this.zone) {
+        stopTracking();
+        setTrackedObject(null);
+      }
       this.zone = zone;
       this.zoneStart = now;
       this.last = now;

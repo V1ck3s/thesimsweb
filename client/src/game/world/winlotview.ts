@@ -32,7 +32,7 @@ import { LotPeople } from "./lotpeople.js";
 import { RoomLighting, timeOfDay } from "./lighting.js";
 import { loadRoofSettings, makeArchRoofHooks, roofLayersOf } from "./roofs.js";
 import { computeRooms, RoomManager } from "./rooms.js";
-import { Terrain } from "./terrain.js";
+import { houseNumberOfPath, Terrain } from "./terrain.js";
 import { WallManager } from "./walls.js";
 import { CursorDrawer, GUID_TILE_CURSOR } from "./tools/cursorobject.js";
 import { BUILD_TOOLS } from "./tools/buildtools.js";
@@ -84,9 +84,11 @@ import { cancelTutorial, makeTutorialObject, tutorialCompleted } from "../nbhd/t
 import { findPersonPanelButton } from "../cpanel/people.js";
 import { findRelButton } from "../cpanel/live/relationship.js";
 import { moduleOrder } from "./housesave.js";
-import { getHouseStats, piecewiseFromText, readLayoutHistory, STR_HOUSE_SCORE_CURVES, summarizeHouseStats, type LayoutHistory, type PiecewiseFn } from "./housestats.js";
+import { clearLayoutHistory, getHouseStats, piecewiseFromText, readLayoutHistory, STR_HOUSE_SCORE_CURVES, summarizeHouseStats, type LayoutHistory, type PiecewiseFn } from "./housestats.js";
 import { loadStringSet } from "../sim/behavior.js";
 
+/** NeighborhoodConstants "new family start hour" (lbl_105BA1E0, default 7). */
+const NEW_FAMILY_START_HOUR = 7;
 /** NeighborhoodConstants "architecture value multiplier" (lbl_105BA1EC, default 0.7). */
 const ARCHITECTURE_VALUE_MULTIPLIER = Math.fround(0.7);
 
@@ -360,6 +362,8 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
     });
     this.rooms = rooms;
     this.cutaway = cut;
+    // Animator::SetTrackedObject's GlobalDispatch(0xf7).
+    setTrackingDispatch(() => cut.onTrackedChanged());
     if (this.lotObjects) {
       this.lotObjects.drawer.cutawayView = walls;
       walls.customWallStyle = customWallStyleOf(this.lotObjects, fixed);
@@ -368,7 +372,9 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
     const lighting = new RoomLighting(rooms, v.world, () => this.lotObjects?.objects ?? null);
     const phase0 = timeOfDay(st.getTime().hour);
     lighting.compute(phase0);
+    // Neighborhood::LoadHouse's cTerrain::SetColor (the lot's ground colors by house number);
     // cSimulator::SetCurrentHour -> GlobalDispatch(0xdd): the terrain is relit too.
+    this.terrain?.setColor(houseNumberOfPath(this.housePath), phase0);
     this.terrain?.setLatitudeByTimeOfDay(phase0);
     this.lighting = lighting;
     v.lighting = lighting;
@@ -834,8 +840,9 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
    * SetSelectedPerson creates the missing instance) makes the character's
    * object out of the world (cXPerson::Reset: persistent data, Init) and
    * cXObject::FindGoodLocation places it from the view's centermost tile
-   * outwards (level 1). The lot view then dresses and draws it. The
-   * arrival by car / from the road is not ported: they appear in place.
+   * outwards (level 1). The lot view then dresses and draws it. A family
+   * moving in was already made at the mailbox by "reset lot"
+   * (resetLotForMoveIn).
    */
   private async bringInFamily(v: HouseViewer, lot: LotObjects): Promise<void> {
     const sim = this.sim;
@@ -1652,6 +1659,8 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
     this.buyTool?.cancel();
     this.actionIcons.clear();
     if (this.ctx.state.viewer === this) this.ctx.state.viewer = null;
+    setTrackingDispatch(null);
+    setTrackedObject(null);
     super.shutdown();
   }
 
@@ -1665,13 +1674,161 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
     const v = this.viewer;
     if (!v || o.tileX < 0) return;
     const [fx, fy] = RotatableWorld.rotateCoords(o.fx, o.fy, v.world.rotation, 0x400);
-    v.scrollToTile(fx, fy, o.level, false);
+    v.scrollToTile(fx, fy, o.level, smooth);
   }
 
-  /** HouseViewerHooks: CPState::SetSelectedPerson re-selecting the selected person. */
+  /**
+   * HouseViewerHooks: CPState::SetSelectedPerson re-selecting the selected
+   * person: cWinPeople::StopTracking unless that person is the tracked
+   * object, then CenterHouseViewOnMe(person, true).
+   */
   centerOnSelected(): void {
     const guid = this.ctx.state.personGetSelected()?.guid;
+    const o = guid === undefined ? null : this.getPersonInstance(guid);
+    if (!o || o !== getTrackedObject()) stopTracking();
     if (guid !== undefined) this.centerOnPerson(guid, true);
+  }
+
+  /** HouseViewerHooks: PersonFinder::GetInstance. */
+  getPersonInstance(guid: number): PlacedObject | null {
+    for (const o of this.lotObjects?.objects.values() ?? []) if (o.isPerson && (o.guid | 0) === (guid | 0)) return o;
+    return null;
+  }
+
+  /** HouseViewerHooks: CenterHouseViewOnMe of an object of the module's list (cWinPeople::TrackPerson's toad). */
+  centerOnObjectId(id: number, smooth: boolean): void {
+    const o = this.lotObjects?.objects.get(id);
+    if (o) this.centerOnObject(o, smooth);
+  }
+
+  // --- camera tracking (world/tracking.ts) -------------------------------------------
+
+  /**
+   * HouseViewer::UpdateWorld: the tracked object's Track (cXPerson::Track ->
+   * SAnimator::Track(true), cXObject::Track -> Animator::Track(true)) while
+   * no smooth scroll runs (+0x1a4). SAnimator::~SAnimator: a tracked object
+   * gone from the lot is forgotten.
+   */
+  private updateTracking(nowMs: number): void {
+    const o = getTrackedObject();
+    const v = this.viewer;
+    if (!o || !v) return;
+    if (this.lotObjects?.objects.get(o.objectId) !== o) {
+      setTrackedObject(null);
+      return;
+    }
+    if (!v.isScrolling()) this.track(o, true, nowMs);
+  }
+
+  /**
+   * Animator::Track(smooth) (Mac 0x10473800) and, for a person,
+   * SAnimator::Track(smooth) (Mac 0x1034a310): an object that is shown
+   * (+0x8e, object data 34) and in a room (+0x84, object data 29) on
+   * another level switches the view to its level (HouseViewer::SetLevel,
+   * SetDrawRoof(false), CPState::SetLevel) and centers it; on the view's
+   * level it is centered (ScrollToCenter then SetDrawRoof(false)) once it
+   * leaves the middle of the viewport. The point centered is `head / 2`
+   * above its feet, head = (1 << (scale + 1)) * (lbl_105BCE4C 1/3 *
+   * lbl_105C34D4 6) * (lbl_105BCE48: 2 * sqrt 6) pixels. The middle is
+   * [w/4, 3w/4) x [h/4 + head, 3h/4); for a person on a route
+   * (cXPerson::GetCurrentRoute) it is [16 << scale, w - (16 << scale)) x
+   * [head * 9/8, h - head/8), and when the person follows a path (+0x180)
+   * the center takes in the path points still ahead (+0x178 on), within
+   * the middle's size less 32 pixels on each axis.
+   */
+  private track(o: PlacedObject, smooth: boolean, nowMs: number): void {
+    const v = this.viewer;
+    if (!v || o.hidden !== 0 || o.objectData[29]! < 0) return;
+    const s = v.scale;
+    const head = Math.trunc((1 << (s + 1)) * Math.fround(Math.fround(1 / 3) * 6) * Math.fround(2 * Math.sqrt(6)));
+    const rot = v.world.rotation;
+    const project = (fx: number, fy: number): { h: number; v: number } => {
+      const [rx, ry] = RotatableWorld.rotateCoords(fx, fy, rot, 0x400);
+      return v.tileToPointF(rx, ry, o.level, s);
+    };
+    const p = project(o.fx, o.fy);
+    if (o.level !== v.level) {
+      this.ctx.state.setLevel(o.level);
+      this.setDrawRoofOff();
+      v.scrollToCenter(p.h, p.v - Math.trunc(head / 2), smooth, nowMs);
+      return;
+    }
+    const w = v.viewW;
+    const h = v.viewH;
+    const person = o.isPerson ? (this.sim?.module.persons.find((x) => x.obj === o) ?? null) : null;
+    let left = Math.trunc(w / 4);
+    let right = Math.trunc((3 * w) / 4);
+    let top = Math.trunc(h / 4) + head;
+    let bottom = Math.trunc((3 * h) / 4);
+    if (person?.route) {
+      left = 16 << s;
+      right = w - left;
+      top = Math.trunc((head * 9) / 8);
+      bottom = h - Math.trunc(head / 8);
+    }
+    let cx = p.h;
+    let cy = p.v;
+    if (left <= cx && top <= cy && cx < right && cy < bottom) return;
+    const anim = person?.animator;
+    if (anim && anim.followState !== 0) {
+      const maxW = right - left - 0x20;
+      const maxH = bottom - top - 0x20;
+      let x0 = cx;
+      let x1 = cx + 1;
+      let y0 = cy;
+      let y1 = cy + 1;
+      let doneX = false;
+      let doneY = false;
+      for (let i = anim.pathIndex; i < anim.path.length - 1 && (!doneX || !doneY); i++) {
+        const pt = anim.path[i];
+        if (!pt) continue;
+        const q = project(pt.fx, pt.fy);
+        if (!doneX) {
+          if (q.h < x0) {
+            x0 = q.h;
+            if (maxW < x1 - q.h) {
+              x0 = x1 - maxW;
+              doneX = true;
+            }
+          } else if (x1 <= q.h) {
+            x1 = q.h + 1;
+            if (maxW < x1 - x0) {
+              x1 = x0 + maxW;
+              doneX = true;
+            }
+          }
+        }
+        if (!doneY) {
+          if (q.v < y0) {
+            y0 = q.v;
+            if (maxH < y1 - q.v) {
+              y0 = y1 - maxH;
+              doneY = true;
+            }
+          } else if (y1 <= q.v) {
+            y1 = q.v + 1;
+            if (maxH < y1 - y0) {
+              y1 = y0 + maxH;
+              doneY = true;
+            }
+          }
+        }
+      }
+      cx = Math.trunc((x0 + x1) / 2);
+      cy = Math.trunc((y0 + y1) / 2);
+    }
+    v.scrollToCenter(cx, cy - Math.trunc(head / 2), smooth, nowMs);
+    this.setDrawRoofOff();
+  }
+
+  /** HouseViewer::SetDrawRoof(false, false): +0x51 off (DirtyAll, CPState dirty 0x80) when it was on. */
+  private setDrawRoofOff(): void {
+    const v = this.viewer;
+    if (!v?.drawRoof) return;
+    v.drawRoof = false;
+    if (v.walls instanceof WallManager) v.walls.drawRoof = false;
+    v.dirty = true;
+    this.ctx.state.setDirty(0x80);
   }
 
   centerOnPerson(guid: number | undefined, smooth = false): void {
@@ -1861,6 +2018,11 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
       cancelTutorial(this.sim.module);
       hideTutorialHighlighter();
     }
+    // cDDDSimsView::TSOnKeyDown: Enter in Live mode is cWinPeople::TrackPerson(the selected person).
+    if (key === "Enter" && this.ctx.state.getMode() === Mode.Live) {
+      const guid = this.ctx.state.personGetSelected()?.guid;
+      if (guid !== undefined) trackPerson(this.getPersonInstance(guid));
+    }
     // cDDDSimsView::TSOnCharacter (WM_CHAR: none while Ctrl or Alt is down):
     // speed, pause, zoom and catalog page keys, then the tool, then rotation.
     const typed = !winMgr.isKeyDown("Control") && !winMgr.isKeyDown("Alt");
@@ -1874,10 +2036,17 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
     if (this.sim && this.ctx.state.getMode() === Mode.Live && (key === " " || key === "n" || key === "N")) {
       this.advanceSelectedPerson();
       // (CenterHouseViewOnMe(person, 1) scrolls smoothly; this one jumps)
-      if (key === " " && this.selectedPerson()) this.centerOnPerson(this.ctx.state.personGetSelected()?.guid);
+      const next = key === " " ? this.selectedPerson() : null;
+      if (next) {
+        // cWinPeople::StopTracking unless the new selected person is the tracked object.
+        if (next.obj !== getTrackedObject()) stopTracking();
+        this.centerOnPerson(this.ctx.state.personGetSelected()?.guid);
+      }
       return true;
     }
     const tw = 16 << v.scale;
+    // EdgeDetectScroller::OnKeyDown: an arrow (no Shift / Ctrl, not scrolling) first stops the tracking.
+    if (key.startsWith("Arrow")) stopTracking();
     switch (key) {
       case "ArrowLeft":
         v.asyncScroll(tw, 0);
@@ -1913,6 +2082,9 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
     if (!edge) return true;
     winMgr.releaseCapture(this);
     if (!edge.onMouseUpR(winMgr.isLeftButtonDown())) return true;
+    // EdgeDetectScroller::OnMouseUpR: cWinPeople::StopTracking, SetTrackedObject(0), CenterView.
+    stopTracking();
+    setTrackedObject(null);
     const w = v.world;
     const t = v.pointToWholeTile(x, y, v.level);
     const n = w.size - 2;

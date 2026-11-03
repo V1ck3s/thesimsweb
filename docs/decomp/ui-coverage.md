@@ -50,7 +50,7 @@ or developer-only tools).
 | cWinViewControl | Clock, speed, zoom, rotation, levels, funds, help button, friend count dialog (STR# 162) | ported | `cpanel/viewcontrol.ts` |
 | cWinBudgetDlg, cWinBudgetRow | Budget window (funds click on a residential lot): 3-day / today income and expenses by type, funds, net worth, days | ported (object / architecture values recomputed at opening) | `cpanel/budgetdlg.ts` |
 | cWinHelp | Help window (view control "?" button): topic list and text | ported | `cpanel/help.ts` |
-| cWinPeople | Live panel: portraits, mood, page buttons | partial (portrait pie menus, sim tracking, at-work overlays) | `cpanel/people.ts` |
+| cWinPeople | Live panel: portraits (person popup, TrackPerson / StopTracking, UpdateAtWorkStatus), mood, page buttons | ported (its two pie menus are the lot's) | `cpanel/people.ts`, `world/tracking.ts` |
 | cWinMotive | Needs page, with its delta meters | ported | `cpanel/live/motive.ts` |
 | cWinDeltaMeter, cAverageHistory | Up / down change arrows of the needs | ported (needs; the relationship page's meter is wired but, as in the original, its history is null so it never draws arrows) | `cpanel/live/deltameter.ts` |
 | cWinPersonality | Personality page | ported | `cpanel/live/personality.ts` |

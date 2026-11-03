@@ -8,6 +8,7 @@
  */
 
 import type { ResFile } from "./world/iffres.js";
+import type { PlacedObject } from "./world/objects.js";
 
 export const enum Mode {
   Build = 0,
@@ -238,6 +239,10 @@ export interface HouseViewerHooks {
   createPersonInstance?(guid: number): boolean;
   /** HouseViewer::SetViewportHeight (cWinViewControl::SetMode). */
   setViewportHeight?(height: number): void;
+  /** PersonFinder::GetInstance: the person on the lot with this GUID, null when there is none. */
+  getPersonInstance?(guid: number): PlacedObject | null;
+  /** cXObject::CenterHouseViewOnMe(smooth) of the lot object with this id (ObjectModule's list). */
+  centerOnObjectId?(id: number, smooth: boolean): void;
 }
 
 /**

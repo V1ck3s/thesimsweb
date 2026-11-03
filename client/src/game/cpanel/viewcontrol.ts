@@ -31,6 +31,7 @@ import { WinBudgetDlg } from "./budgetdlg.js";
 import type { WinCPanel } from "./cpanel.js";
 import { WinHelp } from "./help.js";
 import { getCursor } from "../ui/cursor.js";
+import { stopTracking } from "../world/tracking.js";
 
 /** CPState dirty bits tested by UpdateViewFromCPState. */
 const DIRTY_MODE = 0x2;
@@ -591,9 +592,11 @@ export class WinViewControl extends TSWin {
     switch (src) {
       case this.level1:
         // cWinPeople::StopTracking when the level changes.
+        if (s.getLevel() !== 1) stopTracking();
         s.setLevel(1);
         break;
       case this.level2:
+        if (s.getLevel() !== 2) stopTracking();
         s.setLevel(2);
         break;
       case this.levelRoof:

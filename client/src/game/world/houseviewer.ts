@@ -619,6 +619,23 @@ export class HouseViewer {
     else this.setOffsets(tx, ty);
   }
 
+  /**
+   * HouseViewer::ScrollToCenter(x, y, smooth): bring view point (x, y) to the
+   * center, the origin clamped to GetOffsetsMinMax; smooth starts a
+   * constant-time scroll of lbl_105BA680 (250) ms, only when none runs (+0x1a4).
+   */
+  scrollToCenter(x: number, y: number, smooth: boolean, now = performance.now()): void {
+    const m = this.getOffsetsMinMax();
+    const tx = Math.min(Math.max(this.originX - (x - Math.trunc(this.viewW / 2)), m.minX), m.maxX);
+    const ty = Math.min(Math.max(this.originY - (y - Math.trunc(this.viewH / 2)), m.minY), m.maxY);
+    if (!smooth) {
+      this.scroll = null;
+      this.setOffsets(tx, ty);
+    } else if (!this.scroll) {
+      this.startScroll(tx, ty, 250, now);
+    }
+  }
+
   /** HouseViewer::AsyncScroll: smooth scroll by (dx, dy), clamped like SetOffsets. */
   asyncScroll(dx: number, dy: number, now = performance.now()): void {
     const fromX = this.scroll ? this.scroll.toX : this.originX;

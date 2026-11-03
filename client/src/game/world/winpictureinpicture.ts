@@ -33,7 +33,7 @@
  *    the window showing obj.
  *
  * Not ported: the auto snapshot into the family's scrapbook (cScrapbook::
- * AddPhoto), GetBoboVision's animated show / hide, cWinPeople::StopTracking.
+ * AddPhoto), GetBoboVision's animated show / hide.
  */
 
 import type { GameContext } from "../context.js";
@@ -45,6 +45,7 @@ import { Gfx, TSWin } from "../ui/tswin.js";
 import type { HouseViewer } from "./houseviewer.js";
 import type { XObject } from "./objects.js";
 import { RotatableWorld } from "./world.js";
+import { stopTracking } from "./tracking.js";
 import { getStandardCursor } from "../ui/cursor.js";
 
 /** lbl_105BC500: the three window sizes. */
@@ -267,6 +268,7 @@ export class WinPictureInPicture extends TSWin {
     if (v) {
       const [cx, cy] = this.getCenterOnPt(v);
       const [fx, fy] = RotatableWorld.rotateCoords(cx, cy, v.world.rotation, 0x400);
+      stopTracking();
       v.scrollToTile(fx, fy, this.obj ? this.obj.level : v.level, true);
     }
     this.fade(false);
