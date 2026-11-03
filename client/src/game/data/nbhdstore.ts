@@ -602,6 +602,19 @@ export class NeighborhoodStore {
     f.dirty = true;
   }
 
+  /**
+   * Neighborhood::LoadHouse(house, family) after the house file is read:
+   * Family +0x138 bit 2 (set by setFamilyHouse) makes this load a move in;
+   * it is cleared. Returns whether it was set.
+   */
+  takeMoveInFlag(familyId: number): boolean {
+    const f = this.familyRaw(familyId);
+    if (!f || (f.flags & 4) === 0) return false;
+    f.flags &= ~4;
+    f.dirty = true;
+    return true;
+  }
+
   /** The family living in house `house` (Neighborhood::GetFamily of the house's family number), if any. */
   familyOfHouse(house: number): number | undefined {
     return this.families.find((f) => f.houseNumber === house && house !== 0 && !SPECIAL_FAMILY_IDS.has(f.id))?.id;

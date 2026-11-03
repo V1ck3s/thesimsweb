@@ -277,12 +277,14 @@ class Game {
   async moveIn(house: number, family: number, houseValue: number): Promise<void> {
     const store = await NeighborhoodStore.open(this.nbhdDir);
     store.setFamilyHouse(family, house, houseValue);
+    // LoadHouse reads and clears the move-in bit before anything is saved.
+    const moving = store.takeMoveInFlag(family);
     await store.save();
-    await this.enterLot(house);
+    await this.enterLot(house, moving ? family : 0);
   }
 
-  /** Neighborhood::LoadHouse + cSimsApp control panel setup. */
-  async enterLot(house: number): Promise<void> {
+  /** Neighborhood::LoadHouse + cSimsApp control panel setup (`moveInFamily`: the family just moved in). */
+  async enterLot(house: number, moveInFamily = 0): Promise<void> {
     const { ctx, mgr } = this;
     const state = ctx.state;
     const arrival = this.arrival;
@@ -297,6 +299,8 @@ class Game {
     const view = new WinLotView(ctx, this.nbhd.getHousePath(house));
     // LoadGame: the members arriving (+0x108 / +0x109 / +0x10a) come through PersonFinder::CreateDowntownSim.
     view.arrivalOutOfWorld = !!(arrival && (arrival.member || arrival.family || arrival.studioMember));
+    // Neighborhood::LoadHouse: the move in's clock and "reset lot" (WinLotView.resetLotForMoveIn).
+    if (moveInFamily) view.moveIn = { family: moveInFamily, house };
     view.setArea(0, 0, ctx.width, ctx.height);
     const t0 = performance.now();
     if (!(await view.init())) throw new Error("lot view init failed");

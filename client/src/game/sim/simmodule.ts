@@ -849,6 +849,24 @@ export class SimModule {
     }
   }
 
+  /**
+   * ObjectModule::BroadcastMessage(name, param) (Mac 100da7a0): every object
+   * along the module's list whose Behavior has a tree of that name runs it
+   * at once (TreeSim::RunOneTickTree, stack object 0, parameter 0 = param).
+   */
+  broadcastMessage(name: string, param: number): void {
+    for (const o of [...this.list]) {
+      if (o.killed) continue;
+      const tree = o.behavior.getTreeID(name);
+      if (tree === 0) continue;
+      try {
+        o.runOneTickTree(o.behavior, 0, tree, { src: [param, 0, 0, 0], at: 0 });
+      } catch (e) {
+        console.warn(`[sim] ${name}: object ${o.id} failed`, e);
+      }
+    }
+  }
+
   /** ObjectModule::AddToKillQueue. */
   addToKillQueue(id: number, flag: number): void {
     const o = this.getObject(id);

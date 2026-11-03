@@ -132,6 +132,18 @@ Flow: Move In opens cWinPickFamily, then the family is picked or created and Mov
 4. If the family's funds are below the lot value, message 2/3 is shown again.
 5. Otherwise a yes/no "buy house" (0/1) or "buy lot" (6/7) question is asked. On yes, LoadGame runs.
 
+The arrival (Neighborhood::LoadHouse, Mac 100a7010 / Windows 004282ec): the move in sets Family +0x138
+bit 2; after the house file and PostLoad, LoadHouse clears it and runs SetCurrentHour(NeighborhoodConstants
+"new family start hour", default 7, 0), cSimulator::ClearHistory, Resume, House::ClearRouteHistory and
+ObjectModule::BroadcastMessage("reset lot", 0). There is no car: VisitGenerator.iff's "reset lot" (4111)
+finds MailBox - Part A (0xef121974), makes every neighbor of family global 9 without an instance with
+Create New Object Instance (mode 6, flag 4) and puts each by the mailbox with Find Location For mode 4
+(from the mailbox, along its facing + 2), removing the ones that do not fit; the mailbox, NPCController
+(paper girl), Bills, Fire and HelpSystem reset themselves. PersonFinder::CreateInstance (view center) only
+makes members still missing. Port: `NeighborhoodStore.takeMoveInFlag`, `Game.moveIn` → `enterLot(house,
+family)`, `WinLotView.moveIn` / `resetLotForMoveIn`, `SimModule.broadcastMessage`. Verified on a copy of
+the game's UserData (Bonpote into lot 50): 7:00, the four members at the mailbox, $15,500 left.
+
 The checks follow MoveInModeLotHandler in `cWinNeighborhoodUL.c`. The HouseInfo fields come from GetHouseFileInfo's out-pointers in `_global.c` (GetHouseInfo):
 
 - +0x10 = no tutorial and global 21 == 0;

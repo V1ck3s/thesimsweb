@@ -310,6 +310,7 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
     if (this.lotObjects && this.sim && this.placement) await updateSimObjects(this.placement, this.lotObjects.folder, this.sim.module);
     // Neighborhood::LoadHouse: the Tutorial object on a tutorial lot (nbhd/tutorial.ts).
     if (this.lotObjects && this.sim && this.placement) await makeTutorialObject(this.placement, this.lotObjects.folder, this.sim.module, this.housePath.split("/")[0] ?? "UserData");
+    if (this.moveIn && this.lotObjects && this.sim) await this.resetLotForMoveIn(this.lotObjects, this.moveIn);
     if (this.lotObjects && this.sim) await this.bringInFamily(v, this.lotObjects);
     if (this.lotObjects && this.sim && this.placement) await this.initPlumbBobs(this.lotObjects, this.sim, this.placement);
     this.exploreAnchor = await this.ctx.res.image("kExploreAnchor");
@@ -344,6 +345,11 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
         if (guid === undefined || !objs) return null;
         for (const o of objs.values()) if (o.isPerson && o.guid === guid && o.hidden === 0) return { x: o.tileX, y: o.tileY, level: o.level };
         return null;
+      },
+      trackedPerson: () => {
+        const o = getTrackedObject();
+        if (!o) return undefined;
+        return o.isPerson ? { x: o.tileX, y: o.tileY, level: o.level } : null;
       },
       cursor: () => this.cursor,
       tool: () => {
@@ -934,6 +940,43 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
    * trip): the arriving sims are made out of the world (bringInFamily).
    */
   arrivalOutOfWorld = false;
+
+  /**
+   * Set before init when a family just moved in (Neighborhood::LoadHouse
+   * finds Family +0x138 bit 2, set by the move in, and clears it): its
+   * family number (Family +0x10c) and the house.
+   */
+  moveIn: { family: number; house: number } | null = null;
+
+  /**
+   * Neighborhood::LoadHouse's move-in step (Mac 100a7010, Windows 004282ec
+   * on): cSimulator::SetCurrentHour(NeighborhoodConstants "new family start
+   * hour", lbl_105BA1E0, default 7, 0), ClearHistory, Resume,
+   * House::ClearRouteHistory, then ObjectModule::BroadcastMessage("reset
+   * lot", 0). The game's own trees do the rest: VisitGenerator's "reset
+   * lot" makes every member of the family in global 9 without an instance
+   * (Create New Object Instance of the neighbor, out of the world) and puts
+   * them by the mailbox (Find Location For mode 4 from MailBox - Part A),
+   * removing those that do not fit; the mailbox, newspaper controller,
+   * bills, fires and help system reset themselves. The members' character
+   * files are opened first (the original reads them synchronously).
+   */
+  private async resetLotForMoveIn(lot: LotObjects, moveIn: { family: number; house: number }): Promise<void> {
+    const sim = this.sim;
+    if (!sim) return;
+    // LoadHouse's SetGlobal(9, family) / SetGlobal(10, house) come before PostLoad in the
+    // original; the port's LoadGame step (applyLoadGameLocation) runs after the view's init.
+    sim.globals[9] = moveIn.family;
+    sim.globals[G.houseNumber] = moveIn.house;
+    for (const info of this.ctx.state.family) {
+      if (info.guid !== undefined) await lot.folder.getSelectorByGUID(info.guid).catch(() => null);
+    }
+    sim.setCurrentHour(NEW_FAMILY_START_HOUR, 0);
+    sim.clearHistory();
+    sim.resume();
+    this.layoutHistory = clearLayoutHistory();
+    sim.module.broadcastMessage("reset lot", 0);
+  }
 
   /** The selected sim's action icons (Live mode). */
   private readonly actionIcons: ActionIcons;
@@ -1585,6 +1628,8 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
     const phase = timeOfDay(this.ctx.state.getTime().hour);
     if (phase === l.phase) return;
     l.compute(phase);
+    // SetCurrentHour: cTerrain::SetColor, then GlobalDispatch(0xdd).
+    this.terrain?.setColor(houseNumberOfPath(this.housePath), phase);
     this.terrain?.setLatitudeByTimeOfDay(phase);
     this.viewer.dirty = true;
   }
