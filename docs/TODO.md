@@ -23,20 +23,14 @@ sous `client/src/game/`).
 ## 2. Fonctionnalités manquantes (visibles en jeu)
 
 Live
-- **Panneau des personnes** : pas de menu camembert sur les portraits, pas de suivi de caméra d'un
-  sim (cWinPeople, kTrackingTarget, Animator::SetTrackedObject, StopTracking), pas de popup
-  portrait de famille, pas d'incrustation « au travail ». `cpanel/people.ts`.
 - **Popups au survol sans icône d'objet** (cWinLivePopup::SetObject / DrawObjectIcon) ; **page
   célébrité** : les aptitudes ne sont pas des objets de catalogue. `cpanel/livepopup.ts`,
   `cpanel/live/fame.ts`.
-- **Arrivée de la famille en voiture à l'emménagement** : les sims apparaissent sur place.
-  `world/winlotview.ts`.
 - **Score d'agencement de la maison figé** (House::AddLayoutTick, décalage de minuit) ; besoin
   « pièce / éclairage » non porté (score de ComputeRoom, lumières de plafond Room +0x73).
   `world/winlotview.ts`, `sim/person.ts`, `world/lighting.ts`.
-- **Familles de touristes** jamais créées (DoFirstTimeTouristFamilies, RefillTouristFamilies,
-  AddNewTourist) ; habitants préfabriqués sans leur personnalité de modèle. `nbhd/townies.ts`,
-  `nbhd/winneighborhoodul.ts`.
+- **Tri des familles** après création des habitants / touristes (comparateur lbl_105BB988).
+  `nbhd/townies.ts`.
 - **Autonomie : filtres Hot Date centre-ville / vacances** de TryFindBestAction (lots 40..49 ou
   zonage 2). `sim/person.ts`.
 - **Grimoire / livre de cuisine** : filtres d'extension et « déjà préparé » non appliqués
@@ -52,7 +46,7 @@ Achat / Construction
   fiche produit (DrawWallIcon, WallManager::DrawIconic). `data/buildcatalog.ts`.
 
 Quartier / sauvegarde
-- **Vignettes du quartier sans les sims.** `world/thumbnail.ts`.
+- **Vignettes** : la petite vignette faite au déménagement peut différer d'un pixel. `world/thumbnail.ts`.
 - **Quitter un lot communautaire** n'exécute pas SaveAllPersistentDataForMatterTransferance.
   `world/savegame.ts`.
 - **Déménagement / SaveHouse** : ClearRouteHistory, remise à zéro du budget de la famille 0,
@@ -71,8 +65,6 @@ Quartier / sauvegarde
 - **Papier peint** : cNewWallpaperTool::ModifyCursorPos (crochet de découpe des murs).
 
 Interface
-- **Touches de la vue** Tab, Page préc. / suiv., Début, Fin (cDDDSimsView::TSOnKeyDown, son
-  `UI_error` quand refusées). `world/winlotview.ts`.
 - **Champs de texte** : pas de sélection, presse-papiers, annulation ni barre de défilement
   (cTSWinTextEdit2). `ui/textedit.ts`.
 - **Options** : pas de fondu entre les sous-panneaux, astuces de la maison du didacticiel non
@@ -115,8 +107,11 @@ Interface
 - Repas à 10 $ répétés au frigo cher du centre-ville. Fidèle ?
 - Le journal ne propose que « Recycler » l'après-midi. Probablement fidèle.
 - Vraie livraison de pizza (bulles du livreur) jamais observée.
-- Toit : régénéré quand on ne déplace que l'escalier ? Caché quand la caméra suit un sim ? Bouton
-  de murs resynchronisé au chargement ? Décalage THMB des vignettes, eau dans les vignettes.
+- Toit : régénéré quand on ne déplace que l'escalier ? Bouton de murs resynchronisé au chargement ?
+  House90 : la terrasse de l'étage reste sans toit (le jeu la couvre).
+- Ville magique : arbres pâles et citrouilles sombres (vue du lot et vignettes).
+- Suivi de caméra : arrêt par les boutons d'étage, changement d'étage du sim suivi, toit masqué
+  (portés, non testés en jeu). Emménagement sur un lot déjà construit ou sans boîte aux lettres.
 - Pause / reprise des canaux non MP3 : reprise au même endroit ?
 - Le menu camembert se ferme-t-il si son objet est supprimé ?
 - Annuler une suppression de mur : l'objet revient-il côté simulation ?
@@ -143,7 +138,8 @@ Interface
 - Codes de triche non portés : map_edit, prepare_lot, sim_log, tile_info, history, w, triches
   graphiques, draw_routes / draw_floorable, move_lots, nessie, stream_fps, reload_neighborhood ;
   mode déplacement (5) et touches du quartier. `ui/cheat.ts`, `nbhd/winneighborhoodul.ts`.
-- Touches q (quitter), s (ombres), t (images/s), v (version) de la vue. `cpanel/modekeys.ts`.
+- Touches s (ombres, liée aux triches graphiques) et t (fenêtre images/s) de la vue ; F8 (caméra
+  « stalker », développeur). q (quitter) n'a pas d'équivalent web. `cpanel/modekeys.ts`.
 - Rapport de textures manquantes (ReportMissingTextures), cWinTileInfo, cWinMemView.
 - Touches 1..9 de l'outil terrain (changement de rendu).
 - `world/worldedit.ts` duplique des fonctions de `wallworld.ts` (nettoyage).
