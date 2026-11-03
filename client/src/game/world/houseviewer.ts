@@ -701,6 +701,11 @@ export class HouseViewer {
     this.cutawayCtl?.onLevel(old);
   }
 
+  /** The roof renderer with the current roof pattern loaded (MakeThumbnail's roof pass draws it at once). */
+  async prepareRoof(): Promise<void> {
+    await (this.roofRenderer ??= new RoofRenderer(this.comp.gl)).prepare();
+  }
+
   // --- rendering --------------------------------------------------------------
 
   /** HouseViewer::UpdateStaticLayer for the whole view. */

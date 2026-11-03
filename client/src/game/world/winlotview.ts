@@ -42,7 +42,8 @@ import { ToolSounds, type ToolHost } from "./tools/tool.js";
 import { UndoManager } from "./tools/undo.js";
 import { Placement, type ObjectBehaviorHooks } from "./tools/placement.js";
 import { FixedWorld, RotatableWorld } from "./world.js";
-import type { XObject } from "./objects.js";
+import type { PlacedObject, XObject } from "./objects.js";
+import { getTrackedObject, setTrackedObject, setTrackingDispatch, stopTracking, trackPerson } from "./tracking.js";
 import type { ObjSelector } from "./objselector.js";
 import { G, Simulator } from "../sim/simulator.js";
 import { animSoundEnv } from "../sim/animsound.js";
@@ -1659,8 +1660,8 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
    * centers the view on the selected sim when the lot opens. The head-height
    * adjustment of the person branch (ScrollToCenter) is not ported.
    */
-  /** cXObject::CenterHouseViewOnMe (not smooth) for any object in the world. */
-  centerOnObject(o: XObject): void {
+  /** cXObject::CenterHouseViewOnMe for any object in the world. */
+  centerOnObject(o: PlacedObject, smooth = false): void {
     const v = this.viewer;
     if (!v || o.tileX < 0) return;
     const [fx, fy] = RotatableWorld.rotateCoords(o.fx, o.fy, v.world.rotation, 0x400);
@@ -1759,6 +1760,7 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
     this.edge?.pump(nowMs, winMgr.cursorInside);
     this.viewer?.pump(nowMs);
     this.cutaway?.updateWorld();
+    this.updateTracking(nowMs);
     this.updateTimeOfDay();
     // HouseViewer::PrepareWorldForUpdate: RoomManager::UpdateRooms (a changed room light dispatches 0xf1: redraw).
     if (this.lighting?.updateRooms() && this.viewer) this.viewer.dirty = true;

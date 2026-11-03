@@ -139,11 +139,31 @@ Port of the house save path. Code: `client/src/game/world/{reconwriter,usagemap,
   to the file the game itself saved; the transparent silhouette matches pixel for pixel, mean color difference
   3/255 (the lot changed since). Save 0.75-1.2 s (headless Chrome, swiftshader). Bulldozing house 3
   (moveOutHouse, 1.3 s): the neighborhood screen shows the empty lot.
-- Gaps: the port draws no roof yet, so BMP_ 513 = BMP_ 512 and THMB dx = dy = 0 (pass 1 re-renders the view
-  with `drawRoof` set and will pick roofs up once the viewer draws them; meanwhile a saved house loses its
-  roof on the neighborhood screen); people (3D) are not drawn into the thumbnail; terrain colors by house
-  number (cTerrain::SetColor) are not wired in the port; RenderTerrainRow's water-tile case in thumbnail mode
-  is not ported.
+- No people, as in the original: MakeThumbnail runs UpdateStaticLayer and RenderDynamicObjects only; the 3D
+  objects (people's meshes, carried 3D objects) are drawn by Render3DObject, which only UpdateStaticDynamic,
+  GenerateSnapshot and DrawPictureInPicture call. A person still gets cXPerson::DrawIso from the dynamic list
+  (the sprite object in its hand; its sprite slots draw nothing at scale 1). House01, saved by the game with its
+  family on the lot, has no person in BMP_ 512 / 513.
+- Roof pass: RenderRoofPolys of both roof layers. The roof texture is loaded before the synchronous render
+  (`prepareHouseThumbnails`, `HouseViewer.prepareRoof`); `withHouseThumbnails` also reads HOUS 0's roof
+  settings (loadRoofSettings) and gives the roof generator the objects (stairs test), as WinLotView::init does.
+- Terrain colors: SaveThumbnail calls cTerrain::SetColor (cSimulator global 10, the house number: sand, snow,
+  leaves, soil, clouds or dirt) at time 0 and again with the restored time. The lot view now calls it too
+  (Neighborhood::LoadHouse, cSimulator::SetCurrentHour), so the Vacation / Magic Town lots have their ground
+  colors (`houseNumberOfPath`, terrain.ts).
+- Water: RenderTerrainRow draws the water tiles inside the tile body that +0x50 skips on flag-0x20 tiles; the
+  port does the same (House92: the pond matches).
+- Checked against the game's files (2026-11-03, `withHouseThumbnails` on each UserData house at 1024 x 668):
+  the houses written by this build (HOUS 0 version 0x49: House01, 04, 69, 92, 95, 99) give THMB 512, BMP_ 512
+  / 513 sizes and silhouettes identical to the shipped ones (House92 mean color difference 2.6/255, House01
+  2.0). Files written by older builds (HOUS 0 versions 0x3e..0x48) are one pixel wider at the left and right
+  tips of the lot (THMB x one more), whatever the view size or saved zoom, which the port's output does not
+  depend on: an older build's rendering, not a port difference. Before the roof fix, THMB dy was 0 where the
+  game's files have -1 / -2 (House81, 85, 90): it now matches on House81 / 85.
+- Gaps: the half-size pair (BMP_ 1024 / 1025) can differ by one pixel in size (House01: 158 x 86 against
+  159 x 85; THMB 1024 matches). House90: the roof generator leaves the upper terrace unroofed where the game
+  roofs it (roofs.ts). Some objects differ from the game's thumbnails: Magic Town trees drawn pale, pumpkins
+  darker (object rendering, also in the lot view).
 
 ## Gaps
 

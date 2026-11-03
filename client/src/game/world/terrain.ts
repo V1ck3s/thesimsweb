@@ -115,6 +115,16 @@ class OverlayRenderer extends TerrainRenderer {
   }
 }
 
+/**
+ * cSimulator global 10 as Neighborhood::LoadHouse sets it, the house number
+ * cTerrain::SetColor reads: "UserData/Houses/House28.iff" -> 28 (0 when the
+ * path names no house).
+ */
+export function houseNumberOfPath(path: string): number {
+  const m = /House(\d+)\.iff$/i.exec(path);
+  return m ? parseInt(m[1]!, 10) : 0;
+}
+
 export class Terrain {
   /** +0x18: the grass renderer. */
   readonly swatch = new ColorSwatch();

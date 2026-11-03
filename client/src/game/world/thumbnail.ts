@@ -42,11 +42,21 @@
  * Port: the buffer is rendered by the lot's HouseViewer in pieces of its
  * own size (its WebGL target), the origin moved for each piece, and read
  * back. Pixels are 16-bit 555 as in the original's buffers (the colors of
- * the shipped BMP_s are multiples of 8). People are left out (the 3D
- * meshes draw through `viewer.people`, outside the sprite passes). Pass 1
- * renders the view again with +0x51 (HouseViewer.drawRoof / the walls'
- * drawRoof) set: while the viewer draws no roof, BMP_ 513 = BMP_ 512 and
- * THMB dx = dy = 0.
+ * the shipped BMP_s are multiples of 8). Pass 1 renders the view again with
+ * +0x51 (HouseViewer.drawRoof / the walls' drawRoof) set; the roof texture
+ * is loaded beforehand (prepareHouseThumbnails), the render being
+ * synchronous.
+ *
+ * No people: MakeThumbnail (101b8ad0, Windows 004b2d29) renders
+ * UpdateStaticLayer and RenderDynamicObjects only. The 3D objects (the
+ * people's meshes and the 3D objects they carry, HouseViewer +0x1d8 /
+ * +0x1e4) are drawn by Render3DObject, which only UpdateStaticDynamic,
+ * GenerateSnapshot and DrawPictureInPicture call. A person in the dynamic
+ * list still gets cXPerson::DrawIso: the sprite object in its hand
+ * (SAnimator::PrepReg, `placeHeld`) and its sprite slots, which draw nothing
+ * at scale 1 (balloons.ts). So `viewer.people` (the meshes) is off during
+ * the render. The game's own saves agree (House01, saved with Kyle and Jada
+ * on the lot: no person in BMP_ 512 / 513).
  */
 
 import { WallState } from "../cpstate.js";
@@ -59,8 +69,9 @@ import { HouseViewer } from "./houseviewer.js";
 import { ResFile } from "./iffres.js";
 import { RoomLighting } from "./lighting.js";
 import { customWallStyleOf, loadLotObjectDrawer } from "./lotobjects.js";
+import { loadRoofSettings, roofLayersOf } from "./roofs.js";
 import { computeRooms, RoomManager } from "./rooms.js";
-import { Terrain } from "./terrain.js";
+import { houseNumberOfPath, Terrain } from "./terrain.js";
 import { WallManager } from "./walls.js";
 import { readLotSize } from "./winlotview.js";
 import { FixedWorld, RotatableWorld } from "./world.js";
@@ -86,6 +97,8 @@ export interface ThumbnailScene {
   walls: WallManager | null;
   lighting: RoomLighting | null;
   terrain: Terrain | null;
+  /** cSimulator global 10 (the lot's house number), read by cTerrain::SetColor. */
+  houseNumber: number;
 }
 
 /** A 16-bit 555 image. */
@@ -118,7 +131,7 @@ function rgbOf(p: number): [number, number, number] {
  * ThumbnailInfo for scale `f`.
  */
 function renderLot(scene: ThumbnailScene, f: number, bufW: number, bufH: number, offX: number, offY: number, roof: boolean): { img: Image16; info: ThumbnailInfo } {
-  const { viewer: v, walls, lighting, terrain } = scene;
+  const { viewer: v, walls, lighting, terrain, houseNumber } = scene;
   const world = v.world;
   const fixed = world.fixed;
   // The average tile of the lot (x / y rounded with + 0.5, as chars).
@@ -160,6 +173,7 @@ function renderLot(scene: ThumbnailScene, f: number, bufW: number, bufH: number,
   try {
     // cSimulator +0x18 = 0, cTerrain::SetColor, AllRoomsLightingChanged; SetTerrainDetail(2).
     if (lighting && lighting.phase !== 0) lighting.compute(0);
+    terrain?.setColor(houseNumber, 0);
     terrain?.setLatitudeByTimeOfDay(0);
     if (terrain && saved.quality !== 2) terrain.setQuality(2);
     terrain?.showOverlay(false);
@@ -231,6 +245,7 @@ function renderLot(scene: ThumbnailScene, f: number, bufW: number, bufH: number,
     v.originX = saved.originX;
     v.originY = saved.originY;
     if (lighting && lighting.phase !== saved.phase) lighting.compute(saved.phase);
+    terrain?.setColor(houseNumber, saved.phase);
     terrain?.setLatitudeByTimeOfDay(saved.phase);
     if (terrain && saved.quality !== 2) terrain.setQuality(saved.quality);
     terrain?.showOverlay(saved.overlay);
@@ -380,7 +395,6 @@ function saveThumbnail(scene: ThumbnailScene, id: number, f: number, half: boole
   const offY = Math.trunc(m.maxY / div);
   const bufW = Math.trunc(0.5 + w / f);
   const bufH = Math.trunc(0.5 + h / f);
-  // Pass 0 renders the lot; pass 1 would add the roof polygons to the same buffer.
   // Pass 0: the lot; pass 1: the lot with +0x51 set (the roof; the port renders the whole
   // view again where the original adds the roof polygons to pass 0's buffer).
   const bmps: IffChunk[] = [];
@@ -404,7 +418,15 @@ function saveThumbnail(scene: ThumbnailScene, id: number, f: number, half: boole
   return [{ type: "THMB", id, flags: 0, label: "", data: thmbBytes(thmb) }, bmps[1]!, bmps[0]!];
 }
 
-/** GlobalDispatch(0x92)'s thumbnails: SaveThumbnail(0x200), then SaveUnleashedThumbnail(0x400). */
+/** What saveHouseThumbnails needs loaded first: the roof texture of the roof pass. */
+export async function prepareHouseThumbnails(viewer: HouseViewer): Promise<void> {
+  await viewer.prepareRoof();
+}
+
+/**
+ * GlobalDispatch(0x92)'s thumbnails: SaveThumbnail(0x200), then
+ * SaveUnleashedThumbnail(0x400). Call prepareHouseThumbnails first.
+ */
 export function saveHouseThumbnails(scene: ThumbnailScene): IffChunk[] {
   return [...saveThumbnail(scene, 0x200, SCALE_THUMBNAIL, false), ...saveThumbnail(scene, 0x400, SCALE_UNLEASHED, true)];
 }
@@ -441,6 +463,9 @@ export async function withHouseThumbnails(name: string, bytes: Uint8Array, viewW
     v.objects = lot.drawer;
     lot.drawer.cutawayView = walls;
     walls.customWallStyle = customWallStyleOf(lot, world.fixed);
+    // HouseViewer::DoStream's roof settings; DiscoverTilesToRoof's stairs test (in ComputeRooms) reads the objects.
+    loadRoofSettings(house);
+    roofLayersOf(world.fixed).objects = () => lot.objects;
     const rooms = new RoomManager(world.fixed);
     computeRooms(world.fixed, rooms);
     rooms.computeCutaway(v, 0);
@@ -451,7 +476,8 @@ export async function withHouseThumbnails(name: string, bytes: Uint8Array, viewW
     const hous = house.get("HOUS", 0);
     const zoom = hous && hous.length >= 20 ? new DataView(hous.buffer, hous.byteOffset, hous.byteLength).getInt32(16, true) : 3;
     v.scale = zoom >= 1 && zoom <= 3 ? zoom : 3;
-    const thumbs = saveHouseThumbnails({ viewer: v, walls, lighting, terrain });
+    await prepareHouseThumbnails(v);
+    const thumbs = saveHouseThumbnails({ viewer: v, walls, lighting, terrain, houseNumber: houseNumberOfPath(name) });
     const chunks = parseIff(bytes).filter((c) => !THUMB_KEYS.has(`${c.type}:${c.id}`));
     const at = chunks.findIndex((c) => c.type === "HOUS" && c.id === 0);
     chunks.splice(at < 0 ? chunks.length : at + 1, 0, ...thumbs);

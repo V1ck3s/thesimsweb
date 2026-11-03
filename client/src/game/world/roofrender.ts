@@ -189,6 +189,18 @@ export class RoofRenderer {
   }
 
   /**
+   * Loads the current roof pattern's texture now, for a render that must
+   * draw the roof in one go (HouseViewer::MakeThumbnail's roof pass); the
+   * lot view otherwise draws it from the frame after the load.
+   */
+  async prepare(): Promise<void> {
+    const name = getRoofPattern();
+    if (this.textures.has(name)) return;
+    const img = await loadRoofImage(name);
+    if (!this.textures.has(name)) this.textures.set(name, img ? this.upload(img) : null);
+  }
+
+  /**
    * DDDTextureMgr::GetNewTexture (texture site GameData/Roofs): the pattern's
    * BMP. A missing texture makes the factory fall back to "r1_".
    */
