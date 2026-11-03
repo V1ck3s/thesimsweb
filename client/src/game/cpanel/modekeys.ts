@@ -11,9 +11,12 @@
  *  - F5: Options.
  */
 
-import { CatalogSort, type CPState, Mode } from "../cpstate.js";
+import { soundPlayer, UI, UI_SOURCE } from "../audio/index.js";
+import type { GameContext } from "../context.js";
+import { CatalogSort, type CPState, Mode, WallState } from "../cpstate.js";
 import { currentTaxiDialog } from "../nbhd/winpicturesplashdialog.js";
 import type { Strings } from "../res/strings.js";
+import { TSWinMsgBox } from "../ui/msgbox.js";
 import { winMgr } from "../ui/winmgr.js";
 import type { WinCPanel } from "./cpanel.js";
 
@@ -58,6 +61,120 @@ export function modeKeyDown(state: CPState, key: string): boolean {
     default:
       return false;
   }
+}
+
+/** What {@link viewKeyDown} needs from the lot view. */
+export interface ViewKeyHooks {
+  /** cTSWinMgrW95::GetWindowFromPoint(cursor) is the lot view itself (Windows FUN_004d3d05). */
+  cursorOverView(): boolean;
+  /** HouseViewer +0x3c: the rendered lot view. */
+  screenBuffer(): HTMLCanvasElement | OffscreenCanvas | null;
+}
+
+/** cSoundPlayer::PlayBySource("UI_error", -4): a refused view key. */
+function refuse(): void {
+  soundPlayer.playBySource(UI.error, UI_SOURCE);
+}
+
+/** The second level may be shown: in Build mode on a floorable lot, or once a sim has been up there. */
+function canGoUp(state: CPState): boolean {
+  return (state.getMode() === Mode.Build && state.is2ndLevelFloorable()) || state.hasBeenTo2ndLevel();
+}
+
+/**
+ * cDDDSimsView::TSOnKeyDown (Windows 004d1450, Mac 0x1020E700), the view keys
+ * besides F1..F5 (the developer stalker camera F8 is not ported):
+ *  - Tab: level 1 -> 2 when {@link canGoUp} (else UI_error), level 2 -> 1;
+ *  - Page Up: level 2 when below it and {@link canGoUp}, else UI_error;
+ *    Page Down: level 1 from level 2, else UI_error;
+ *  - End: walls up -> cutaway -> down (UI_error when already down), Home
+ *    the other way (UI_error when already up); the roof view stays;
+ *  - Shift + Left / Right rotate (CPState::RotateLeft / RotateRight), Ctrl +
+ *    arrows in camera mode with the cursor over the view resize the camera
+ *    frame by 4 pixels (CamSetSize(width +- 4, height +- 4), Up taller, Down
+ *    shorter); arrows with Shift or Ctrl never scroll (EdgeDetectScroller::
+ *    OnKeyDown takes the plain ones);
+ *  - F10: the screen capture (FUN_004d2ffa): the rendered lot view saved as
+ *    "%d%02d%02d_%02d%02d%02d.jpg" (local year, month, day, hour, minute,
+ *    second; SaveGimex quality 0x5a) into the game folder; here a download.
+ * True when the key is consumed. Tab, Home and End are not in the original
+ * (they go on to the tool); Tab is consumed here so that the browser keeps
+ * the focus.
+ */
+export function viewKeyDown(state: CPState, key: string, hooks: ViewKeyHooks): boolean {
+  switch (key) {
+    case "Tab":
+      if (state.getLevel() !== 1) state.setLevel(1);
+      else if (canGoUp(state)) state.setLevel(2);
+      else refuse();
+      return true;
+    case "PageUp":
+      if (state.getLevel() < 2 && canGoUp(state)) state.setLevel(2);
+      else refuse();
+      return true;
+    case "PageDown":
+      if (state.getLevel() < 2) refuse();
+      else state.setLevel(1);
+      return true;
+    case "End": {
+      const ws = state.getWallState();
+      if (ws === WallState.Up) state.setWallState(WallState.Cutaway);
+      else if (ws === WallState.Cutaway) state.setWallState(WallState.Down);
+      else if (ws === WallState.Down) refuse();
+      return false;
+    }
+    case "Home": {
+      const ws = state.getWallState();
+      if (ws === WallState.Up) refuse();
+      else if (ws === WallState.Cutaway) state.setWallState(WallState.Up);
+      else if (ws === WallState.Down) state.setWallState(WallState.Cutaway);
+      return false;
+    }
+    case "ArrowLeft":
+    case "ArrowRight":
+    case "ArrowUp":
+    case "ArrowDown": {
+      const ctrl = winMgr.isKeyDown("Control");
+      if (ctrl) {
+        if (hooks.cursorOverView() && state.getMode() === Mode.Camera) {
+          let w = state.camGetWidth();
+          let h = state.camGetHeight();
+          if (key === "ArrowLeft") w -= 4;
+          else if (key === "ArrowUp") h += 4;
+          else if (key === "ArrowRight") w += 4;
+          else h -= 4;
+          state.camSetCustomSize(w, h);
+        }
+        return true;
+      }
+      if (!winMgr.isKeyDown("Shift")) return false;
+      if (key === "ArrowLeft") state.rotateLeft();
+      else if (key === "ArrowRight") state.rotateRight();
+      return true;
+    }
+    case "F10": {
+      const view = hooks.screenBuffer();
+      if (view) void saveScreenCapture(view);
+      return true;
+    }
+    default:
+      return false;
+  }
+}
+
+/** FUN_004d2ffa: GetLocalTime -> "%d%02d%02d_%02d%02d%02d.jpg", SaveGimex(name, buffer, 0, 0x5a, 1, 0). */
+async function saveScreenCapture(view: HTMLCanvasElement | OffscreenCanvas): Promise<void> {
+  const t = new Date();
+  const d2 = (n: number): string => String(n).padStart(2, "0");
+  const name = `${t.getFullYear()}${d2(t.getMonth() + 1)}${d2(t.getDate())}_${d2(t.getHours())}${d2(t.getMinutes())}${d2(t.getSeconds())}.jpg`;
+  const shot = new OffscreenCanvas(view.width, view.height);
+  shot.getContext("2d")!.drawImage(view, 0, 0);
+  const blob = await shot.convertToBlob({ type: "image/jpeg", quality: 0x5a / 100 });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = name;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 0);
 }
 
 /** UIText STR# 0xa1 (161): the hotkeys, one per entry, localized. */
@@ -131,13 +248,27 @@ export function characterBeforeTool(state: CPState, strings: Strings, cpanel: Wi
   }
 }
 
+/** UIText STR# 0x9a (154), 1-based: 0xb the product name, 0xc "Version". */
+const STR_VERSION = 0x9a;
+/** Windows 006c7b70: the build date (__DATE__ ", " __TIME__). */
+const BUILD_DATE = "Sep 25 2003, 14:23:46";
+
 /**
  * cDDDSimsView::TSOnCharacter after the tool's OnChar: ',' '<' rotate left,
- * '.' '>' rotate right. ('q' quit, 's' shadows, 't' frame rate and 'v'
- * version are not ported.)
+ * '.' '>' rotate right, 'v' the version box: STR# 0x9a 0xb, "\n" and the build
+ * date, titled STR# 0x9a 0xc ("Build Version" when the set is missing), OK
+ * only. ('q' quit, 's' the shadow flag and 't' the frame rate window are not
+ * ported.)
  */
-export function characterAfterTool(state: CPState, ch: string): boolean {
+export function characterAfterTool(ctx: GameContext, ch: string): boolean {
+  const state = ctx.state;
   switch (ch) {
+    case "v": {
+      const name = ctx.strings.get("UIText", STR_VERSION, 0xb - 1);
+      const title = ctx.strings.get("UIText", STR_VERSION, 0xc - 1) || "Build Version";
+      void TSWinMsgBox.show(ctx, (name ? `${name}\n` : "") + BUILD_DATE, title);
+      return true;
+    }
     case ",":
     case "<":
       state.rotateLeft();

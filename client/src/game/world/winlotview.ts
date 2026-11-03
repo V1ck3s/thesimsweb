@@ -11,7 +11,7 @@
  */
 
 import { computeCameraFrame, drawCameraFrame, takeCameraSnapshot } from "../cpanel/camsnapshot.js";
-import { characterAfterTool, characterBeforeTool, modeKeyDown } from "../cpanel/modekeys.js";
+import { characterAfterTool, characterBeforeTool, modeKeyDown, viewKeyDown } from "../cpanel/modekeys.js";
 import { WinCPanel } from "../cpanel/cpanel.js";
 import type { GameContext } from "../context.js";
 import { soundPlayer, UI_SOURCE } from "../audio/index.js";
@@ -1800,6 +1800,15 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
     if (key === "Alt" && this.edge?.onAltDown()) return true;
     // cDDDSimsView::TSOnKeyDown: F1..F5 switch the control panel mode.
     if (modeKeyDown(this.ctx.state, key)) return true;
+    // cDDDSimsView::TSOnKeyDown: Tab / Page Up / Page Down (level), Home / End (walls), Shift / Ctrl arrows, F10.
+    const keyHooks = {
+      cursorOverView: (): boolean => {
+        const p = winMgr.cursorPosition();
+        return winMgr.main.windowFromPoint(p.x, p.y) === this;
+      },
+      screenBuffer: () => v.comp.canvas,
+    };
+    if (viewKeyDown(this.ctx.state, key, keyHooks)) return true;
     // cDDDSimsView::TSOnKeyDown: Escape is Neighborhood::CancelTutorial, then the tutorial arrow hides.
     if (key === "Escape" && this.sim) {
       cancelTutorial(this.sim.module);
@@ -1812,7 +1821,7 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
     const chr = typed ? characterBeforeTool(this.ctx.state, this.ctx.strings, cpanel, key) : { done: false, ch: key };
     if (chr.done) return true;
     if (this.activeTools()?.keyDown(key)) return true;
-    if (typed && characterAfterTool(this.ctx.state, chr.ch)) return true;
+    if (typed && characterAfterTool(this.ctx, chr.ch)) return true;
     // cObjPickerTool::OnChar (Live mode): Space advances the selected person
     // and centers the view on them (CenterHouseViewOnMe), N only advances.
     if (this.sim && this.ctx.state.getMode() === Mode.Live && (key === " " || key === "n" || key === "N")) {
