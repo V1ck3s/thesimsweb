@@ -52,7 +52,14 @@ import { WinCredits } from "./wincredits.js";
 import { getImportInfoForFile, getLotImportInfo, hasImports, importFamily, importLotFile, listImports, pickAndUploadImports, uploadImports, type ImportInfo, type LotImportInfo } from "./imports.js";
 import { PD_AVOID_RECT, WinPictureDialog } from "../ui/picturedialog.js";
 import { getCheatCodeManager, type CheatCommandLine } from "../ui/cheat.js";
-import { doFirstTimeTownies, refillTownies, TOWNIE_COUNT } from "./townies.js";
+import {
+  doFirstTimeTouristFamilies,
+  doFirstTimeTownies,
+  refillTouristFamilies,
+  refillTownies,
+  TOURIST_FAMILY_COUNT,
+  TOWNIE_COUNT,
+} from "./townies.js";
 import { importTutorialIfPresent } from "./tutorial.js";
 
 /** cWinNeighborhood::Mode */
@@ -1166,6 +1173,8 @@ export class WinNeighborhoodUL extends TSWin implements LotBtnOwner {
     const store = await NeighborhoodStore.open(this.nb.dir);
     await doFirstTimeTownies(this.ctx, store);
     await refillTownies(this.ctx, store, TOWNIE_COUNT);
+    await doFirstTimeTouristFamilies(this.ctx, store);
+    await refillTouristFamilies(this.ctx, store, TOURIST_FAMILY_COUNT);
   }
 
   /** cWinNeighborhoodUL::RegularModeLotHandler (main screen) */

@@ -46,12 +46,39 @@ ratio, bar (20, h−35, w−20, h−15) color 0x32 and done part color 0x98 (rea
 
 ### Not ported / gaps
 
-- Tourist families (DoFirstTimeTouristFamilies, RefillTouristFamilies,
-  AddNewTourist: families 3000–3009, Live STR# 160–164, STR# 230,
-  kDialogVILogo; random family composition) — read but not ported.
-- The family sort after DoFirstTimeTownies (comparator lbl_105BB988).
-- Premade townie personality: person data stays at the template/CAS defaults
-  (+ RandomizeAllInterests), not read from the template object.
+- The family sort after DoFirstTimeTownies / DoFirstTimeTouristFamilies
+  (comparator lbl_105BB988).
+
+### Premade townie personality
+
+The game copies nothing from the template in code: AddNewTownie only runs
+BeginDesignAPerson (CreateInstance: the template's Init tree), the name and
+EndDesignAPerson (SavePersistentData), on a neighbor whose person data
+Neighbor::Neighbor zeroed. The template's values live in its own trees,
+copied into the character file with its other resources: "init tree" (BHAV
+4097) calls "init traits" (4100: interests 13, 14, 16, 20, 26, 46..55) and
+sets job 15 level 3 only when person data 61 is 2000 and there is no job
+(not the case at creation: Family::AddMember comes later); "Main" (4096)
+calls "Clear Personality" (4099) and writes the five traits. They run when
+the townie is instantiated on a lot (our VM, from the copied file).
+
+### Tourist families (Vacation)
+
+`doFirstTimeTouristFamilies` / `refillTouristFamilies` / `addNewTourist` in
+`nbhd/townies.ts`, run by `cWinNeighborhoodUL` after the townies (lot click,
+move in, Downtown), as in the game (Mac 100a1c20 / 100a1db0 / 100a9830).
+
+- Gate: Vacation (ExpansionPack4 present = app +0x66 & 8); DoFirstTime also
+  needs NGBH +0x19f. Families using 3000..3009 move to max id + 1, then
+  Refill(10), +0x19e = 1 / +0x19f = 0, save.
+- Refill: each missing id of 3000..3009 becomes a family named from Live
+  STR# 160 (rand(1000) % count, removed), dialog UIText STR# 230 entries 2/3
+  + kDialogVILogo ticked per family. Adults: couple 60 %, man 20 %, woman
+  20 %; children 1 or 2 (40 / 60 %); skins lgt/med/drk 33/33/34 %, second
+  skin same 70 %; names Live STR# 161 men, 162 women, 163 boys, 164 girls.
+- AddNewTourist: HDT_Generic copied to `Characters/User%05d.iff`, age,
+  gender, skin, random body / head suit (rand(max(1000, 2n)) % n),
+  SetupNewHDSkins, name, EndDesignAPerson(save).
 - The generic GenNPCInfo lists are recorded but, as in the game, never cause a
   re-draw.
 - A failing AddNewTownie stops after n failures (the game would loop).
