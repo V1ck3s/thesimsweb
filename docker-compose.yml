@@ -1,0 +1,27 @@
+# The Sims web port on a server. Settings come from the environment or a
+# `.env` file next to this one (see .env.example):
+#
+#   SIMS_DIR=/srv/sims/Les Sims   # the install folder of The Sims (required)
+#   THESIMSWEB_PORT=3000          # published port
+#   THESIMSWEB_BIND=127.0.0.1     # 0.0.0.0 to expose it without a reverse proxy
+#
+#   docker compose up -d --build
+#
+# The server has no authentication: anyone who reaches it can play and
+# overwrite the saves. Put it behind a reverse proxy with authentication, or
+# keep it on a private network. See docs/docker.md.
+services:
+  thesimsweb:
+    build: .
+    image: thesimsweb:latest
+    restart: unless-stopped
+    ports:
+      - "${THESIMSWEB_BIND:-127.0.0.1}:${THESIMSWEB_PORT:-3000}:3000"
+    volumes:
+      # The game folder, never written to.
+      - "${SIMS_DIR:?set SIMS_DIR to the install folder of The Sims}:/app/server/assets/Sims:ro"
+      # Saves (UserData* written by the game), kept across rebuilds.
+      - saves:/app/server/data/overlay
+
+volumes:
+  saves:

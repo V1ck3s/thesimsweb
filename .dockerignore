@@ -1,0 +1,15 @@
+# Only sources go into the build context: never the game files or saves.
+.git
+**/node_modules
+**/dist
+target
+crates/wasm-bindings/pkg
+server/assets
+server/data
+samples
+docs
+tests
+tools
+*.log
+.env
+.env.*

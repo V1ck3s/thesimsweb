@@ -68,3 +68,4 @@ server/data/
 *.sqlite
 *.sqlite3
 *.db
+!.env.example
