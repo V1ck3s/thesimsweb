@@ -27,7 +27,7 @@
  * photos taken since the last save are dropped when the lot is not saved).
  */
 
-import { fetchManifest } from "../../engine/assets.js";
+import { assetFetch, fetchManifest } from "../../engine/assets.js";
 import type { GameContext } from "../context.js";
 import { deleteGameFile, writeGameFile } from "../data/files.js";
 import { loadNeighborhood, PD } from "../data/neighborhood.js";
@@ -80,11 +80,6 @@ interface Page {
   num: number;
   /** A new photo's pixels until they are saved. */
   pending: OffscreenCanvas | null;
-}
-
-/** Game file URL (/assets/Sims/<path>). */
-function assetUrl(path: string): string {
-  return `/assets/Sims/${path.split("/").map(encodeURIComponent).join("/")}`;
 }
 
 /** The description files hold the game's 8-bit characters. */
@@ -297,10 +292,10 @@ export class Scrapbook {
     p.photo?.close();
     p.photo = null;
     p.description = "";
-    const text = await fetch(assetUrl(p.text), { cache: "no-store" }).catch(() => null);
+    const text = await assetFetch(`Sims/${p.text}`, { cache: "no-store" }).catch(() => null);
     if (!text?.ok) return false;
     p.description = new TextDecoder("windows-1252").decode(await text.arrayBuffer());
-    const img = await fetch(assetUrl(p.file), { cache: "no-store" }).catch(() => null);
+    const img = await assetFetch(`Sims/${p.file}`, { cache: "no-store" }).catch(() => null);
     p.photo = img?.ok ? await createImageBitmap(await img.blob()).catch(() => null) : null;
     if (!p.photo) return false;
     p.state = PageState.Loaded;

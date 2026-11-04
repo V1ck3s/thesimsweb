@@ -29,7 +29,7 @@
  * cSimsApp::ShowNbhdDialog reads (DoModalWin result 1001 -> -1, 1020 -> -20...).
  */
 
-import { fetchManifest } from "../../engine/assets.js";
+import { assetFetch, fetchManifest } from "../../engine/assets.js";
 import { MUSIC, soundPlayer, UI } from "../audio/index.js";
 import type { GameContext } from "../context.js";
 import type { FfnFont } from "../res/ffn.js";
@@ -453,7 +453,7 @@ export class WinNeighborhoodUL extends TSWin implements LotBtnOwner {
     const path = `Sims/${this.nb.dir}/${name}`.toLowerCase();
     const file = (await fetchManifest()).files.find((f) => f.path.toLowerCase() === path);
     if (!file) return null;
-    const r = await fetch(`/assets/${file.path}`).catch(() => null);
+    const r = await assetFetch(file.path).catch(() => null);
     return r?.ok ? createImageBitmap(await r.blob()).catch(() => null) : null;
   }
 
@@ -1228,7 +1228,7 @@ export class WinNeighborhoodUL extends TSWin implements LotBtnOwner {
   /** Houses\NeighborhoodDesc.iff STR# 2000 + house, entries 1 and 2 (left alone when the file or the set is missing). */
   private async setLotDescription(house: number, name: string, description: string): Promise<void> {
     const path = `${this.nb.dir}/Houses/NeighborhoodDesc.iff`;
-    const res = await fetch(`/assets/Sims/${path}`, { cache: "no-store" });
+    const res = await assetFetch(`Sims/${path}`, { cache: "no-store" });
     if (!res.ok) return;
     const chunks = parseIff(new Uint8Array(await res.arrayBuffer()));
     const id = 2000 + house;

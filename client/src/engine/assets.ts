@@ -9,6 +9,9 @@
  * ranges) is also kept in IndexedDB (engine/idb.ts), so a reload does not
  * download it again. Files the game writes (Sims/UserData*, served from the
  * save overlay) change and are always read from the server, never cached.
+ * When the instance keeps saves in the browser (engine/saves.ts, "client"
+ * mode), a file saved here is read from the saves database instead, and the
+ * manifest lists it over the server's files.
  */
 
 import { engine } from "./wasm.js";
@@ -22,6 +25,7 @@ import {
   idbPutIffFile,
   idbPutRange,
 } from "./idb.js";
+import { getSaveMode, isLocalSave, isSavePath, localSaveList, localSaveRead } from "./saves.js";
 
 export interface ManifestFile {
   path: string;
@@ -60,7 +64,20 @@ export function fetchManifest(): Promise<Manifest> {
     const p = (async () => {
       const res = await fetch("/api/manifest", { cache: "no-store" });
       if (!res.ok) throw new Error(`manifest ${res.status}`);
-      return (await res.json()) as Manifest;
+      const m = (await res.json()) as Manifest;
+      if ((await getSaveMode()) === "client") {
+        // Files saved in this browser replace or add to the server's (as the overlay does there).
+        const saved = await localSaveList();
+        if (saved.length) {
+          const byPath = new Map(m.files.map((f) => [f.path.toLowerCase(), f]));
+          for (const f of saved) {
+            const kind = f.path.toLowerCase().endsWith(".far") ? "far" : f.path.toLowerCase().endsWith(".iff") ? "iff" : "other";
+            byPath.set(f.path.toLowerCase(), { path: byPath.get(f.path.toLowerCase())?.path ?? f.path, size: f.size, kind });
+          }
+          m.files = [...byPath.values()];
+        }
+      }
+      return m;
     })();
     manifest = p;
     p.catch(() => {
@@ -75,12 +92,33 @@ export function invalidateManifest(): void {
   manifest = null;
 }
 
-/** Paths the save overlay can write (server/src/routes/userdata.ts). */
-const WRITABLE_PATH = /^Sims\/UserData\d*\//i;
-
-/** Whether `path` (relative to /assets/) is a file the game can write, which is never cached. */
+/** Whether `path` (relative to /assets/) is a file the game can write (Sims/UserData*), which is never cached. */
 export function isWritableAssetPath(path: string): boolean {
-  return WRITABLE_PATH.test(path);
+  return isSavePath(path);
+}
+
+/** The copy of a save file kept in this browser, in client save mode (null otherwise). */
+async function savedCopy(path: string): Promise<Uint8Array | null> {
+  return (await isLocalSave(path)) ? localSaveRead(path) : null;
+}
+
+/**
+ * `fetch` of `path` (relative to /assets/, not URL-encoded) for the callers
+ * that want a Response: a save file kept in this browser answers from there
+ * (status 200, or 206 for a `Range: bytes=a-b` request); anything else goes to
+ * the server's /assets/.
+ */
+export async function assetFetch(path: string, init?: RequestInit): Promise<Response> {
+  const saved = await savedCopy(path);
+  if (saved) {
+    const range = /^bytes=(\d+)-(\d*)$/.exec(new Headers(init?.headers).get("range") ?? "");
+    if (!range) return new Response(saved.slice(), { status: 200, headers: { "content-length": String(saved.length) } });
+    const start = Number(range[1]);
+    const end = range[2] ? Math.min(Number(range[2]) + 1, saved.length) : saved.length;
+    if (start >= saved.length) return new Response(null, { status: 416 });
+    return new Response(saved.slice(start, end), { status: 206, headers: { "content-length": String(end - start) } });
+  }
+  return fetch(assetUrl(path), init);
 }
 
 function assetUrl(path: string): string {
@@ -101,6 +139,8 @@ const PERSIST_MAX_BYTES = 8 * 1024 * 1024;
 export function readAssetFile(path: string): Promise<Uint8Array> {
   if (isWritableAssetPath(path)) {
     return (async () => {
+      const saved = await savedCopy(path);
+      if (saved) return saved.slice();
       const res = await fetch(assetUrl(path), { cache: "no-store" });
       if (!res.ok) throw new Error(`${path}: ${res.status}`);
       return new Uint8Array(await res.arrayBuffer());
@@ -126,6 +166,13 @@ export function readAssetFile(path: string): Promise<Uint8Array> {
 }
 
 async function fetchRange(path: string, start: number, endInclusive: number): Promise<Uint8Array> {
+  if (isWritableAssetPath(path)) {
+    const saved = await savedCopy(path);
+    if (saved) {
+      if (start >= saved.length) throw new Error(`range fetch ${path} ${start}-${endInclusive}: 416`);
+      return saved.slice(start, endInclusive + 1);
+    }
+  }
   const url = `${ASSETS_BASE}${path}`;
   // Not through the HTTP cache: the bytes are kept in IndexedDB, and Chrome
   // serializes cached requests to one URL (a FAR archive), which stalled cold loads.
@@ -321,6 +368,18 @@ export class RangeBatcher {
 
   /** Bytes [start, end) of `path` (relative to /assets/). */
   read(path: string, start: number, end: number): Promise<Uint8Array> {
+    // A save file kept in this browser (client save mode) is read from there.
+    if (isWritableAssetPath(path)) {
+      return savedCopy(path).then((saved) => {
+        if (!saved) return this.enqueue(path, start, end);
+        if (start >= saved.length) throw new Error(`${path} ${start}-${end}: unreadable`);
+        return saved.subarray(start, end);
+      });
+    }
+    return this.enqueue(path, start, end);
+  }
+
+  private enqueue(path: string, start: number, end: number): Promise<Uint8Array> {
     return new Promise((resolve, reject) => {
       this.queue.push({ path, start, end, resolve, reject });
       if (!this.scheduled) {

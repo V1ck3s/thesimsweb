@@ -31,7 +31,7 @@
  *    inside a 16 px margin (Product::SetPopupBitmap).
  */
 
-import { fetchManifest } from "../../../engine/assets.js";
+import { assetFetch, fetchManifest } from "../../../engine/assets.js";
 import { WallState } from "../../cpstate.js";
 import type { GameContext } from "../../context.js";
 import { decodeImage } from "../../res/bmp.js";
@@ -406,7 +406,7 @@ export class WinRoofPanel extends TSWin {
 /** BMPFactory + IsAllowableRoofTexture: square power-of-two textures only. */
 async function loadTexture(path: string): Promise<ImageBitmap | null> {
   try {
-    const r = await fetch(`/assets/${path}`);
+    const r = await assetFetch(path);
     if (!r.ok) return null;
     const img = decodeImage(new Uint8Array(await r.arrayBuffer()), path);
     const pow2 = (v: number): boolean => v >= 1 && v <= 0x100 && (v & (v - 1)) === 0;

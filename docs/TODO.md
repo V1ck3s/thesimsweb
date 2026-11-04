@@ -132,6 +132,8 @@ Interface
 - Page d'accueil et assistant d'import du dossier du jeu (utilisateur final).
 - Documentation utilisateur.
 - Décider : version publique hébergée ou usage personnel.
+- Sauvegardes en mode `SAVES=client` : export / import (une archive des `UserData*` du navigateur),
+  sans quoi effacer les données du site les perd.
 
 ## 9. Outils de développement (faible priorité)
 

@@ -34,6 +34,7 @@
  * Save into the same file) and end with 3; Cancel ends with 1, No with 2.
  */
 
+import { assetFetch } from "../../engine/assets.js";
 import type { GameContext } from "../context.js";
 import { writeGameFile } from "../data/files.js";
 import { buildIff, parseIff, stringSetMultiSave } from "../data/iff.js";
@@ -133,7 +134,7 @@ export class WinEditDTLotDesc extends TSWin {
     this.lotDesc = this.descEdit?.getText() ?? this.lotDesc;
     const path = this.path;
     if (!path) return;
-    const res = await fetch(`/assets/Sims/${path}`, { cache: "no-store" });
+    const res = await assetFetch(`Sims/${path}`, { cache: "no-store" });
     if (!res.ok) return;
     const chunks = parseIff(new Uint8Array(await res.arrayBuffer()));
     const id = DESC_SET_BASE + this.house;

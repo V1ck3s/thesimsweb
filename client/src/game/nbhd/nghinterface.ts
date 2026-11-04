@@ -15,7 +15,7 @@
  *   Neighborhood.iff  families (decoded by data/neighborhood.ts).
  */
 
-import { fetchManifest, readStandaloneIff, type IffChunkInfo } from "../../engine/assets.js";
+import { assetFetch, fetchManifest, type IffChunkInfo, readStandaloneIff } from "../../engine/assets.js";
 import {
   familyInHouse,
   loadNeighborhood,
@@ -161,7 +161,7 @@ export class Neighborhood {
     if (!z || z.zone === zone) return false;
     z.zone = zone;
     const path = `${this.dir}/LotZoning.iff`;
-    const res = await fetch(`/assets/Sims/${path}`, { cache: "no-store" });
+    const res = await assetFetch(`Sims/${path}`, { cache: "no-store" });
     if (!res.ok) return false;
     const chunks = parseIff(new Uint8Array(await res.arrayBuffer()));
     const str = chunks.find((c) => c.type === "STR#" && c.id === 1);

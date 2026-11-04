@@ -32,7 +32,7 @@
  *   PostChildDraw (picker): filter icons over the matching lots, the title, the frame.
  */
 
-import { fetchManifest } from "../../engine/assets.js";
+import { assetFetch, fetchManifest } from "../../engine/assets.js";
 import { MUSIC, soundPlayer, UI } from "../audio/index.js";
 import type { GameContext } from "../context.js";
 import { writeGameFile } from "../data/files.js";
@@ -637,7 +637,7 @@ export class WinTown extends TSWin implements LotBtnOwner {
     const has = (p: string): boolean => files.some((f) => f.path.toLowerCase() === `sims/${p}`.toLowerCase());
     if (has(this.nb.getHousePath(template.first))) return;
     const copy = async (from: string, to: string): Promise<void> => {
-      const r = await fetch(`/assets/Sims/${from}`).catch(() => null);
+      const r = await assetFetch(`Sims/${from}`).catch(() => null);
       if (r?.ok) await writeGameFile(to, new Uint8Array(await r.arrayBuffer()));
     };
     for (let h = template.first; h < template.end; h++) {
@@ -651,7 +651,7 @@ export class WinTown extends TSWin implements LotBtnOwner {
     const path = `Sims/${this.nb.dir}/${name}`.toLowerCase();
     const file = (await fetchManifest()).files.find((f) => f.path.toLowerCase() === path);
     if (!file) return null;
-    const r = await fetch(`/assets/${file.path}`).catch(() => null);
+    const r = await assetFetch(file.path).catch(() => null);
     return r?.ok ? createImageBitmap(await r.blob()).catch(() => null) : null;
   }
 

@@ -4,6 +4,8 @@
 #   SIMS_DIR=/srv/sims/Les Sims   # the install folder of The Sims (required)
 #   THESIMSWEB_PORT=3000          # published port
 #   THESIMSWEB_BIND=127.0.0.1     # 0.0.0.0 to expose it without a reverse proxy
+#   THESIMSWEB_SAVES=server       # server: one shared set of saves on the server
+#                                 # client: each player's saves stay in their browser
 #
 #   docker compose up -d --build
 #
@@ -15,12 +17,14 @@ services:
     build: .
     image: thesimsweb:latest
     restart: unless-stopped
+    environment:
+      SAVES: "${THESIMSWEB_SAVES:-server}"
     ports:
       - "${THESIMSWEB_BIND:-127.0.0.1}:${THESIMSWEB_PORT:-3000}:3000"
     volumes:
       # The game folder, never written to.
       - "${SIMS_DIR:?set SIMS_DIR to the install folder of The Sims}:/app/server/assets/Sims:ro"
-      # Saves (UserData* written by the game), kept across rebuilds.
+      # Saves (UserData* written by the game), kept across rebuilds (unused when SAVES=client).
       - saves:/app/server/data/overlay
 
 volumes:

@@ -17,7 +17,7 @@
  * slot + 1 (FindNeighborByID, AddNewNeighbor).
  */
 
-import { fetchManifest } from "../../engine/assets.js";
+import { assetFetch, fetchManifest } from "../../engine/assets.js";
 import { LANG_FRENCH } from "../res/uires.js";
 import { createCharacterFile, createCharacterFileFrom, deleteCharacterFile, GUID_TEMPLATE_PERSON } from "./character.js";
 import { deleteGameFile, writeGameFile } from "./files.js";
@@ -374,7 +374,7 @@ export class NeighborhoodStore {
   ) {}
 
   static async open(dir: string): Promise<NeighborhoodStore> {
-    const res = await fetch(`/assets/Sims/${dir}/Neighborhood.iff`, { cache: "no-store" });
+    const res = await assetFetch(`Sims/${dir}/Neighborhood.iff`, { cache: "no-store" });
     if (!res.ok) throw new Error(`${dir}/Neighborhood.iff: ${res.status}`);
     const chunks = parseIff(new Uint8Array(await res.arrayBuffer()));
     const nbrsChunk = chunks.find((c) => c.type === "NBRS");
@@ -679,7 +679,7 @@ export class NeighborhoodStore {
     if (!f) return false;
     const base = `${this.dir}/Export/${f.name}_${f.id}`;
     const read = async (path: string): Promise<IffChunk[] | null> => {
-      const res = await fetch(`/assets/Sims/${path}`, { cache: "no-store" });
+      const res = await assetFetch(`Sims/${path}`, { cache: "no-store" });
       return res.ok ? parseIff(new Uint8Array(await res.arrayBuffer())) : null;
     };
     const out: IffChunk[] = [];

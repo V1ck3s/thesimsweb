@@ -19,7 +19,7 @@
  * Export/ file stays offered.
  */
 
-import { fetchManifest, readFarEntry } from "../../engine/assets.js";
+import { assetFetch, fetchManifest, readFarEntry } from "../../engine/assets.js";
 import { saveCharacter } from "../data/character.js";
 import { deleteGameFile, writeGameFile } from "../data/files.js";
 import { buildIff, decodeStrSet, parseIff, parseIffMapOrder, stringSetMultiSave, type IffChunk } from "../data/iff.js";
@@ -97,7 +97,7 @@ export async function listTownImports(nbhdDir: string, ext: string): Promise<str
  */
 export async function setLotDescription(nbhdDir: string, file: string, house: number, name: string, description: string): Promise<void> {
   const path = `${nbhdDir}/Houses/${file}`;
-  const res = await fetch(`/assets/Sims/${path}`, { cache: "no-store" });
+  const res = await assetFetch(`Sims/${path}`, { cache: "no-store" });
   if (!res.ok) return;
   const chunks = parseIff(new Uint8Array(await res.arrayBuffer()));
   const c = chunks.find((x): boolean => x.type === "STR#" && x.id === 2000 + house);
@@ -113,7 +113,7 @@ export async function hasImports(nbhdDir: string): Promise<boolean> {
 }
 
 async function readFile(path: string): Promise<Uint8Array | null> {
-  const res = await fetch(`/assets/Sims/${path.split("/").map(encodeURIComponent).join("/")}`, { cache: "no-store" });
+  const res = await assetFetch(`Sims/${path}`, { cache: "no-store" });
   return res.ok ? new Uint8Array(await res.arrayBuffer()) : null;
 }
 

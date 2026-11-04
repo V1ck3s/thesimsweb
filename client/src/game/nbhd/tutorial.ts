@@ -35,7 +35,7 @@ import { writeGameFile } from "../data/files.js";
 import { IDOK, MB_OK, MB_OKCANCEL, TSWinMsgBox } from "../ui/msgbox.js";
 import { getImportInfoForFile, importDir, importFamily } from "./imports.js";
 import { Zone, type Neighborhood } from "./nghinterface.js";
-import { fetchManifest } from "../../engine/assets.js";
+import { assetFetch, fetchManifest } from "../../engine/assets.js";
 import { getOptionsMgr } from "../optionsmgr.js";
 import type { SimModule } from "../sim/simmodule.js";
 import type { ObjectFolder } from "../world/objectfolder.js";
@@ -70,7 +70,7 @@ async function fileExists(path: string): Promise<boolean> {
 
 /** CopyFileA of the shipped Tutorial.FAM into the import folder; false on failure. */
 async function copyTutorialIntoImport(nbhdDir: string): Promise<boolean> {
-  const res = await fetch(`/assets/Sims/${TUTORIAL_SOURCE}`, { cache: "no-store" }).catch(() => null);
+  const res = await assetFetch(`Sims/${TUTORIAL_SOURCE}`, { cache: "no-store" }).catch(() => null);
   if (!res?.ok) return false;
   try {
     await writeGameFile(`${importDir(nbhdDir)}/${TUTORIAL_FAM}`, new Uint8Array(await res.arrayBuffer()));

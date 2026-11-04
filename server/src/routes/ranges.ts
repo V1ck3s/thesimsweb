@@ -26,7 +26,8 @@ const UNREADABLE = 0xffffffff;
 
 interface Options {
   assetsDir: string;
-  overlayDir: string;
+  /** Writable overlay (routes/userdata.ts); none when saves are kept in the browser. */
+  overlayDir?: string;
 }
 
 function safeJoin(root: string, rel: string): string | null {
@@ -36,7 +37,7 @@ function safeJoin(root: string, rel: string): string | null {
 
 export async function registerRangesRoute(app: FastifyInstance, { assetsDir, overlayDir }: Options): Promise<void> {
   const locate = (path: string): string | null => {
-    const over = safeJoin(overlayDir, path);
+    const over = overlayDir ? safeJoin(overlayDir, path) : null;
     if (over && existsSync(over)) return over;
     return safeJoin(assetsDir, path);
   };

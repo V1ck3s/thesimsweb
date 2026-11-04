@@ -28,7 +28,7 @@
  * based lookups (master / sub-tile selectors) need.
  */
 
-import { fetchManifest, RangeBatcher, readFarManifest, type FarEntryInfo } from "../../engine/assets.js";
+import { assetFetch, type FarEntryInfo, fetchManifest, RangeBatcher, readFarManifest } from "../../engine/assets.js";
 import { idbGetFarManifest, idbPutFarManifest } from "../../engine/idb.js";
 import { engine } from "../../engine/wasm.js";
 import { parseIff } from "../data/iff.js";
@@ -318,7 +318,7 @@ export class ObjectFolder implements SelectorFolder {
    * blocks zeroed.
    */
   private async load(): Promise<void> {
-    const res = await fetch(`/assets/Sims/${this.userDir}/Neighborhood.iff`, { cache: "no-store" }).catch(() => null);
+    const res = await assetFetch(`Sims/${this.userDir}/Neighborhood.iff`, { cache: "no-store" }).catch(() => null);
     if (!res?.ok) return;
     const chunk = parseIff(new Uint8Array(await res.arrayBuffer())).find((c) => c.type === "TATT" && c.id === 1);
     if (!chunk) return;

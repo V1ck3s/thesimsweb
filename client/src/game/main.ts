@@ -10,6 +10,7 @@
 
 import { modeMusicEvent, soundPlayer, UI_SOURCE } from "./audio/index.js";
 import { installLotAudio } from "./audio/lotaudio.js";
+import { getSaveMode, requestPersistentStorage } from "../engine/saves.js";
 import { CPState, DIRTY_ALL, Mode } from "./cpstate.js";
 import type { GameContext } from "./context.js";
 import { CPANEL_HEIGHT, WinCPanel } from "./cpanel/cpanel.js";
@@ -340,6 +341,8 @@ class Game {
 async function boot(): Promise<void> {
   const mgr = new WinMgr(document.getElementById("screen")!, SCREEN_W, SCREEN_H);
   const ctx = await createContext();
+  // Saves kept in this browser (SAVES=client): ask the browser not to evict them.
+  if ((await getSaveMode()) === "client") void requestPersistentStorage();
   // cSimsApp::SetupWinCtrlMgr: the cursor files (UIGraphics/shared/cursors).
   await loadCursors();
   mgr.setDefaultTTWindow(await DefaultTTWindow.create(ctx.fonts));

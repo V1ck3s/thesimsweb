@@ -21,7 +21,7 @@
  * same order instead (data/iff.ts).
  */
 
-import { readFarEntry } from "../../engine/assets.js";
+import { assetFetch, readFarEntry } from "../../engine/assets.js";
 import { LANG_FRENCH } from "../res/uires.js";
 import { deleteGameFile, writeGameFile } from "./files.js";
 import { buildIff, decodeStrSet, encodeStrSet, parseIffMapOrder, stringSetMultiSave, type IffChunk } from "./iff.js";
@@ -106,7 +106,7 @@ export async function createCharacterFileFrom(
 
 /** The resources of a character file, in resource-map order (read fresh, never cached). */
 export async function readCharacterFile(dir: string, fileName: string): Promise<IffChunk[]> {
-  const res = await fetch(`/assets/Sims/${dir}/Characters/${fileName}`, { cache: "no-store" });
+  const res = await assetFetch(`Sims/${dir}/Characters/${fileName}`, { cache: "no-store" });
   if (!res.ok) throw new Error(`${dir}/Characters/${fileName}: ${res.status}`);
   return parseIffMapOrder(new Uint8Array(await res.arrayBuffer()));
 }
