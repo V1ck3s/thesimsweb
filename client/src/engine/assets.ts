@@ -8,8 +8,8 @@
  * Game-folder data read here (FAR tables and entries, whole files, byte
  * ranges) is also kept in IndexedDB (engine/idb.ts), so a reload does not
  * download it again. Files the game writes (Sims/UserData*, served from the
- * save overlay) change and are always read from the server, never cached.
- * When the instance keeps saves in the browser (engine/saves.ts, "client"
+ * save overlay) change: they are never stored, only read once per load (the
+ * save-file cache below). When the instance keeps saves in the browser (engine/saves.ts, "client"
  * mode), a file saved here is read from the saves database instead, and the
  * manifest lists it over the server's files.
  */
@@ -92,7 +92,7 @@ export function invalidateManifest(): void {
   manifest = null;
 }
 
-/** Whether `path` (relative to /assets/) is a file the game can write (Sims/UserData*), which is never cached. */
+/** Whether `path` (relative to /assets/) is a file the game can write (Sims/UserData*), never stored across loads. */
 export function isWritableAssetPath(path: string): boolean {
   return isSavePath(path);
 }
@@ -102,21 +102,102 @@ async function savedCopy(path: string): Promise<Uint8Array | null> {
   return (await isLocalSave(path)) ? localSaveRead(path) : null;
 }
 
+// --- Save files: one read per load ------------------------------------------------
+
+interface SaveFile {
+  bytes: Uint8Array;
+  /** Its chunk list (readStandaloneIff), parsed on first use. */
+  chunks?: IffChunkInfo[];
+}
+
+/**
+ * The save files (Sims/UserData*) read since the current load began, by
+ * lower-cased path (the game folder is case-insensitive); null: no such file.
+ * A neighborhood or lot load reads the same files from several modules
+ * (Neighborhood.iff about six times, the characters two to four times): each
+ * is now fetched, or read from this browser's saves, once, and every reader
+ * gets its own copy of the bytes.
+ *
+ * Kept correct by: data/files.ts dropping a file after the game writes or
+ * deletes it (invalidateSaveFile), so the next read sees the new file (in
+ * both save modes); and resetSaveFileCache at the start of every load
+ * (game/main.ts), so a load still sees files changed elsewhere (another tab,
+ * another player of the shared server saves), as when nothing was cached.
+ * Failed reads (network, server errors) are not kept.
+ */
+const saveFiles = new Map<string, Promise<SaveFile | null>>();
+
+function saveFile(path: string): Promise<SaveFile | null> {
+  const key = path.toLowerCase();
+  const cached = saveFiles.get(key);
+  if (cached) return cached;
+  const p = (async (): Promise<SaveFile | null> => {
+    const saved = await savedCopy(path);
+    if (saved) return { bytes: saved };
+    const res = await fetch(assetUrl(path), { cache: "no-store" });
+    if (res.status === 404) return null;
+    if (!res.ok) throw new Error(`${path}: ${res.status}`);
+    return { bytes: new Uint8Array(await res.arrayBuffer()) };
+  })();
+  saveFiles.set(key, p);
+  p.catch(() => {
+    if (saveFiles.get(key) === p) saveFiles.delete(key);
+  });
+  return p;
+}
+
+/**
+ * Bytes [start, end) of a save file already read in this load, or kept in
+ * this browser (client save mode); undefined when neither has it (the caller
+ * reads the range from the server, as before). Throws where a Range request
+ * would fail (missing file, `start` at or past the end).
+ */
+async function saveFileRange(path: string, start: number, end: number): Promise<Uint8Array | undefined> {
+  const cached = saveFiles.get(path.toLowerCase());
+  let bytes: Uint8Array | undefined;
+  if (cached) {
+    const f = await cached.catch(() => undefined);
+    if (f === null) throw new Error(`${path} ${start}-${end}: 404`);
+    bytes = f?.bytes;
+  }
+  bytes ??= (await savedCopy(path)) ?? undefined;
+  if (!bytes) return undefined;
+  if (start >= bytes.length) throw new Error(`${path} ${start}-${end}: 416`);
+  return bytes.slice(start, end);
+}
+
+/** `path` (relative to /assets/, "Sims/UserData2/Neighborhood.iff") changed: its next read goes to the server (or this browser's saves) again. */
+export function invalidateSaveFile(path: string): void {
+  saveFiles.delete(path.toLowerCase());
+}
+
+/** A new load begins: every save file is read again (once). */
+export function resetSaveFileCache(): void {
+  saveFiles.clear();
+}
+
 /**
  * `fetch` of `path` (relative to /assets/, not URL-encoded) for the callers
- * that want a Response: a save file kept in this browser answers from there
- * (status 200, or 206 for a `Range: bytes=a-b` request); anything else goes to
- * the server's /assets/.
+ * that want a Response. A GET of a save file (Sims/UserData*) answers from the
+ * save-file cache (read once per load, from this browser's saves in client
+ * mode, else the server, uncached): status 200, 206 for a `Range: bytes=a-b`
+ * request, 404 when there is no such file. Anything else goes to the
+ * server's /assets/.
  */
 export async function assetFetch(path: string, init?: RequestInit): Promise<Response> {
-  const saved = await savedCopy(path);
-  if (saved) {
-    const range = /^bytes=(\d+)-(\d*)$/.exec(new Headers(init?.headers).get("range") ?? "");
-    if (!range) return new Response(saved.slice(), { status: 200, headers: { "content-length": String(saved.length) } });
-    const start = Number(range[1]);
-    const end = range[2] ? Math.min(Number(range[2]) + 1, saved.length) : saved.length;
-    if (start >= saved.length) return new Response(null, { status: 416 });
-    return new Response(saved.slice(start, end), { status: 206, headers: { "content-length": String(end - start) } });
+  if (isSavePath(path) && (init?.method ?? "GET").toUpperCase() === "GET") {
+    const f = await saveFile(path).catch(() => undefined);
+    if (f === null) return new Response(null, { status: 404 });
+    if (f) {
+      const saved = f.bytes;
+      const range = /^bytes=(\d+)-(\d*)$/.exec(new Headers(init?.headers).get("range") ?? "");
+      if (!range) return new Response(saved.slice(), { status: 200, headers: { "content-length": String(saved.length) } });
+      const start = Number(range[1]);
+      const end = range[2] ? Math.min(Number(range[2]) + 1, saved.length) : saved.length;
+      if (start >= saved.length) return new Response(null, { status: 416 });
+      return new Response(saved.slice(start, end), { status: 206, headers: { "content-length": String(end - start) } });
+    }
+    // The read failed (not kept): this request gets the server's answer itself.
   }
   return fetch(assetUrl(path), init);
 }
@@ -133,18 +214,16 @@ const PERSIST_MAX_BYTES = 8 * 1024 * 1024;
  * The whole file `path` (relative to /assets/, e.g. "Sims/UIGraphics/Res_CPanel.RT").
  * Game-folder files come from the IndexedDB cache when present (stored after
  * the first download); concurrent reads of the same file share one request.
- * Files the game writes (Sims/UserData*) are always fetched, uncached.
+ * Files the game writes (Sims/UserData*) are never stored: they are read
+ * once per load (the save-file cache), each caller getting its own copy.
  * Rejects when the server has no such file.
  */
 export function readAssetFile(path: string): Promise<Uint8Array> {
   if (isWritableAssetPath(path)) {
-    return (async () => {
-      const saved = await savedCopy(path);
-      if (saved) return saved.slice();
-      const res = await fetch(assetUrl(path), { cache: "no-store" });
-      if (!res.ok) throw new Error(`${path}: ${res.status}`);
-      return new Uint8Array(await res.arrayBuffer());
-    })();
+    return saveFile(path).then((f) => {
+      if (!f) throw new Error(`${path}: 404`);
+      return f.bytes.slice();
+    });
   }
   const pending = fileReads.get(path);
   // A read joining one in flight gets its own copy, as if it had fetched the file itself.
@@ -167,11 +246,8 @@ export function readAssetFile(path: string): Promise<Uint8Array> {
 
 async function fetchRange(path: string, start: number, endInclusive: number): Promise<Uint8Array> {
   if (isWritableAssetPath(path)) {
-    const saved = await savedCopy(path);
-    if (saved) {
-      if (start >= saved.length) throw new Error(`range fetch ${path} ${start}-${endInclusive}: 416`);
-      return saved.slice(start, endInclusive + 1);
-    }
+    const known = await saveFileRange(path, start, endInclusive + 1);
+    if (known) return known;
   }
   const url = `${ASSETS_BASE}${path}`;
   // Not through the HTTP cache: the bytes are kept in IndexedDB, and Chrome
@@ -274,7 +350,8 @@ export async function readFarManifest(farPath: string): Promise<FarEntryInfo[]> 
 }
 
 /**
- * Read one entry from a FAR archive. Uses a Range request bounded to the entry's bytes.
+ * Read one entry from a FAR archive: the entry's bytes only, batched with the
+ * other reads of the same task (RangeBatcher), kept in IndexedDB.
  */
 export async function readFarEntry(farPath: string, entryName: string): Promise<Uint8Array> {
   const cacheKey = `${farPath}|${entryName.toLowerCase()}`;
@@ -290,9 +367,11 @@ export async function readFarEntry(farPath: string, entryName: string): Promise<
       if (!target) {
         throw new Error(`${farPath}: entry "${entryName}" not found`);
       }
+      // Through the shared batcher: the entries asked for in one task (a lot
+      // load asks for ~2000, Live mode a few dozen per new animation) share one
+      // POST /api/ranges instead of one Range request each.
       const start = target.offset;
-      const end = start + target.sizeCompressed - 1;
-      const bytes = await fetchRange(farPath, start, end);
+      const bytes = await readAssetRangeBatched(farPath, start, start + target.sizeCompressed);
       // (a copy: the put is queued, the caller may change its bytes meanwhile)
       void idbPutFarEntry(farPath, entryName, bytes.slice());
       return bytes;
@@ -332,8 +411,14 @@ export async function readStandaloneIff(
   path: string,
 ): Promise<{ data: Uint8Array; chunks: IffChunkInfo[] }> {
   const wasm = await engine();
-  // Files the game writes (UserData*, served from the save overlay) change:
-  // readAssetFile never keeps them in the persistent cache.
+  // Files the game writes (UserData*) are read and parsed once per load (the
+  // save-file cache); every caller gets its own copy of the bytes and chunk list.
+  if (isWritableAssetPath(path)) {
+    const f = await saveFile(path);
+    if (!f) throw new Error(`${path}: 404`);
+    f.chunks ??= wasm.parseIffChunks(f.bytes) as IffChunkInfo[];
+    return { data: f.bytes.slice(), chunks: f.chunks.map((c) => ({ ...c })) };
+  }
   const data = await readAssetFile(path);
   const chunks = wasm.parseIffChunks(data) as IffChunkInfo[];
   return { data, chunks };
@@ -368,13 +453,14 @@ export class RangeBatcher {
 
   /** Bytes [start, end) of `path` (relative to /assets/). */
   read(path: string, start: number, end: number): Promise<Uint8Array> {
-    // A save file kept in this browser (client save mode) is read from there.
+    // A save file read in this load or kept in this browser (client save mode) is read from there.
     if (isWritableAssetPath(path)) {
-      return savedCopy(path).then((saved) => {
-        if (!saved) return this.enqueue(path, start, end);
-        if (start >= saved.length) throw new Error(`${path} ${start}-${end}: unreadable`);
-        return saved.subarray(start, end);
-      });
+      return saveFileRange(path, start, end).then(
+        (known) => known ?? this.enqueue(path, start, end),
+        () => {
+          throw new Error(`${path} ${start}-${end}: unreadable`);
+        },
+      );
     }
     return this.enqueue(path, start, end);
   }

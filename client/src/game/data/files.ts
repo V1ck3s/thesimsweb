@@ -5,8 +5,10 @@
  * /assets/Sims/<path> and lists them in the manifest. Only UserData* paths
  * are writable.
  *
- * After a write the in-memory caches that hold game files are dropped and the
- * listeners are told (onGameFilesChanged), so the next read sees the new file.
+ * After a write the in-memory caches that hold game files are dropped (the
+ * file's entry of the per-load save-file cache, engine/assets.ts, among them)
+ * and the listeners are told (onGameFilesChanged), so the next read sees the
+ * new file.
  * Standalone IFFs under UserData* are never kept in the IndexedDB asset cache
  * (engine/assets.ts), so a reload sees them too.
  *
@@ -14,7 +16,7 @@
  * mode) the writes go to this browser's saves database instead of the server.
  */
 
-import { invalidateManifest } from "../../engine/assets.js";
+import { invalidateManifest, invalidateSaveFile } from "../../engine/assets.js";
 import { getSaveMode, localSaveDelete, localSaveWrite } from "../../engine/saves.js";
 import { clearIffFileCache } from "../nbhd/nghinterface.js";
 
@@ -28,6 +30,7 @@ function url(path: string): string {
 function changed(path: string): void {
   // The manifest is fetched once per page (engine/assets.ts): it lists the new file from now on.
   invalidateManifest();
+  invalidateSaveFile(`Sims/${path}`);
   clearIffFileCache();
   for (const l of [...listeners]) l(path);
 }

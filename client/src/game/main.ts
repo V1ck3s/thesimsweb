@@ -10,6 +10,7 @@
 
 import { modeMusicEvent, soundPlayer, UI_SOURCE } from "./audio/index.js";
 import { installLotAudio } from "./audio/lotaudio.js";
+import { resetSaveFileCache } from "../engine/assets.js";
 import { getSaveMode, requestPersistentStorage } from "../engine/saves.js";
 import { CPState, DIRTY_ALL, Mode } from "./cpstate.js";
 import type { GameContext } from "./context.js";
@@ -167,6 +168,8 @@ class Game {
   /** cSimsApp::DoNbhdScreen */
   async showNeighborhood(): Promise<void> {
     const { ctx, mgr } = this;
+    // A new load: the save files are read again, once each (engine/assets.ts).
+    resetSaveFileCache();
     // The installer's Tutorial.FAM, imported by the screen's CheckForNewImports (first run only).
     await firstRunTutorial(this.nbhdDir);
     const nb = await Neighborhood.load(this.nbhdDir);
@@ -222,6 +225,7 @@ class Game {
   /** cSimsApp::ShowDowntownDialog (and the other towns): the town screen; -20 goes back to DoNbhdScreen, a house loads it. */
   async showTown(town: Town): Promise<void> {
     const { ctx, mgr } = this;
+    resetSaveFileCache();
     const nb = this.nbhd ?? (await Neighborhood.load(this.nbhdDir));
     this.nbhd = nb;
     const screen: WinTown = new WinTown(ctx, nb, town, true, {
@@ -288,6 +292,7 @@ class Game {
   async enterLot(house: number, moveInFamily = 0): Promise<void> {
     const { ctx, mgr } = this;
     const state = ctx.state;
+    resetSaveFileCache();
     const arrival = this.arrival;
     this.arrival = null;
     if (!(await prepareArrival(ctx, this.nbhdDir, arrival)) && !(await activateFamily(state, await loadNeighborhood(this.nbhdDir), house))) {

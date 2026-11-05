@@ -203,6 +203,43 @@ are uncached on purpose; sharing one read between modules would need a per-load 
 files. Music streams through `<audio>` (HTTP cache). Cold loads are unchanged within noise (Firefox
 lot ~23 s to the lot view; Chrome's cold lot still waits ~2 min on its last requests).
 
+## Save files and cold lots (2026-11-05)
+
+**Per-load save-file cache** (`engine/assets.ts`, `saveFile`). Every read of a `Sims/UserData*`
+file (`assetFetch` GET, `readAssetFile`, `readStandaloneIff`, and the range reads when the file is
+already in hand) goes through one map of whole files: each file is fetched (or, with `SAVES=client`,
+read from the browser's saves database) once per load, every caller gets its own copy of the bytes
+(`readStandaloneIff` also parses the chunk list once and hands out copies). It stays correct by:
+`data/files.ts` dropping the file after each `writeGameFile` / `deleteGameFile` (both save modes);
+`resetSaveFileCache()` at the start of every load (`game/main.ts`: `showNeighborhood`, `showTown`,
+`enterLot`), so a load still sees files changed elsewhere (another tab, another player of the shared
+saves); failed reads are not kept, a missing file (404) is. Checked in both modes: 4 readers of one
+file = 1 request, mutating a copy does not leak, missing → write → rewrite → delete reads 404 /
+new bytes / newer bytes / 404, a client-mode copy shadowing an original goes back to the original
+after a delete, and a file changed behind the page's back shows on the next load, not inside this one.
+
+| Warm `?nbhd=UserData33&house=1`, Chrome | Before | After |
+|---|---|---|
+| Save-file requests (distinct files) | 94 (39): `Neighborhood.iff` 6 x, characters 2..4 x, `LotZoning.iff` 2 x | 39 (39) |
+| Same, `SAVES=client` (`UserData2`, house 1) | | 4 (4) |
+
+The neighborhood screen alone read each of its 45 files once already.
+
+**Chrome cold lot.** Not a stall any more: with empty IndexedDB / HTTP cache the lot view is up in
+15..19 s (dev server; 28..36 s on a prod build while the shared :3000 server was busy, its
+`/api/manifest` alone took 8..21 s). What looked like "2 minutes on the last requests" is the
+network-idle mark: once the lot runs, Live mode keeps reading animations and sounds on demand
+(bursts of 20..60 FAR entries each time a sim starts something new), so the network stays busy for
+1..2 min after the lot is playable. No request takes long (the slowest are ~1..2 s while ~1000 others
+are queued). The `net::ERR_ABORTED` that Playwright reports for every `HEAD` of a FAR is a reporting
+artifact (the same `fetch` resolves 200 with its content-length).
+
+Each FAR entry was one `Range` request (2271 per cold lot, Chrome queueing them 6 at a time per
+host). `readFarEntry` now reads through the shared `RangeBatcher`: 2967 → 1239..1351 requests per cold
+lot, 180 GETs left (FAR heads and tails); the lot-view time is within noise (16.3 s → 15.6..18.8 s).
+The entries are byte-identical (301 entries sampled from IndexedDB vs direct `Range` reads).
+Firefox cold lot after the change: 23.4 s to the lot view, as before.
+
 ## Remaining issues
 
 - **Firefox: WebGL -> 2D readback, ~7 ms per frame.** The lot is rendered in a WebGL canvas and
