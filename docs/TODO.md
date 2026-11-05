@@ -28,8 +28,15 @@ Live
   relance à Main sans Init ; l'original recrée un objet neuf (Init). `world/tools/wallundo.ts`.
 
 Quartier / sauvegarde
-- **Pages web** : cScrapbook::MakeCurThumb, SetBlockSimulator ; l'ordre de `[objects]` du .pub suit
-  notre index ; FinishFamily (Créer une famille) n'exporte pas les pages.
+- **Pages web** : l'ordre de `[objects]` du .pub suit notre index. Lien vers les pages en mode
+  SAVES=client sans service worker (serveur de dev) : non servies. Album photo avec photos
+  (MakeCurThumb porté) non testé.
+- **Langue** (réglage de la page d'accueil, `engine/language.ts`) : à finir de vérifier. Le
+  quartier se charge en `?lang=1` ; à contrôler : textes de l'interface, catalogue, bulles,
+  formats d'argent / d'heure, décalages de police (fame / job / house / options ne connaissent que
+  le français), noms des quartiers et lots (STR# 2000 par langue), modèles web anglais en repli.
+  Les outils (dirttool, floortool, movetool, wallpapertool, pooltool, walltool) formatent les
+  prix avec `toLocaleString("en-US")` au lieu de makeMoneyString.
 - **Vignettes** : le vert du terrain est un cran 5 bits trop bas sur ~28 % des pixels (génération
   des couleurs du terrain) ; la grande vignette de House01 fait 158x86 au lieu de 159x85.
 - **Ville magique** : feuillage des bouleaux translucide (vue et vignettes), opaque dans le jeu ;
