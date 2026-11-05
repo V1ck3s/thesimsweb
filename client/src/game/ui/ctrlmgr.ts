@@ -53,6 +53,9 @@ export class TSWinCtrlMgr {
   private readonly fonts = new Map<number, FfnFont>();
   private readonly table = new Map<number, FfnFont>();
 
+  /** The last loaded control manager, for windows built without a context (cTSFrameWork_CtrlMgr()). */
+  static current: TSWinCtrlMgr | null = null;
+
   private constructor() {}
 
   /** The context's control manager, loaded once (cTSFrameWork_CtrlMgr()). */
@@ -77,6 +80,7 @@ export class TSWinCtrlMgr {
     ]);
     m.fonts.set(0, m.table.get(11)!);
     m.fonts.set(1, m.table.get(12)!.withFlags(FONT_SHADOW));
+    TSWinCtrlMgr.current = m;
     return m;
   }
 

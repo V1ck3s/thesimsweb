@@ -380,6 +380,8 @@ async function boot(): Promise<void> {
   splash.setSplashMessage("ocns");
   await ObjectFolder.get("UserData");
   const game = new Game(ctx, mgr);
+  // cOptionsMgr::GetQuickTips reads the lot's simulator (tutorial house global).
+  getOptionsMgr().simulatorGlobals = () => game.lotView?.sim?.globals ?? null;
   // cSimsApp::Init: RegisterCheats and the cheat widget (the shipped builds
   // restrict the cheats, IsFinalShip; `?devcheats` lifts it for development).
   await installCheatConsole(ctx, { lotView: () => game.lotView }, !new URLSearchParams(location.search).has("devcheats"));

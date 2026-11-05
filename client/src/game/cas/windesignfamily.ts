@@ -210,6 +210,9 @@ export class WinDesignFamily extends TSWinGenDlg {
     name.setArea(NAME_EDIT.x + ox, NAME_EDIT.y + oy, NAME_EDIT.x + NAME_EDIT.w + ox, NAME_EDIT.y + NAME_EDIT.h + oy);
     name.target = this;
     name.setLinesAllowed(1);
+    // +0x18c / +400: "UI_NHood_error" (lbl_105BC738 + 0xd) for a refused insertion or character.
+    name.errorSound = "UI_NHood_error";
+    name.filterSound = "UI_NHood_error";
     name.setTransparent(true);
     name.setColors(DLG_FILL, WHITE, WHITE);
     name.setCapacity(0x18);

@@ -40,9 +40,24 @@
  *  - Escape, Return or any command close it (message 0x10).
  *
  * The caller plays the credits music and restores the neighborhood music;
- * neither Init nor Shutdown touches the sound. Not ported: the frame rate
- * the window forces on the 3D device (AnimDevice +0x70), the page-flipping
- * repair fill.
+ * neither Init nor Shutdown touches the sound.
+ *
+ * Nothing to port, with the reasons:
+ *  - the AnimDevice "cadence": Init sets the 3D device's +0x70 (Windows
+ *    +0x60) to 100, ShowWindow to 30, HideWindow / Shutdown back to 0. On
+ *    Windows that value only feeds the present timer (FUN_005c8b39, called
+ *    before each blit / flip with it): a new nonzero value sets its period to
+ *    1 000 000 / value us, and the call returns the milliseconds left in the
+ *    period, which every caller drops; nothing waits on it. The Mac
+ *    AnimDevice never reads +0x70. The credits' pace comes from
+ *    Credit::GetCurTime (50 ms steps at most) and the 35 px / s scroll,
+ *    both ported;
+ *  - the fill after AnimDevice::ScrollPrimaryAsync when the device is page
+ *    flipping (IsFlipping): the private buffer's scrolled area (x 20 ..
+ *    w - 20) is filled with the background color because the scroll went to
+ *    the primary surface, not to the back buffer that the next flip shows.
+ *    Here the window's own buffer is the picture that is scrolled and shown;
+ *    there is no second page to repair.
  */
 
 import type { GameContext } from "../context.js";

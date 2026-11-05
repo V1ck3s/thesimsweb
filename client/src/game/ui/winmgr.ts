@@ -35,6 +35,11 @@ export interface ToolTipColorSource {
   toolTipColor(): number;
 }
 
+/** A window with its own tooltip placement (an override of cTSWin::GetTTPosition). */
+export interface TTPositionSource {
+  getTTPosition(tt: TSWin, followCursor: boolean): { x: number; y: number };
+}
+
 /** The single window manager, like the game's global cTSWinMgrW95 pointer. */
 export let winMgr: WinMgr;
 
@@ -49,6 +54,8 @@ export class WinMgr {
   private buttons = 0;
   /** Keys held (GetKeyState). */
   private readonly keysDown = new Set<string>();
+  /** Set by a key handler that consumes a key but lets the browser act on it (keepKeyDefault). */
+  private keyDefaultKept = false;
   /** cTSWinMgrW95+0x34: the window keys go to. */
   private focus: TSWin | null = null;
   /** cTSWinMgrW95+0x38: the window of the innermost DoModalWin loop. */
@@ -120,6 +127,14 @@ export class WinMgr {
   }
 
   /** GetKeyState(key) < 0, by KeyboardEvent.key ("Shift", "Control", ...). */
+  /**
+   * Called from a tsOnKeyDown that returns true: the key stays consumed but
+   * its browser default runs (Ctrl+C / X / V raising the clipboard events).
+   */
+  keepKeyDefault(): void {
+    this.keyDefaultKept = true;
+  }
+
   isKeyDown(key: string): boolean {
     return this.keysDown.has(key);
   }
@@ -238,6 +253,8 @@ export class WinMgr {
 
   /** cTSWin::GetTTPosition: left edge and top of the tooltip for `w`. */
   getTTPosition(w: TSWin, tt: TSWin, followCursor: boolean): { x: number; y: number } {
+    const custom = (w as Partial<TTPositionSource>).getTTPosition;
+    if (custom) return custom.call(w, tt, followCursor);
     const o = w.absOrigin();
     const right = o.x + w.getW();
     const bottom = o.y + w.getH();
@@ -547,8 +564,10 @@ export class WinMgr {
       // only; cTSWin::TSOnKeyDown passes what a window leaves to its parent, up
       // to the main window (cTSMainWindowW95::TSOnKeyDown).
       for (let w = this.focus; w; w = w.parent) {
+        this.keyDefaultKept = false;
         if (w === this.main ? this.mainKeyDown?.(e.key) : w.tsOnKeyDown(e.key)) {
-          e.preventDefault();
+          if (!this.keyDefaultKept) e.preventDefault();
+          this.keyDefaultKept = false;
           return;
         }
       }

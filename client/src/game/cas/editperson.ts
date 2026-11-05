@@ -30,9 +30,15 @@
  *  - names are lowercased (the asset index keeps lowercased file names), so
  *    the written body strings are lowercase where the game keeps the file
  *    case. The game compares them case-insensitively;
- *  - pets (genders 2..5): only the strings SetGender / UpdateSuits write
- *    directly; the clownie suits; the instance side (ResetInstanceSuits,
- *    killing / recreating the cXPerson, running its init tree).
+ *  - the instance side lives with whoever shows the person: EditPerson calls
+ *    onResetInstanceSuits where the game calls ResetInstanceSuits (end of
+ *    ForceUpdateSuits, end of UpdateSuits for pets, the empty-list cases);
+ *    PersonFinder::SetAge's killing and re-creating of the cXPerson is the
+ *    Create-a-Sim screen's (cas/windesigncharacter.ts).
+ *
+ * Also ported: the clownie suits (Get/Count/SetClownieSuit,
+ * GetCachedClownieList), which only Neighborhood::RefillFans (not ported)
+ * uses.
  */
 
 import { BodyStrings } from "../sims/bodystrings.js";
@@ -67,6 +73,8 @@ const S = {
   chd: "chd",
   cchd: "cchd",
   suitExcluded: "suit-",
+  clownie: "B20",
+  clownieExcluded: "B200",
 } as const;
 
 /** lbl_105BA094 / 098 / 09C: the three skin colors. */
@@ -268,6 +276,14 @@ export class EditPerson {
   private strings: string[];
   private readonly original: string[];
   private readonly cache = new Map<ListKind, SuitTex[]>();
+  /** +0x94: the clownie list, kept across SetGender / SetAge / SetColor (they only clear +0x78..+0x90). */
+  private clownieList: SuitTex[] | null = null;
+  /**
+   * ResetInstanceSuits(selector, person): the person's instance re-reads its
+   * suits (SAnimator::ResetSuits) and its head texture is marked dirty.
+   * Installed by whoever shows the instance; nothing happens without one.
+   */
+  onResetInstanceSuits: (() => void) | null = null;
 
   private constructor(
     private readonly cat: Catalog,
@@ -571,6 +587,82 @@ export class EditPerson {
     this.setSuit(kind, EditPerson.outfitEntry(kind), i, update);
   }
 
+  // --- clownie suits (Neighborhood::RefillFans' clowns) -----------------------------
+
+  /**
+   * EditPerson::GetAvailableClownieSuits: the suits matching "B20" + one
+   * character (+ "m" / "u" for men, "f" / "u" for women) + "a" (+ three
+   * characters for people), "B200*" excepted, each with every texture
+   * whose name starts with the matched part of the suit (+ the skin color
+   * for people), keyed "BODY=".
+   */
+  private getAvailableClownieSuits(): SuitTex[] {
+    const g = this.getGender();
+    const human = g === PERSON_GENDER_MALE || g === PERSON_GENDER_FEMALE;
+    const tree = new RegExpTree().addRequired(S.clownie).addWildcard(1);
+    const excluded = new RegExpTree().addRequired(S.clownieExcluded);
+    if (g === PERSON_GENDER_FEMALE) {
+      tree.addOption("f", "u");
+      excluded.addOption("f", "u");
+    } else if (g === PERSON_GENDER_MALE) {
+      tree.addOption("m", "u");
+      excluded.addOption("m", "u");
+    }
+    tree.addRequired("a");
+    excluded.addRequired("a");
+    if (human) {
+      tree.addWildcard(3);
+      excluded.addWildcard(3);
+    }
+    const skin = this.skin();
+    const out: SuitTex[] = [];
+    for (const suit of this.cat.suits) {
+      const n = tree.getMatchingLength(suit);
+      if (n <= 0 || excluded.getMatchingLength(suit) > 0) continue;
+      const texTree = new RegExpTree().addRequired(suit.slice(0, n));
+      if (human) texTree.addRequired(skin);
+      for (const tex of this.cat.textures) {
+        if (texTree.getMatchingLength(tex) > 0) out.push({ suit, tex: BODY_KEY + tex });
+      }
+    }
+    return out;
+  }
+
+  /**
+   * EditPerson::GetCachedClownieList: one list per skin color (the
+   * SkinColorCache), child or adult, and male or not (+0x80 + (2 child +
+   * (gender != 0)) * 4: every non-male gender shares the slot).
+   */
+  private cachedClownieList(): SuitTex[] {
+    if (this.clownieList) return this.clownieList;
+    const key = `clownie|${this.skin().toLowerCase()}|${this.isAdult() ? 0 : 1}|${this.getGender() !== 0 ? 1 : 0}`;
+    let l = this.cat.lists.get(key);
+    if (!l) {
+      l = this.getAvailableClownieSuits();
+      this.cat.lists.set(key, l);
+    }
+    this.clownieList = l;
+    return l;
+  }
+
+  /** EditPerson::CountAvailableClownieSuits */
+  countAvailableClownieSuits(): number {
+    return this.cachedClownieList().length;
+  }
+
+  /** EditPerson::SetClownieSuit: the body (entry 2); -1 clears it, an index out of the list is ignored. */
+  setClownieSuit(i: number, update = true): void {
+    const list = this.cachedClownieList();
+    let value = "";
+    if (i !== -1) {
+      const st = list[i];
+      if (i < 0 || !st) return;
+      value = suitTexStr(st);
+    }
+    this.set(E.body, value);
+    if (update) this.updateSuits();
+  }
+
   // --- UpdateSuits ---------------------------------------------------------------
 
   /** EditPerson::UpdateSuits: makes the outfits, naked body and hands follow the body / head. */
@@ -641,6 +733,7 @@ export class EditPerson {
         }
       } else {
         for (const e of [E.body, E.head, E.leftHand, E.rightHand, E.naked, E.underwear]) this.set(e, S.empty);
+        this.onResetInstanceSuits?.();
       }
     }
 
@@ -664,17 +757,24 @@ export class EditPerson {
         }
       } else {
         for (const e of [E.formal, E.swimwear, E.lingerie]) this.set(e, S.empty);
+        this.onResetInstanceSuits?.();
       }
     }
     if (winter === -1) {
-      if (this.list("winter").length < 1) this.set(E.winter, S.empty);
-      else this.setupVacationSkins();
+      if (this.list("winter").length < 1) {
+        this.set(E.winter, S.empty);
+        this.onResetInstanceSuits?.();
+      } else this.setupVacationSkins();
     }
     if (fashion === -1) {
-      if (this.list("fashion").length < 1) this.set(E.fashion, S.empty);
-      else this.setupFashionSkins();
+      if (this.list("fashion").length < 1) {
+        this.set(E.fashion, S.empty);
+        this.onResetInstanceSuits?.();
+      } else this.setupFashionSkins();
     }
+    // ForceUpdateSuits ends with ResetInstanceSuits; pets (genders 2..5) reset theirs here.
     if (human) this.forceUpdateSuits();
+    else if (g < 6) this.onResetInstanceSuits?.();
     this.resetSuitsPersonData();
   }
 
@@ -803,6 +903,7 @@ export class EditPerson {
       const [, side, pose] = HANDS[i]!;
       this.set(HAND_ENTRIES[i]!, h.best === "" ? "" : `H${letter}${side}${pose},${HAND_KEY}${h.best}`);
     });
+    this.onResetInstanceSuits?.();
   }
 
   /** The person-data side of SAnimator::ResetSuits. */

@@ -191,8 +191,20 @@ export class OptionsMgr {
   setSimInBackground(on: boolean): void {
     this.set("simInBackground", on);
   }
-  /** The original also answers false in the tutorial house (house +0x44); no tutorial yet. */
+  /**
+   * The current lot's simulator globals (cSimsApp+0x1c), installed by the
+   * game; null without a lot.
+   */
+  simulatorGlobals: (() => Int16Array | null) | null = null;
+
+  /** cSimsApp+0x1c +0x44: simulator global 26, set in the tutorial house (0 without a lot). */
+  tutorialHouse(): number {
+    return this.simulatorGlobals?.()?.[26] ?? 0;
+  }
+
+  /** cOptionsMgr::GetQuickTips: always off in the tutorial house. */
   getQuickTips(): boolean {
+    if (this.tutorialHouse() !== 0) return false;
     return this.data.quickTips;
   }
   setQuickTips(on: boolean): void {

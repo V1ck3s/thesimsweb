@@ -173,6 +173,12 @@ export class WinDesignCharacter extends TSWinGenDlg implements PersonalityOwner 
   /** +0x1b4: SanifySuits pending. */
   private sanify = true;
   private animatorSerial = 0;
+  /** The person's instance as the preview shows it (the cXPerson's animator). */
+  private instance: SAnimator | null = null;
+  /** The instance being (re)created, until it shows. */
+  private creating: Promise<void> | null = null;
+  /** Instance work left for the end of the current command (a re-creation covers a suit reset). */
+  private instanceWork: "create" | "reset" | null = null;
   private pointsTitle = "";
   private pointsMessage = "";
   private bioCaption = "";
@@ -307,6 +313,8 @@ export class WinDesignCharacter extends TSWinGenDlg implements PersonalityOwner 
     name.setCapacity(0x19);
     name.setFlashFrameOnEmpty(true);
     name.setDrawFrameOnFocus(false);
+    // +0x18c: "UI_NHood_error" (lbl_105BC718 + 0x6c) for a refused insertion.
+    name.errorSound = "UI_NHood_error";
     name.setTransparent(true);
     this.childAdd(name);
     this.nameEdit = name;
@@ -322,6 +330,7 @@ export class WinDesignCharacter extends TSWinGenDlg implements PersonalityOwner 
     bio.setFlashFrameOnEmpty(false);
     bio.setDrawFrameOnFocus(false);
     bio.setCapacity(0x800);
+    bio.errorSound = "UI_NHood_error";
     bio.setTransparent(true);
     this.childAdd(bio);
     this.bioEdit = bio;
@@ -347,6 +356,9 @@ export class WinDesignCharacter extends TSWinGenDlg implements PersonalityOwner 
       });
     }
     this.edit = await this.session.beginDesignAPerson(p);
+    // BeginDesignAPerson: PersonFinder::CreateInstance; EditPerson's ResetInstanceSuits reaches it.
+    this.edit.onResetInstanceSuits = () => this.scheduleInstance("reset");
+    this.scheduleInstance("create");
     if (!this.isNew) {
       this.headIndex = this.edit.getHeadSuit();
       this.bodyIndex = this.edit.getBodySuit();
@@ -410,15 +422,39 @@ export class WinDesignCharacter extends TSWinGenDlg implements PersonalityOwner 
     edit.setHeadSuit(this.headIndex);
   }
 
-  /** The person shown by the preview after a change (cWinVitaBtn renders the live instance). */
-  private refreshPreview(): void {
+  /**
+   * The instance cWinVitaBtn renders: ResetInstanceSuits re-dresses it from
+   * the body strings (SAnimator::ResetSuits, the animation goes on);
+   * PersonFinder::SetAge kills it and creates a new one (new skeleton) that
+   * starts over. Both run once the command's suit changes are done.
+   */
+  private scheduleInstance(work: "create" | "reset"): void {
+    const first = this.instanceWork === null;
+    if (work === "create" || first) this.instanceWork = work;
+    if (first) queueMicrotask(() => this.flushInstance());
+  }
+
+  private flushInstance(): void {
+    const work = this.instanceWork;
+    this.instanceWork = null;
     const p = this.person;
-    if (!p) return;
+    const edit = this.edit;
+    if (!p || !edit) return;
+    if (work === "reset") {
+      if (this.creating) void this.creating.then(() => this.instance?.setBodyStrings(edit.bodyStrings()));
+      else void this.instance?.setBodyStrings(edit.bodyStrings());
+      return;
+    }
     const serial = ++this.animatorSerial;
-    void this.session.animator(p).then(async (a: SAnimator | null) => {
+    const creating = this.session.animator(p).then(async (a: SAnimator | null) => {
       if (serial !== this.animatorSerial || !a) return;
       await a.startIdle();
+      this.instance = a;
       this.vita?.setPerson(a);
+    });
+    this.creating = creating;
+    void creating.finally(() => {
+      if (this.creating === creating) this.creating = null;
     });
   }
 
@@ -430,7 +466,6 @@ export class WinDesignCharacter extends TSWinGenDlg implements PersonalityOwner 
     if (this.sanify) {
       this.sanifySuits();
       this.sanify = false;
-      this.refreshPreview();
     }
     const name = this.nameEdit?.getText() ?? "";
     const named = name.length > 0 && name.trim().length > 0;
@@ -585,7 +620,9 @@ export class WinDesignCharacter extends TSWinGenDlg implements PersonalityOwner 
         this.remember();
         this.adult = i === B.adult ? 1 : 0;
         this.recall();
+        // PersonFinder::SetAge: EditPerson::SetAge, then the instance is killed and created again.
         edit.setAge(i === B.adult ? 0 : 1);
+        this.scheduleInstance("create");
         this.sanify = true;
         this.prepareButtons();
         break;

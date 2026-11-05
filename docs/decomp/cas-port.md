@@ -82,8 +82,16 @@ Gaps:
   them when no child formal suit exists, exactly like the original); the game
   refills them (ADDED + SetupChildHDSkins) the next time EditPerson::Begin
   runs on that person — `EditPerson.begin` does the same.
-- pets, clownie suits and the cXPerson instance side (ResetInstanceSuits,
-  recreating the instance on SetAge) are not ported.
+- clownie suits are ported (Get/Count/SetClownieSuit, GetCachedClownieList:
+  tree "B20" + f/u or m/u + "a", the "B200" tree excluded, list kept across
+  gender / age / color like +0x94); only Neighborhood::RefillFans uses them.
+  Pets go through UpdateSuits' pet branch, which ends with ResetInstanceSuits.
+- the instance side: `EditPerson.onResetInstanceSuits` is called where the game
+  calls ResetInstanceSuits (empty lists, end of ForceUpdateSuits, end of the
+  pet UpdateSuits); Create a Sim re-applies the body strings to its preview
+  animator. The age button re-creates the preview like PersonFinder::SetAge
+  (kill + CreateInstance); the "design-a-person" tree it then runs is
+  approximated by the idle the preview already plays.
 
 ## Portraits
 
@@ -113,7 +121,7 @@ Each file's header comment lists the decompiled details it follows (positions, s
 
 | File | Game class |
 |---|---|
-| `ui/textedit.ts` | cTSWinTextEdit2, the subset the dialogs use: one-line name fields and the multi-line biography. Posts 0x16 changed, 0x17 Return, 0x18 Escape and 0x19 Tab to `target` |
+| `ui/textedit.ts` | cTSWinTextEdit2: word wrap, cursor moves (with Shift selection, Ctrl word moves), mouse selection with capture, Ctrl+X/C/V through the browser cut / copy / paste events, Ctrl+Z/Y undo / redo (snapshots merged within 3000 ms), Ctrl+A, insert / overwrite (Insert key), the vertical SYS_SCROLLBAR created when the text overflows, caret blink 500 ms, error / filter sounds (UI_Error, CAS sets UI_NHood_error). Posts 0x16 changed, 0x17 Return, 0x18 Escape and 0x19 Tab to `target` |
 | `cas/zodiac.ts` | Zodiac.cpp (ComputeZodiacSign, SetZodiacSign, names from STR# 164) |
 | `cas/winpersonalitywidget.ts` | cWinPersonalityWidget (LED bar, click left / right of the lit part) |
 | `cas/winvitabtn.ts` | cWinVitaBtn (turning 3D person). It has its own WebGL2 canvas; `renderSimModel` was added to `sims/renderer.ts` for it |
@@ -179,5 +187,5 @@ Gaps:
   Family gives `Export/<name>_<id>.FAM` with FAMI, FAMs, CTSS 1000, EXPi 0, uChr / CTSS / CTSS 2000 + id / BMP_ of
   the member, NBRS 1 and FINV 2. As the port lists every `Export/*.FAM` as importable, the new family is also
   offered for import.
-- `TSWinTextEdit2` has no selection, clipboard or undo.
+- `TSWinTextEdit2`: double-click (TSOnMouseDoubleL) and the double-byte font paths are not ported.
 - If the page reloads in the middle of a design, the copied template stays behind as an orphan `User%05d.iff` with its neighbor. The game leaves the same orphans when it crashes.

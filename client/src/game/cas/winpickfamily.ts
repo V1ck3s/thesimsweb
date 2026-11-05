@@ -56,8 +56,15 @@
  *    (entry 18) sits at (0x2b2, 0x2a); its own hint (lbl_105C14A9, entries 19
  *    / 20) while GetRunPAFMagicCount() < 6.
  *
- * Not ported: cPickFamilyList::GetTTPosition, the preselection of +0x130
- * (cWinMagicland sets it only in Move In mode, after leaving that mode).
+ *  - cPickFamilyList::GetTTPosition: the list's tooltip is placed at the
+ *    cursor (cTSMainWindowW95 +0xd8 / +0xdc, stored on every mouse move), its
+ *    bottom 2 px above it, whether or not it follows the cursor.
+ *
+ * Not ported: the preselection of +0x130 (Init calls
+ * cPickFamilyList::SetSelected when it is not -1). cWinNeighborhoodUL,
+ * cWinNeighborhoodVC and cWinMagicland copy their lot into it only when their
+ * mode (+0xcc) is 1, but they test it right after SetMode(0) (asm
+ * 0x1045FAF0..0x1045FB5C), so it stays -1 and the call never runs.
  */
 
 import type { GameContext } from "../context.js";
@@ -79,7 +86,7 @@ import { TSSystemButton } from "../ui/systembutton.js";
 import { TSWinScrollbar } from "../ui/scrollbar.js";
 import { TSWinText } from "../ui/text.js";
 import { Gfx, TSWin } from "../ui/tswin.js";
-import { winMgr, type ToolTipWindow, type ToolTipsWindowSource } from "../ui/winmgr.js";
+import { winMgr, type ToolTipWindow, type ToolTipsWindowSource, type TTPositionSource } from "../ui/winmgr.js";
 import { CasSession } from "./personfinder.js";
 import { PickFamilyPersonInfo, type PersonInfoData } from "./personinfo.js";
 import { WinDesignFamily } from "./windesignfamily.js";
@@ -325,7 +332,7 @@ class PickFamilyItem extends TSWinBtn {
 }
 
 /** cPickFamilyList */
-class PickFamilyList extends TSWin {
+class PickFamilyList extends TSWin implements TTPositionSource {
   readonly items: PickFamilyItem[] = [];
   /** +0x104: selected row, -1 for none. */
   selected = -1;
@@ -342,6 +349,15 @@ class PickFamilyList extends TSWin {
 
   constructor(private readonly bkg: ImageBitmap) {
     super();
+  }
+
+  /**
+   * cPickFamilyList::GetTTPosition: the tooltip's left edge on the cursor and
+   * its bottom 2 px above it (the main window's last mouse move, +0xd8 / +0xdc).
+   */
+  getTTPosition(tt: TSWin): { x: number; y: number } {
+    const p = winMgr.cursorPosition();
+    return { x: p.x, y: p.y - (tt.getH() + 2) };
   }
 
   async build(scrollImage: ImageBitmap, rows: PickFamilyItem[]): Promise<void> {

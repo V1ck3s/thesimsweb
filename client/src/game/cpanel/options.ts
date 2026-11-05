@@ -24,10 +24,15 @@
  * commands identify them by index. The anti-aliasing label and check box are
  * always hidden (UpdateViewFromCPState / SetMode).
  *
- * Not ported: interface effects fades of the subpanels (AsyncShowHideWin; we
- * switch at once), downtown / vacation / studio / magic town lots (the other
- * "leave" screens; SaveDowntownDescription is ported: nbhd/wineditdtlotdesc.ts), the tutorial
- * house's disabled quick tips, UI sounds, cWinPeople::SetQuickTips.
+ * With interface effects on, the subpanels fade (SetMode / DoMessage 0x1b).
+ * In the tutorial house the quick tips check box is disabled (ShowWindow) and
+ * GetQuickTips answers false. The panel's own sounds: the free will refusal
+ * (UI_error); the buttons, check boxes and radios click through cTSWinBtn,
+ * the popup whooshes (cWinLivePopup).
+ *
+ * Not ported: downtown / vacation / studio / magic town lots (the other
+ * "leave" screens; SaveDowntownDescription is ported: nbhd/wineditdtlotdesc.ts),
+ * cWinPeople::SetQuickTips.
  */
 
 import { CPState, DIRTY_OPTIONS, DIRTY_SAVE_DISABLED } from "../cpstate.js";
@@ -259,6 +264,8 @@ export class WinOptions extends TSWin {
   private popup: WinLivePopup | null = null;
   private client: WinLivePopupClient | null = null;
   private mouseInside = false;
+  /** The subpanel fading out, until its fade ends (cTSWin's message 0x1b to this panel). */
+  private fadingOut: TSWin | null = null;
 
   constructor(readonly ctx: GameContext) {
     super();
@@ -545,10 +552,17 @@ export class WinOptions extends TSWin {
 
   // --- showing ---------------------------------------------------------------
 
-  /** cWinOptions::ShowWindow: back to no subpanel, quick tips refreshed. */
+  /**
+   * cWinOptions::ShowWindow: back to no subpanel; the quick tips check box
+   * (dynamic_cast of slot 38 to cTSWinCheck) is disabled in the tutorial
+   * house (simulator global 26, cSimsApp+0x1c +0x44), enabled elsewhere;
+   * quick tips refreshed.
+   */
   override showWindow(): void {
     super.showWindow();
     if (this.mode !== Mode.None) this.setMode(Mode.None);
+    const quickTips = this.wins[B.ChkQuickTips];
+    if (quickTips instanceof TSWinCheck) quickTips.btn?.setEnabled(getOptionsMgr().tutorialHouse() === 0);
     this.setQuickTips(getOptionsMgr().getQuickTips());
   }
 
@@ -564,23 +578,32 @@ export class WinOptions extends TSWin {
     (this.parent as Partial<WinCPanel> | null)?.camPanel?.setQuickTips(on);
   }
 
-  /** cWinOptions::SetMode */
+  /**
+   * cWinOptions::SetMode. With interface effects (GetBoboVision) the old
+   * subpanel fades out (AsyncShowHideWin(false)) and the new one only fades
+   * in when that fade ends (its message 0x1b, -1: DoMessage); leaving no
+   * subpanel posts that message at once.
+   */
   private setMode(mode: Mode): void {
     const bobo = getOptionsMgr().getBoboVision();
     if (this.mode !== mode) {
-      // With interface effects the old subpanel fades out (AsyncShowHideWin) and the
-      // new one fades in after it (message 0x1b); both happen at once here.
-      const old = this.panelFor(this.mode);
-      old?.hideWindow();
-      const btn = this.buttonFor(this.mode);
-      btn?.setState(0);
+      if (this.mode === Mode.None) {
+        // PostMessageToTarget(this, 0x1b, 0, -1)
+        queueMicrotask(() => this.doMessageAsyncHidden());
+      } else {
+        const old = this.panelFor(this.mode);
+        if (old && bobo) {
+          old.asyncShowHideWin(false, false);
+          this.fadingOut = old;
+        } else old?.hideWindow();
+        this.buttonFor(this.mode)?.setState(0);
+      }
       if (this.popup?.isEnabled()) this.popup.disablePopup();
     }
     this.mode = mode;
     if (this.playPanel) this.applyLotRules(false);
-    const panel = this.panelFor(mode);
-    panel?.showWindow();
     if (bobo) return;
+    this.panelFor(mode)?.showWindow();
     if (mode === Mode.Graphics) {
       this.wins[B.ChkAntiAlias]?.hideWindow();
       this.wins[B.LblAntiAlias]?.hideWindow();
@@ -636,6 +659,14 @@ export class WinOptions extends TSWin {
       reset?.hideWindow();
       freeWill(true);
     }
+  }
+
+  /**
+   * cWinOptions::DoMessage(0x1b, -1): a subpanel finished fading out (or no
+   * subpanel was open); the current mode's subpanel fades in.
+   */
+  private doMessageAsyncHidden(): void {
+    if (this.mode !== Mode.None) this.panelFor(this.mode)?.asyncShowHideWin(true, false);
   }
 
   private panelFor(mode: Mode): TSWin | null {
@@ -877,6 +908,11 @@ export class WinOptions extends TSWin {
    */
   override pump(nowMs: number): void {
     super.pump(nowMs);
+    const fading = this.fadingOut;
+    if (fading && fading.fadeDir === 0) {
+      this.fadingOut = null;
+      if (!fading.isVisible()) this.doMessageAsyncHidden();
+    }
     const inside = this.isVisibleAndAllParentsVisible() && this.containsCursor();
     if (this.mouseInside && !inside && this.popup?.isEnabled()) this.popup.disablePopup();
     this.mouseInside = inside;

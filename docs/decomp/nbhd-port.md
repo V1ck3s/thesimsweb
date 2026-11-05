@@ -119,7 +119,10 @@ SetCol). Test pages: `game.html?test=cas&screen=credits`,
 - A click, Escape or Enter closes it (`tsEndDialog(0)`).
 - Init and Shutdown never touch the music. The caller plays `bkground_credits`
   and then restores the neighborhood music.
-- Not ported: the AnimDevice frame rate (+0x70) and the page-flip repair fill.
+- Nothing to port for the AnimDevice frame rate (+0x70): Init sets 100, ShowWindow 30,
+  Hide / Shutdown 0, but it only feeds the present timer whose result every caller
+  drops (and the Mac AnimDevice never reads it). The fill after ScrollPrimaryAsync
+  when IsFlipping repairs the back page; the port has no second page.
 
 ### cPickFamilyPersonInfo (PickFamilyPersonInfo.cpp)
 
@@ -170,7 +173,11 @@ SetCol). Test pages: `game.html?test=cas&screen=credits`,
   −offset (+0x100). The empty rows are shifted by the same amount.
 - The list clips its children while scrolling.
 - AddItem and DeleteSelection still set the top row immediately (SetTopRow).
-- Not ported: cPickFamilyList::GetTTPosition (where the list's own tooltip goes).
+- cPickFamilyList::GetTTPosition: the tooltip goes at the last mouse position
+  (cTSMainWindowW95 +0xd8/+0xdc), raised by its height + 2 (`TTPositionSource`
+  in `ui/winmgr.ts`).
+- The +0x130 preselection is unreachable: the neighborhood, VC and Magicland
+  callers all leave it at -1 (test mode +0xcc == 1 right after SetMode(0)).
 
 ### First-run hint (cWinPickFamily::Init / TSOnTimerMsg)
 
