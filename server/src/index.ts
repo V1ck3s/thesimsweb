@@ -1,5 +1,6 @@
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
+import { readdir } from "node:fs/promises";
 import Fastify, { type FastifyReply } from "fastify";
 import fastifyCors from "@fastify/cors";
 import fastifyStatic from "@fastify/static";
@@ -19,15 +20,32 @@ const clientDir = resolve(process.env["CLIENT_DIST"] ?? resolve(repoRoot, "clien
 const HOST = process.env["HOST"] ?? "127.0.0.1";
 const PORT = Number(process.env["PORT"] ?? 3000);
 /**
+ * Where the game files come from. "server" (default): the game folder under
+ * server/assets/ (served under /assets/, listed by /api/manifest). "client":
+ * each player imports their own install folder into their browser
+ * (client/src/engine/gamefiles.ts); the server then serves no game file at
+ * all (no /assets/, /api/manifest, /api/ranges), only the app, and the saves
+ * stay in the browsers (SAVES=client is forced).
+ */
+const GAME_FILES = process.env["GAME_FILES"] ?? "server";
+if (GAME_FILES !== "server" && GAME_FILES !== "client") {
+  console.error(`GAME_FILES must be "server" or "client" (got "${GAME_FILES}")`);
+  process.exit(1);
+}
+const serverGameFiles = GAME_FILES === "server";
+/**
  * Where the game's saves live. "server" (default): one shared set, written to
  * the overlay (routes/userdata.ts). "client": each browser keeps its own in
  * IndexedDB (client/src/engine/saves.ts); the server is then read-only and
  * serves the game folder as installed, its UserData* folders included.
  */
-const SAVES = process.env["SAVES"] ?? "server";
+const SAVES = serverGameFiles ? (process.env["SAVES"] ?? "server") : "client";
 if (SAVES !== "server" && SAVES !== "client") {
   console.error(`SAVES must be "server" or "client" (got "${SAVES}")`);
   process.exit(1);
+}
+if (!serverGameFiles && process.env["SAVES"] === "server") {
+  console.warn('GAME_FILES=client: SAVES=server is ignored (the saves stay in the browsers)');
 }
 const serverSaves = SAVES === "server";
 
@@ -46,7 +64,8 @@ await app.register(fastifyCors, { origin: true });
 // UserData* files change when the game saves (a saved copy then shadows the
 // original through the overlay): always revalidated.
 const USERDATA_FILE = /^Sims[\\/]UserData\d*[\\/]/i;
-await app.register(fastifyStatic, {
+// (GAME_FILES=client: never served, whatever server/assets/ holds)
+if (serverGameFiles) await app.register(fastifyStatic, {
   root: assetsDir,
   prefix: "/assets/",
   decorateReply: false,
@@ -61,9 +80,16 @@ await app.register(fastifyStatic, {
 
 app.get("/api/health", async () => ({ ok: true }));
 // Read by the client at startup (client/src/engine/saves.ts).
-app.get("/api/config", async () => ({ saves: SAVES }));
+app.get("/api/config", async () => ({ saves: SAVES, gameFiles: GAME_FILES }));
 
-if (serverSaves) {
+if (!serverGameFiles) {
+  // No game file leaves this server: the browsers read their own import.
+  const refuse = async (_req: unknown, reply: FastifyReply) =>
+    reply.code(403).send({ error: "saves are kept in the browser on this server (GAME_FILES=client)" });
+  app.addContentTypeParser("*", { parseAs: "buffer", bodyLimit: 128 * 1024 * 1024 }, (_req, _body, done) => done(null));
+  app.put("/api/files/*", refuse);
+  app.delete("/api/files/*", refuse);
+} else if (serverSaves) {
   // The manifest caches its overlay listing; saves invalidate it.
   let invalidateOverlay = (): void => {};
   await registerUserDataRoute(app, { overlayDir, onChange: () => invalidateOverlay() });
@@ -78,6 +104,10 @@ if (serverSaves) {
   app.delete("/api/files/*", refuse);
   await registerManifestRoute(app, { assetsDir });
   await registerRangesRoute(app, { assetsDir });
+}
+app.log.info(`game files: ${serverGameFiles ? `served from ${assetsDir}` : "imported by each browser (none served)"}`);
+if (serverGameFiles && (await readdir(resolve(assetsDir, "Sims")).catch(() => [])).length === 0) {
+  app.log.warn(`no game folder in ${resolve(assetsDir, "Sims")}: link or mount the install of The Sims there (SIMS_DIR with Docker), or set GAME_FILES=client`);
 }
 app.log.info(`saves: ${SAVES === "server" ? "on the server (shared)" : "in each browser"}`);
 // The built game (`pnpm build`); in dev, vite serves the client on :5173 instead.

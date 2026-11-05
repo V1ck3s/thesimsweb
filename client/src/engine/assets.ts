@@ -12,6 +12,12 @@
  * save-file cache below). When the instance keeps saves in the browser (engine/saves.ts, "client"
  * mode), a file saved here is read from the saves database instead, and the
  * manifest lists it over the server's files.
+ *
+ * When the instance serves no game file (GAME_FILES=client, engine/config.ts)
+ * every read is answered from the game files the player imported into this
+ * browser (engine/gamefiles.ts) instead of /assets/, /api/manifest and
+ * /api/ranges: nothing goes to the server, and the IndexedDB asset cache is
+ * not used (it would only copy what is stored already).
  */
 
 import { engine } from "./wasm.js";
@@ -26,6 +32,7 @@ import {
   idbPutRange,
 } from "./idb.js";
 import { getSaveMode, isLocalSave, isSavePath, localSaveList, localSaveRead } from "./saves.js";
+import { isGameFilesLocal, localGameBlob, localGameIndex, localGameRange, localGameRead, localGameSize } from "./gamefiles.js";
 
 export interface ManifestFile {
   path: string;
@@ -62,17 +69,23 @@ let manifest: Promise<Manifest> | null = null;
 export function fetchManifest(): Promise<Manifest> {
   if (!manifest) {
     const p = (async () => {
-      const res = await fetch("/api/manifest", { cache: "no-store" });
-      if (!res.ok) throw new Error(`manifest ${res.status}`);
-      const m = (await res.json()) as Manifest;
+      let m: Manifest;
+      if (await isGameFilesLocal()) {
+        const files = await localGameIndex();
+        if (!files) throw new Error("the game files are not imported in this browser");
+        m = { version: 1, assetsRoot: ASSETS_BASE, files: files.map((f) => ({ path: f.path, size: f.size, kind: kindOf(f.path) })) };
+      } else {
+        const res = await fetch("/api/manifest", { cache: "no-store" });
+        if (!res.ok) throw new Error(`manifest ${res.status}`);
+        m = (await res.json()) as Manifest;
+      }
       if ((await getSaveMode()) === "client") {
         // Files saved in this browser replace or add to the server's (as the overlay does there).
         const saved = await localSaveList();
         if (saved.length) {
           const byPath = new Map(m.files.map((f) => [f.path.toLowerCase(), f]));
           for (const f of saved) {
-            const kind = f.path.toLowerCase().endsWith(".far") ? "far" : f.path.toLowerCase().endsWith(".iff") ? "iff" : "other";
-            byPath.set(f.path.toLowerCase(), { path: byPath.get(f.path.toLowerCase())?.path ?? f.path, size: f.size, kind });
+            byPath.set(f.path.toLowerCase(), { path: byPath.get(f.path.toLowerCase())?.path ?? f.path, size: f.size, kind: kindOf(f.path) });
           }
           m.files = [...byPath.values()];
         }
@@ -85,6 +98,11 @@ export function fetchManifest(): Promise<Manifest> {
     });
   }
   return manifest;
+}
+
+function kindOf(path: string): ManifestFile["kind"] {
+  const lower = path.toLowerCase();
+  return lower.endsWith(".far") ? "far" : lower.endsWith(".iff") ? "iff" : "other";
 }
 
 /** The next fetchManifest asks the server again (the game files changed). */
@@ -134,6 +152,10 @@ function saveFile(path: string): Promise<SaveFile | null> {
   const p = (async (): Promise<SaveFile | null> => {
     const saved = await savedCopy(path);
     if (saved) return { bytes: saved };
+    if (await isGameFilesLocal()) {
+      const original = await localGameRead(path);
+      return original ? { bytes: original } : null;
+    }
     const res = await fetch(assetUrl(path), { cache: "no-store" });
     if (res.status === 404) return null;
     if (!res.ok) throw new Error(`${path}: ${res.status}`);
@@ -199,11 +221,49 @@ export async function assetFetch(path: string, init?: RequestInit): Promise<Resp
     }
     // The read failed (not kept): this request gets the server's answer itself.
   }
+  if (await isGameFilesLocal()) return localFetch(path, init);
   return fetch(assetUrl(path), init);
+}
+
+/** assetFetch answered from the imported game files (GET and HEAD, with or without a Range header). */
+async function localFetch(path: string, init?: RequestInit): Promise<Response> {
+  const method = (init?.method ?? "GET").toUpperCase();
+  if (method !== "GET" && method !== "HEAD") return new Response(null, { status: 405 });
+  const size = await localGameSize(path);
+  if (size === null) return new Response(null, { status: 404 });
+  const head = method === "HEAD";
+  const range = /^bytes=(\d+)-(\d*)$/.exec(new Headers(init?.headers).get("range") ?? "");
+  if (!range) return new Response(head ? null : await localGameRead(path), { status: 200, headers: { "content-length": String(size) } });
+  const start = Number(range[1]);
+  const end = range[2] ? Math.min(Number(range[2]) + 1, size) : size;
+  if (start >= size) return new Response(null, { status: 416 });
+  return new Response(head ? null : await localGameRange(path, start, end), { status: 206, headers: { "content-length": String(end - start) } });
 }
 
 function assetUrl(path: string): string {
   return ASSETS_BASE + path.split("/").map(encodeURIComponent).join("/");
+}
+
+const objectUrls = new Map<string, Promise<string | null>>();
+
+/**
+ * A URL of the game file `path` (relative to /assets/) for the browser to
+ * load itself (an `<audio>` element streaming a music track): its /assets/
+ * URL, or, when the game files are imported in this browser, a blob: URL of
+ * the stored file (made once per page). Null when the file was not imported.
+ */
+export function assetObjectUrl(path: string): Promise<string | null> {
+  const key = path.toLowerCase();
+  let p = objectUrls.get(key);
+  if (!p) {
+    p = (async () => {
+      if (!(await isGameFilesLocal())) return assetUrl(path);
+      const blob = await localGameBlob(path);
+      return blob ? URL.createObjectURL(blob) : null;
+    })();
+    objectUrls.set(key, p);
+  }
+  return p;
 }
 
 const fileReads = new Map<string, Promise<Uint8Array>>();
@@ -229,6 +289,11 @@ export function readAssetFile(path: string): Promise<Uint8Array> {
   // A read joining one in flight gets its own copy, as if it had fetched the file itself.
   if (pending) return pending.then((b) => b.slice());
   const p = (async () => {
+    if (await isGameFilesLocal()) {
+      const local = await localGameRead(path);
+      if (!local) throw new Error(`${path}: 404`);
+      return local;
+    }
     const persisted = await idbGetIffFile(path);
     if (persisted) return persisted;
     const res = await fetch(assetUrl(path));
@@ -249,6 +314,7 @@ async function fetchRange(path: string, start: number, endInclusive: number): Pr
     const known = await saveFileRange(path, start, endInclusive + 1);
     if (known) return known;
   }
+  if (await isGameFilesLocal()) return localGameRange(path, start, endInclusive + 1);
   const url = `${ASSETS_BASE}${path}`;
   // Not through the HTTP cache: the bytes are kept in IndexedDB, and Chrome
   // serializes cached requests to one URL (a FAR archive), which stalled cold loads.
@@ -292,6 +358,7 @@ export function readAssetRangeCached(path: string, start: number, end: number): 
   const pending = rangeReads.get(key);
   if (pending) return pending.then((b) => b.slice());
   const p = (async () => {
+    if (await isGameFilesLocal()) return readAssetRangeBatched(path, start, end);
     const persisted = await idbGetRange(path, start, end);
     if (persisted) return persisted;
     const bytes = await readAssetRangeBatched(path, start, end);
@@ -312,7 +379,8 @@ export async function readFarManifest(farPath: string): Promise<FarEntryInfo[]> 
   let cached = farManifestCache.get(farPath);
   if (!cached) {
     cached = (async () => {
-      const persisted = (await idbGetFarManifest(farPath)) as FarEntryInfo[] | null;
+      const local = await isGameFilesLocal();
+      const persisted = local ? null : ((await idbGetFarManifest(farPath)) as FarEntryInfo[] | null);
       if (Array.isArray(persisted)) return persisted;
       const wasm = await engine();
       const head = await fetchRange(farPath, 0, FAR_HEADER_SIZE - 1);
@@ -322,9 +390,13 @@ export async function readFarManifest(farPath: string): Promise<FarEntryInfo[]> 
       const view = new DataView(head.buffer, head.byteOffset, head.byteLength);
       const manifestOffset = view.getUint32(12, true);
       // Manifest is from manifestOffset to EOF. We need the size — get it via HEAD.
-      const headRes = await fetch(`${ASSETS_BASE}${farPath}`, { method: "HEAD" });
-      if (!headRes.ok) throw new Error(`HEAD ${farPath}: ${headRes.status}`);
-      const totalSize = Number(headRes.headers.get("content-length") ?? "0");
+      let totalSize: number;
+      if (local) totalSize = (await localGameSize(farPath)) ?? 0;
+      else {
+        const headRes = await fetch(`${ASSETS_BASE}${farPath}`, { method: "HEAD" });
+        if (!headRes.ok) throw new Error(`HEAD ${farPath}: ${headRes.status}`);
+        totalSize = Number(headRes.headers.get("content-length") ?? "0");
+      }
       if (!Number.isFinite(totalSize) || totalSize === 0) {
         throw new Error(`${farPath}: no content-length`);
       }
@@ -341,7 +413,7 @@ export async function readFarManifest(farPath: string): Promise<FarEntryInfo[]> 
       const entries = wasm.parseFarManifest(fake) as FarEntryInfo[];
       // Entries point into the original archive; their `offset` is absolute in the
       // un-truncated archive, which matches what we want for downstream Range requests.
-      void idbPutFarManifest(farPath, entries);
+      if (!local) void idbPutFarManifest(farPath, entries);
       return entries;
     })();
     farManifestCache.set(farPath, cached);
@@ -358,7 +430,8 @@ export async function readFarEntry(farPath: string, entryName: string): Promise<
   let cached = entryCache.get(cacheKey);
   if (!cached) {
     cached = (async () => {
-      const persisted = await idbGetFarEntry(farPath, entryName);
+      const local = await isGameFilesLocal();
+      const persisted = local ? null : await idbGetFarEntry(farPath, entryName);
       if (persisted) return persisted;
       const entries = await readFarManifest(farPath);
       const target = entries.find(
@@ -373,7 +446,7 @@ export async function readFarEntry(farPath: string, entryName: string): Promise<
       const start = target.offset;
       const bytes = await readAssetRangeBatched(farPath, start, start + target.sizeCompressed);
       // (a copy: the put is queued, the caller may change its bytes meanwhile)
-      void idbPutFarEntry(farPath, entryName, bytes.slice());
+      if (!local) void idbPutFarEntry(farPath, entryName, bytes.slice());
       return bytes;
     })();
     entryCache.set(cacheKey, cached);
@@ -456,11 +529,21 @@ export class RangeBatcher {
     // A save file read in this load or kept in this browser (client save mode) is read from there.
     if (isWritableAssetPath(path)) {
       return saveFileRange(path, start, end).then(
-        (known) => known ?? this.enqueue(path, start, end),
+        (known) => known ?? this.source(path, start, end),
         () => {
           throw new Error(`${path} ${start}-${end}: unreadable`);
         },
       );
+    }
+    return this.source(path, start, end);
+  }
+
+  /** The imported game files when the server serves none (GAME_FILES=client), else the server, batched. */
+  private async source(path: string, start: number, end: number): Promise<Uint8Array> {
+    if (await isGameFilesLocal()) {
+      return localGameRange(path, start, end).catch(() => {
+        throw new Error(`${path} ${start}-${end}: unreadable`);
+      });
     }
     return this.enqueue(path, start, end);
   }

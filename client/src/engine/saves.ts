@@ -9,11 +9,15 @@
  * - "client": every browser keeps its own saves in IndexedDB (this module);
  *   the server only serves the game folder, its original UserData* files
  *   included (the starting neighborhoods). A file saved here shadows the
- *   original of the same path, as the overlay does on the server.
+ *   original of the same path, as the overlay does on the server. Forced
+ *   when the game files themselves are imported in the browser
+ *   (GAME_FILES=client, engine/gamefiles.ts): the originals come from there.
  *
  * The saves database is separate from the asset cache (engine/idb.ts): the
  * cache can be cleared or rebuilt, the saves cannot.
  */
+
+import { getServerConfig } from "./config.js";
 
 export type SaveMode = "server" | "client";
 
@@ -24,21 +28,9 @@ export function isSavePath(path: string): boolean {
   return WRITABLE_PATH.test(path);
 }
 
-let mode: Promise<SaveMode> | null = null;
-
 /** The instance's save mode, asked once per page ("server" when the server does not say). */
-export function getSaveMode(): Promise<SaveMode> {
-  mode ??= (async (): Promise<SaveMode> => {
-    try {
-      const res = await fetch("/api/config", { cache: "no-store" });
-      if (!res.ok) return "server";
-      const cfg = (await res.json()) as { saves?: unknown };
-      return cfg.saves === "client" ? "client" : "server";
-    } catch {
-      return "server";
-    }
-  })();
-  return mode;
+export async function getSaveMode(): Promise<SaveMode> {
+  return (await getServerConfig()).saves;
 }
 
 /** Whether saves are kept in this browser (the path is a save path and the instance is in client mode). */

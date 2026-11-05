@@ -2,11 +2,28 @@
  * The landing page (client/index.html): the web wrapper around the game, not
  * part of it. Play button, the instance's save mode (GET /api/config), the
  * saves export / import (engine/saves.ts), the browser storage state and the
- * offline support (engine/pwa.ts).
+ * offline support (engine/pwa.ts). On an instance that serves no game file
+ * (GAME_FILES=client), the import of the player's own install folder into
+ * this browser (engine/gamefiles.ts); the game cannot start before it.
  */
 
 import { exportSaves, getSaveMode, importSaves, listSaves, type SaveMode } from "../engine/saves.js";
 import { offlineStatus, registerServiceWorker } from "../engine/pwa.js";
+import {
+  gameFilesStatus,
+  hasFolderPicker,
+  hasRememberedFolder,
+  importGameFiles,
+  isGameFilesLocal,
+  pickFolder,
+  planImport,
+  rememberedFolder,
+  rememberFolder,
+  removeGameFiles,
+  sourceFromHandle,
+  sourceFromInput,
+  type SourceFile,
+} from "../engine/gamefiles.js";
 
 const $ = <T extends HTMLElement>(id: string): T => {
   const el = document.getElementById(id);
@@ -102,6 +119,155 @@ async function onImport(file: File): Promise<void> {
   }
 }
 
+// --- Game files (GAME_FILES=client) ------------------------------------------------
+
+/** The instance serves no game file: this browser imports them. */
+let localGame = false;
+/** The import in progress (Stop aborts it). */
+let importing: AbortController | null = null;
+
+function setGameStatus(text: string, kind: "" | "ok" | "warn" | "err" = ""): void {
+  const el = $("gamefiles-status");
+  el.textContent = text;
+  el.className = `status ${kind}`;
+}
+
+/** Play is offered once the game files are here. */
+function setPlayable(ok: boolean): void {
+  const play = $<HTMLAnchorElement>("play");
+  play.setAttribute("aria-disabled", String(!ok));
+  play.tabIndex = ok ? 0 : -1;
+  $("play-note").textContent = ok
+    ? "The game opens in this tab. Close other tabs of the game first."
+    : "Import the game folder first (below).";
+}
+
+async function refreshGameFiles(): Promise<void> {
+  if (!localGame) return;
+  const stateEl = $("gamefiles-state");
+  const select = $<HTMLButtonElement>("gamefiles-select");
+  const resume = $<HTMLButtonElement>("gamefiles-resume");
+  const remove = $<HTMLButtonElement>("gamefiles-remove");
+  const busy = importing !== null;
+  select.disabled = busy;
+  remove.disabled = busy;
+  $<HTMLButtonElement>("gamefiles-stop").hidden = !busy;
+  $("gamefiles-progress").hidden = !busy;
+  let st;
+  try {
+    st = await gameFilesStatus();
+  } catch (e) {
+    stateEl.textContent = `unavailable (${(e as Error).message})`;
+    setPlayable(false);
+    return;
+  }
+  if (st.state === "complete") {
+    stateEl.textContent = `"${st.source}": ${st.fileCount} files, ${formatBytes(st.bytes)}, imported ${new Date(st.finishedAt).toLocaleString()}`;
+    stateEl.className = "ok";
+    select.textContent = "Import again…";
+  } else if (st.state === "partial") {
+    stateEl.textContent = `incomplete: ${formatBytes(st.storedBytes)} of ${formatBytes(st.bytes)} copied from "${st.source}". Select the folder again to resume.`;
+    stateEl.className = "warn";
+    select.textContent = "Select the game folder…";
+  } else {
+    stateEl.textContent = "nothing imported yet";
+    stateEl.className = "";
+    select.textContent = "Select the game folder…";
+  }
+  resume.hidden = busy || st.state !== "partial" || !(await hasRememberedFolder());
+  remove.hidden = st.state === "none";
+  setPlayable(st.state === "complete");
+}
+
+/** Reads the selected folder, checks it and copies it into this browser. */
+async function runImport(read: () => Promise<SourceFile[]>, handle?: unknown): Promise<void> {
+  if (importing) return;
+  importing = new AbortController();
+  const signal = importing.signal;
+  const progress = $<HTMLProgressElement>("gamefiles-progress");
+  progress.value = 0;
+  await refreshGameFiles();
+  setGameStatus("Reading the folder…");
+  try {
+    const plan = planImport(await read());
+    if (handle) await rememberFolder(handle);
+    await importGameFiles(
+      plan,
+      (p) => {
+        progress.value = p.totalBytes ? p.doneBytes / p.totalBytes : 0;
+        setGameStatus(`Copying into this browser… ${formatBytes(p.doneBytes)} of ${formatBytes(p.totalBytes)} (${p.doneFiles} / ${p.totalFiles} files)`);
+      },
+      signal,
+    );
+    setGameStatus(`Imported ${plan.files.length} files (${formatBytes(plan.bytes)}). Ready to play.`, "ok");
+  } catch (e) {
+    if ((e as Error).name === "AbortError") setGameStatus("Stopped. What was copied is kept: select the folder again to resume.", "warn");
+    else setGameStatus(`Import failed: ${(e as Error).message}`, "err");
+  } finally {
+    importing = null;
+    await Promise.all([refreshGameFiles(), refreshStorage()]);
+  }
+}
+
+async function onSelectFolder(): Promise<void> {
+  if (!hasFolderPicker()) {
+    $<HTMLInputElement>("gamefiles-input").click();
+    return;
+  }
+  let handle: unknown;
+  try {
+    handle = await pickFolder();
+  } catch (e) {
+    if ((e as Error).name === "AbortError") return; // (the player closed the picker)
+    // Picker refused (a system folder, a policy): the plain folder input.
+    $<HTMLInputElement>("gamefiles-input").click();
+    return;
+  }
+  await runImport(() => sourceFromHandle(handle, (n) => setGameStatus(`Reading the folder… ${n} files`)), handle);
+}
+
+async function onResume(): Promise<void> {
+  const handle = await rememberedFolder(true);
+  if (!handle) {
+    setGameStatus("The browser no longer allows reading that folder: select it again.", "warn");
+    return;
+  }
+  await runImport(() => sourceFromHandle(handle, (n) => setGameStatus(`Reading the folder… ${n} files`)), handle);
+}
+
+async function onRemoveGameFiles(): Promise<void> {
+  if (!confirm("Remove the game files from this browser? The saves are kept. Playing again needs a new import of the game folder.")) return;
+  try {
+    await removeGameFiles();
+    setGameStatus("The game files were removed from this browser.", "ok");
+  } catch (e) {
+    setGameStatus(`Removal failed: ${(e as Error).message}`, "err");
+  }
+  await Promise.all([refreshGameFiles(), refreshStorage()]);
+}
+
+function initGameFiles(): void {
+  $("gamefiles").hidden = false;
+  $("lead").textContent = "A web port of The Sims (2000, Complete Collection), running on your own copy of the game, imported into this browser.";
+  const input = $<HTMLInputElement>("gamefiles-input");
+  input.addEventListener("change", () => {
+    const list = input.files;
+    if (!list?.length) return;
+    const files = sourceFromInput(list);
+    input.value = "";
+    void runImport(() => Promise.resolve(files));
+  });
+  $<HTMLButtonElement>("gamefiles-select").addEventListener("click", () => void onSelectFolder());
+  $<HTMLButtonElement>("gamefiles-resume").addEventListener("click", () => void onResume());
+  $<HTMLButtonElement>("gamefiles-stop").addEventListener("click", () => importing?.abort());
+  $<HTMLButtonElement>("gamefiles-remove").addEventListener("click", () => void onRemoveGameFiles());
+  window.addEventListener("beforeunload", (e) => {
+    // (what was copied is kept, but the player may not mean to stop)
+    if (importing) e.preventDefault();
+  });
+  setPlayable(false);
+}
+
 async function refreshStorage(): Promise<void> {
   const persistEl = $("storage-persist");
   const persistBtn = $<HTMLButtonElement>("persist");
@@ -117,7 +283,7 @@ async function refreshStorage(): Promise<void> {
     persistBtn.hidden = persisted || !storage.persist;
   }
   const est = await storage?.estimate?.().catch(() => null);
-  $("storage-usage").textContent = est?.usage !== undefined ? `${formatBytes(est.usage)} (game files cache and saves)` : "unknown";
+  $("storage-usage").textContent = est?.usage !== undefined ? `${formatBytes(est.usage)} (${localGame ? "imported game files" : "game files cache"} and saves)` : "unknown";
 }
 
 async function refreshOffline(): Promise<void> {
@@ -146,6 +312,8 @@ async function main(): Promise<void> {
     () => false,
   );
   mode = await getSaveMode();
+  localGame = await isGameFilesLocal();
+  if (localGame) initGameFiles();
   $("saves-mode").textContent =
     (mode === "client"
       ? "This server keeps no saves: they stay in this browser, on this device, for this address. Another browser or device starts from the game's original neighborhoods."
@@ -153,7 +321,7 @@ async function main(): Promise<void> {
     (online ? "" : " The server cannot be reached: offline.");
   setBusy(false);
   navigator.serviceWorker?.addEventListener("controllerchange", () => void refreshOffline());
-  await Promise.all([refreshSaves(), refreshStorage(), registerServiceWorker().then(refreshOffline, refreshOffline)]);
+  await Promise.all([refreshSaves(), refreshStorage(), refreshGameFiles(), registerServiceWorker().then(refreshOffline, refreshOffline)]);
 }
 
 void main();

@@ -37,6 +37,7 @@
         }
       }
       * { box-sizing: border-box; }
+      [hidden] { display: none !important; }
       body {
         margin: 0;
         background: var(--bg);
@@ -76,6 +77,8 @@
         padding: 10px 28px;
       }
       button:disabled { opacity: 0.55; cursor: default; }
+      a.button.primary[aria-disabled="true"] { opacity: 0.55; pointer-events: none; }
+      progress { width: 100%; height: 10px; margin-top: 10px; }
       button:not(:disabled):hover, a.button:hover { filter: brightness(0.95); }
       .row { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
       .muted { color: var(--muted); }
@@ -94,11 +97,33 @@
   <body>
     <main>
       <h1>The Sims</h1>
-      <p class="lead">A web port of The Sims (2000, Complete Collection), running on the game files of this server.</p>
+      <p class="lead" id="lead">A web port of The Sims (2000, Complete Collection), running on the game files of this server.</p>
 
       <section class="play">
         <a class="button primary" href="game.html" id="play">Play</a>
         <span class="muted" id="play-note">The game opens in this tab. Close other tabs of the game first.</span>
+      </section>
+
+      <section id="gamefiles" hidden>
+        <h2>Game files</h2>
+        <p class="muted">
+          This server does not provide the game. Import your own copy of The Sims (Complete Collection): select its
+          install folder, the one that holds <code>GameData</code>, <code>ExpansionShared</code>, <code>UserData</code>…
+          The files the game reads (about 3.2 GB) are copied into this browser; nothing is sent to the server.
+        </p>
+        <dl>
+          <dt>In this browser</dt>
+          <dd id="gamefiles-state">–</dd>
+        </dl>
+        <progress id="gamefiles-progress" max="1" value="0" hidden></progress>
+        <div class="row">
+          <button type="button" id="gamefiles-select" disabled>Select the game folder…</button>
+          <button type="button" id="gamefiles-resume" hidden>Resume</button>
+          <button type="button" id="gamefiles-stop" hidden>Stop</button>
+          <button type="button" id="gamefiles-remove" hidden>Remove the game files</button>
+          <input type="file" id="gamefiles-input" webkitdirectory multiple hidden />
+        </div>
+        <p class="status" id="gamefiles-status" role="status"></p>
       </section>
 
       <section>

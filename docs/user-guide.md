@@ -2,7 +2,9 @@
 
 thesimsweb fait tourner **Les Sims (2000, Complete Collection)** dans un navigateur, à partir des
 fichiers d'une installation du jeu. Le projet ne contient **aucun fichier du jeu** : il faut sa
-propre copie installée (le dossier qui contient `GameData/`, `UserData/`, `ExpansionShared/`…).
+propre copie installée (le dossier qui contient `GameData/`, `UserData/`, `ExpansionShared/`…) :
+sur le serveur (cas par défaut), ou, sur une instance ouverte à d'autres, importée dans son
+navigateur (§ 3 bis).
 
 ## 1. Installation
 
@@ -19,7 +21,8 @@ pnpm start                                         # construit ce qui manque, pu
 
 Ouvrir <http://127.0.0.1:3000/>. Options : `pnpm start --port 4000` (ou `PORT=4000`),
 `HOST=0.0.0.0 pnpm start` pour le réseau local, `SAVES=client pnpm start` pour garder les
-sauvegardes dans le navigateur (voir § 3).
+sauvegardes dans le navigateur (voir § 3), `GAME_FILES=client pnpm start` pour que chaque joueur
+importe son propre jeu dans son navigateur (§ 3 bis).
 
 ### Sur un serveur (Docker)
 
@@ -33,6 +36,8 @@ proxy avec mot de passe et HTTPS, ou sur un réseau privé.
 `/` ouvre une page d'accueil (en anglais, hors du jeu) :
 
 - **Play** lance le jeu (`/game.html`) ;
+- sur une instance en mode `GAME_FILES=client`, la section **Game files** : import du dossier du
+  jeu dans le navigateur (§ 3 bis) ; **Play** n'est actif qu'une fois l'import terminé ;
 - le mode de sauvegarde de l'instance, le nombre de fichiers sauvegardés, **Export saves** et
   **Import saves…** (§ 4) ;
 - l'état du stockage du navigateur (persistant ou non, place occupée) et du mode hors ligne (§ 6).
@@ -61,6 +66,41 @@ Le mode est choisi par instance, au lancement du serveur (variable `SAVES`, ou
   navigateur).
 
 Changer de mode ne convertit rien ; pour passer d'un mode à l'autre, exporter puis importer.
+
+## 3 bis. Importer son propre jeu dans le navigateur (`GAME_FILES=client`)
+
+Une instance peut être lancée sans aucun fichier du jeu sur le serveur (variable `GAME_FILES=client`,
+ou `THESIMSWEB_GAME_FILES=client` avec Docker, voir [`docker.md`](./docker.md)). C'est le mode pour
+ouvrir une instance à d'autres personnes : le serveur n'héberge que le code du portage et ne
+distribue **jamais** les fichiers du jeu, protégés par le droit d'auteur de Maxis / Electronic Arts.
+Chaque joueur utilise **sa propre copie** du jeu :
+
+1. Ouvrir la page d'accueil, section **Game files**, puis **Select the game folder…**.
+2. Choisir le dossier d'installation de The Sims (Complete Collection) sur son ordinateur : celui
+   qui contient `GameData`, `ExpansionShared`, `ExpansionPack` … `ExpansionPack7`, `UserData`… (un
+   dossier au-dessus convient aussi). Firefox et Chrome demandent de confirmer l'accès au dossier.
+3. La page vérifie que le dossier est complet (sinon elle dit quels fichiers manquent), puis copie
+   dans le navigateur les fichiers que le jeu lit (environ **3,2 Go**, quelques minutes ; ni les
+   programmes `.exe` / `.dll`, ni les journaux, ni le dossier `support`). Rien n'est envoyé au
+   serveur. Une barre de progression suit la copie.
+4. **Play** devient actif. Le dossier d'origine n'est jamais modifié et n'est plus nécessaire
+   ensuite.
+
+Bon à savoir :
+
+- **Un import par navigateur** : un autre navigateur, un autre appareil ou une autre adresse du
+  site demandent un nouvel import. Prévoir ~3,2 Go de place libre sur le disque du navigateur ;
+  accepter le stockage persistant si le navigateur le demande.
+- **Interrompu** (onglet fermé, bouton **Stop**, manque de place) : resélectionner le même dossier
+  reprend la copie là où elle s'était arrêtée. Sous Chrome / Edge, le bouton **Resume** reprend sans
+  resélectionner le dossier.
+- **Import again…** met à jour l'import (après un patch du jeu, par exemple) : seuls les fichiers
+  changés sont recopiés.
+- **Remove the game files** libère la place ; les sauvegardes, elles, restent.
+- Les sauvegardes restent dans le navigateur (comme le mode `SAVES=client`, § 3) : exporter
+  régulièrement (§ 4).
+- Une fois l'import fait, le jeu n'a plus besoin du serveur pour ses fichiers : il fonctionne hors
+  ligne (§ 6), musiques comprises.
 
 ## 4. Exporter et importer les sauvegardes
 
@@ -123,8 +163,8 @@ Limites :
 
 ## 7. Limites connues
 
-- Il faut sa propre copie du jeu, installée sur le serveur ; pas encore d'import du dossier du jeu
-  depuis le navigateur.
+- Il faut sa propre copie du jeu, installée sur le serveur, ou importée dans chaque navigateur
+  (§ 3 bis, ~3,2 Go par navigateur).
 - Aucune authentification côté serveur (voir [`docker.md`](./docker.md), « Sécurité »).
 - Les données du navigateur (cache des fichiers du jeu, plusieurs centaines de Mo, et sauvegardes
   en mode `client`) peuvent être effacées par le navigateur si le disque manque de place, tant que

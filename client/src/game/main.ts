@@ -12,6 +12,7 @@ import { modeMusicEvent, soundPlayer, UI_SOURCE } from "./audio/index.js";
 import { installLotAudio } from "./audio/lotaudio.js";
 import { resetSaveFileCache } from "../engine/assets.js";
 import { getSaveMode, requestPersistentStorage } from "../engine/saves.js";
+import { isGameFilesLocal, localGameIndex } from "../engine/gamefiles.js";
 import { CPState, DIRTY_ALL, Mode } from "./cpstate.js";
 import type { GameContext } from "./context.js";
 import { CPANEL_HEIGHT, WinCPanel } from "./cpanel/cpanel.js";
@@ -344,6 +345,12 @@ class Game {
 }
 
 async function boot(): Promise<void> {
+  // GAME_FILES=client: the game files come from this browser's import (engine/gamefiles.ts);
+  // without one, back to the landing page, which imports them.
+  if ((await isGameFilesLocal()) && !(await localGameIndex())) {
+    location.replace("/");
+    return;
+  }
   const mgr = new WinMgr(document.getElementById("screen")!, SCREEN_W, SCREEN_H);
   const ctx = await createContext();
   // Saves kept in this browser (SAVES=client): ask the browser not to evict them.

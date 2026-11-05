@@ -15,7 +15,7 @@
  * loose file served under /assets/Sims/.
  */
 
-import { fetchManifest, readAssetFile, readFarEntry, type Manifest } from "../../engine/assets.js";
+import { assetObjectUrl, fetchManifest, readAssetFile, readFarEntry, type Manifest } from "../../engine/assets.js";
 import { engine } from "../../engine/wasm.js";
 
 export const GAME_ROOT = "Sims/";
@@ -134,7 +134,8 @@ export async function listDir(dir: string): Promise<{ dirs: string[]; files: str
 /** URL of a loose game file, or null when the install has no such file. */
 export async function looseUrl(path: string): Promise<string | null> {
   const orig = (await files()).get(toSlash(path).toLowerCase());
-  return orig ? `/assets/${GAME_ROOT}${orig.split("/").map(encodeURIComponent).join("/")}` : null;
+  // (a blob: URL when the game files are imported in this browser, GAME_FILES=client)
+  return orig ? assetObjectUrl(GAME_ROOT + orig) : null;
 }
 
 /** Path under /assets/ of a loose game file ("Sims/..."), or null when the install has no such file. */
