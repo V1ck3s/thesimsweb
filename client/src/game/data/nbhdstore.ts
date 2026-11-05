@@ -566,6 +566,32 @@ export class NeighborhoodStore {
     for (const i of PERSISTENT_DATA_FIELDS) n.personData[i] = personData[i] ?? 0;
   }
 
+  /**
+   * Neighborhood::SaveAllPersistentDataForMatterTransferance: for each
+   * neighbor in order (the walk stops at the first empty slot), the person
+   * on the lot with its GUID (`instance`: its person data, null when not
+   * there) saves its persistent fields into the neighbor its person data 0x1f
+   * (cXPerson +0x5ca, the neighbor id) names.
+   */
+  saveAllPersistentDataForMatterTransferance(instance: (guid: number) => Int16Array | null): void {
+    for (const n of this.nbrs.entries) {
+      if (!n) break;
+      const pd = instance(n.guid >>> 0);
+      if (!pd) continue;
+      const target = this.nbrs.entries[(pd[0x1f] ?? 0) - 1];
+      if (target) this.savePersistentData(target.guid, pd);
+    }
+  }
+
+  /** Family +0x118 (budget) and +0x138 (flags) set as given (Neighborhood::SaveHouse). */
+  setFamilyBudgetAndFlags(familyId: number, budget: number, flags: number): void {
+    const f = this.familyRaw(familyId);
+    if (!f) return;
+    f.budget = budget | 0;
+    f.flags = flags;
+    f.dirty = true;
+  }
+
   /** PersonFinder::GetData without an instance: the neighbor's person data (live). */
   getPersonData(guid: number): Int16Array {
     return this.neighborByGuid(guid)?.personData ?? new Int16Array(256);

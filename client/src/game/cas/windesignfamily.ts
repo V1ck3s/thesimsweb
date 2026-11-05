@@ -36,7 +36,10 @@
  *    cPickFamilyPersonInfo (+0x170, created in the constructor) set to the
  *    button's person (cas/personinfo.ts).
  *
- * Not ported: the .FAM export of FinishFamily.
+ * FinishFamily(family): Neighborhood::Save, then (family != -1)
+ * Neighborhood::ExportFamily into the neighborhood's Export folder
+ * (NeighborhoodStore.exportFamily: <name>_<id>.FAM). Not ported: its
+ * ExportFamilyHTML (an option).
  */
 
 import type { GameContext } from "../context.js";
@@ -362,8 +365,9 @@ export class WinDesignFamily extends TSWinGenDlg {
     const family = store.makeNewFamily();
     store.setFamilyName(family, this.familyName);
     for (const p of this.members) store.addToFamily(p.guid, family);
-    // FinishFamily: the neighborhood is saved.
+    // FinishFamily: the neighborhood is saved, then the family exported (its result ignored).
     await store.save();
+    if (!(await store.exportFamily(family))) console.warn(`[cas] ExportFamily ${family} failed`);
     this.target?.familyDesigned(family);
     this.tsEndDialog(1);
   }

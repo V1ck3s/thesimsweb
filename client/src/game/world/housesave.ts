@@ -39,6 +39,7 @@ import type { ObjSelector } from "./objselector.js";
 import type { PersonRecord, SavedInteraction } from "./personstream.js";
 import { getSRandSeed } from "./random.js";
 import { ReconBuffer } from "./reconbuffer.js";
+import { clearLayoutHistory, type LayoutHistory } from "./housestats.js";
 import { compactRecon, type ReconOut } from "./reconwriter.js";
 import { getRoofPattern, getRoofPitch } from "./roofs.js";
 import type { WallGraphicsMgr } from "./wallgraphics.js";
@@ -231,6 +232,29 @@ export function saveSimulator(sim: Simulator, loaded: Uint8Array | null, extra: 
       for (let i = 0; i < (b.full === 0 ? 7 : 8); i++) w.recon32(b.values[i]!);
     }
   });
+}
+
+// --- HOUS 1 (House) -----------------------------------------------------------------
+
+/**
+ * SimpleReconObject<House>::DoStream (write, version 0x49): the house name,
+ * then for each of the five past days and today the routing ticks (+0x34 +
+ * 8i) and the ticks (+0x30 + 8i) of the layout history.
+ */
+export function saveHouseRecon(name: string, h: LayoutHistory): Uint8Array {
+  return compactRecon(SAVE_VERSION, "HOUS", (w) => {
+    w.reconString(name);
+    for (let i = 0; i < 6; i++) {
+      w.recon32(h.routing[i] ?? 0);
+      w.recon32(h.ticks[i] ?? 0);
+    }
+  });
+}
+
+/** The house name HOUS 1 holds (version > 0x12; "" before). */
+export function readHouseName(bytes: Uint8Array): string {
+  const { buf, version } = ReconBuffer.fromChunk(bytes);
+  return version > 0x12 ? buf.reconString() : "";
 }
 
 // --- HOUS 0 (HouseViewer) -----------------------------------------------------------
@@ -695,6 +719,8 @@ export interface HouseSaveInput {
   stats?: { objectValue: number; archValue: number; global16: number; global25: number } | null;
   /** cSimulator::ClearHistory before the save (Neighborhood::MoveOut). */
   clearHistory?: boolean;
+  /** House::ClearRouteHistory before the save (Neighborhood::MoveOut): HOUS 1 written with the cleared layout history. */
+  clearRouteHistory?: boolean;
   /** Dev check: number the saved types in the loaded table's order (that of the folder which wrote it). */
   keepLoadedTypeOrder?: boolean;
   /**
@@ -730,7 +756,12 @@ export async function buildHouseFile(input: HouseSaveInput): Promise<Uint8Array>
     add({ type: "SIMI", id: 1, flags: FLAGS, label: "", data: saveSimulator(sim, simi, extra) });
   } else if (simi) add({ type: "SIMI", id: 1, flags: FLAGS, label: "", data: simi.slice() });
   const hous1 = house.get("HOUS", 1);
-  if (hous1) add({ type: "HOUS", id: 1, flags: FLAGS, label: "", data: hous1.slice() });
+  if (hous1) {
+    // The layout history in memory (cSimulator.layoutHistory, House +0x30..+0x5c) when the lot ran.
+    const layout = input.clearRouteHistory ? clearLayoutHistory() : (sim?.layoutHistory ?? null);
+    const data = layout ? saveHouseRecon(readHouseName(hous1), layout) : hous1.slice();
+    add({ type: "HOUS", id: 1, flags: FLAGS, label: "", data });
+  }
   const [flr0, flr1] = input.floors.saveUsageMap(input.fixed);
   add({ type: "FLRm", id: 0, flags: FLAGS, label: "", data: flr0 });
   add({ type: "FLRm", id: 1, flags: FLAGS, label: "", data: flr1 });

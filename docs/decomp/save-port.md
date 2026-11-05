@@ -29,7 +29,7 @@ Port of the house save path. Code: `client/src/game/world/{reconwriter,usagemap,
 | Chunk | Original | Writer |
 |---|---|---|
 | SIMI 1 | cSimulator::DoStream v0x49 | `saveSimulator` |
-| HOUS 1 | SimpleReconObject\<House\> | copied (name + 12 ints, not modeled) |
+| HOUS 1 | SimpleReconObject\<House\> | copied (name + 12 ints); rewritten by `saveHouseRecon` after ClearRouteHistory (MoveOut) |
 | FLRm 0/1 | FloorGraphicsMgr::SaveUsageMap | `FloorGraphicsMgr.saveUsageMap` + `usagemap.ts` |
 | WALm 0/1 | WallGraphicsMgr::SaveUsageMap | `WallGraphicsMgr.saveUsageMap` |
 | Arry × 18 | cFixedWorld::Save → c2DArray::WriteToDisk | `saveFixedWorld` / `encodeC2DArray` |
@@ -165,9 +165,46 @@ Port of the house save path. Code: `client/src/game/world/{reconwriter,usagemap,
   roofs it (roofs.ts). Some objects differ from the game's thumbnails: Magic Town trees drawn pale, pumpkins
   darker (object rendering, also in the lot view).
 
+## Neighborhood side of SaveGame / SaveHouse (`world/savegame.ts`)
+
+- **House family** (`houseFamilyOf`): House +0x10 as Neighborhood::LoadHouse sets it, the first family whose
+  +0x110 (house) or +0x13c (vacation lot) is the lot, else family 0. A vacation lot with its family on it
+  therefore goes through SaveHouse, as in the original.
+- **Town / community branch** (sims on the lot, global 32 clear): the selected person's family gets the funds as
+  its budget (only +0x118: its flags are left alone), then `NeighborhoodStore.saveAllPersistentDataForMatterTransferance`
+  (Neighborhood.c 100ab830): neighbors in order, the walk stopping at the first empty slot; the person on the lot
+  with the neighbor's GUID copies its persistent fields into the neighbor its person data 0x1f names. Then
+  Neighborhood::Save. The same SaveGame runs when leaving by taxi (cSimsApp::SwitchLots) and from DoSave (Options >
+  Neighborhood, "Yes").
+- **SaveHouse, before House::SaveFile** (`saveHouseBudget`, Neighborhood.c 100a6d00): a real family gets the funds
+  and loses +0x138 bit 3 (bits 0 / 1 from ComputeStats, which House::SaveFile only sets when the family id is not 0).
+  Family 0 gets budget 0, except on a town or community lot (21..30, 40..49, zoning 2, 81..89, 93..98) where it has
+  a member: the family of that member's person on the lot (person data 0x3d) then gets family 0's budget and loses
+  bit 3 (no neighborhood shipped has a family-0 member).
+- **SaveHouse, after House::SaveFile** (`deleteUnhousedCharacters`): DeleteCharacter of every neighbor that is a
+  character (ObjSelector +0xb4 bits 2-3 = 1, `ObjectFolder.sourceOfGUID`) with person data 0x3d (family) and 0x43
+  (house) both 0, its people on the lot killed first; then Neighborhood::Save. The NPC neighbors (maid, townie
+  templates...) also have family 0 / house 0 but come from the objects or downloads folders and are not touched. The
+  original loops until none is left (a refused deletion would loop forever); the port walks the list once.
+- **ExportUnoccupiedLot** (cSimsApp.c 102422e0), after SaveHouse when the lot was opened without sims (global 32):
+  `Export/L<NN>` + `.rdt` (zoning 1), `.cmt` (zoning 2, not Magic Town), `.dtl`, `.stl`, `.mtl`, `.vil` (town lots);
+  `L<NN>.<ext>` and `L<NN>.srf` are deleted, the saved house file is copied, and its STR# 2000 (StringSetBase:
+  current language, empty comments, flags 0x10) gets entries 1 / 2 = the lot's name and description from
+  `Houses/<DT|ST|MT|VI>Desc.iff` or `NeighborhoodDesc.iff` STR# 2000 + house (line breaks become spaces) and 3 = the
+  house number. Strings at lbl_105BC2E0 + 0x321..0x3aa (mac.bin). The import side (`nbhd/imports.ts
+  getLotImportInfo`) reads these three entries and BMP_ 512.
+- **MoveOut** (`world/moveout.ts`) runs the same SaveHouse parts, House::ClearRouteHistory (HOUS 1 rewritten by
+  `saveHouseRecon`: SimpleReconObject<House>::DoStream, name then six (+0x34, +0x30) pairs; the five past days at
+  NeighborhoodConstants "fill value for layout history" 200, today 0), and LoadHouse's Tutorial object (GUID
+  0xc3249a1d) and "import lot" broadcast (lbl_105BB990 + 0x13e, when the house file holds EXPi resources).
+  `saveHouseRecon` re-encodes the shipped version 0x49 HOUS 1 chunks byte for byte (older versions differ only in
+  the version word and the string pad byte).
+
 ## Gaps
 
-- People's persistent data is not saved to the neighborhood at save time. In the original, cXPerson does this at other moments.
-- Unoccupied lots (family +0x10c == 0): the budget is not saved. The family export (`ExportFamily`) and `ExportUnoccupiedLot` are not ported.
+- SaveGame's ExportFamily (and ExportFamilyHTML) of the resident family after a residential save is not ported:
+  the port lists every neighborhood's `Export/*.FAM` as importable families (nbhd/imports.ts), so each save would
+  offer the family it just saved for import.
+- The lot view's own LoadHouse (world/winlotview.ts) does not broadcast "import lot" for a house file with EXPi.
 - Save failure: the message uses UIText 0x99 entries 0xf/0x10, which is not verified visually.
 - RelMatrix null entries are dropped when loading, so they are not written back.

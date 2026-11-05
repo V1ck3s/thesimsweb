@@ -12,7 +12,12 @@
  *    floor / wall usage maps, the object module), ObjectModule::PostLoad (the
  *    simulator: Load / Init trees), and its person pass: people of no family
  *    whose person data 0x43 is another house, and people of a real family
- *    that has no house any more (the evicted one) are killed.
+ *    that has no house any more (the evicted one) are killed. Then the
+ *    Tutorial object (GUID 0xc3249a1d) is made on a tutorial lot
+ *    (nbhd/tutorial.ts makeTutorialObject) and, when the house file holds an
+ *    EXPi resource (a lot that came with an imported family), every object's
+ *    "import lot" tree runs. LoadHouse's move-in part ("reset lot") needs a
+ *    family moving in, which never happens here (the house has none).
  * 2. ObjectModule::BroadcastMessage("evict lot", 0): every object's BHAV of
  *    that name runs once (Bills has one).
  * 3. Every object not held by another (PlacementSpec +0xc == 0) for which
@@ -23,20 +28,21 @@
  *    0x20 loses its floor and its walls (cFixedWorld::SetWall with an empty
  *    TileWalls); the pool layer is cleared (cPoolLayer::Clear).
  * 5. Funds 0, global 26 (tutorial house) 0, cSimulator::ClearHistory (the
- *    SIMI history blocks and global 28), GlobalDispatch(0x91) (ComputeRooms).
+ *    SIMI history blocks and global 28), House::ClearRouteHistory (HOUS 1:
+ *    the layout history reset, world/housesave.ts saveHouseRecon),
+ *    GlobalDispatch(0x91) (ComputeRooms).
  * 6. Bulldoze: Neighborhood::DeleteCharacter for each neighbor whose
  *    Neighbor +0xfa (person data 0x43) is the house, until one is refused;
  *    the person objects with that GUID are killed first.
- * 7. GViewer::SetLevel(1), then Neighborhood::SaveHouse (House::SaveFile:
- *    the stats, then world/housesave.ts).
+ * 7. GViewer::SetLevel(1), then Neighborhood::SaveHouse
+ *    (world/savegame.ts): the house family's budget (family 0, nobody living
+ *    here any more: 0), House::SaveFile (the stats, then world/housesave.ts),
+ *    then DeleteCharacter of the characters of no family and no house. The
+ *    caller saves the neighborhood (Neighborhood::Save ends SaveHouse).
  *
  * The thumbnails SaveFile writes come from a view opened on the saved file
  * (world/thumbnail.ts withHouseThumbnails): the original renders them with
  * its one HouseViewer, which holds the loaded lot.
- *
- * Not ported: House::ClearRouteHistory (route history not modeled), the
- * persistent family 0's budget reset by SaveHouse, and SaveHouse's cleanup
- * of family-less, house-less characters (DeleteCharacter loop).
  */
 
 import type { GameContext } from "../context.js";
@@ -44,6 +50,7 @@ import { loadBuildCatalog } from "../data/buildcatalog.js";
 import { writeGameFile } from "../data/files.js";
 import { buildIff, parseIff } from "../data/iff.js";
 import type { NeighborhoodStore } from "../data/nbhdstore.js";
+import { makeTutorialObject } from "../nbhd/tutorial.js";
 import { PDX } from "../sim/person.js";
 import type { WorldHooks } from "../sim/simmodule.js";
 import { G, Simulator } from "../sim/simulator.js";
@@ -53,6 +60,7 @@ import { isDeletedByEvict, summarizeHouseStats } from "./housestats.js";
 import { ResFile } from "./iffres.js";
 import { loadLotModule, OD, type XObject } from "./objects.js";
 import { computeRooms, RoomManager } from "./rooms.js";
+import { deleteUnhousedCharacters, saveHouseBudget } from "./savegame.js";
 import { TileWalls } from "./tilewalls.js";
 import { withHouseThumbnails } from "./thumbnail.js";
 import { killObject, makeNewOutOfWorldObject } from "./tools/objectfactory.js";
@@ -64,6 +72,8 @@ import { FixedWorld } from "./world.js";
 
 /** lbl_105BB990 + 0x1a8: the message MoveOut broadcasts. */
 const EVICT_LOT = "evict lot";
+/** lbl_105BB990 + 0x13e: the message LoadHouse broadcasts when the house file holds an EXPi resource. */
+const IMPORT_LOT = "import lot";
 /** cXObject +0xa0 bit 4: never deleted by an eviction (also spares a bulldozed tile's object). */
 const MV_KEEP = 0x10;
 /** Tile flag 0x20: the tile cannot be edited (the road side); a bulldoze leaves it. */
@@ -261,6 +271,9 @@ export async function moveOutHouse(ctx: GameContext, store: NeighborhoodStore, h
   }
   const { sim, fixed } = lot;
   killStrayPeople(lot, store, house);
+  // LoadHouse: the Tutorial object, then (the count of EXPi resources > 0) "import lot".
+  await makeTutorialObject(lot.placement, lot.folder, sim.module, store.dir).catch((e: unknown) => console.warn("[moveout] tutorial object", e));
+  if (parseIff(lot.house.data).some((c) => c.type === "EXPi")) broadcastMessage(lot, IMPORT_LOT, 0);
   broadcastMessage(lot, EVICT_LOT, 0);
   killEvictedObjects(lot, bulldoze);
   if (bulldoze) bulldozeTiles(fixed);
@@ -273,6 +286,12 @@ export async function moveOutHouse(ctx: GameContext, store: NeighborhoodStore, h
     const prices = (await loadBuildCatalog(ctx)).prices;
     const objects = new Map(moduleOrder(lot.module).map((o) => [o.objectId, o]));
     const st = summarizeHouseStats(objects, fixed, lot.walls, lot.floors, prices);
+    // Neighborhood::SaveHouse: the house family's budget before House::SaveFile.
+    const familyOfPerson = (guid: number): number | null => {
+      const obj = [...lot.module.objects.values()].find((o) => o.isPerson && o.guid >>> 0 === guid >>> 0);
+      return obj ? (personData(lot, obj)?.[PDX.familyNumber] ?? null) : null;
+    };
+    saveHouseBudget(store, house, sim.module.zoning.get(house) ?? 1, sim.getFunds(), st.familyFlags, familyOfPerson);
     const bytes = await buildHouseFile({
       house: lot.house,
       fixed,
@@ -286,10 +305,15 @@ export async function moveOutHouse(ctx: GameContext, store: NeighborhoodStore, h
       selectedPersonId: lot.module.selectedPersonId,
       stats: { objectValue: st.simA0, archValue: st.simA4, global16: st.lotHasHouse, global25: st.transitFilterFlags },
       clearHistory: true,
+      clearRouteHistory: true,
     });
     // House::SaveFile's thumbnails (GlobalDispatch(0x92)), from a view of the saved lot.
     const saved = await withHouseThumbnails(path, setSavedLevel(bytes, 1), ctx.width, ctx.height - 100);
     await writeGameFile(path, saved);
+    // SaveHouse after a successful House::SaveFile: the characters of no family and no house go.
+    await deleteUnhousedCharacters(store, lot.folder, (guid) => {
+      for (const obj of [...lot.module.objects.values()]) if (obj.isPerson && obj.guid >>> 0 === guid >>> 0) kill(lot, obj);
+    });
   } catch (e) {
     console.error(`[moveout] SaveHouse ${path} failed`, e);
     return false;

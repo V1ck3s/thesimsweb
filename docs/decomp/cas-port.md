@@ -172,6 +172,12 @@ Gaps:
   - the lot view refresh (vtable +0x168) in the "buy house" branch;
   - the member tooltip windows (cPickFamilyPersonInfo);
   - the picker's first-run hint and scroll ramp;
-  - the .FAM export.
+  - FinishFamily's ExportFamilyHTML (an option).
+- FinishFamily (NghInterface 1022aff0, called by Done with the new family and by Cancel with -1): Neighborhood::Save,
+  then for a real family Neighborhood::ExportFamily into the neighborhood's Export folder
+  (`NeighborhoodStore.exportFamily`). Checked on a throwaway copy of UserData: a family of one made in Create a
+  Family gives `Export/<name>_<id>.FAM` with FAMI, FAMs, CTSS 1000, EXPi 0, uChr / CTSS / CTSS 2000 + id / BMP_ of
+  the member, NBRS 1 and FINV 2. As the port lists every `Export/*.FAM` as importable, the new family is also
+  offered for import.
 - `TSWinTextEdit2` has no selection, clipboard or undo.
 - If the page reloads in the middle of a design, the copied template stays behind as an orphan `User%05d.iff` with its neighbor. The game leaves the same orphans when it crashes.
