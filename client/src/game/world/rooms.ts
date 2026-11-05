@@ -64,6 +64,8 @@ export class Room {
   tiles: TilePt[] = [];
   /** +0x34. */
   inUse = false;
+  /** +0x73: the overhead lights (Room::SetOverheadLights); 0 in GetNewRoom, kept by Room::Clear. */
+  overheadLights = false;
   /** +0x71 / +0x72: IsOutside cache. */
   private outsideKnown = false;
   private outside = false;

@@ -442,6 +442,28 @@ export function clearLayoutHistory(): LayoutHistory {
   return { ticks: [f, f, f, f, f, 0], routing: [f, f, f, f, f, 0] };
 }
 
+/** House::AddLayoutTick (cXPerson::Simulate every 10 ticks): today's ticks (+0x58), routing ones (+0x5c). */
+export function addLayoutTick(h: LayoutHistory, routing: boolean): void {
+  if (routing) h.routing[5] = h.routing[5]! + 1;
+  h.ticks[5] = h.ticks[5]! + 1;
+}
+
+/**
+ * House::DoCommand(0xdc) (midnight, cSimulator::SimulateOneTick): as the
+ * original's code does, the four older days all take yesterday's values
+ * (not a shift), yesterday takes today's, today starts at 0.
+ */
+export function layoutHistoryDayChanged(h: LayoutHistory): void {
+  for (let i = 1; i < 5; i++) {
+    h.ticks[i] = h.ticks[0]!;
+    h.routing[i] = h.routing[0]!;
+  }
+  h.ticks[0] = h.ticks[5]!;
+  h.routing[0] = h.routing[5]!;
+  h.ticks[5] = 0;
+  h.routing[5] = 0;
+}
+
 /**
  * SimpleReconObject<House>::DoStream (read): the house name (version > 0x12),
  * then for each of the six days the routing ticks and the ticks (version >=

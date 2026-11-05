@@ -417,9 +417,12 @@ Ported: `filter = (cSimulator +0x98 ticks + person id) & 3`, 0 when the lot's zo
 (not residential); 0 scores every object, 1 only those within 7 tiles (CalcShortDistance <=
 lbl_105BBB78 +0x1c = 7.0, read from mac.bin), 2 objects with an even id, 3 odd ids (+0xf0 bit 0).
 The person's own object is scored when it is a pet (person data 0x41 >= 2), as in the original
-(the port skipped it always). Not ported (logged here): the Hot Date downtown / vacation filters
-of the same loop (lots 40..49 or zoning 2: objects whose master OBJD +0x8a is 4 or 5 skipped;
-on lots 40..49 with a family other than global 9, objects with object data 59 = 0x2e).
+(the port skipped it always). The filters of the same loop for lots 40..49 (Vacation Island,
+listed as "Hot Date downtown / vacation") are ported since (2026-11-05): on lots 40..49 or a zoning type 2 lot, objects whose master OBJD +0x8a
+(build mode type) is 4 or 5 are skipped; on lots 40..49, a person whose family (person data
+0x3d) is not global 9 skips the category 5..7 objects (object data 59) of inside rooms when the
+lot has an object of category 0x2e (the front desks). Still not ported: the end of the function picks the best
+interaction (no random draw) for visitors / a best entry with flag +0xc set on a residential lot.
 
 ### cXPerson::Cleanup(obj): the interaction's icon person (+0xa14)
 

@@ -623,6 +623,23 @@ not caught in TickAllObjects (none in the original either).
   undressed when the job accessory is empty (the original's Redress with an empty name is
   probably a no-op).
 
+## Room motive, layout ticks (2026-11-05, `sim/person.ts`, `world/lighting.ts`)
+
+- cXPerson::Simulate after the animator tick: UpdateCurrentRoom (+0xaac, 0xfffb at creation:
+  object data 29 changed -> overhead lights of the old room off when Room::GetPeopleCount
+  (people whose +0xaac is the room, person data 0x44 / 0x54 bit 0 left out) is 0, of the new
+  room on, person data 0x41 <= 1 only; GlobalDispatch(0xf7) for the selected or tracked person),
+  then motive 13 (room, +0x7c0) = Room +0x68 of the current room, RoomManager +0x48 outside,
+  0 without the room; outside (room 0) on a lot whose zoning type is not 1, at least 0.
+- Every 10 ticks (cSimulator tick % 10), a resident (person data 0x20 = 0) not hidden and
+  awake (motive 11 >= 0) adds House::AddLayoutTick(has a route): +0x58 ticks, +0x5c routing.
+  cSimulator::SimulateOneTick's midnight GlobalDispatch(0xdc) after PostSim moves the history:
+  House::DoCommand copies yesterday (+0x30 / +0x34) into the four older days (not a shift, as
+  the original's code does), today into yesterday, today to 0. The history lives on
+  `Simulator.layoutHistory` (read from HOUS 1 at load, written back by buildHouseFile).
+- Not ported: cXPerson::Place's UpdateCurrentRoom (the next tick does it), the rest of
+  House::DoCommand(0xdc) (ObjectModule::ComputeStats / family flags).
+
 ## Open questions / deviations
 
 - `Reset` keeps containerId/slotNumber instead of recomputing placement.

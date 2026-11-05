@@ -29,7 +29,7 @@ import { customWallStyleOf, loadLotObjectDrawer, type LotObjects } from "./lotob
 import type { DrawableObject } from "./objectdraw.js";
 import { RenderParam as RenderParamImpl, type RenderParam } from "./renderparam.js";
 import { LotPeople } from "./lotpeople.js";
-import { RoomLighting, timeOfDay } from "./lighting.js";
+import { loadRoomScoreConstants, RoomLighting, timeOfDay } from "./lighting.js";
 import { loadRoofSettings, makeArchRoofHooks, roofLayersOf } from "./roofs.js";
 import { computeRooms, RoomManager } from "./rooms.js";
 import { houseNumberOfPath, Terrain } from "./terrain.js";
@@ -84,7 +84,7 @@ import { cancelTutorial, makeTutorialObject, tutorialCompleted } from "../nbhd/t
 import { findPersonPanelButton } from "../cpanel/people.js";
 import { findRelButton } from "../cpanel/live/relationship.js";
 import { moduleOrder } from "./housesave.js";
-import { clearLayoutHistory, getHouseStats, piecewiseFromText, readLayoutHistory, STR_HOUSE_SCORE_CURVES, summarizeHouseStats, type LayoutHistory, type PiecewiseFn } from "./housestats.js";
+import { clearLayoutHistory, getHouseStats, piecewiseFromText, readLayoutHistory, STR_HOUSE_SCORE_CURVES, summarizeHouseStats, type PiecewiseFn } from "./housestats.js";
 import { loadStringSet } from "../sim/behavior.js";
 
 /** NeighborhoodConstants "new family start hour" (lbl_105BA1E0, default 7). */
@@ -370,6 +370,10 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
     }
     // Room lighting follows the time of day (cSimulator global 4).
     const lighting = new RoomLighting(rooms, v.world, () => this.lotObjects?.objects ?? null);
+    // ComputeRooms' SetGlobal(0x1b, the inside rooms' area).
+    lighting.onInsideArea = (area) => {
+      if (this.sim) this.sim.globals[0x1b] = area;
+    };
     const phase0 = timeOfDay(st.getTime().hour);
     lighting.compute(phase0);
     // Neighborhood::LoadHouse's cTerrain::SetColor (the lot's ground colors by house number);
@@ -982,7 +986,7 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
     sim.setCurrentHour(NEW_FAMILY_START_HOUR, 0);
     sim.clearHistory();
     sim.resume();
-    this.layoutHistory = clearLayoutHistory();
+    sim.layoutHistory = clearLayoutHistory();
     sim.module.broadcastMessage("reset lot", 0);
   }
 
@@ -1528,7 +1532,14 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
         room: (id) => this.lighting?.roomInfo(id) ?? null,
         roomLightingChanged: (id) => this.lighting?.roomChanged(id),
         roomScoreChanged: (id) => this.lighting?.roomChanged(id),
+        roomScore: (id) => this.lighting?.roomScore(id) ?? null,
+        setOverheadLights: (id, on) => this.lighting?.setOverheadLights(id, on),
+        currentRoomChanged: () => this.cutaway?.onTrackedChanged(),
       };
+      // The first RoomManager::ComputeRooms (initCutaway) reads the RoomScoreConstants (FCNS 3 of Global.iff).
+      loadRoomScoreConstants(sim.module.res.glob);
+      // House::DoStream's layout history (HOUS 1).
+      sim.layoutHistory = readLayoutHistory(house.get("HOUS", 1));
       sim.module.userEventHooks = {
         livePIP: () => getOptionsMgr().getLivePIP(),
         pictureInPicture: (o, a) => {
@@ -1874,8 +1885,6 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
 
   // --- painting / input -----------------------------------------------------------
 
-  /** House +0x30..+0x5c: the layout history (read from HOUS 1; House::AddLayoutTick is not ported). */
-  private layoutHistory: LayoutHistory | null = null;
   /** House +0x60 / +0x64: the size and furnishings score curves (Global.iff STR# 505). */
   private scoreFns: { size: PiecewiseFn; furnishings: PiecewiseFn } | null = null;
   private houseStatsAt = -Infinity;
@@ -1892,7 +1901,6 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
     const rooms = this.rooms;
     if (!sim || !v || !lot || !rooms || this.ctx.state.getMode() !== Mode.Live || nowMs - this.houseStatsAt < 500) return;
     this.houseStatsAt = nowMs;
-    this.layoutHistory ??= readLayoutHistory(this.house?.get("HOUS", 1));
     if (!this.scoreFns) {
       const curves = sim.module.res.glob ? loadStringSet(sim.module.res.glob, STR_HOUSE_SCORE_CURVES) : null;
       this.scoreFns = { size: piecewiseFromText(curves?.[0]), furnishings: piecewiseFromText(curves?.[1]) };
@@ -1904,7 +1912,7 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
       members: this.ctx.state.family.length,
       objectValue: sim.objectValue,
       archValue: sim.archValue,
-      layout: this.layoutHistory,
+      layout: sim.layoutHistory ?? clearLayoutHistory(),
       sizeFn: this.scoreFns.size,
       furnishingsFn: this.scoreFns.furnishings,
     });

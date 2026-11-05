@@ -28,6 +28,7 @@ import { loadStringSet } from "./behavior.js";
 import type { XObject } from "../world/objects.js";
 import type { ObjSelector } from "../world/objselector.js";
 import { getNextRandomNumber, getSRandSeed, setSRandSeed } from "../world/random.js";
+import { addLayoutTick, layoutHistoryDayChanged, type LayoutHistory } from "../world/housestats.js";
 import { ReconBuffer } from "../world/reconbuffer.js";
 import { EP } from "./objfntable.js";
 import { SimModule, SimResources } from "./simmodule.js";
@@ -391,6 +392,18 @@ export class Simulator {
   onSuspendChange: ((suspended: boolean) => void) | null = null;
 
   /**
+   * House +0x30..+0x5c, the layout history (HOUS 1): the lot view reads it
+   * with the house; cXPerson::Simulate's House::AddLayoutTick fills it, the
+   * midnight dispatch moves it on, House::SaveFile writes it.
+   */
+  layoutHistory: LayoutHistory | null = null;
+
+  /** House::AddLayoutTick. */
+  addLayoutTick(routing: boolean): void {
+    if (this.layoutHistory) addLayoutTick(this.layoutHistory, routing);
+  }
+
+  /**
    * cSimulator::Simulate's head: on a residential lot (zoning type 1), when
    * no family member is awake and visible (ObjectModule::IsFamilyMemberAwakeAndVisible)
    * the speed is saved in global 18 and forced to 1000 (1 ms per tick); when
@@ -557,6 +570,7 @@ export class Simulator {
     const advanced = this.tickAllObjects();
     this.seed = getSRandSeed();
     setSRandSeed(saved);
+    let midnight = false;
     if (advanced) {
       this.tickCount++;
       const g = this.globals;
@@ -569,6 +583,7 @@ export class Simulator {
           g[G.hour] = g[G.hour]! + 1;
           if (g[G.hour]! > 0x17) {
             // ObjectModule::DayChanged / the family history are not ported.
+            midnight = true;
             g[G.daysRunning] = g[G.daysRunning]! + 1;
             // The ExpenseReports: as the original's code does, blocks 1..4 all get the old block
             // 0 (not a shift), block 0 gets today's, today starts at 0.
@@ -595,6 +610,8 @@ export class Simulator {
     }
     // ObjectModule::PostSim: object dialogs are recorded only; the kill queue runs here.
     this.module.runKillQueue();
+    // GlobalDispatch(0xdc) after PostSim: House::DoCommand moves the layout history on a day.
+    if (midnight && this.layoutHistory) layoutHistoryDayChanged(this.layoutHistory);
     if (advanced) this.pushPeople();
     return advanced;
   }

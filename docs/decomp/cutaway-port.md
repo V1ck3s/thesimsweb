@@ -88,7 +88,23 @@ WallManager passes as the view) + lotobjects.ts (flags, requiredSegment).
   (SetMaxAmbient).
 - People: lotpeople uses viewer.ambientAt (Render3DObject).
 - Terrain: setLatitudeByTimeOfDay on time-of-day change (cSimulator::SetCurrentHour 0xdd).
+- Room score (2026-11-05, `lighting.ts`): Room::CollectTileStats (pool tiles +0x54, floored
+  area +0x3c, walls +0x60 = segments whose style is 1, 3, 5..9, 0xf, 0x16, 0x17, wallpapered
+  +0x64; diagonal tiles through lbl_105BBC14 {0x10: sides 2, 4; 0x20: 1, 3}, the half floors in
+  TileWalls +0x08 / +0x14), CollectObjectStats (count +0x40, beds / bathroom objects, people
+  +0x280 = OBJD type 2, lamps +0x27c = lights that are not portals, dirt +0x4c, room impact
+  +0x50, good objects +0x54) and ComputeRoom's score +0x68 with the RoomScoreConstants (FCNS 3
+  of Global.iff, defaults lbl_105BBC24; RoomScoreConstants::UpdateConstants once):
+  inside wall% x 40 - 40 + floor% x 40 - 40 + impact x 10 / clamp(area, 10, 45)
+  + min(area, 60) / 60 x 60 - 30 + ambient x 40 - 20, clamped to -100..100; outside
+  impact x 2 + good x 1. RoomManager +0x4c = sum of the outside rooms' scores, +0x48 = +0x4c / 3
+  + 0 (day) / -20 (dawn, dusk) / -50 (night), clamped; global 0x1b = the inside rooms' area.
+- Overhead lights (Room +0x73): Room::SetOverheadLights from cXPerson::UpdateCurrentRoom (the
+  new room on, the old one off once Room::GetPeopleCount is 0; person data 0x41 <= 1). Room::
+  GetAmbientLight and ComputeRoom's tile map give 0.8 / 0xcc to an inside room with the flag,
+  no lamp, people and an ambient below 0.8; SetOverheadLights dispatches 0xf1 (the room is
+  computed again) and writes the tile bytes at once.
 - Not ported: LightMapSet / LightLayer / Lit*Blit (lamp and window light pools on floors and
-  walls), Room +0x73 overhead lights, the score part. Lighting is recomputed only on
+  walls). Lighting is recomputed only on
   time-of-day changes: RoomManager::RoomLightingChanged / ComputeRooms when objects change their
   lighting contribution (lamps switched by the VM) should call RoomLighting.compute again.

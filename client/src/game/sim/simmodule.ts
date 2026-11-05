@@ -272,6 +272,12 @@ export class SimModule {
     room(id: number): { ambient: number; outside: boolean; level: number; area: number } | null;
     roomLightingChanged?(id: number): void;
     roomScoreChanged?(id: number): void;
+    /** cXPerson::Simulate's room motive: Room +0x68, RoomManager +0x48 outside, null without the room. */
+    roomScore?(id: number): number | null;
+    /** Room::SetOverheadLights (cXPerson::UpdateCurrentRoom). */
+    setOverheadLights?(id: number, on: boolean): void;
+    /** UpdateCurrentRoom's GlobalDispatch(0xf7) (HouseViewer: the dynamic cutaway). */
+    currentRoomChanged?(): void;
   } | null = null;
   /**
    * Neighborhood::GetNumCharacters: the neighbors whose definition comes from

@@ -16,7 +16,7 @@
 import type { Neighbor } from "../data/neighborhood.js";
 import type { XObject } from "../world/objects.js";
 import type { BehaviorTree } from "./behavior.js";
-import { applyMotiveIncs, calcHappy, motivesSim, type MotiveCurve, type MotiveInc } from "./motives.js";
+import { applyMotiveIncs, calcHappy, MOTIVE, motivesSim, type MotiveCurve, type MotiveInc } from "./motives.js";
 import type { SimModule } from "./simmodule.js";
 import { PRIM_FALSE, PRIM_TRUE, PRIM_WAIT, simThrow, SimError } from "./treesim.js";
 import type { ParamSource, StackElem } from "./treestack.js";
@@ -34,6 +34,11 @@ import { RotatableWorld } from "../world/world.js";
 import type { TreeTableEntry } from "./treetable.js";
 import { fc, type FloatConstants } from "./floatconstants.js";
 import { personLooks } from "../sims/personlook.js";
+import { getTrackedObject } from "../world/tracking.js";
+
+/** Object data 29 (+0x84): the object's room; 59 (+0xc0): its category. */
+const OD_ROOM = 29;
+const OD_CATEGORY = 59;
 
 /** Person data indexes used by the person code (Behavior.iff STR# 200). */
 export const PDX = {
@@ -297,8 +302,10 @@ export class PersonSim extends SimObject {
 
   /**
    * cXPerson::Simulate: cXObject::Simulate, then (when the tick ran) the
-   * motive decay every 60 ticks, the motive increments every tick, and the
-   * happiness. Room / lighting motive, layout ticks, head text: not ported.
+   * motive decay every 60 ticks, the animator, the current room
+   * (UpdateCurrentRoom) and the room motive, the motive increments every
+   * tick, and every 10 ticks a layout tick for the house. Head text and
+   * the head fee: not ported.
    */
   override simulate(): boolean {
     const a = this.animator;
@@ -317,11 +324,69 @@ export class PersonSim extends SimObject {
       }
       // SAnimator::Tick (vtable +0x58) on every tick the person ran.
       this.animator.tick();
+      this.updateCurrentRoom();
+      this.updateRoomMotive();
       // Person data 27, "tick counter" (read by the "divide tick counts" tree).
       this.pd[27] = this.pd[27]! + 1;
       applyMotiveIncs(m, this.motiveIncs);
+      // House::AddLayoutTick every 10 ticks for an awake resident in the world (motive 11 >= 0),
+      // counted as routing while the person has a route.
+      if (tick % 10 === 0 && this.pd[PDX.personType] === 0 && this.obj.hidden === 0 && m[MOTIVE.sleepState]! >= 0) {
+        this.module.sim.addLayoutTick(this.routes.length > 0);
+      }
     }
     return r;
+  }
+
+  /** cXPerson +0xaac: the room the person is in (0xfffb, none, until UpdateCurrentRoom). */
+  currentRoom = 0xfffb;
+
+  /**
+   * cXPerson::UpdateCurrentRoom: when the room (object data 29) changed,
+   * the old room's overhead lights go off once nobody is left in it and the
+   * new room's go on (person data 0x41 <= 1: not for pets); the selected or
+   * tracked person dispatches 0xf7 (the dynamic cutaway follows).
+   */
+  private updateCurrentRoom(): void {
+    const room = this.obj.objectData[OD_ROOM]! & 0xffff;
+    if (room === this.currentRoom) return;
+    const old = this.currentRoom;
+    this.currentRoom = room;
+    const h = this.module.roomHooks;
+    if (this.pd[0x41]! <= 1) {
+      if (old < 0xfffb && this.getPeopleCount(old) === 0) h?.setOverheadLights?.(old, false);
+      if (room < 0xfffb) h?.setOverheadLights?.(room, true);
+    }
+    const sel = this.module.sim.state?.personGetSelected();
+    const selected = !!sel && sel.guid !== undefined && (sel.guid | 0) === (this.obj.selector.guid | 0);
+    if (selected || getTrackedObject() === this.obj) h?.currentRoomChanged?.();
+  }
+
+  /**
+   * Room::GetPeopleCount: the people of the lot whose current room is `id`
+   * (person data 0x44 and 0x54 bit 0 leave one out).
+   */
+  private getPeopleCount(id: number): number {
+    let n = 0;
+    for (const p of this.module.persons) {
+      if ((p.pd[0x54]! & 1) === 1 || (p.pd[0x44]! & 1) === 1) continue;
+      if (p.currentRoom === id) n++;
+    }
+    return n;
+  }
+
+  /**
+   * cXPerson::Simulate's room motive (13): the score of the current room
+   * (Room +0x68; RoomManager +0x48 outside; 0 without the room), not below
+   * 0 outside (room 0) on a lot that is not residential (zoning type 1).
+   */
+  private updateRoomMotive(): void {
+    const id = this.currentRoom;
+    const hooks = this.module.roomHooks;
+    if (id === 0xfffb || !hooks?.roomScore) return;
+    let v = hooks.roomScore(id) ?? 0;
+    if (id === 0 && this.module.getZoningType(this.module.sim.globals[10]!) !== 1 && v < 0) v = 0;
+    this.motives[MOTIVE.room] = v;
   }
 
   /**
@@ -1934,14 +1999,28 @@ export class PersonSim extends SimObject {
     // The objects looked at rotate with the tick (cSimulator +0x98) and the person's id:
     // 0 all of them, 1 those within 7 tiles (lbl_105BBB78 +0x1c), 2 even ids, 3 odd ids;
     // all of them on a lot whose zoning type is not residential.
+    const lot = m.sim.globals[10]!;
+    const zoning = m.getZoningType(lot);
     let filter = (m.sim.tickCount + this.id) & 3;
-    if (m.getZoningType(m.sim.globals[10]!) !== 0) filter = 0;
+    if (zoning !== 0) filter = 0;
+    // Vacation lots (40..49): someone not of the family in global 9 leaves the bathroom
+    // objects (category 5..7) of the inside rooms alone when the lot has an object of
+    // category 0x2e (the front desks).
+    const vacation = lot > 0x27 && lot < 0x32;
+    const skipBathrooms = vacation && this.pd[PDX.familyNumber] !== m.sim.globals[9] && m.list.some((o) => o.obj.objectData[OD_CATEGORY] === 0x2e);
     for (const o of m.list) {
       if (o.obj.selector.objd.i16(0xe) === 0) continue;
       if (!(m.getSimFlags(o.id) & 0x80000)) continue;
+      // On a vacation lot or a zoning type 2 lot, not the objects whose master OBJD
+      // build mode type (+0x8a) is 4 or 5.
+      if (zoning === 2 || vacation) {
+        const buildType = o.obj.selector.getMasterSelector().objd.i16(0x8a);
+        if (buildType === 4 || buildType === 5) continue;
+      }
       // The person itself only for pets (person data 0x41 >= 2).
       if ((o === this && this.pd[0x41]! < 2) || o.obj.hidden !== 0) continue;
       if (o.obj.objectData[25]! >= 1) continue;
+      if (skipBathrooms && this.isInsideBathroomObject(o)) continue;
       const dist = this.distanceTo(o);
       if (filter === 1 ? dist > 7 : filter === 2 ? (o.id & 1) !== 0 : filter === 3 && (o.id & 1) === 0) continue;
       const tt = m.treeTableOf(o.obj.selector);
@@ -1971,6 +2050,16 @@ export class PersonSim extends SimObject {
     this.obj.objectData[20] = best.e.stringIndex;
     elem.stackObj = best.o.id;
     return PRIM_TRUE;
+  }
+
+  /** TryFindBestAction's vacation lot test: in a room (object data 29) that exists and is inside, of category 5, 6 or 7. */
+  private isInsideBathroomObject(o: SimObject): boolean {
+    const room = o.obj.objectData[OD_ROOM]! & 0xffff;
+    if (room === 0xfffb) return false;
+    const r = this.module.roomHooks?.room(room);
+    if (!r || r.outside) return false;
+    const category = o.obj.objectData[OD_CATEGORY]!;
+    return category === 5 || category === 6 || category === 7;
   }
 
   /** cXObject::CalcShortDistance in tiles. */
