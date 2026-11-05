@@ -94,7 +94,8 @@ import {
 import type { GameContext } from "../context.js";
 import { bodyStringsOf, readCharacterFile } from "../data/character.js";
 import { parseIffMapOrder, type IffChunk } from "../data/iff.js";
-import type { NeighborhoodStore } from "../data/nbhdstore.js";
+import type { NeighborhoodStore, NgbhRaw } from "../data/nbhdstore.js";
+import { loadFameScoring, type FameScoring } from "../sim/fametrack.js";
 import { WinProgressPictureDialog } from "./winprogresspicturedialog.js";
 
 /** Family id of the townies. */
@@ -104,6 +105,9 @@ export const TOWNIE_COUNT = 0x1e;
 /** OBJD types of the townie templates. */
 const OBJ_TYPE_GENERIC_TOWNIE = 0x200;
 const OBJ_TYPE_PREMADE_TOWNIE = 0x400;
+/** SSCelebGeneric.iff (RefillCelebs) and MMClownieGeneric.iff (RefillMagicSims). */
+const OBJ_TYPE_CELEB = 0x800;
+const OBJ_TYPE_CLOWNIE = 0x1000;
 /** UIText STR# 211: townie family name, then the two dialog title / text pairs. */
 const STR_TOWNIES = 211;
 /** Live.iff STR# 150 / 151: male / female first names. */
@@ -136,7 +140,7 @@ function random(n: number): number {
 
 let templatesPromise: Promise<Template[]> | null = null;
 
-/** The TemplateNPCs objects of type 0x200 / 0x400, in folder (file name) order. */
+/** The TemplateNPCs objects of type 0x200 / 0x400 / 0x800 / 0x1000, in folder (file name) order. */
 function townieTemplates(): Promise<Template[]> {
   templatesPromise ??= (async () => {
     const files = (await fetchManifest()).files
@@ -152,7 +156,7 @@ function townieTemplates(): Promise<Template[]> {
       if (!objd) continue;
       const v = new DataView(objd.data.buffer, objd.data.byteOffset, objd.data.byteLength);
       const type = v.getInt16(0x12, true);
-      if (type !== OBJ_TYPE_GENERIC_TOWNIE && type !== OBJ_TYPE_PREMADE_TOWNIE) continue;
+      if (type !== OBJ_TYPE_GENERIC_TOWNIE && type !== OBJ_TYPE_PREMADE_TOWNIE && type !== OBJ_TYPE_CELEB && type !== OBJ_TYPE_CLOWNIE) continue;
       out.push({ guid: v.getUint32(0x1c, true), type, chunks });
     }
     return out;
@@ -478,4 +482,328 @@ async function addNewTourist(
   p.firstName = takeString(names);
   await session.endDesignAPerson(p, true, true);
   return c.guid;
+}
+
+// --- Superstar celebrities and fans, Makin' Magic residents ----------------------------
+
+/**
+ * Neighborhood::DoFirstTimeCelebs / RefillCelebs / AddNewCeleb (Mac 100a09c0 /
+ * 100a0b30 / 100a05e0), DoFirstTimeFans / RefillFans / AddNewFan (1009f3a0 /
+ * 1009f510 / 100a02c0), DoFirstTimeMagicSims / RefillMagicSims /
+ * AddNewMagicSim (1009edc0 / 1009ef30 / 1009ff90) and the AddNewNPCSim they
+ * share (1009f910). cWinNeighborhoodUL::TSOnTimerMsg (and the VC screen's)
+ * runs, on its first tick: DoFirstTimeCelebs, RefillCelebs(12),
+ * DoFirstTimeFans, RefillFans(18), DoFirstTimeMagicSims, RefillMagicSims(30).
+ *
+ *  - DoFirstTime*: with the pack (cSimsApp +0x66 & 0x40 Superstar, & 0x80
+ *    Makin' Magic) and its NGBH "done" byte not 1 (+0x1a0 celebs, +0x1a2
+ *    fans, +0x1a4 magic): a family already using the pool's id moves to the
+ *    largest id + 1 (the original writes the new id one past the family
+ *    vector, its loop has no break: the port renumbers the family that has the
+ *    id, as DoFirstTimeTownies does), Refill, done = 1, needed = 0, the
+ *    families sorted (lbl_105BB988) and the neighborhood saved.
+ *  - Refill*(n): the template is the first ObjectFolder object of OBJD type
+ *    0x800 (celebs), 0x200 (fans) or 0x1000 (magic); the family 5000 / 5500 /
+ *    6000 is created when missing (name: UIText STR# 271 entry 1 / 10, STR#
+ *    272 entry 10) and appended, the dialog (kCelebPoolPic / kFanPoolPic /
+ *    kMagicPoolPic) shows STR# 271 entries 2 / 3 (celebs) or 6 / 7 (fans),
+ *    STR# 272 entries 2 / 3 (magic), total n; an existing family with fewer
+ *    than n members shows 4 / 5, 8 / 9 or 2 / 5, total n - members, else
+ *    nothing happens. Then for i = members .. n - 1: TickOnce and
+ *    AddNew*(i); a GUID is added to the family. The neighborhood is saved.
+ *  - AddNew*(i) (i in 0..n-1): the skin rand(1000) % 3 (0 lgt, 1 med, 2 drk);
+ *    i below 7 (16 for magic) is a woman (default name "Nora", Live.iff STR#
+ *    166 / 168 / 182), else a man ("Nomad", STR# 165 / 167 / 181); up to n
+ *    draws of entry rand(1000) % count + 1 until IsNameUnique (trimmed, not
+ *    empty, no member of the pool family has it). A celebrity gets a fame
+ *    level: lbl_105BB984[i] = 10, 9, 9, 8, 8, 7, 7, 6, 5, 4 for i < 10, else
+ *    (the skin draw) % 7 + 4; its star points are cFameTrack's for the level
+ *    (1000 for level 10, at most 1000).
+ *  - AddNewNPCSim(template, adult, gender, name, skin, level, points, false):
+ *    the AddNewTownie file part (User%05d.iff, AddNewNeighbor, OBJD type 2),
+ *    BeginDesignAPerson, SetAge, SetGender, SetColor, person data 0x51 / 0x52
+ *    = level and 0x50 = points; a 0x1000 template draws a clownie suit
+ *    (EditPerson::GetAvailableClownieSuits), the others a body suit, then a
+ *    head suit (RandomUint32Uniform(max(1000, 2 count)) % count),
+ *    SetupNewHDSkins, SetName, EndDesignAPerson(save). The last argument
+ *    (random personality and fashion suits) is false at every call site.
+ */
+
+interface NpcPool {
+  /** cSimsApp +0x66 pack bit's folder (ObjectFolder pack mask). */
+  packDir: string;
+  family: number;
+  templateType: number;
+  /** UIText STR# of the family name and dialog strings. */
+  str: number;
+  nameEntry: number;
+  createTitle: number;
+  createText: number;
+  refillTitle: number;
+  refillText: number;
+  image: string;
+  /** AddNew*: indexes below this are women. */
+  women: number;
+  /** Live.iff STR# of the women's / men's first names. */
+  womenNames: number;
+  menNames: number;
+  /** NGBH bytes: done / needed. */
+  flags: (n: NgbhRaw) => [boolean, boolean];
+  setFlags: (n: NgbhRaw, done: boolean, needed: boolean) => void;
+  celeb: boolean;
+}
+
+const SUPERSTAR_DIR = "sims/expansionpack6/";
+const MAGIC_DIR = "sims/expansionpack7/";
+/** lbl_105BB990 + 0x26 / + 0x1b: the first names kept when no draw is unique. */
+const DEFAULT_WOMAN_NAME = "Nora";
+const DEFAULT_MAN_NAME = "Nomad";
+/** lbl_105BB984: the fame levels of celebrities 0..9. */
+const CELEB_LEVELS = [10, 9, 9, 8, 8, 7, 7, 6, 5, 4];
+
+export const CELEB_COUNT = 0xc;
+export const FAN_COUNT = 0x12;
+export const MAGIC_SIM_COUNT = 0x1e;
+
+const CELEBS: NpcPool = {
+  packDir: SUPERSTAR_DIR,
+  family: 5000,
+  templateType: OBJ_TYPE_CELEB,
+  str: 271,
+  nameEntry: 1,
+  createTitle: 2,
+  createText: 3,
+  refillTitle: 4,
+  refillText: 5,
+  image: "kCelebPoolPic",
+  women: 7,
+  womenNames: 166,
+  menNames: 165,
+  flags: (n) => [n.b1a0[0], n.b1a0[1]],
+  setFlags: (n, d, x) => {
+    n.b1a0[0] = d;
+    n.b1a0[1] = x;
+  },
+  celeb: true,
+};
+
+const FANS: NpcPool = {
+  packDir: SUPERSTAR_DIR,
+  family: 0x157c,
+  templateType: OBJ_TYPE_GENERIC_TOWNIE,
+  str: 271,
+  nameEntry: 10,
+  createTitle: 6,
+  createText: 7,
+  refillTitle: 8,
+  refillText: 9,
+  image: "kFanPoolPic",
+  women: 7,
+  womenNames: 168,
+  menNames: 167,
+  flags: (n) => [n.b1a0[2], n.b1a0[3]],
+  setFlags: (n, d, x) => {
+    n.b1a0[2] = d;
+    n.b1a0[3] = x;
+  },
+  celeb: false,
+};
+
+const MAGIC_SIMS: NpcPool = {
+  packDir: MAGIC_DIR,
+  family: 6000,
+  templateType: OBJ_TYPE_CLOWNIE,
+  str: 272,
+  nameEntry: 10,
+  createTitle: 2,
+  createText: 3,
+  refillTitle: 2,
+  refillText: 5,
+  image: "kMagicPoolPic",
+  women: 0x10,
+  womenNames: 182,
+  menNames: 181,
+  flags: (n) => [n.b1a4[0], n.b1a4[1]],
+  setFlags: (n, d, x) => {
+    n.b1a4 = [d, x];
+  },
+  celeb: false,
+};
+
+async function packInstalled(dir: string): Promise<boolean> {
+  return (await fetchManifest()).files.some((f) => f.path.toLowerCase().startsWith(dir));
+}
+
+async function doFirstTimePool(ctx: GameContext, store: NeighborhoodStore, pool: NpcPool, n: number): Promise<void> {
+  if (!(await packInstalled(pool.packDir))) return;
+  const ngbh = store.ngbh();
+  if (pool.flags(ngbh)[0]) return;
+  const ids = store.familyIds();
+  if (ids.includes(pool.family)) store.renumberFamily(pool.family, Math.max(0, ...ids) + 1);
+  await refillPool(ctx, store, pool, n, false);
+  pool.setFlags(ngbh, true, false);
+  store.touchNgbh();
+  store.sortFamiliesByCreation();
+  await store.save();
+}
+
+async function refillPool(ctx: GameContext, store: NeighborhoodStore, pool: NpcPool, n: number, save = true): Promise<void> {
+  if (!(await packInstalled(pool.packDir))) return;
+  const template = (await townieTemplates()).find((t) => t.type === pool.templateType);
+  await ctx.strings.load("GameData/Live.iff");
+  const str = (i: number): string => ctx.strings.get("UIText", pool.str, i - 1);
+  let total: number;
+  let title: number;
+  let text: number;
+  if (!store.familyIds().includes(pool.family)) {
+    store.newFamily(pool.family, str(pool.nameEntry));
+    total = n;
+    title = pool.createTitle;
+    text = pool.createText;
+  } else {
+    const members = store.familyMemberCount(pool.family);
+    if (n <= members) return;
+    total = n - members;
+    title = pool.refillTitle;
+    text = pool.refillText;
+  }
+  const dlg = new WinProgressPictureDialog(ctx);
+  await dlg.init();
+  dlg.setImage(await ctx.res.image(pool.image).catch(() => null));
+  await dlg.setTitle(str(title));
+  dlg.addText(str(text));
+  dlg.setTotal(total);
+  await dlg.show();
+  const session = new CasSession(store, ctx.res);
+  const fame = pool.celeb ? await loadFameScoring() : null;
+  for (let i = store.familyMemberCount(pool.family); i < n; i++) {
+    await dlg.tickOnce();
+    const guid = await addNewPoolSim(ctx, store, session, pool, n, i, template, fame);
+    if (guid !== 0) store.addFamilyMember(pool.family, guid);
+  }
+  dlg.close();
+  if (save) await store.save();
+}
+
+/** AddNewCeleb / AddNewFan / AddNewMagicSim (i below n). */
+async function addNewPoolSim(
+  ctx: GameContext,
+  store: NeighborhoodStore,
+  session: CasSession,
+  pool: NpcPool,
+  n: number,
+  i: number,
+  template: Template | undefined,
+  fame: FameScoring | null,
+): Promise<number> {
+  if (i < 0 || i >= n) return 0;
+  const draw = random(1000);
+  const skin = SKINS[draw % 3]!;
+  let level = 0;
+  let points = 0;
+  if (pool.celeb) {
+    level = i < CELEB_LEVELS.length ? CELEB_LEVELS[i]! : (draw % 7) + 4;
+    // GetFameTrackData: cFameTrack::GetFamePointsFromLevel (0 below 1), 1000 at level 10.
+    if (fame) points = level < 10 ? (level < 1 ? 0 : (fame.points[level] ?? 0)) : 1000;
+    points = Math.min(points, 1000);
+  }
+  const woman = i < pool.women;
+  let name = woman ? DEFAULT_WOMAN_NAME : DEFAULT_MAN_NAME;
+  const names = ctx.strings.list("Live", woman ? pool.womenNames : pool.menNames);
+  const taken = await store.familyMemberNames(pool.family);
+  for (let k = 0; k < n && names.length > 0; k++) {
+    name = names[random(1000) % names.length] ?? "";
+    // Neighborhood::IsNameUnique
+    const t = name.trim();
+    if (t !== "" && !taken.includes(t)) break;
+  }
+  return addNewNPCSim(store, session, template, PERSON_AGE_ADULT, woman ? PERSON_GENDER_FEMALE : PERSON_GENDER_MALE, name, skin, level, points);
+}
+
+/** Neighborhood::AddNewNPCSim: the new neighbor's GUID, 0 on failure. */
+async function addNewNPCSim(
+  store: NeighborhoodStore,
+  session: CasSession,
+  template: Template | undefined,
+  age: number,
+  gender: number,
+  name: string,
+  skin: PersonColor,
+  level: number,
+  points: number,
+): Promise<number> {
+  if (!template) return 0;
+  let c: Awaited<ReturnType<NeighborhoodStore["addNewCharacterFrom"]>>;
+  try {
+    c = await store.addNewCharacterFrom(template.chunks);
+  } catch (e) {
+    console.warn("AddNewNPCSim failed", e);
+    return 0;
+  }
+  const chunks = await readCharacterFile(store.dir, c.fileName);
+  const p: CasPerson = {
+    guid: c.guid,
+    fileName: c.fileName,
+    firstName: "",
+    bio: "",
+    bodyStrings: bodyStringsOf(chunks),
+    personData: new Int16Array(store.getPersonData(c.guid)),
+    face: null,
+    edit: null,
+  };
+  const edit = await EditPerson.begin(p.bodyStrings, p.personData);
+  p.edit = edit;
+  edit.setAge(age);
+  edit.setGender(gender);
+  edit.setColor(skin);
+  p.personData[0x51] = level;
+  p.personData[0x52] = level;
+  p.personData[0x50] = points;
+  const pick = (count: number): number => (count > 0 ? random(count > 999 ? count * 2 : 1000) % count : 0);
+  if (template.type === OBJ_TYPE_CLOWNIE) edit.setClownieSuit(pick(edit.countAvailableClownieSuits()));
+  else edit.setBodySuit(pick(edit.countAvailableBodySuits()));
+  edit.setHeadSuit(pick(edit.countAvailableHeadSuits()));
+  edit.setupNewHDSkins();
+  p.firstName = name;
+  await session.endDesignAPerson(p, true, true);
+  return c.guid;
+}
+
+/** Neighborhood::DoFirstTimeCelebs */
+export function doFirstTimeCelebs(ctx: GameContext, store: NeighborhoodStore): Promise<void> {
+  return doFirstTimePool(ctx, store, CELEBS, CELEB_COUNT);
+}
+/** Neighborhood::RefillCelebs(n) */
+export function refillCelebs(ctx: GameContext, store: NeighborhoodStore, n: number): Promise<void> {
+  return refillPool(ctx, store, CELEBS, n);
+}
+/** Neighborhood::DoFirstTimeFans */
+export function doFirstTimeFans(ctx: GameContext, store: NeighborhoodStore): Promise<void> {
+  return doFirstTimePool(ctx, store, FANS, FAN_COUNT);
+}
+/** Neighborhood::RefillFans(n) */
+export function refillFans(ctx: GameContext, store: NeighborhoodStore, n: number): Promise<void> {
+  return refillPool(ctx, store, FANS, n);
+}
+/** Neighborhood::DoFirstTimeMagicSims */
+export function doFirstTimeMagicSims(ctx: GameContext, store: NeighborhoodStore): Promise<void> {
+  return doFirstTimePool(ctx, store, MAGIC_SIMS, MAGIC_SIM_COUNT);
+}
+/** Neighborhood::RefillMagicSims(n) */
+export function refillMagicSims(ctx: GameContext, store: NeighborhoodStore, n: number): Promise<void> {
+  return refillPool(ctx, store, MAGIC_SIMS, n);
+}
+
+/**
+ * The pool part of cWinNeighborhoodUL::TSOnTimerMsg's first tick (after the
+ * Unleashed import): DoFirstTimeCelebs, RefillCelebs(12), DoFirstTimeFans,
+ * RefillFans(18), DoFirstTimeMagicSims, RefillMagicSims(30).
+ */
+export async function refillNpcPools(ctx: GameContext, store: NeighborhoodStore): Promise<void> {
+  await doFirstTimeCelebs(ctx, store);
+  await refillCelebs(ctx, store, CELEB_COUNT);
+  await doFirstTimeFans(ctx, store);
+  await refillFans(ctx, store, FAN_COUNT);
+  await doFirstTimeMagicSims(ctx, store);
+  await refillMagicSims(ctx, store, MAGIC_SIM_COUNT);
 }

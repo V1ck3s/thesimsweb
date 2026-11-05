@@ -84,14 +84,23 @@ Gaps:
   runs on that person — `EditPerson.begin` does the same.
 - clownie suits are ported (Get/Count/SetClownieSuit, GetCachedClownieList:
   tree "B20" + f/u or m/u + "a", the "B200" tree excluded, list kept across
-  gender / age / color like +0x94); only Neighborhood::RefillFans uses them.
+  gender / age / color like +0x94). Their only caller is Neighborhood::AddNewNPCSim
+  for a template of OBJD type 0x1000 (TemplateNPCs/MMClownieGeneric.iff), i.e.
+  RefillMagicSims (family 6000, Makin' Magic); RefillFans uses the generic 0x200
+  template and body suits. Both are ported in `nbhd/townies.ts` (2026-11-05).
   Pets go through UpdateSuits' pet branch, which ends with ResetInstanceSuits.
 - the instance side: `EditPerson.onResetInstanceSuits` is called where the game
   calls ResetInstanceSuits (empty lists, end of ForceUpdateSuits, end of the
   pet UpdateSuits); Create a Sim re-applies the body strings to its preview
   animator. The age button re-creates the preview like PersonFinder::SetAge
   (kill + CreateInstance); the "design-a-person" tree it then runs is
-  approximated by the idle the preview already plays.
+  approximated by the idle the preview already plays. That tree (PersonGlobals
+  BHAV 8308, run on the instance by BeginDesignAPerson and SetAge through
+  Behavior::GetTreeID(lbl_105BC1FC + 0x57); without it the sim flag is cleared)
+  sets person data 29 (motives static) to 1, then loops SEMI 0x16B ? "do idle"
+  (8301) : "do new adult idle" (8330), i.e. the random idle animations of a lot.
+  Running it needs the instance in a simulator (the CAS room lot), which the
+  port's preview does not have; left as is.
 
 ## Portraits
 

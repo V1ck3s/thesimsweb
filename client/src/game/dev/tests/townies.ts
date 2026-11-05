@@ -4,6 +4,7 @@
  *
  *   game.html?test=townies                 DoFirstTimeTownies on UserData3
  *   game.html?test=townies&refill=40       RefillTownies(40) instead
+ *   game.html?test=townies&pools=1         the celebrity / fan / Makin' Magic pools (refillNpcPools)
  *   &dir=UserData2                         another neighborhood
  *
  * Writes through the save overlay (server/data/overlay).
@@ -11,7 +12,7 @@
 
 import type { GameContext } from "../../context.js";
 import { NeighborhoodStore } from "../../data/nbhdstore.js";
-import { doFirstTimeTownies, refillTownies, TOWNIE_FAMILY_ID } from "../../nbhd/townies.js";
+import { doFirstTimeTownies, refillNpcPools, refillTownies, TOWNIE_FAMILY_ID } from "../../nbhd/townies.js";
 import { DefaultTTWindow } from "../../ui/ttwindow.js";
 import type { WinMgr } from "../../ui/winmgr.js";
 
@@ -26,6 +27,13 @@ export async function mount(ctx: GameContext, mgr: WinMgr): Promise<void> {
   const store = await NeighborhoodStore.open(dir);
   log.push(`ngbh v${store.ngbh().version} townies ${store.ngbh().townies.join(",")}`);
   const t0 = performance.now();
+  if (params.get("pools")) {
+    await refillNpcPools(ctx, store);
+    for (const id of [5000, 0x157c, 6000]) log.push(`family ${id}: ${store.familyMemberCount(id)} members ${(await store.familyMemberNames(id)).join(",")}`);
+    log.push(`ngbh b1a0 ${store.ngbh().b1a0.join(",")} b1a4 ${store.ngbh().b1a4.join(",")}`);
+    state.done = true;
+    return;
+  }
   if (refill) await refillTownies(ctx, store, refill);
   else await doFirstTimeTownies(ctx, store);
   log.push(`done in ${Math.round(performance.now() - t0)} ms`);

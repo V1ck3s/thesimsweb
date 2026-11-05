@@ -19,7 +19,7 @@
 
 import { assetFetch, fetchManifest } from "../../engine/assets.js";
 import { LANG_FRENCH } from "../res/uires.js";
-import { createCharacterFile, createCharacterFileFrom, deleteCharacterFile, GUID_TEMPLATE_PERSON } from "./character.js";
+import { createCharacterFile, createCharacterFileFrom, deleteCharacterFile, GUID_TEMPLATE_PERSON, readCharacterFirstName } from "./character.js";
 import { serializeFamilyHistory } from "./familyhistory.js";
 import { deleteGameFile, writeGameFile } from "./files.js";
 import { buildIff, decodeStrSet, parseIff, stringSetBaseResave, stringSetMultiSave, stringSetMultiSaveLocal, type IffChunk } from "./iff.js";
@@ -1073,7 +1073,9 @@ export class NeighborhoodStore {
     const ids = Array.from(expi.i16s(8));
     const fami = get("FAMI", fileFamilyId);
     if (!fami) return null;
-    const loaded = parseFamily(fami.data, fileFamilyId, "");
+    // Family::LoadFamily: the name is FAMs <id> (entry 1 in the current language); CTSS 1000 overrides it.
+    const fams = get("FAMs", fileFamilyId);
+    const loaded = parseFamily(fami.data, fileFamilyId, fams ? pickString(fams.data, 0) : "");
     const names = get("CTSS", 1000);
     const famName = names ? pickString(names.data, 0) : "";
     const nbrsChunk = get("NBRS", 1);
@@ -1233,6 +1235,18 @@ export class NeighborhoodStore {
       spells: [0, 0, 0, 0, 0, 0],
       dirty: true,
     });
+  }
+
+  /** PersonFinder::GetName of every member of a family, in member order (Neighborhood::IsNameUnique). */
+  async familyMemberNames(familyId: number): Promise<string[]> {
+    const f = this.familyRaw(familyId);
+    if (!f) return [];
+    const out: string[] = [];
+    for (const g of f.memberGuids) {
+      const n = this.neighborByGuid(g);
+      out.push(n ? await readCharacterFirstName(this.dir, characterFileName(n.name)) : "");
+    }
+    return out;
   }
 
   /** Family::AddMember: the GUID joins the member list (the neighbor itself is not touched). */

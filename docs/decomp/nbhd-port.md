@@ -49,6 +49,32 @@ ratio, bar (20, h−35, w−20, h−15) color 0x32 and done part color 0x98 (rea
 - The family sort after DoFirstTimeTownies / DoFirstTimeTouristFamilies
   (comparator lbl_105BB988).
 
+### Celebrities, fans, Makin' Magic residents (2026-11-05, `nbhd/townies.ts`)
+
+Neighborhood::DoFirstTimeCelebs / RefillCelebs / AddNewCeleb, DoFirstTimeFans /
+RefillFans / AddNewFan, DoFirstTimeMagicSims / RefillMagicSims / AddNewMagicSim
+and the AddNewNPCSim they share are ported (`refillNpcPools` runs them in
+cWinNeighborhoodUL::TSOnTimerMsg's order: celebs 12, fans 18, magic 30). Families
+5000 (UIText STR# 271 entry 1), 5500 (entry 10) and 6000 (STR# 272 entry 10);
+templates of OBJD type 0x800 (SSCelebGeneric), 0x200 (HDT_Generic) and 0x1000
+(MMClownieGeneric, the only user of the clownie suits); the dialogs
+kCelebPoolPic / kFanPoolPic / kMagicPoolPic with STR# 271 entries 2/3, 4/5, 6/7,
+8/9 and STR# 272 entries 2 with 3/5; NGBH bytes +0x1a0/+0x1a1, +0x1a2/+0x1a3,
++0x1a4/+0x1a5. AddNew*(i): skin rand(1000) % 3, women below 7 (16 for magic)
+with Live.iff STR# 166 / 168 / 182 ("Nora" kept when no draw is unique), men
+STR# 165 / 167 / 181 ("Nomad"), up to n draws against Neighborhood::IsNameUnique
+(the pool family's members' names, `NeighborhoodStore.familyMemberNames`). A
+celebrity's fame level is lbl_105BB984 = 10, 9, 9, 8, 8, 7, 7, 6, 5, 4 for the
+first ten, else (draw % 7) + 4; its star points are cFameTrack's for the level
+(1000 at level 10, capped at 1000): person data 0x51 / 0x52 = level, 0x50 =
+points. AddNewNPCSim's last argument (random personality, fashion suits) is false
+at every call site. Deviation: DoFirstTime*'s renumbering of a family already
+using the pool id writes one past the family vector in the original (its loop
+has no break); the port renumbers that family as DoFirstTimeTownies does.
+**Hook needed** (not in this agent's files): `cWinNeighborhoodUL` should call
+`refillNpcPools(ctx, store)` on its first TSOnTimerMsg tick (after the Unleashed
+import, not ported either). Test page: `game.html?test=townies&pools=1&dir=UserDataN`.
+
 ### Premade townie personality
 
 The game copies nothing from the template in code: AddNewTownie only runs
@@ -404,3 +430,12 @@ Files: `client/src/game/screens/frozen.ts` (new), `world/moveout.ts` (new), `mai
   URLs keep working. The old prototype page moved to `client/legacy.html` (`src/main.ts`, unchanged).
 - The Fastify server does not serve the client (only /api and /assets): nothing to change there.
 
+
+### Imported family name (2026-11-05, `data/nbhdstore.ts` importFamily)
+
+Neighborhood::ImportFamily loads the family with Family::LoadFamily, which names it from the
+file's FAMs <family id> (entry 1, current language; FAMI version > 4), then CTSS 1000 overrides the
+name when the file has one. The port only read CTSS 1000, so Tutorial.FAM (FAMs 1 = "Newbie" /
+"Nouvot", no CTSS 1000) came in with an empty name, and its album photos were named
+`_<family number>_NNNN` (Scrapbook's `<name>_<number>`). Fixed: FAMs first, CTSS 1000 over it.
+Members' first names come from CTSS <id> + 2000 else CTSS <id> (47 "Paulette", 48 "Jojo" in French).

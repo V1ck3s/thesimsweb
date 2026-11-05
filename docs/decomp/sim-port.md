@@ -762,3 +762,51 @@ Checked by running the original Path next to the new one on every search of a 3-
 searches, 0 differences in points, goal, steps) and BuildRoomPartition old / new for every room
 (0 differences); FindPath's share of the profile went from 3.1 % to 0.7 %, Path::run's worst
 case from 11.4 to 5.5 ms.
+
+## Simulation checks (2026-11-05)
+
+Throwaway copy `?nbhd=UserData32` (House01), soaks of 2..3 sim days at speed 3 with per-tick motive
+jump and per-object writer probes.
+- **Unported values**: none hit on House01 in 7 sim days (`SimModule.unported` stayed empty, 0 tree
+  errors): the earlier `scope 23 room[temp0]` etc. are ported.
+- **Motive collapse**: Motives::Sim (Mac 10095c20) compared line by line with `motivesSim`
+  (variants by person data 0x41 bits 1 / 2, energy asleep / awake with the wake hours, the
+  hunger-to-bladder transfer, comfort / social by person data 3 / 6, fun, hygiene and bladder asleep
+  / awake, clamping and the copy into 16..31): same. The sudden hygiene -100 drops are "failure
+  bladder" (PersonGlobals 8199, from "check motive failure" in the person main loop), mostly during
+  sleep: the beds' "tweak sleep finished" (Beds.iff 4117) only shows a balloon below bladder -85, it
+  does not wake the sleeper (data). Social / fun at -100 come from the autonomy choices, already
+  checked (MotiveEffects::GetInteractionScore).
+- **Error 62 in "do new adult idle"** (8330): the Breakpoint primitive throws 0x3e in the original
+  too (TryElement case 15, asm 100E7BEC: InterpValue != 0 -> throw 0x3e). Node 29 (the one seen
+  downtown) is reached when the person holds something (slot 0 != 0) as it starts idling; node 30
+  when object attribute 5 is outside 4..12 (the tree itself only writes 4..8). Not reproduced; most
+  likely an interrupted carry on a community lot.
+- **Child in outfit 0x12**: Change Suit with index 0x12 is only in Global 482 "Dress High Fashion"
+  (dresser entry, TTAB flag 0x10: not for children) and the clothing booths' "Change Suit" (4101) for
+  clothing type 6, reached through "CT - Try On" (4117) from Superstar's "Clothing Rack - Fame"
+  (rack type 5, high fashion) whose "Try On" entry has flags 0x21: children may use it. That is the
+  trigger, faithful.
+- **Chase Tail**: DogGlobals 8320 ends after local 2 + local 3 (2..5 each) animation loops whatever
+  the motives; only an animation that never ends could keep a pet in it. Dogs ran it on House01
+  without sticking; not reproduced.
+- **Undoing a wall deletion** (`world/tools/wallundo.ts`, not changed here): the original's
+  ObjectUndoable(3)::UndoSelf calls ObjectState::CreateObject (MakeNewOutOfWorldObject: a new
+  object whose Init runs); the port places the same XObject back and the lot view's onEnterWorld
+  re-adds a SimObject that restarts at Main without Init.
+- **Pie menu of a deleted object**: ObjectModule::OnKill / OnExitWorld call
+  cDDDSimsView::CancelPieMenu (both people pies EndPopup(-1)) when the object is the pie's active
+  stack object (cObjPickerTool::GetActiveStackObject) or, for a person, the popup head person. Not
+  in the port (the hook belongs in `world/winlotview.ts`).
+- **Fridge without a counter**: House01 with its counters, sinks, tables and coffee maker killed
+  (1 sim day): "Serve Meal" went grab food -> prepare core / loop -> surface function -> eat
+  standing up, "Have A Meal" grab food -> eat standing up; nobody starved. The data allows it: the
+  food's "prepare food" (Food.iff 4198) marks the food prepared when Find Best Object for Function
+  finds no surface. The earlier starving observation is not reproduced.
+- **Pizza delivery**: phone "Services.../Pizza" -> "C'est $40 en tout..." dialog, NPC Pizza Dude
+  through the pedestrian portal 15 min later, left at 12:08 unpaid (funds unchanged; nobody went
+  to pay in that run). Balloons not checked.
+- **0x44e at load**: House05 and House07 of a UserData copy load and run half a day with 0 tree
+  errors and no unported value (the tree version check of PostLoad covers them).
+- **$10 meals downtown**: each "Have A Meal" is its own Transfer Funds of the fridge's food cost
+  (Fridges.iff 4098 / 4105, community lot); repeated meals are repeated autonomous choices. Data.

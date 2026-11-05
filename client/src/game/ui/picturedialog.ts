@@ -6,7 +6,9 @@
  *
  * From the decompiled class:
  *  - constructor: the cWinTextWrap (+0xe0) is created right away; the target
- *    width / height ratio (+0x138) is lbl_105BC4F8 = 2.0;
+ *    width / height ratio (+0x138, `targetRatio`) is lbl_105BC4F8 = 2.0
+ *    (ObjectDialog::SetupDialog sets lbl_105BB9B4 = 1.2 for an operand with
+ *    byte 5 bit 7);
  *  - Init: the frame is cTSWinCtrlMgr system bitmap 5 (popup tiles, 3x3 cells,
  *    GetClientTopLeft = one cell), cursor 0, kPictureDialogStub loaded (+0x110,
  *    drawn under a 45 x 45 picture);
@@ -435,7 +437,10 @@ export class WinPictureDialog extends TSWinDlg {
     return this.getW() / this.getH();
   }
 
-  /** cWinPictureDialog::DoLayout: the text width whose box ratio is closest to 2. */
+  /** +0x138: the width / height ratio DoLayout aims at (ObjectDialog::SetupDialog sets 1.2 for operand flag +0x3e). */
+  targetRatio = TARGET_RATIO;
+
+  /** cWinPictureDialog::DoLayout: the text width whose box ratio is closest to +0x138 (param_1[0x4e]). */
   private doLayout(): void {
     const c = this.cell();
     const { left, top } = this.area;
@@ -452,15 +457,15 @@ export class WinPictureDialog extends TSWinDlg {
     let lowW = text.getW();
     let highW = lowW;
     let high = low;
-    if (Math.abs(low - TARGET_RATIO) > RATIO_TOLERANCE) {
+    if (Math.abs(low - this.targetRatio) > RATIO_TOLERANCE) {
       // Widen until the box is at least as wide as the target...
-      while ((high = this.tryLayout()) < TARGET_RATIO) {
+      while ((high = this.tryLayout()) < this.targetRatio) {
         this.setTextWidth(text.getW() * 2);
         highW = text.getW();
       }
       // ...narrow from the start until it is at most as wide...
       this.setTextWidth(lowW);
-      for (let i = 1; i < 10 && (low = this.tryLayout()) > TARGET_RATIO; i++) {
+      for (let i = 1; i < 10 && (low = this.tryLayout()) > this.targetRatio; i++) {
         this.setTextWidth(Math.trunc(text.getW() / 2));
         lowW = text.getW();
       }
@@ -468,7 +473,7 @@ export class WinPictureDialog extends TSWinDlg {
       for (let i = 1; i < 10 && Math.abs(highW - lowW) > 0x14; i++) {
         this.setTextWidth(Math.trunc((highW + lowW) / 2));
         const r = this.tryLayout();
-        if (r >= TARGET_RATIO) {
+        if (r >= this.targetRatio) {
           highW = text.getW();
           high = r;
         } else {
@@ -477,7 +482,7 @@ export class WinPictureDialog extends TSWinDlg {
         }
       }
     }
-    const best = Math.abs(high - TARGET_RATIO) <= Math.abs(low - TARGET_RATIO) ? highW : lowW;
+    const best = Math.abs(high - this.targetRatio) <= Math.abs(low - this.targetRatio) ? highW : lowW;
     if (best !== text.getW()) this.setTextWidth(best);
     this.tryLayout();
 

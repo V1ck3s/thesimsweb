@@ -11,9 +11,13 @@
  * when there is only one button. A dialog without a button is modeless:
  * DoSimsModalDialog adds it to the lot view and returns.
  *
+ * Operand byte 5 bit 7 (+0x3e): the dialog aims at a width / height ratio of
+ * 1.2 (cWinPictureDialog +0x138 = lbl_105BB9B4) instead of 2.
+ *
  * The tutorial object's dialogs (+0x3c): the minimize box as close box, no
  * timeout, placed in a corner of the tutorial icon's last target area (its
- * own area without one), hidden while the icon flies to them
+ * own area without one), the focus to the icon when it accepts it
+ * (TSSetFocus, else TSGetFocus), hidden while the icon flies to them
  * (StartOpenAnimation); a button press shows the icon again, flying home
  * from the dialog (BtnPressed: StartCloseAnimation), and the abort of a
  * modeless one keeps its area as the last target (Abort). The tutorial
@@ -30,6 +34,7 @@ import { loadPicture, WinPhoneBook } from "../ui/phonebook.js";
 import { PD_CORNER_OF_RECT, WinPictureDialog } from "../ui/picturedialog.js";
 import { rgb } from "../ui/syscolors.js";
 import type { Rect, TSWin } from "../ui/tswin.js";
+import { winMgr } from "../ui/winmgr.js";
 import { ObjectIcon } from "../cpanel/buy/objecticon.js";
 import { personBitmap, personSelector } from "../cas/personpictures.js";
 import type { ObjSelector } from "./objselector.js";
@@ -40,6 +45,8 @@ import { WinClothingChoiceDlg, WinPetSelectDlg, WinTransformMeDlg, type PickedPe
 import { CWinMagicBook } from "../ui/magicbook.js";
 import { getTutorialIcon } from "../ui/tutorialicon.js";
 
+/** lbl_105BB9B4: the dialog box ratio of an operand with byte 5 bit 7 (ObjectDialog +0x3e). */
+const DIALOG_RATIO_3E = 1.2;
 /** PersonFinder's picture cell (45 x 45). */
 const PERSON_CELL = 0x2d;
 /** ObjectDialog::SetParams' object picture: the buffer and the drawn / shown square. */
@@ -163,11 +170,15 @@ async function show(ctx: GameContext, sim: Simulator, d: ObjectDialog, view: TSW
     w.setKey(last, 0x1b);
     if (single) w.setKey(2, 0x20);
     if (d.noTitle) w.setTransparent(true, 200);
+    // +0x3e (operand byte 5 bit 7): cWinPictureDialog +0x138 = lbl_105BB9B4 (1.2), a narrower box.
+    if (d.flag3e) w.targetRatio = DIALOG_RATIO_3E;
     const icon = d.tutorial ? getTutorialIcon() : null;
     if (icon) {
       w.setPositioning(PD_CORNER_OF_RECT, icon.getLastTargetArea() ?? { ...icon.area });
       w.hideWindow();
       icon.showWindow();
+      // TSSetFocus(icon) when it accepts the focus (no 0x2000 flag), else TSGetFocus (no change).
+      winMgr.offerFocus(icon);
       w.onBeginModal = () => icon.startOpenAnimation(w);
     }
     d.close = () => {

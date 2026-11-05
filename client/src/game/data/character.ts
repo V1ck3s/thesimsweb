@@ -111,6 +111,18 @@ export async function readCharacterFile(dir: string, fileName: string): Promise<
   return parseIffMapOrder(new Uint8Array(await res.arrayBuffer()));
 }
 
+/** PersonFinder::GetName from the file: CTSS <OBJD+0x52> entry 1 in the current language, else US English; "" without one. */
+export async function readCharacterFirstName(dir: string, fileName: string): Promise<string> {
+  const chunks = await readCharacterFile(dir, fileName).catch(() => null);
+  const objd = chunks?.find((x) => x.type === "OBJD");
+  if (!chunks || !objd) return "";
+  const id = new DataView(objd.data.buffer, objd.data.byteOffset, objd.data.byteLength).getInt16(OBJD_CATALOG_STRINGS_ID, true);
+  const ctss = chunks.find((x) => x.type === "CTSS" && x.id === id);
+  if (!ctss) return "";
+  const e = decodeStrSet(ctss.data);
+  return (e.filter((x) => x.lang === CURRENT_LANG)[0] ?? e.filter((x) => x.lang === 1)[0] ?? e[0])?.value ?? "";
+}
+
 export async function deleteCharacterFile(dir: string, fileName: string): Promise<void> {
   await deleteGameFile(`${dir}/Characters/${fileName}`);
 }
