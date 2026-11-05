@@ -82,6 +82,8 @@ export class WinMotive extends TSWinBtn {
     super();
     this.caption = name;
     this.client = new WinLivePopupClient(name, desc);
+    // The client's tag (+0x18, read by Tut_CheckForEvents).
+    this.client.kind = "motives";
     this.client.target = this;
     this.resetHistory();
     // The original looks the selectors up synchronously; here they come in once the folder is open.

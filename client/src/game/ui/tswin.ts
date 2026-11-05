@@ -24,6 +24,8 @@ export const WF_NO_FOCUS = 0x2000;
 export const WF_MODAL = 0x10000;
 /** An unforced global cursor shows over the window (cTSWinMgrW95::SetCursor; cSimsApp::WindowSetup sets it on cDDDSimsView). */
 export const WF_GLOBAL_CURSOR = 0x20000;
+/** cTSWin::SetTransparent: the window is blended at its +0xa8 opacity. */
+export const WF_TRANSPARENT = 0x80000;
 
 /**
  * Called when a window leaves the tree or hides (cTSWin::child_remove_absolute,
@@ -232,12 +234,130 @@ export class TSWin {
 
   plot(ctx: CanvasRenderingContext2D, ox: number, oy: number): void {
     if (!this.isVisible()) return;
+    let opacity = 0xff;
+    if (this.getFlag(WF_TRANSPARENT)) {
+      // cTSWin::Plot of a transparent window: always blended at its opacity.
+      opacity = this.getOpacity();
+    } else if (this.fadeDir !== 0) {
+      // cTSWin::Plot of a fading window: the end of the ramp finishes it; in
+      // between the window and its children are blended over what lies under
+      // them at GetOpacity (31 / 32 and above: opaque, below 1 / 32: not drawn).
+      if (performance.now() >= this.fadeRamp.end) this.endFade();
+      if (!this.isVisible()) return;
+      opacity = this.getOpacity();
+      const level = (opacity >> 3) & 0x1f;
+      if (level === 0) return;
+      if (level === 0x1f) opacity = 0xff;
+    }
+    if (opacity === 0xff) {
+      this.plotContent(ctx, ox, oy);
+      return;
+    }
+    const w = this.getW();
+    const h = this.getH();
+    if (w <= 0 || h <= 0) return;
+    let c = this.fadeBuffer;
+    if (c?.width !== w || c.height !== h) c = this.fadeBuffer = new OffscreenCanvas(w, h);
+    const cx = c.getContext("2d")!;
+    cx.clearRect(0, 0, w, h);
+    this.plotContent(cx as unknown as CanvasRenderingContext2D, -this.area.left, -this.area.top);
+    const a = ctx.globalAlpha;
+    ctx.globalAlpha = a * (opacity / 255);
+    ctx.drawImage(c, ox + this.area.left, oy + this.area.top);
+    ctx.globalAlpha = a;
+  }
+
+  /** +0xa8: SetTransparent's opacity. */
+  private transparency = 0;
+
+  /** cTSWin::SetTransparent(on, opacity) */
+  setTransparent(on: boolean, opacity: number): void {
+    this.setFlag(WF_TRANSPARENT, on);
+    if (on) this.transparency = opacity & 0xff;
+  }
+
+  /** cTSWin::Plot's drawing: this window, its children back to front, then PostChildDraw. */
+  private plotContent(ctx: CanvasRenderingContext2D, ox: number, oy: number): void {
     const x = ox + this.area.left;
     const y = oy + this.area.top;
     const g = new Gfx(ctx, x, y);
     this.tsPaint(g);
     for (let i = this.children.length - 1; i >= 0; i--) this.children[i]!.plot(ctx, x, y);
     this.postChildDraw(g);
+  }
+
+  // --- fades (cTSWin::AsyncShowHideWin, interface effects) --------------------
+
+  /** +0xac: the running fade, 1 showing, -1 hiding, 0 none. */
+  fadeDir = 0;
+  /** +0xc5: the window keeps painting while it fades (else the original blends its last picture). */
+  fadeLive = false;
+  /** +0xb4 (RampGenerator) and +0xc0 (its end): the opacity ramp, 0..1. */
+  private fadeRamp = { from: 0, to: 0, start: 0, end: 0 };
+  private fadeBuffer: OffscreenCanvas | null = null;
+
+  /**
+   * cTSWin::AsyncShowHideWin(show, live, ms): fades the window in (shown
+   * at once) or out (hidden at the end) over `ms` (0: 333 ms, 0x14d). A
+   * fade the other way already running turns around from where it is, over
+   * the part of `ms` left to cover; one the same way, or a window already
+   * shown / hidden, is left alone. Starting a fade finishes the children's.
+   * The end of the fade (cTSWin::Plot or FinishAsync) hides a hidden window
+   * and tells the parent (message 0x1b, not ported).
+   */
+  asyncShowHideWin(show: boolean, live: boolean, ms = 0): void {
+    const now = performance.now();
+    if (this.fadeDir !== 0 && now >= this.fadeRamp.end) this.endFade();
+    const visible = this.isVisible();
+    const d = this.fadeDir;
+    if (!((show !== visible || (show && d < 0)) && (show || d >= 0) && (!show || d < 1))) return;
+    if (ms === 0) ms = 0x14d;
+    if (d === 0) {
+      for (const c of this.children) c.finishAsync();
+      this.fadeLive = live;
+      if (show) {
+        this.fadeDir = 1;
+        this.fadeRamp = { from: 0, to: 1, start: now, end: now + ms };
+        this.showWindow();
+      } else {
+        this.fadeDir = -1;
+        this.fadeRamp = { from: 1, to: 0, start: now, end: now + ms };
+      }
+    } else if (d < 0) {
+      const v = this.fadeValue(now);
+      this.fadeRamp = { from: v, to: 1, start: now, end: now + Math.trunc(0.5 + ms * (1 - v)) };
+      this.fadeDir = 1;
+    } else {
+      const v = this.fadeValue(now);
+      this.fadeRamp = { from: v, to: 0, start: now, end: now + Math.trunc(0.5 + ms * v) };
+      this.fadeDir = -1;
+    }
+  }
+
+  /** cTSWin::FinishAsync: the running fade ends now (a hiding window hides), then the children's. */
+  finishAsync(): void {
+    if (this.fadeDir !== 0) this.endFade();
+    for (const c of this.children) c.finishAsync();
+  }
+
+  /** cTSWin::GetOpacity: 0 hidden, SetTransparent's for a transparent window, else 255 (the ramp while fading). */
+  getOpacity(): number {
+    if (!this.isVisible()) return 0;
+    if (this.getFlag(WF_TRANSPARENT)) return this.transparency;
+    if (this.fadeDir === 0) return 0xff;
+    return Math.trunc(255 * this.fadeValue(performance.now()) + 0.5) & 0xff;
+  }
+
+  private fadeValue(now: number): number {
+    const r = this.fadeRamp;
+    if (now >= r.end || r.end <= r.start) return r.to;
+    return r.from + ((r.to - r.from) * (now - r.start)) / (r.end - r.start);
+  }
+
+  private endFade(): void {
+    const d = this.fadeDir;
+    this.fadeDir = 0;
+    if (d < 0) this.hideWindow();
   }
 
   /** Called once per frame before plotting (timers, animation). */

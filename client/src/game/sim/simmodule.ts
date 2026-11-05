@@ -18,6 +18,8 @@
 import { type FarEntryInfo, readFarManifest } from "../../engine/assets.js";
 import { ResFile } from "../world/iffres.js";
 import type { XObject } from "../world/objects.js";
+import type { HousePageStats } from "../world/housestats.js";
+import { addNewStat, FAMILY_STAT_FIELDS, getFamilyHistory } from "../data/familyhistory.js";
 import type { ObjSelector } from "../world/objselector.js";
 import { Behavior } from "./behavior.js";
 import type { Simulator } from "./simulator.js";
@@ -27,7 +29,7 @@ import { EP } from "./objfntable.js";
 import { PersonSim, SCORE_CURVE_MOTIVES, type Interaction, type MenuItem } from "./person.js";
 import { curvesFromStrings, HAPPY_CURVE_MOTIVES, type MotiveCurve } from "./motives.js";
 import { loadStringSet, loadTree } from "./behavior.js";
-import type { Neighbor, NeighborhoodData, SimInventory } from "../data/neighborhood.js";
+import type { Family, Neighbor, NeighborhoodData, SimInventory } from "../data/neighborhood.js";
 import { getLiveNeighborhood, PERSISTENT_DATA_FIELDS, setLiveNeighborhood } from "../data/nbhdstore.js";
 import type { SimCareer } from "./careers.js";
 import type { FameScoring } from "./fametrack.js";
@@ -329,6 +331,109 @@ export class SimModule {
     if (this.autofollowDirty.some((q) => q && q.id === p.id)) return;
     this.autofollowDirty.push(p);
     this.plumbBobsDirty = true;
+  }
+
+  /** cXPerson::Place (vtable +0x60): after cXObject::Place, a person updates its current room. */
+  placed(obj: XObject): void {
+    for (const p of this.persons) if (p.obj === obj) p.updateCurrentRoom();
+  }
+
+  /** ObjectModule::DayChanged: cXObject::DayPassed on every object, in module order. */
+  dayChanged(): void {
+    for (const o of this.list) this.dayPassed(o);
+  }
+
+  /**
+   * cXObject::DayPassed: the age from the birth date (object data 45..47,
+   * +0xa4..+0xa8) against the simulator's date: years into object data 18
+   * (+0x6e), months into 48 (+0xaa); then the depreciation of the OBJD (the
+   * master selector's for the lead of a multi-tile object, none for its other
+   * parts) unless it is self depreciating (+0x4a): the current value (object
+   * data 41) loses the initial depreciation (+0x46) while it is the price
+   * (+0x24), else the daily one (+0x48), down to the limit (+0x4c).
+   */
+  private dayPassed(o: SimObject): void {
+    const d = o.obj.objectData;
+    const g = this.sim.globals;
+    let years = (g[8]! - d[45]!) << 16 >> 16;
+    let months = (g[7]! - d[46]!) << 16 >> 16;
+    if (((g[1]! - d[47]!) << 16 >> 16) < 0) months = (months - 1) << 16 >> 16;
+    if (months < 0) {
+      months += 12;
+      years = (years - 1) << 16 >> 16;
+    }
+    d[18] = years;
+    d[48] = months + years * 12;
+    let objd = o.obj.selector.objd;
+    if (objd.masterId !== 0) {
+      if (o.obj.mtLeadId !== 0 && o.obj.mtLeadId !== o.id) return;
+      objd = o.obj.selector.getMasterSelector().objd;
+    }
+    if (objd.i16(0x4a) !== 0) return;
+    const v = d[41]!;
+    const step = v !== objd.i16(0x24) || objd.i16(0x46) === 0 ? objd.i16(0x48) : objd.i16(0x46);
+    const next = (v - step) << 16 >> 16;
+    d[41] = next < objd.i16(0x4c) ? objd.i16(0x4c) : next;
+  }
+
+  /**
+   * Neighborhood::AddFamilyHistoryStat (at midnight, before PostSim): for the
+   * family of the house (global 9, Family +0x10c not 0), a FamilyStat into
+   * its history (Family::GetHistory, FamilyHistory::AddNewStat). `house` is
+   * House::GetHouseStats; the values are those the simulator holds now.
+   */
+  addFamilyHistoryStat(house: HousePageStats): void {
+    const fn = this.sim.globals[9]!;
+    const fam = fn === 0 ? undefined : this.nbhd?.families.find((f) => f.chunkId === fn);
+    if (!fam) return;
+    const s = new Int32Array(FAMILY_STAT_FIELDS);
+    s[0] = fam.houseNumber << 16 >> 16;
+    // Members with an instance on the lot: count, then by (child ? 2 : 0) | person data 0x41 bit 0,
+    // and the grown-ups whose person data 0x38 is set.
+    for (const guid of fam.memberGuids) {
+      const p = this.persons.find((x) => (x.obj.selector.guid | 0) === (guid | 0));
+      if (!p) continue;
+      s[1]!++;
+      const child = p.pd[0x3a]! < 0x12 ? 2 : 0;
+      const kind = (p.pd[0x41]! & 1) | child;
+      s[2 + kind]!++;
+      if (child === 0 && p.pd[0x38] !== 0) s[6]!++;
+    }
+    s[7] = house.objectCount << 16 >> 16;
+    s[8] = this.sim.objectValue;
+    s[9] = this.sim.archValue;
+    s[10] = house.squareFeet << 16 >> 16;
+    s[11] = house.lotSize;
+    s[12] = house.furnishingsScore << 16 >> 16;
+    s[13] = house.sizeScore << 16 >> 16;
+    s[14] = house.yardScore << 16 >> 16;
+    s[15] = house.upkeepScore << 16 >> 16;
+    s[16] = house.layoutScore << 16 >> 16;
+    const e = this.sim.getTodaysExpenses();
+    s[17] = e[1]!;
+    s[18] = e[4]!;
+    s[19] = e[3]!;
+    s[20] = e[5]!;
+    s[21] = e[6]!;
+    s[22] = (e[2]! + e[0]!) | 0;
+    s[23] = e[7]!;
+    s[24] = this.sim.getFunds();
+    // Relationships across the family's border: value 1 set (members toward others, others
+    // toward members), value 0 at least lbl_105BA1F4 (25) (members toward others, others toward members).
+    const members = new Set(fam.memberGuids.map((g) => g | 0));
+    const byId = new Map((this.nbhd?.neighbors ?? []).map((n) => [n.id, n]));
+    for (const n of this.nbhd?.neighbors ?? []) {
+      const inFamily = members.has(n.guid | 0);
+      for (const r of n.relationships) {
+        const other = byId.get(r.other);
+        if (!other || members.has(other.guid | 0) === inFamily) continue;
+        if ((r.values[0] ?? 0) >= 25) s[inFamily ? 27 : 28]!++;
+        if (r.values.length > 1 && r.values[1] !== 0) s[inFamily ? 25 : 26]!++;
+      }
+    }
+    s[29] = this.familyFriendCount(fam.memberGuids) << 16 >> 16;
+    for (const k of [1, 2, 3, 4, 5, 6, 25, 26, 27, 28]) s[k] = s[k]! << 16 >> 16;
+    addNewStat(getFamilyHistory(fam), s);
   }
 
   /** The people as PersonSim. */
@@ -640,6 +745,34 @@ export class SimModule {
           const off = t.nodeOffset(i);
           if ((t.primitive(off) & 0x7fff) !== 42 || (t.bytes[off + 4 + 5]! & 4) !== 0) continue;
           out.add(t.view.getUint32(off + 4, true));
+        }
+      }
+    }
+    return out;
+  }
+
+  /**
+   * The GUIDs whose catalog name cXObject::ParseUIString's $TokenNameLocal
+   * may look up (ObjectFolder::GetSelectorByGUID, synchronous in the
+   * original, whose folder has every selector open): the tokens of every
+   * SimInventory, and the literal GUIDs of the Manage Inventory (51) nodes
+   * of the loaded behaviors. The lot view opens their files before the
+   * simulation starts.
+   */
+  tokenGUIDs(): Set<number> {
+    const out = new Set<number>();
+    for (const inv of this.nbhd?.inventories ?? this.sessionInventories) for (const t of inv.tokens) if (t.guid) out.add(t.guid >>> 0);
+    const files = new Set<ResFile>();
+    for (const b of this.behaviors.values()) for (const f of [b.glob, b.priv, b.middle]) if (f) files.add(f);
+    for (const f of files) {
+      for (const c of f.list("BHAV")) {
+        const t = loadTree(f, c.id);
+        if (!t) continue;
+        for (let i = 0; i < t.count; i++) {
+          const off = t.nodeOffset(i);
+          if ((t.primitive(off) & 0x7fff) !== 51) continue;
+          const guid = t.view.getUint32(off + 4 + 4, true);
+          if (guid) out.add(guid);
         }
       }
     }
@@ -1046,6 +1179,45 @@ export class SimModule {
     this.sim.state?.removeFamilyMember(nb.guid);
     this.updateInstanceVisitorTypes();
     fam.flags &= ~8;
+    return true;
+  }
+
+  /**
+   * Neighborhood::AddToFamily(neighbor, family): fails (false) when the
+   * family already lists the neighbor. Otherwise Family::AddMember appends
+   * the GUID, UpdateInstanceVisitorTypes runs, the person's instance
+   * (cXPerson +0x606 / +0x612) and the neighbor (+0xee / +0xfa) take the
+   * family number and person data 0x43 = 0, the family is marked changed
+   * (+0x124 = 1, +0x138 bit 3 cleared) and GlobalDispatch(0xe8) refreshes
+   * the control panel, whose family list (PersonFinder, Family::
+   * GetIndexedMember) gets the new last member.
+   */
+  addToFamily(nb: Neighbor, fam: Family): boolean {
+    if (fam.memberGuids.some((g) => (g | 0) === (nb.guid | 0))) return false;
+    fam.memberGuids.push(nb.guid >>> 0);
+    this.updateInstanceVisitorTypes();
+    const inst = this.persons.find((p) => (p.obj.selector.guid | 0) === (nb.guid | 0));
+    if (inst) {
+      inst.pd[0x3d] = fam.chunkId;
+      inst.pd[0x43] = 0;
+    }
+    if (nb.personData) {
+      nb.personData[0x3d] = fam.chunkId;
+      nb.personData[0x43] = 0;
+    }
+    fam.flags &= ~8;
+    const state = this.sim.state;
+    const data = this.nbhd;
+    if (state && data) {
+      void import("../data/family.js")
+        .then(({ personFromNeighbor }) => personFromNeighbor(data, nb, fam.name))
+        .then((info) => {
+          state.addFamilyMember(info);
+          // (UpdateInstanceVisitorTypes reads the family list, which is complete only now)
+          this.updateInstanceVisitorTypes();
+        })
+        .catch((e: unknown) => console.error("[sim] AddToFamily", e));
+    }
     return true;
   }
 

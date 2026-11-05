@@ -10,6 +10,15 @@
  * except for types 3 / 4, Enter = 2, Escape = the last button, Space = 2
  * when there is only one button. A dialog without a button is modeless:
  * DoSimsModalDialog adds it to the lot view and returns.
+ *
+ * The tutorial object's dialogs (+0x3c): the minimize box as close box, no
+ * timeout, placed in a corner of the tutorial icon's last target area (its
+ * own area without one), hidden while the icon flies to them
+ * (StartOpenAnimation); a button press shows the icon again, flying home
+ * from the dialog (BtnPressed: StartCloseAnimation), and the abort of a
+ * modeless one keeps its area as the last target (Abort). The tutorial
+ * guide's (+0x3d) have no title and are see-through (SetTransparent(true,
+ * 200)).
  */
 
 import type { GameContext } from "../context.js";
@@ -18,7 +27,7 @@ import { decodeImage } from "../res/bmp.js";
 import type { DialogHooks, DialogIcon, ObjectDialog } from "../sim/objectdialog.js";
 import type { Simulator } from "../sim/simulator.js";
 import { loadPicture, WinPhoneBook } from "../ui/phonebook.js";
-import { WinPictureDialog } from "../ui/picturedialog.js";
+import { PD_CORNER_OF_RECT, WinPictureDialog } from "../ui/picturedialog.js";
 import { rgb } from "../ui/syscolors.js";
 import type { Rect, TSWin } from "../ui/tswin.js";
 import { ObjectIcon } from "../cpanel/buy/objecticon.js";
@@ -29,6 +38,7 @@ import { loadStringSet } from "../sim/behavior.js";
 import type { SimObject } from "../sim/xobject.js";
 import { WinClothingChoiceDlg, WinPetSelectDlg, WinTransformMeDlg, type PickedPerson } from "../ui/outfitdlg.js";
 import { CWinMagicBook } from "../ui/magicbook.js";
+import { getTutorialIcon } from "../ui/tutorialicon.js";
 
 /** PersonFinder's picture cell (45 x 45). */
 const PERSON_CELL = 0x2d;
@@ -129,12 +139,13 @@ async function show(ctx: GameContext, sim: Simulator, d: ObjectDialog, view: TSW
   const w = new WinPictureDialog(ctx);
   d.state = 1;
   {
-    w.setTitle(d.title);
+    if (!d.noTitle) w.setTitle(d.title);
     const pic = await iconImage(ctx, d.obj.obj.selector, d.icon);
     if (pic) w.setImage(pic.image, pic.rect);
     let last = 2;
     let single = true;
     if (d.modal) w.addButton(d.buttons[0], 2);
+    else if (d.tutorial) w.addCloseBox(2, "kSMSystemDlgMinimizeBox");
     else w.addCloseBox(2);
     if (d.type === 1 || d.type === 2) {
       w.addButton(d.buttons[1], 3);
@@ -147,14 +158,31 @@ async function show(ctx: GameContext, sim: Simulator, d: ObjectDialog, view: TSW
     }
     w.addText(d.message);
     if (d.type === 3) w.addEditBox("", 999);
-    if (d.type !== 3 && d.type !== 4) w.setTimeout(last, 40000);
+    if (d.type !== 3 && d.type !== 4 && !d.tutorial) w.setTimeout(last, 40000);
     w.setKey(2, 0x0d);
     w.setKey(last, 0x1b);
     if (single) w.setKey(2, 0x20);
-    d.close = () => w.close();
+    if (d.noTitle) w.setTransparent(true, 200);
+    const icon = d.tutorial ? getTutorialIcon() : null;
+    if (icon) {
+      w.setPositioning(PD_CORNER_OF_RECT, icon.getLastTargetArea() ?? { ...icon.area });
+      w.hideWindow();
+      icon.showWindow();
+      w.onBeginModal = () => icon.startOpenAnimation(w);
+    }
+    d.close = () => {
+      if (!d.modal && icon) icon.setLastTargetArea(w.area);
+      w.close();
+    };
     // DoSimsModalDialog(win, +0x39): a dialog with a close box is modeless (in the lot view).
     const id = !d.modal && view ? await w.runModeless(view) : await w.run();
-    if (d.state === 1) d.btnPressed(id, w.getEditedText());
+    if (d.state === 1) {
+      if (icon) {
+        icon.showWindow();
+        icon.startCloseAnimation(w);
+      }
+      d.btnPressed(id, w.getEditedText());
+    }
   }
 }
 

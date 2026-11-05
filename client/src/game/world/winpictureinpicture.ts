@@ -26,14 +26,21 @@
  *    object's level; the caption (font table entry 12, DrawTextPara 5
  *    pixels in, bottom aligned) unless the picture goes to the scrapbook;
  *    a 2-pixel black outline;
+ *  - a snapshot picture (the auto snapshots option, user event flag
+ *    0x10) is a copy of the private buffer, without the caption and before
+ *    the outline, added to the family's scrapbook (Family::GetScrapbook of
+ *    the house's family, cScrapbook::AddPhoto with CPState::
+ *    CamGetQualityValue) with the caption as its description when there is
+ *    one (cScrapbook::SetDescription); the caption is then dropped;
  *  - TSPaint rebuilds the picture each paint for a live window with the
  *    Live PIP option (TryUserEvent only opens windows with that option on);
- *  - a click scrolls the lot view to the object (ScrollToTile, smooth) and
+ *  - Fade: with interface effects (cOptionsMgr::GetBoboVision) the window
+ *    fades in and out (cTSWin::AsyncShowHideWin(show, live)), else it is
+ *    shown / hidden at once;
+ *  - a click scrolls the lot view to the object (ScrollToTile, smooth),
+ *    starts the fade out (AsyncShowHideWin, whatever the option) and
  *    closes; Escape, the timer and the close box close; Close(obj) closes
  *    the window showing obj.
- *
- * Not ported: the auto snapshot into the family's scrapbook (cScrapbook::
- * AddPhoto), GetBoboVision's animated show / hide.
  */
 
 import type { GameContext } from "../context.js";
@@ -47,6 +54,8 @@ import type { XObject } from "./objects.js";
 import { RotatableWorld } from "./world.js";
 import { stopTracking } from "./tracking.js";
 import { getStandardCursor } from "../ui/cursor.js";
+import { getOptionsMgr } from "../optionsmgr.js";
+import { currentScrapbook } from "../cpanel/camscrapbook.js";
 
 /** lbl_105BC500: the three window sizes. */
 const SIZES: ReadonlyArray<[number, number]> = [
@@ -174,14 +183,17 @@ export class WinPictureInPicture extends TSWin {
     return p.h >= 0 && p.v >= 0 && p.h < v.viewW && p.v < v.viewH;
   }
 
-  /** cWinPictureInPicture::Fade (without BoboVision). */
+  /** cWinPictureInPicture::Fade */
   private fade(show: boolean): void {
+    const bobo = getOptionsMgr().getBoboVision();
     if (!show) {
-      this.hideWindow();
+      if (bobo) this.asyncShowHideWin(false, this.live);
+      else this.hideWindow();
       return;
     }
     if (!this.live || !this.host.livePIP()) this.buildImage();
-    this.showWindow();
+    if (bobo) this.asyncShowHideWin(true, this.live);
+    else this.showWindow();
   }
 
   /** cWinPictureInPicture::HideWindow: the timer goes too. */
@@ -237,8 +249,18 @@ export class WinPictureInPicture extends TSWin {
       const bottom = h - 5;
       f.drawTextPara(g, { left: 5, top: bottom - lines * f.height, right: w - 5, bottom }, this.caption, ALIGN_LEFT, UI_FONT_COLOR);
     }
-    // cScrapbook::AddPhoto is not ported: the snapshot picture is dropped.
     if (this.snapshot) {
+      // cTSBuffer::Clone of the private buffer, into the family's album.
+      const photo = new OffscreenCanvas(w, h);
+      photo.getContext("2d")!.drawImage(this.buffer, 0, 0);
+      const caption = this.caption;
+      const ctx = this.ctx;
+      void currentScrapbook(ctx)
+        .then(async (book) => {
+          if (!book || !(await book.addPhoto(photo, ctx.state.camGetQualityValue()))) return;
+          if (caption) book.setDescription(caption);
+        })
+        .catch((e: unknown) => console.warn("pip: snapshot failed", e));
       this.caption = "";
       this.snapshot = false;
     }
@@ -271,6 +293,7 @@ export class WinPictureInPicture extends TSWin {
       stopTracking();
       v.scrollToTile(fx, fy, this.obj ? this.obj.level : v.level, true);
     }
+    this.asyncShowHideWin(false, this.live);
     this.fade(false);
     return true;
   }

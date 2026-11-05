@@ -10,7 +10,7 @@
  * around an anchor (OnMouseDownR / OnMouseMove / OnMouseUpR).
  */
 
-import { computeCameraFrame, drawCameraFrame, takeCameraSnapshot } from "../cpanel/camsnapshot.js";
+import { computeCameraFrame, drawCameraFrame, takeAsyncSnapshot, takeCameraSnapshot } from "../cpanel/camsnapshot.js";
 import { characterAfterTool, characterBeforeTool, modeKeyDown, viewKeyDown } from "../cpanel/modekeys.js";
 import { WinCPanel } from "../cpanel/cpanel.js";
 import type { GameContext } from "../context.js";
@@ -18,7 +18,7 @@ import { soundPlayer, UI_SOURCE } from "../audio/index.js";
 import { getOptionsMgr, type OptionsMgr } from "../optionsmgr.js";
 import { ArchTool, DIRTY_ARCH_SUBTOOL, DIRTY_ARCH_TOOL, DIRTY_ARCH_UNDO, DIRTY_LEVEL, DIRTY_SHOP_ITEM, Mode, type CPState, type HouseViewerHooks, type WallState } from "../cpstate.js";
 import { DefaultTTWindow } from "../ui/ttwindow.js";
-import { Gfx, TSWin, WF_GLOBAL_CURSOR } from "../ui/tswin.js";
+import { Gfx, type Rect, TSWin, WF_GLOBAL_CURSOR } from "../ui/tswin.js";
 import { Compositor } from "./compositor.js";
 import { DynamicCutaway } from "./cutaway.js";
 import { EdgeDetectScroller } from "./edgescroll.js";
@@ -79,14 +79,19 @@ import { WinBudgetDlg } from "../cpanel/budgetdlg.js";
 import { WinViewControl } from "../cpanel/viewcontrol.js";
 import { loadBuildCatalog } from "../data/buildcatalog.js";
 import { holdSimulator } from "../nbhd/transit.js";
-import { hideTutorialHighlighter, tutFlashButtonByImageID, tutFlashWindow } from "../ui/tutorialhighlight.js";
+import { hideTutorialHighlighter, tutCheckForEvents, tutFlashButtonByImageID, tutFlashWindow, type TutEventSource } from "../ui/tutorialhighlight.js";
+import { setTutorialIcon, TutorialIcon } from "../ui/tutorialicon.js";
 import { cancelTutorial, makeTutorialObject, tutorialCompleted } from "../nbhd/tutorial.js";
-import { findPersonPanelButton } from "../cpanel/people.js";
+import { findPeoplePopup, findPersonPanelButton } from "../cpanel/people.js";
 import { findRelButton } from "../cpanel/live/relationship.js";
 import { moduleOrder } from "./housesave.js";
-import { clearLayoutHistory, getHouseStats, piecewiseFromText, readLayoutHistory, STR_HOUSE_SCORE_CURVES, summarizeHouseStats, type PiecewiseFn } from "./housestats.js";
+import { clearLayoutHistory, getHouseStats, piecewiseFromText, readLayoutHistory, STR_HOUSE_SCORE_CURVES, summarizeHouseStats, type ArchPrices, type HousePageStats, type PiecewiseFn } from "./housestats.js";
 import { loadStringSet } from "../sim/behavior.js";
 
+/** ObjectModule::ShowTutorialInfo's tree (lbl_105BBA30 + 0x72). */
+const SHOW_SITUATION_INFO = "show situation info";
+/** lbl_105BA7B0 (__sinit_CPState): the smallest camera photo, the auto snapshot's minimum size. */
+const SNAPSHOT_MIN = { w: 200, h: 0x96 };
 /** NeighborhoodConstants "new family start hour" (lbl_105BA1E0, default 7). */
 const NEW_FAMILY_START_HOUR = 7;
 /** NeighborhoodConstants "architecture value multiplier" (lbl_105BA1EC, default 0.7). */
@@ -764,6 +769,7 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
         const p = this.placement;
         if (!p) return;
         p.place(obj, pos, level, container, slot, true);
+        this.sim?.module.placed(obj);
         if (this.viewer) this.viewer.dirty = true;
       },
       moveTo: (obj, pos, level) => {
@@ -1024,6 +1030,92 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
     return this.pip;
   }
 
+  /** HouseViewer +0x4d8..+0x4f0: the snapshot TakeAsyncSnapshot asked for, taken by the next UpdateWorld (tsPaint). */
+  private pendingSnapshot: { rect: Rect; description: string } | null = null;
+
+  /**
+   * cDDDSimsView::DoPictureInPicture's auto snapshot (no window): none for
+   * an object on the lot's border tiles; else the rectangle of the object's
+   * tile tops (HouseViewer::ComputePixelTopOfTile with the tile's altitude,
+   * (16 << scale) x (8 << scale) around each; the union over a multi-tile
+   * group), and a photo of 200 x 300 >> (3 - scale) (at least CPState's
+   * smallest camera size, lbl_105BA7B0 = 200 x 150) centered on it
+   * horizontally, its bottom half the rectangle's height under the
+   * rectangle's center; HouseViewer::TakeAsyncSnapshot(rect, no album, the
+   * caption).
+   */
+  private autoSnapshot(o: PlacedObject, caption: string): void {
+    const v = this.viewer;
+    if (!v) return;
+    const n = v.world.fixed.size - 1;
+    if (o.tileX < 1 || o.tileX >= n || o.tileY < 1 || o.tileY >= n) return;
+    const s = v.scale;
+    const hw = (0x10 << s) / 2;
+    const hh = (8 << s) / 2;
+    const around = (x: PlacedObject): Rect => {
+      const [tx, ty] = v.world.toView(x.tileX, x.tileY);
+      const p = v.tileToPoint(tx, ty, x.level);
+      return { left: p.h - hw, top: p.v - hh, right: p.h + hw, bottom: p.v + hh };
+    };
+    let r = around(o);
+    if (o.kind === "multiTile" || o.kind === "portal") {
+      const lead = o.mtLeadId !== 0 ? o.mtLeadId : o.objectId;
+      for (const q of this.sim?.module.objects ?? []) {
+        if (!q || (q.id !== lead && q.obj.mtLeadId !== lead)) continue;
+        const b = around(q.obj);
+        r = { left: Math.min(r.left, b.left), top: Math.min(r.top, b.top), right: Math.max(r.right, b.right), bottom: Math.max(r.bottom, b.bottom) };
+      }
+    }
+    const k = 1 << (3 - s);
+    const w = Math.max(Math.trunc(200 / k), SNAPSHOT_MIN.w);
+    const h = Math.max(Math.trunc(300 / k), SNAPSHOT_MIN.h);
+    const cx = Math.trunc((r.left + r.right) / 2);
+    const cy = Math.trunc((r.top + r.bottom) / 2);
+    const left = cx - Math.trunc(w / 2);
+    const top = cy + (r.bottom - r.top - h);
+    this.pendingSnapshot = { rect: { left, top, right: left + w, bottom: top + h }, description: caption };
+    v.dirty = true;
+  }
+
+  /** cDDDSimsView +0x119c */
+  private tutorialIcon: TutorialIcon | null = null;
+  private tutEvents: TutEventSource | null = null;
+
+  /**
+   * cDDDSimsView's init makes the tutorial icon (a child that overlaps the
+   * scroll area), cSimsApp puts its top right at (right - 1, top + 1), and
+   * GlobalDispatch(0x107) (ObjectModule::SetTutorialObject) calls
+   * cTutorialIcon::ObjectChanged; its click is ObjectModule::
+   * ShowTutorialInfo: the tutorial object's "show situation info" tree.
+   */
+  private async initTutorialIcon(sim: Simulator): Promise<void> {
+    const m = sim.module;
+    const icon = new TutorialIcon(() => {
+      const o = m.tutorialObject;
+      const tree = o?.behavior.getTreeID(SHOW_SITUATION_INFO) ?? 0;
+      if (!o || tree === 0) return;
+      try {
+        o.runOneTickTree(o.behavior, 0, tree, null);
+      } catch (e) {
+        console.warn("[tutorial] show situation info failed", e);
+      }
+    });
+    await icon.init();
+    if (this.sim !== sim) return;
+    this.childAdd(icon);
+    icon.setIconTopRight(this.getW() - 1, 1);
+    this.tutorialIcon = icon;
+    setTutorialIcon(icon);
+    m.onTutorialObjectChanged = (o) => icon.objectChanged(o ? o.obj.selector.res : null);
+    icon.objectChanged(m.tutorialObject ? m.tutorialObject.obj.selector.res : null);
+    this.tutEvents = {
+      ctx: this.ctx,
+      module: m,
+      rotation: () => this.viewer?.world.rotation ?? 0,
+      personPicture: (guid) => findPersonPanelButton(winMgr.main, guid)?.image ?? null,
+    };
+  }
+
   /** The Live mode pie menu (cWinPeople's cTSPieMenu), made on first use. */
   private pie: TSPieMenu | null = null;
 
@@ -1112,8 +1204,8 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
    * (MakeNewOutOfWorldObject) and placed at the clicked point (rotated to
    * world coordinates) or the closest good location (FindGoodLocation; the
    * tile's center when there is none), so that its menu offers Go Here.
-   * Killed when it cannot be placed. (The original's grass check for lot
-   * type 99 is not ported.)
+   * Killed when it cannot be placed, and on house 99 when the grass of its
+   * tile is below 10.
    */
   private makeGoHereHelper(x: number, y: number): SimObject | null {
     const sim = this.sim;
@@ -1145,6 +1237,13 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
     const obj = sim.module.getObject(xo.objectId);
     if (!obj) return null;
     const pos = h.findGoodLocation(xo, { fx, fy }, level, { emptyTile: true, buildable: false, random: null }) ?? { fx: (fx & ~0xf) | 8, fy: (fy & ~0xf) | 8 };
+    // House 99 (global 10): no Go Here where the grass (signed) is below 10. The
+    // world tile is handed to cRotatableWorld::GetGrass, which rotates it once more
+    // as if it were a view tile (the same as the original under a view rotation).
+    if (sim.globals[10] === 99 && v.world.getGrass((pos.fx >> 4) << 24 >> 24, (pos.fy >> 4) << 24 >> 24) < 10) {
+      sim.module.killObject(obj);
+      return null;
+    }
     if (!h.canPlace(xo, pos, level, null, -1)) {
       sim.module.killObject(obj);
       return null;
@@ -1517,6 +1616,7 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
         },
       };
       this.sim = sim;
+      void this.initTutorialIcon(sim);
       getOptionsMgr().onChange(this.onOptions);
       this.initBudgetSource(sim, lot);
       // cWinPeople::BuildGifts reads the selected sim's SimInventory and the gifts' selectors.
@@ -1554,14 +1654,21 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
             return;
           }
           // cDDDSimsView::DoPictureInPicture without a window: CenterHouseViewOnMe with the
-          // auto-centering option, else the "UI_error" sound; the auto snapshot is not ported.
+          // auto-centering option, else the "UI_error" sound and no snapshot.
+          let snapshot = a.snapshot && getOptionsMgr().getAutoSnapshots();
           if (getOptionsMgr().getAutoCentering()) this.centerOnObject(o.obj);
-          else soundPlayer.playBySource("UI_error", UI_SOURCE);
+          else {
+            snapshot = false;
+            soundPlayer.playBySource("UI_error", UI_SOURCE);
+          }
+          if (snapshot) this.autoSnapshot(o.obj, a.caption);
         },
       };
       animSoundEnv.floorSound = (pattern) => this.viewer?.floors.getFloorSound(pattern) ?? 2;
       // objects the behaviors create (the original folder has them all)
-      await Promise.all([...sim.module.createdObjectGUIDs()].map((g) => lot.folder.getSelectorByGUID(g >>> 0).catch(() => null)));
+      // and the inventory tokens ParseUIString names ($TokenNameLocal)
+      const guids = new Set([...sim.module.createdObjectGUIDs(), ...sim.module.tokenGUIDs()]);
+      await Promise.all([...guids].map((g) => lot.folder.getSelectorByGUID(g >>> 0).catch(() => null)));
       // The people's VitaBoys follow the simulation's animators.
       for (const ps of sim.module.persons) {
         this.people?.bindSim(
@@ -1585,6 +1692,20 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
    * The family flags (+0x138) and global 0x17 of those functions are not applied here.
    */
   private initBudgetSource(sim: Simulator, lot: LotObjects): void {
+    // The midnight House::GetHouseStats (family history) and House::DoCommand(0xdc) stats;
+    // the build prices ComputeArchValue reads come from the catalog, loaded once.
+    let prices: ArchPrices | null = null;
+    void loadBuildCatalog(this.ctx).then((c) => (prices = c.prices));
+    sim.houseHooks = {
+      houseStats: () => this.computeHouseStats(),
+      computeStats: () => {
+        const viewer = this.viewer;
+        const walls = this.wallManager;
+        if (!viewer || !walls || !prices) return null;
+        const objects = new Map(moduleOrder(lot.module).map((o) => [o.objectId, o]));
+        return { summary: summarizeHouseStats(objects, viewer.world.fixed, walls.gfx, viewer.floors, prices), lotSize: viewer.world.fixed.size };
+      },
+    };
     WinViewControl.holdSimulator = () => holdSimulator(sim);
     // GlobalDispatch(0x109): cSimsApp::DoCommand -> the view control (cWinCPanel::PostInit put it here).
     sim.onSuspendChange = (on) => {
@@ -1673,6 +1794,7 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
     this.buyTool?.cancel();
     this.actionIcons.clear();
     if (this.ctx.state.viewer === this) this.ctx.state.viewer = null;
+    if (this.tutorialIcon) setTutorialIcon(null);
     setTrackingDispatch(null);
     setTrackedObject(null);
     super.shutdown();
@@ -1904,11 +2026,22 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
     const rooms = this.rooms;
     if (!sim || !v || !lot || !rooms || this.ctx.state.getMode() !== Mode.Live || nowMs - this.houseStatsAt < 500) return;
     this.houseStatsAt = nowMs;
+    const stats = this.computeHouseStats();
+    if (stats) this.ctx.state.houseStats = stats;
+  }
+
+  /** House::GetHouseStats of this lot (null before the simulator, the view and the rooms exist). */
+  private computeHouseStats(): HousePageStats | null {
+    const sim = this.sim;
+    const v = this.viewer;
+    const lot = this.lotObjects;
+    const rooms = this.rooms;
+    if (!sim || !v || !lot || !rooms) return null;
     if (!this.scoreFns) {
       const curves = sim.module.res.glob ? loadStringSet(sim.module.res.glob, STR_HOUSE_SCORE_CURVES) : null;
       this.scoreFns = { size: piecewiseFromText(curves?.[0]), furnishings: piecewiseFromText(curves?.[1]) };
     }
-    this.ctx.state.houseStats = getHouseStats({
+    return getHouseStats({
       fixed: v.world.fixed,
       rooms: rooms.inUseRooms(),
       objects: new Map(moduleOrder(lot.module).map((o) => [o.objectId, o])),
@@ -1932,8 +2065,12 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
     this.updateTimeOfDay();
     // HouseViewer::PrepareWorldForUpdate: RoomManager::UpdateRooms (a changed room light dispatches 0xf1: redraw).
     if (this.lighting?.updateRooms() && this.viewer) this.viewer.dirty = true;
+    // cDDDSimsView::Draw: cTutorialIcon::Animate.
+    this.tutorialIcon?.animate();
     if (this.sim && this.viewer) {
       this.sim.syncFromState();
+      // Tut_CheckForEvents, right before cSimulator::Simulate.
+      if (this.tutEvents) tutCheckForEvents(this.tutEvents, findPeoplePopup(winMgr.main));
       this.sim.simulate(nowMs);
       // ObjectModule::SetSelectedPerson (CPState's selection), then HouseViewer's ObjectModule::UpdatePlumbBobs.
       if (this.plumbBobs) {
@@ -1981,6 +2118,10 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
     }
     if (v.dirty) {
       v.render();
+      // HouseViewer::UpdateWorld: the snapshot TakeAsyncSnapshot asked for, out of this frame.
+      const snap = this.pendingSnapshot;
+      this.pendingSnapshot = null;
+      if (snap) void takeAsyncSnapshot(this.ctx, v.comp.canvas, snap.rect, false, snap.description);
       // A frame rendered for this paint is read back once, straight to the screen.
       g.ctx.drawImage(v.comp.canvas, g.ox, g.oy);
       this.frameStale = true;

@@ -74,3 +74,13 @@ room ambient (already ported in lighting.ts).
   thumbnail (BMP_ 513) shows it roofed.
 - RotateRamp / RotateCap tables are extracted but unused (rotation is done
   on the model matrix).
+
+## Room +0x74 (2026-11-05)
+
+Room::CollectObjectStats sets Room +0x74 (cleared by Room::Clear) when an object of category 8
+(object data 59) on the room's tiles, not hidden and counted (object data 29 >= 0), is met:
+`(room id & 0x3ff) != 0`. Room::WantsRoof roofs a flat room when +0x74 is set or the room is
+not outside. RoomManager::ComputeRooms runs (GlobalDispatch 0xf0) just before GenerateRoof
+in cFixedWorld::ComputeRooms, so `roofs.ts` computes the flag from the objects at roof time
+(`roomHasCategory8`). In the shipped houses tested, category 8 is the koi pond (outside room
+0, so the flag stays 0 there).

@@ -289,6 +289,8 @@ export class WinSubpanelJob extends TSWin {
     }
     this.client.setName(this.popupTexts[0] ?? "");
     this.client.setDesc(this.popupTexts[1] ?? "");
+    // The client's tag (+0x18, read by Tut_CheckForEvents): "job" (lbl_105BC5D4 + 0x1c).
+    this.client.kind = "job";
     return super.init();
   }
 
@@ -318,6 +320,7 @@ export class WinSubpanelJob extends TSWin {
         popupClick(popup, this.client, this, this.skillBtns[skill]!, () => {
           this.client.setName(this.popupTexts[2 * skill] ?? "");
           this.client.setDesc(this.popupTexts[2 * skill + 1] ?? "");
+          this.client.kind = "skill";
           // The skills' object panes (lbl_105BC5C0 GUIDs) are all empty.
           this.client.setBitmap(0, null);
         });
@@ -342,6 +345,8 @@ export class WinSubpanelJob extends TSWin {
     const desc = (i: number): string => t(13 + 2 * i);
     const job = this.getJob(p);
     c.setBitmap(1, null);
+    // The tag: "job" for the job line, "perf" for the performance, "summary" for the others.
+    c.kind = line === 0 ? "job" : line === 2 ? "perf" : "summary";
     if (line === 0) {
       // The career's picture: one of the 22 rows of kJobPopupComposite (row 0 when jobless).
       const comp = this.jobComposite;

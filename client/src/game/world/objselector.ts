@@ -174,6 +174,8 @@ export interface SelectorFolder {
   getSubTileSelector(sel: ObjSelector, x: number, y: number, level: number): ObjSelector | null;
   /** ObjectFolder::GetSelectorByGUID for a selector already opened (ObjectFolder.selectorByGUID). */
   selectorByGUID?(guid: number): ObjSelector | null;
+  /** ObjectFolder::GetSelectorByGUID, opening the object's file when needed. */
+  getSelectorByGUID?(guid: number): Promise<ObjSelector | null>;
   /** ObjectFolder::GetTypeAttrBlock (made at `size` shorts when missing). */
   getTypeAttrBlock?(guid: number, size: number): Int16Array | null;
 }

@@ -1218,7 +1218,7 @@ export class SimObject extends TreeSim {
    * camera), 0 (Neighborhood::TutorialCompleted), 14 (global 0x1f := temp 0), 15 (person data 0x48 := temp 0),
    * 26 (the current family or the house's first person), 28 (lot zoning
    * into temp 0), 18..23 (the lot change's arrival, sim/lotcalls.ts), 24
-   * (set suit), 43 (Family::LoadSpellsForFamily), 6 (neighbor check). Others are logged and
+   * (set suit), 43 (Family::LoadSpellsForFamily), 6 (neighbor leaves the family), 4 (neighbor joins the lot's family). Others are logged and
    * return true.
    */
   protected tryGenericSimCall(elem: StackElem, call: number): number {
@@ -1242,6 +1242,20 @@ export class SimObject extends TreeSim {
           m.onQueueChanged?.(me);
         }
         return PRIM_TRUE;
+      }
+      case 4: {
+        // The stack object names a neighbor (Neighborhood::FindNeighborByID, error 0x37
+        // without one) who joins the lot's family (House +0x10, the family of global 9):
+        // false without that family; a neighbor of a family leaves it first
+        // (Neighborhood::RemoveFromFamily), false when that fails; then
+        // Neighborhood::AddToFamily, false when it fails.
+        const nb = m.findNeighborByID(elem.stackObj);
+        if (!nb) simThrow(0x37);
+        const id = m.sim.globals[9]!;
+        const fam = id !== 0 ? m.nbhd?.families.find((f) => f.chunkId === id) : undefined;
+        if (!fam) return PRIM_FALSE;
+        if ((nb.personData?.[0x3d] ?? 0) !== 0 && !m.removeFromFamily(nb)) return PRIM_FALSE;
+        return m.addToFamily(nb, fam) ? PRIM_TRUE : PRIM_FALSE;
       }
       case 6: {
         // The stack object names a neighbor (Neighborhood::FindNeighborByID, error 0x37
@@ -1639,6 +1653,13 @@ export class SimObject extends TreeSim {
         break;
     }
     if (!ok) return PRIM_FALSE;
+    // The original folder has every selector open: the new token's is opened now for
+    // a later $TokenNameLocal (the lot view opened those known at load).
+    if (action === 0 || action === 5 || action === 6) {
+      const g = action === 0 ? guid : (m.findNeighborByID(temps[0]!)?.guid ?? 0);
+      const folder = this.obj.selector.folder;
+      if (g && !folder.selectorByGUID?.(g)) void folder.getSelectorByGUID?.(g >>> 0).catch(() => null);
+    }
     m.record(this, "inventoryDirty", nb.id);
     return PRIM_TRUE;
   }

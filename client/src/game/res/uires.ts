@@ -85,8 +85,18 @@ export class UIRes {
     const id = typeof idOrName === "string" ? this.id(idOrName) : idOrName;
     const p = this.path(id);
     if (!p) return Promise.reject(new Error(`no UI bitmap for id ${id}`));
-    return this.imageByPath(p);
+    return this.imageByPath(p).then((img) => {
+      if (!this.ids.has(img)) this.ids.set(img, id);
+      return img;
+    });
   }
+
+  /** cTSBuffer +0x30: the resource id a bitmap was first loaded by (image(id)), undefined for others. */
+  idOf(img: ImageBitmap): number | undefined {
+    return this.ids.get(img);
+  }
+
+  private readonly ids = new WeakMap<ImageBitmap, number>();
 
   /** The decoded pixels of a resource id, unkeyed (a TGA's own alpha kept: the Compose2 masks). */
   async rgba(id: number): Promise<RgbaImage> {

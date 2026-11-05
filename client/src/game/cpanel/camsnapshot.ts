@@ -72,14 +72,32 @@ let shooting = false;
 
 /**
  * cDDDSimsView::TSOnMouseDownL (camera mode) -> HouseViewer::TakeAsyncSnapshot
- * -> HouseViewer::UpdateWorld: the photo inside `frame` of the rendered
- * `view`, added to the family album, then the album opens.
+ * of the camera frame inset by 1 pixel, the album opened after.
  */
 export async function takeCameraSnapshot(ctx: GameContext, view: HTMLCanvasElement | OffscreenCanvas, frame: Rect): Promise<void> {
+  const r = { left: frame.left + 1, top: frame.top + 1, right: frame.right - 1, bottom: frame.bottom - 1 };
+  await takeAsyncSnapshot(ctx, view, r, true, "");
+}
+
+/**
+ * HouseViewer::TakeAsyncSnapshot(rect, openAlbum, description) ->
+ * HouseViewer::UpdateWorld: the photo inside `rect` (view coordinates) of
+ * the rendered `view`, added to the family album with the description
+ * (cScrapbook::SetDescription, when not empty), then the album opens when
+ * asked (the view's command 0x1f). Also cDDDSimsView::DoPictureInPicture's
+ * auto snapshot (no album, the event's caption).
+ */
+export async function takeAsyncSnapshot(
+  ctx: GameContext,
+  view: HTMLCanvasElement | OffscreenCanvas,
+  rect: Rect,
+  openAlbum: boolean,
+  description: string,
+): Promise<void> {
   if (shooting) return;
   shooting = true;
   try {
-    let r = { left: frame.left + 1, top: frame.top + 1, right: frame.right - 1, bottom: frame.bottom - 1 };
+    let r = rect;
     soundPlayer.playBySource(UI.cameraPhoto, UI_SOURCE);
     const w = r.right - r.left;
     const h = r.bottom - r.top;
@@ -94,8 +112,9 @@ export async function takeCameraSnapshot(ctx: GameContext, view: HTMLCanvasEleme
     const book = await currentScrapbook(ctx);
     if (!book) return;
     await book.addPhoto(photo, ctx.state.camGetQualityValue());
+    if (description) book.setDescription(description);
     // The view's command 0x1f: the album, on the new photo.
-    await showScrapbook(ctx);
+    if (openAlbum) await showScrapbook(ctx);
   } finally {
     shooting = false;
   }

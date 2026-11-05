@@ -252,7 +252,7 @@ export class RoofLayer {
       let w = wants.get(id);
       if (w === undefined) {
         const room = rooms.getRoom(id);
-        w = room ? roomWantsRoof(fixed, room) : false;
+        w = room ? roomWantsRoof(fixed, room, objects) : false;
         wants.set(id, w);
       }
       return w;
@@ -422,30 +422,27 @@ export class RoofLayer {
 
 /**
  * Room::WantsRoof: every tile of the room is flat (its four corner
- * altitudes equal, cached in Room +0x76) and the room is not outside
- * (+0x74, the forced-roof flag, is never set).
+ * altitudes equal, cached in Room +0x76), and the room has a category 8
+ * object (+0x74) or is not outside.
  */
-function roomWantsRoof(fixed: FixedWorld, room: Room): boolean {
+function roomWantsRoof(fixed: FixedWorld, room: Room, objects: RoofObjects | null): boolean {
   const alt = fixed.alt;
   for (const t of room.tiles) {
     const o = alt.offset(t.x, t.y);
     const d = alt.data;
     if (!(d[o] === d[o + 2] && d[o] === d[o + 1] && d[o] === d[o + 3])) return false;
   }
-  return !room.isOutside();
+  return roomHasCategory8(fixed, room, objects) || !room.isOutside();
 }
 
 /** What DiscoverTilesToRoof needs from the object module: the objects by id. */
 export type RoofObjects = () => ReadonlyMap<number, PlacedObject> | null;
 
 /**
- * DiscoverTilesToRoof's ObjectIterator over a tile (the tile's object and
- * its hierarchy: slot 0 = the next object on the tile, other slots =
- * contained objects): any object whose master selector has build mode type 3.
+ * ObjectIterator over a tile: the tile's object and its hierarchy (slot 0 =
+ * the next object on the tile, other slots = contained objects).
  */
-function hasStairs(fixed: FixedWorld, objects: RoofObjects, x: number, y: number, level: number): boolean {
-  const objs = objects();
-  if (!objs) return false;
+function* tileObjects(fixed: FixedWorld, objs: ReadonlyMap<number, PlacedObject>, x: number, y: number, level: number): Generator<PlacedObject> {
   const first = fixed.objects[level - 1]!.s16(x, y);
   const stack = first > 0 ? [first] : [];
   const seen = new Set<number>();
@@ -458,9 +455,39 @@ function hasStairs(fixed: FixedWorld, objects: RoofObjects, x: number, y: number
       const c = o.objectSlots[i]!.containedId;
       if (c > 0) stack.push(c);
     }
+    yield o;
+  }
+}
+
+/** DiscoverTilesToRoof's test: an object on the tile whose master selector has build mode type 3. */
+function hasStairs(fixed: FixedWorld, objects: RoofObjects, x: number, y: number, level: number): boolean {
+  const objs = objects();
+  if (!objs) return false;
+  for (const o of tileObjects(fixed, objs, x, y, level)) {
     if (o.selector.getMasterSelector().objd.buildModeType === BUILD_TYPE_STAIRS) return true;
   }
   return false;
+}
+
+/**
+ * Room +0x74 as Room::CollectObjectStats sets it (RoomManager::ComputeRooms,
+ * through GlobalDispatch(0xf0), runs just before GenerateRoof): an object of
+ * category 8 (object data 59, +0xc0) on the room's tiles, not hidden (object
+ * data 34) and counted (object data 29 >= 0), in a room whose id has a
+ * number (id & 0x3ff not 0).
+ */
+function roomHasCategory8(fixed: FixedWorld, room: Room, objects: RoofObjects | null): boolean {
+  const objs = objects?.();
+  if (!objs) return false;
+  let flag = false;
+  for (const t of room.tiles) {
+    for (const o of tileObjects(fixed, objs, t.x, t.y, t.level)) {
+      const d = o.objectData;
+      if (o.hidden !== 0 || d[29]! < 0) continue;
+      if (d[59] === 8) flag = (room.id & 0x3ff) !== 0;
+    }
+  }
+  return flag;
 }
 
 /** cFixedWorld +0x58 / +0x5c (GetRoofLayer) and what generating them needs. */

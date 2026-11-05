@@ -116,7 +116,8 @@ export class InterestsPanel extends TSWin {
   readonly tiles: WinInterest[] = [];
   /** cWinPeople+0x150: the Live panel's popup (set by WinPeople); +0x26c its client for the tiles. */
   livePopup: WinLivePopup | null = null;
-  private readonly client = new WinLivePopupClient();
+  /** cWinPeople::BuildInterestWindow's client, tagged "int" (+0x18). */
+  private readonly client = Object.assign(new WinLivePopupClient(), { kind: "int" });
   /** cWinPeople+0x260 / +0x264: top-left of the tile grid. */
   private gridLeft = 0;
   private gridTop = 0;

@@ -78,7 +78,8 @@ export class WinPersonality extends TSWinBtn {
   /** cTSWinBtn::SetCol: the hilite column forced by the owner, -1 = from the state. */
   fixedCol = -1;
   /** +0x194: the popup client (this button is its target). */
-  readonly client = new WinLivePopupClient();
+  /** Tagged "per.ity" (+0x18, read by Tut_CheckForEvents). */
+  readonly client = Object.assign(new WinLivePopupClient(), { kind: "per.ity" });
   /** PersonFinder::GetPictureBuffer for the popup's portrait pane (set by the owner). */
   pictureOf: ((person: number) => ImageBitmap | null) | null = null;
 

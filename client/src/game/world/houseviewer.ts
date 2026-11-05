@@ -598,8 +598,12 @@ export class HouseViewer {
     return { minX, maxX, minY, maxY, low };
   }
 
+  /** lbl_105BA494: SetOffsets calls so far (Tut_CheckForEvents' scroll event). */
+  static setOffsetsCount = 0;
+
   /** HouseViewer::SetOffsets: clamp, align x to 4 pixels, move the origin. */
   setOffsets(x: number, y: number): void {
+    HouseViewer.setOffsetsCount++;
     const m = this.getOffsetsMinMax();
     const cx = (Math.min(Math.max(x, m.minX), m.maxX) + 1) & ~3;
     const cy = Math.min(Math.max(y, m.minY), m.maxY);

@@ -978,7 +978,11 @@ function roomPartition(m: SimModule, room: number): PenaltyRect[] {
   let h = 0x811c9dc5;
   for (const a of [fixed.rooms[level - 1]!, fixed.walls[level - 1]!, fixed.floors[level - 1]!]) {
     const d = a.data;
-    for (let i = 0; i < d.length; i++) h = Math.imul(h ^ d[i]!, 0x01000193);
+    // Four bytes at a time where the array allows it (the key is only compared with itself).
+    const words = (d.byteOffset & 3) === 0 ? d.length >> 2 : 0;
+    const w = new Uint32Array(d.buffer, d.byteOffset, words);
+    for (let i = 0; i < words; i++) h = Math.imul(h ^ w[i]!, 0x01000193);
+    for (let i = words << 2; i < d.length; i++) h = Math.imul(h ^ d[i]!, 0x01000193);
   }
   let cache = partitions.get(fixed);
   if (!cache) {
@@ -994,8 +998,8 @@ function roomPartition(m: SimModule, room: number): PenaltyRect[] {
 
 /**
  * ObjectModule's room update after ComputeRooms (level 0: all): every
- * object's room (object data 29) resolved from its position. (People's
- * UpdateCurrentRoom - overhead lights - is not ported.)
+ * object's room (object data 29) resolved from its position (a person's
+ * current room, +0xaac, is cXPerson::UpdateCurrentRoom's).
  */
 export function updateRoomIDs(module: SimModule, level: number): void {
   const fixed = module.sim.world;

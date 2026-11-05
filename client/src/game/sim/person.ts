@@ -360,7 +360,7 @@ export class PersonSim extends SimObject {
    * new room's go on (person data 0x41 <= 1: not for pets); the selected or
    * tracked person dispatches 0xf7 (the dynamic cutaway follows).
    */
-  private updateCurrentRoom(): void {
+  updateCurrentRoom(): void {
     const room = this.obj.objectData[OD_ROOM]! & 0xffff;
     if (room === this.currentRoom) return;
     const old = this.currentRoom;
@@ -2001,7 +2001,9 @@ export class PersonSim extends SimObject {
    * threshold <= person data 0x24, check tree passes) as
    * (interaction score - current score) / (1 + distance * attenuation),
    * keeps those >= the FCNS 2 minimum score, and picks at random among the
-   * best "random selection count" (minus logic / 2000): the stack object becomes the object and object data 20 the entry.
+   * best "random selection count" (minus logic / 2000), or the best one for a
+   * visitor or a TTAB flag 0x100 entry on a residential lot: the stack object
+   * becomes the object and object data 20 the entry.
    */
   protected tryFindBestAction(elem: StackElem): number {
     const m = this.module;
@@ -2013,7 +2015,7 @@ export class PersonSim extends SimObject {
     const autonomy = this.pd[0x24]!;
     // The objects looked at rotate with the tick (cSimulator +0x98) and the person's id:
     // 0 all of them, 1 those within 7 tiles (lbl_105BBB78 +0x1c), 2 even ids, 3 odd ids;
-    // all of them on a lot whose zoning type is not residential.
+    // all of them on a lot whose zoning type is not 0 (any lot listed in the zoning table, and lot 0).
     const lot = m.sim.globals[10]!;
     const zoning = m.getZoningType(lot);
     let filter = (m.sim.tickCount + this.id) & 3;
@@ -2059,7 +2061,10 @@ export class PersonSim extends SimObject {
     }
     if (!scored.length) return PRIM_FALSE;
     const n = Math.max(1, Math.trunc(k.randomCount - this.pd[0x12]! / 2000));
-    const pick = scored.length < n ? m.sim.random() % scored.length : m.sim.random() % n;
+    // A visitor, or a best entry whose interaction has flag 1 (TTAB entry flag 0x100,
+    // ScoredInteraction +0xc), on a residential lot takes the top score.
+    const top = (visitor || (scored[0]!.e.flags & 0x100) !== 0) && zoning === 1;
+    const pick = top ? 0 : scored.length < n ? m.sim.random() % scored.length : m.sim.random() % n;
     const best = scored[pick]!;
     if (this.pd[PDX.sitting] !== 0 && best.score < k.minSitting) return PRIM_FALSE;
     this.obj.objectData[20] = best.e.stringIndex;

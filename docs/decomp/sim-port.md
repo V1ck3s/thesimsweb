@@ -584,6 +584,31 @@ not caught in TickAllObjects (none in the original either).
   strings, the suit of list temp 0 := temp 1 (temp 1 := the previous one), EditPerson::End;
   the edited strings are kept by GUID (`SimModule.bodyStringEdits`) and the lot view dresses
   the person again (`WorldHooks.bodyStringsChanged` → `LotPeople.redress`).
+- **GenericSimCall 4** (Mac 0x100e95c8): the neighbor whose id is the stack object (error
+  0x37 without one) joins the lot's family (House +0x10: the family of global 9; false
+  without one): a neighbor of a family leaves it first (Neighborhood::RemoveFromFamily, false
+  when it fails), then Neighborhood::AddToFamily (`SimModule.addToFamily`: Family::AddMember,
+  UpdateInstanceVisitorTypes, person data 0x3d / 0x43 of the instance and the neighbor, family
+  marked changed, GlobalDispatch(0xe8): the control panel gets the new last member,
+  `CPState.addFamilyMember`); false when the family already lists them.
+- **$TokenNameLocal** (ParseUIString): ObjectFolder::GetSelectorByGUID is synchronous in the
+  original (every selector open). The lot view now opens, before the simulation starts, the
+  selectors of every SimInventory token and of the literal GUIDs of the Manage Inventory (51)
+  nodes of the loaded behaviors (`SimModule.tokenGUIDs`); a token added at run time (actions
+  0, 5, 6) has its selector opened right away.
+- **Tut_CheckForEvents** (Mac 0x1014d6c0, `ui/tutorialhighlight.ts`), each frame before
+  cSimulator::Simulate: global 12 = the resource id of the last clicked button's bitmap
+  (lbl_105BA498, `TSWinBtn.lastPressed`, `UIRes.idOf`); the tutorial object's "query wait
+  event" tree, its temps 0 / 1 (event, data), the 16-case table (control panel shown; live
+  popup open on a client tagged "motives" / "rel" / "job" / "skill" / "per.ity", or closed; last
+  button's bitmap; a neighbor's picture; rotation / scroll (HouseViewer::SetOffsets count)
+  changed; a button down), then "got wait event". The popup clients carry the original tags
+  (+0x18): motives, per.ity, rel, int, gft, job / perf / summary / skill.
+- **User event (prim 35) auto snapshot**: with a window, cWinPictureInPicture::BuildImage
+  puts the picture into the family album (cScrapbook::AddPhoto + SetDescription(caption));
+  without one, cDDDSimsView::DoPictureInPicture computes the photo rectangle around the
+  object's tile tops and HouseViewer::TakeAsyncSnapshot takes it from the next rendered frame
+  (`WinLotView.autoSnapshot`, `cpanel/camsnapshot.ts` takeAsyncSnapshot).
 - **ObjectDialog pictures "rel" and "job"**: "rel" = the first person the selected sim has a
   relationship with (family first, then daily value), its character BMP_ 2003 portrait;
   "job n" = row n of kJobPopupComposite (-1 → 0xb).
@@ -658,8 +683,44 @@ not caught in TickAllObjects (none in the original either).
   House::DoCommand copies yesterday (+0x30 / +0x34) into the four older days (not a shift, as
   the original's code does), today into yesterday, today to 0. The history lives on
   `Simulator.layoutHistory` (read from HOUS 1 at load, written back by buildHouseFile).
-- Not ported: cXPerson::Place's UpdateCurrentRoom (the next tick does it), the rest of
-  House::DoCommand(0xdc) (ObjectModule::ComputeStats / family flags).
+- cXPerson::Place (vtable +0x60): cXObject::Place then UpdateCurrentRoom, through the
+  lot view's place hook (`SimModule.placed`).
+- The rest of House::DoCommand(0xdc) (`Simulator.houseDayChanged`, lot view `houseHooks`):
+  ObjectModule::ComputeStats + cFixedWorld::ComputeArchValue as in EnterLiveMode, cSimulator
+  +0xa0 / +0xa4, Family +0x138 bits 0 / 1 (family of global 9, id not 0), globals 0x17 (lot
+  size, cFixedWorld +0x10), 0x16, 0x25. Skipped until the build catalog's prices are loaded.
+
+## Midnight: DayChanged, family history (2026-11-05, `sim/simulator.ts`, `sim/simmodule.ts`, `data/familyhistory.ts`)
+
+- cSimulator::SimulateOneTick's day change, in the original's order: days running, hour - 24,
+  day + 1, ObjectModule::DayChanged, Neighborhood::AddFamilyHistoryStat, the expense blocks
+  move, then the month / year roll over; GlobalDispatch(0xdc) after PostSim.
+- cXObject::DayPassed (`SimModule.dayPassed`, every object in module order): object data 18
+  (+0x6e) = age in years and 48 (+0xaa) = age in months from the birth date (45..47) and the
+  simulator's year / month / day; then the OBJD depreciation (own OBJD; the master selector's
+  for the lead of a multi-tile object, the other parts skip it): unless +0x4a, value (41) -=
+  +0x46 while it equals the price +0x24 (and +0x46 is set), else +0x48, not below +0x4c.
+- Neighborhood::AddFamilyHistoryStat (`SimModule.addFamilyHistoryStat`): FamilyStat of the
+  house's family (global 9 not 0): house number, members with an instance on the lot and their
+  kinds ((age < 18 ? 2 : 0) | person data 0x41 bit 0), grown-ups with person data 0x38 set,
+  House::GetHouseStats (object count = HouseStats +0x28, FillInObjectStats' catalog objects;
+  square feet, lot size, the five scores), cSimulator +0xa0 / +0xa4, today's expenses (types
+  1, 4, 3, 5, 6, 2 + 0, 7), funds, the relationships across the family border (value 1 set,
+  value 0 >= 25, each way) and Family::GetFriendCount. FamilyHistory::AddNewStat keeps 0x400.
+- FAMh (FamilyHistory::DoStream): ReconBool compressed + compressed ints, Recon32 count,
+  FamilyStat::DoStream (30 fields; +0x10/+0x14/+0x28..+0x3c 16-bit below version 1); saved as
+  version 1. The chunk is kept on the family at neighborhood load (Family +0x140), parsed on
+  first use (Family::GetHistory, +0x144) and written back by NeighborhoodStore's takeLive
+  (Family::SaveFamily). Round trip of the shipped UserData FAMh chunks is byte-identical.
+
+## Autonomy pick (2026-11-05, `sim/person.ts`)
+
+- End of cXPerson::TryFindBestAction: the ScoredInteraction (0x10 bytes) +0xc byte is the
+  Interaction's flag 1, i.e. TTAB entry flag 0x100 (Interaction ctor). A visitor (person data
+  0x20 not 0) or a best entry with that flag, on a residential lot (zoning type 1), takes the
+  top score (index 0) instead of the random pick among the best "random selection count".
+  Entries with 0x100 in the shipped objects: sleep / relax on beds, group meal, turn off
+  (TV, stereo, computer), answer the phone, nap, portal "Leave".
 
 ## Open questions / deviations
 
@@ -677,3 +738,24 @@ not caught in TickAllObjects (none in the original either).
 2. ConstructGoals r8 on House01 (chair-direction goal blocked by a chair).
 3. Arrival by car on move-in; smooth CenterHouseViewOnMe.
 4. Tutorial (10), Set To Next 11 on Windows, inventories saved to NGBH.
+
+## Routing cost (2026-11-05, `sim/spacepartition.ts`, `sim/routing.ts`)
+
+Tick spikes of 15 to 40 ms (Chrome, House01 of a UserData copy) were single XRoute::FindPath
+calls, failed or not (the butler's flowers route failing every few game minutes, a visitor's
+route to the pedestrian portal). A CPU profile put 62 % of FindPath in SpacePartition::ExpandRect
+(its scans of every obstacle, partition and free rectangle, up to 200 steps per rectangle) and
+10 % in the partition cache key. Changes, each giving the same results:
+- ExpandRect with the size limit: the rectangle never leaves its start grown by the limit, so
+  only the obstacles / partition / free rectangles overlapping that box (kept in order) are
+  scanned.
+- Path's open / closed lists: Sets for the membership tests (the open array keeps its order
+  for FindSmallestOpenNode); BuildSpatialSuccessorList finds a (goal, rectangle) node through
+  a map of the first such node instead of scanning the node list.
+- BuildRoomPartition: `walkable(x, y)` answers are kept for the call (the merges asked the same
+  tiles again and again).
+- The room partition cache key hashes four bytes at a time.
+Checked by running the original Path next to the new one on every search of a 3-day soak (1662
+searches, 0 differences in points, goal, steps) and BuildRoomPartition old / new for every room
+(0 differences); FindPath's share of the profile went from 3.1 % to 0.7 %, Path::run's worst
+case from 11.4 to 5.5 ms.

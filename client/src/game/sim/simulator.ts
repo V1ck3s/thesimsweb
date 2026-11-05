@@ -28,12 +28,20 @@ import { loadStringSet } from "./behavior.js";
 import type { XObject } from "../world/objects.js";
 import type { ObjSelector } from "../world/objselector.js";
 import { getNextRandomNumber, getSRandSeed, setSRandSeed } from "../world/random.js";
-import { addLayoutTick, layoutHistoryDayChanged, type LayoutHistory } from "../world/housestats.js";
+import { addLayoutTick, layoutHistoryDayChanged, type HousePageStats, type HouseStatsSummary, type LayoutHistory } from "../world/housestats.js";
 import { ReconBuffer } from "../world/reconbuffer.js";
 import { EP } from "./objfntable.js";
 import { SimModule, SimResources } from "./simmodule.js";
 import type { SimObject } from "./xobject.js";
 import type { PersonSim } from "./person.js";
+
+/** What the midnight work needs from the lot (WinLotView sets it). */
+export interface HouseHooks {
+  /** House::GetHouseStats (Neighborhood::AddFamilyHistoryStat). */
+  houseStats(): HousePageStats | null;
+  /** ObjectModule::ComputeStats and cFixedWorld::ComputeArchValue, with the lot size (cFixedWorld +0x10). */
+  computeStats(): { summary: HouseStatsSummary; lotSize: number } | null;
+}
 
 /** Global indexes. */
 export const G = {
@@ -398,6 +406,31 @@ export class Simulator {
    */
   layoutHistory: LayoutHistory | null = null;
 
+  /** The house side of the midnight work (set by the lot view; none: skipped). */
+  houseHooks: HouseHooks | null = null;
+
+  /**
+   * GlobalDispatch(0xdc) after PostSim, House::DoCommand: the layout history
+   * moves on a day; then, as in House::EnterLiveMode, ObjectModule::ComputeStats
+   * and cFixedWorld::ComputeArchValue give cSimulator +0xa0 / +0xa4, the family
+   * flags (Family +0x138 bits 0 / 1, for a family id not 0) and globals 0x17
+   * (lot size), 0x16 (lot has house) and 0x25 (transit filter flags).
+   */
+  private houseDayChanged(): void {
+    if (this.layoutHistory) layoutHistoryDayChanged(this.layoutHistory);
+    const r = this.houseHooks?.computeStats();
+    if (!r) return;
+    const { summary: st, lotSize } = r;
+    const fn = this.globals[9]!;
+    const fam = fn === 0 ? undefined : this.module.nbhd?.families.find((f) => f.chunkId === fn);
+    if (fam) fam.flags = (fam.flags & ~3) | st.familyFlags;
+    this.objectValue = st.simA0;
+    this.archValue = st.simA4;
+    this.globals[0x17] = (lotSize << 16) >> 16;
+    this.globals[0x16] = st.lotHasHouse;
+    this.globals[0x25] = st.transitFilterFlags;
+  }
+
   /** House::AddLayoutTick. */
   addLayoutTick(routing: boolean): void {
     if (this.layoutHistory) addLayoutTick(this.layoutHistory, routing);
@@ -582,17 +615,21 @@ export class Simulator {
           g[G.minute] = g[G.minute]! - 0x3c;
           g[G.hour] = g[G.hour]! + 1;
           if (g[G.hour]! > 0x17) {
-            // ObjectModule::DayChanged / the family history are not ported.
             midnight = true;
             g[G.daysRunning] = g[G.daysRunning]! + 1;
+            g[G.hour] = g[G.hour]! - 0x18;
+            g[G.day] = g[G.day]! + 1;
+            // ObjectModule::DayChanged and Neighborhood::AddFamilyHistoryStat see the new day
+            // before the month rolls over, and today's expenses before they move.
+            this.module.dayChanged();
+            const house = this.houseHooks?.houseStats();
+            if (house) this.module.addFamilyHistoryStat(house);
             // The ExpenseReports: as the original's code does, blocks 1..4 all get the old block
             // 0 (not a shift), block 0 gets today's, today starts at 0.
             const [d1, ...older] = this.expenseHistory;
             for (const b of older) b.set(d1!);
             d1!.set(this.expenses);
             this.expenses.fill(0);
-            g[G.hour] = g[G.hour]! - 0x18;
-            g[G.day] = g[G.day]! + 1;
             if (g[G.day]! > countDaysInMonth()) {
               g[G.day] = 1;
               g[G.month] = g[G.month]! + 1;
@@ -610,8 +647,7 @@ export class Simulator {
     }
     // ObjectModule::PostSim: object dialogs are recorded only; the kill queue runs here.
     this.module.runKillQueue();
-    // GlobalDispatch(0xdc) after PostSim: House::DoCommand moves the layout history on a day.
-    if (midnight && this.layoutHistory) layoutHistoryDayChanged(this.layoutHistory);
+    if (midnight) this.houseDayChanged();
     if (advanced) this.pushPeople();
     return advanced;
   }

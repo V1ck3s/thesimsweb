@@ -26,7 +26,7 @@ or developer-only tools).
 | cTSWinBtn | Button (frame columns, push / toggle, async timers) | ported | `ui/btn.ts` |
 | cTSWinCheck | Check box | ported | `ui/check.ts` |
 | cTSWinText | Static text | ported | `ui/text.ts` |
-| cTSWinTextEdit2 | Edit field | partial (no selection, clipboard, undo, scrollbar) | `ui/textedit.ts` |
+| cTSWinTextEdit2 | Edit field | ported (selection, clipboard, undo, scrollbar; not double-click or double-byte fonts) | `ui/textedit.ts` |
 | cTSWinTextList | Text list | ported | `ui/textlist.ts` |
 | cTSWinScrollbar | Scroll bar | ported | `ui/scrollbar.ts` |
 | cTSWinSlider | Slider | ported | `ui/slider.ts` |
@@ -47,7 +47,7 @@ or developer-only tools).
 | Class | What it is | Status | Where |
 |---|---|---|---|
 | cWinCPanel | Control panel container, panel switching | ported | `cpanel/cpanel.ts` |
-| cWinViewControl | Clock, speed, zoom, rotation, levels, funds, help button, friend count dialog (STR# 162) | ported | `cpanel/viewcontrol.ts` |
+| cWinViewControl | Clock, speed, zoom, rotation, levels, funds, help button, friend count dialog (STR# 162), SetMode with BoboVision (panel fade) | ported (BoboVision Compose of the gadget's alpha mask not ported) | `cpanel/viewcontrol.ts` |
 | cWinBudgetDlg, cWinBudgetRow | Budget window (funds click on a residential lot): 3-day / today income and expenses by type, funds, net worth, days | ported (object / architecture values recomputed at opening) | `cpanel/budgetdlg.ts` |
 | cWinHelp | Help window (view control "?" button): topic list and text | ported | `cpanel/help.ts` |
 | cWinPeople | Live panel: portraits (person popup, TrackPerson / StopTracking, UpdateAtWorkStatus), mood, page buttons | ported (its two pie menus are the lot's) | `cpanel/people.ts`, `world/tracking.ts` |
@@ -69,7 +69,7 @@ or developer-only tools).
 | cWinDisposePopup | Sell page of the control panel while a lot object is held in Buy / Build mode (picture, "click here to sell X for $", refund) | ported (its slide-in ramp is never started in either build) | `cpanel/disposepopup.ts` |
 | cWinArch | Build mode panel | ported | `cpanel/arch.ts` |
 | cWinRoofPanel | Roof sub-panel | ported | `cpanel/arch/roofpanel.ts` |
-| cWinOptions | Options panel: save, neighborhood, quit, graphics / sound / play sub-panels (shadows, lighting, terrain and character detail, effects / music / voice volumes, scroll speed, screen size via play options) | partial (sub-panel fades, town lot save variants) | `cpanel/options.ts` |
+| cWinOptions | Options panel: save, neighborhood, quit, graphics / sound / play sub-panels (shadows, lighting, terrain and character detail, effects / music / voice volumes, scroll speed, screen size via play options) | partial (town lot save variants) | `cpanel/options.ts` |
 | cWinCamPanel, cCustButton | Camera mode panel | ported | `cpanel/campanel.ts` |
 | cWinScrapbook | Family photo album | ported | `cpanel/camscrapbook.ts` |
 | cDDDSimsView | Lot view mode keys and snapshot | ported (keys, camera) | `cpanel/modekeys.ts`, `cpanel/camsnapshot.ts` |
@@ -84,9 +84,9 @@ or developer-only tools).
 | CWinPhoneBook | Phone book | ported | `ui/phonebook.ts` |
 | cWinClothingChoiceDlg, cWinPetSelectDlg, cWinTransformMeDlg | Outfit, pet purchase, transform windows | ported | `ui/outfitdlg.ts` |
 | CWinMagicBook, cPickSpellList, cPickSpellItem | Spell book / cookbook | ported | `ui/magicbook.ts` |
-| cWinPictureInPicture | Event picture-in-picture | partial (scrapbook auto snapshot) | `world/winpictureinpicture.ts` |
-| cTutorialIcon | Close box of the tutorial dialogs | partial | `ui/picturedialog.ts` |
-| cTSWinTutorialHighlight | Tutorial arrow over a button or lot (neighborhood tutorial lots, prim 34 effect 0) | partial (Tut_CheckForEvents) | `ui/tutorialhighlight.ts` |
+| cWinPictureInPicture | Event picture-in-picture, auto snapshot into the family album, BoboVision fade (cTSWin::AsyncShowHideWin, `ui/tswin.ts`) | ported | `world/winpictureinpicture.ts` |
+| cTutorialIcon | Tutorial guide icon (top right of the lot view), its flight to / from the tutorial object's dialogs, minimize box, "show situation info" on click | ported | `ui/tutorialicon.ts`, `world/objectdialogshow.ts` |
+| cTSWinTutorialHighlight | Tutorial arrow over a button or lot (neighborhood tutorial lots, prim 34 effect 0); Tut_CheckForEvents | ported | `ui/tutorialhighlight.ts` |
 | cActionIcon | Queued action icons (frame, product / people picture, cancel cross, slides, StartUserAction) | ported | `world/actionicons.ts` |
 | cColorSwatch, cGouraudSwatch, cMapTileSwatch | Terrain tool swatches | ported | `world/terrain*.ts` |
 

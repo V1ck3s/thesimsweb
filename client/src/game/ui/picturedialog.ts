@@ -41,8 +41,14 @@
  *
  * A modeless dialog (runModeless) lives in the lot view without a modal loop.
  *
- * Not ported: BoboVision transparent drag, the cTutorialIcon close box
- * variant, the window flag 0x20 cleared for a modeless dialog (+0x121).
+ * The tutorial object's dialogs (ObjectDialog::SetupDialog) take the
+ * minimize box (kSMSystemDlgMinimizeBox) as their close box, sit in a corner
+ * of the tutorial icon's area (positioning 1) and are shown by the icon
+ * once it has flown to them (ui/tutorialicon.ts); the tutorial guide's are
+ * see-through (cTSWin::SetTransparent(true, 200)).
+ *
+ * Not ported: BoboVision transparent drag, the window flag 0x20 cleared for
+ * a modeless dialog (+0x121).
  */
 
 import type { GameContext } from "../context.js";
@@ -118,6 +124,12 @@ function virtualKey(key: string): number {
 export class WinPictureDialog extends TSWinDlg {
   /** cTSObjectDialog::TSOnCommand → ObjectDialog::BtnPressed(id): called when a button fires. */
   onButton: ((id: number) => void) | null = null;
+  /**
+   * Called once TSBeginModal has laid the dialog out and placed it (the
+   * original's DoSimsModalDialog does both right after SetupDialog, so the
+   * tutorial icon's flight starts toward the placed dialog).
+   */
+  onBeginModal: (() => void) | null = null;
 
   /** +0xd0 */
   private readonly keys: ButtonKeyData[] = [];
@@ -153,7 +165,8 @@ export class WinPictureDialog extends TSWinDlg {
   private mgr: TSWinCtrlMgr | null = null;
   private titleFont: FfnFont | null = null;
   private closeBoxImage: ImageBitmap | null = null;
-  private wantsCloseBox = false;
+  /** The close box's bitmap resource (AddCloseBox), null for none. */
+  private closeBoxRes: string | number | null = null;
   /** Setters called before Init run once its resources are loaded. */
   private pending: (() => void)[] | null = [];
 
@@ -181,7 +194,7 @@ export class WinPictureDialog extends TSWinDlg {
     this.stub = stub;
     this.text.setFont(mgr.tableFont(TEXT_FONT_SIZE));
     this.childAdd(this.text);
-    if (this.wantsCloseBox) this.closeBoxImage = await this.ctx.res.image(CLOSE_BOX).catch(() => null);
+    if (this.closeBoxRes !== null) this.closeBoxImage = await this.ctx.res.image(this.closeBoxRes).catch(() => null);
     const pending = this.pending;
     this.pending = null;
     for (const fn of pending) fn();
@@ -258,9 +271,9 @@ export class WinPictureDialog extends TSWinDlg {
     return this.editBox ? this.editBox.getText() : this.editInitial;
   }
 
-  /** cWinPictureDialog::AddCloseBox(id): kSMSystemDlgCloseBox, 4 frames (call before init / run). */
-  addCloseBox(id: number): void {
-    this.wantsCloseBox = true;
+  /** cWinPictureDialog::AddCloseBox(id [, res = kSMSystemDlgCloseBox]): a 4-frame button (call before init / run). */
+  addCloseBox(id: number, res: string | number = CLOSE_BOX): void {
+    this.closeBoxRes ??= res;
     this.later(() => {
       const img = this.closeBoxImage;
       if (this.closeBox || !img) return;
@@ -497,6 +510,7 @@ export class WinPictureDialog extends TSWinDlg {
       this.text.setFlag(WF_NO_FOCUS, true);
       this.setFlag(WF_NO_FOCUS, true);
     }
+    this.onBeginModal?.();
   }
 
   /** Positioning 1: the quadrant of the main window the rectangle overlaps most; the dialog goes in that corner of the rectangle. */

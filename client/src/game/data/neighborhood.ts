@@ -19,6 +19,7 @@ import { engine } from "../../engine/wasm.js";
 import { LANG_FRENCH } from "../res/uires.js";
 import { decodeBmp } from "../res/bmp.js";
 import { ReconBuffer } from "../world/reconbuffer.js";
+import type { FamilyStat } from "./familyhistory.js";
 import { ReconReader } from "./recon.js";
 
 /** Person data indices (Behavior.iff STR# 200). */
@@ -83,6 +84,10 @@ export interface Family {
   vacationLot?: number;
   /** Family +0x14e: the six spell levels, when the stream had them (Family +0x14c). */
   spells?: number[];
+  /** Family +0x140: the FAMh chunk LoadFamily read (data/familyhistory.ts getFamilyHistory loads it). */
+  historyChunk?: Uint8Array | undefined;
+  /** Family +0x144: the history once loaded (Family::GetHistory). */
+  history?: FamilyStat[] | undefined;
 }
 
 export interface Character {
@@ -264,6 +269,10 @@ export async function loadNeighborhood(dir = "UserData", lang = LANG_FRENCH): Pr
   const families = chunks
     .filter((c) => c.kind === "FAMI")
     .map((c) => parseFami(payload(data, c), c.id, names.get(c.id) ?? ""));
+  for (const f of families) {
+    const famh = chunks.find((c) => c.kind === "FAMh" && c.id === f.chunkId);
+    if (famh) f.historyChunk = payload(data, famh);
+  }
   const ngbh = chunks.find((c) => c.kind === "NGBH" && c.id === 1);
   let ngbhData: { data: Int16Array; inventories: SimInventory[] } = { data: new Int16Array(0x10), inventories: [] };
   try {

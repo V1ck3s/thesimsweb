@@ -37,6 +37,9 @@ export type DialogIcon =
   | { kind: "rel"; guid: number }
   | { kind: "job"; row: number };
 
+/** ObjectDialog::SetParams: the Tutorial object (Objects.far Tutorial.iff). */
+const GUID_TUTORIAL_GUIDE = 0xc3249a1d;
+
 /** UIText STR# 0x8e (ObjectDialog::GetString): 1 OK, 2 cancel, 3 yes, 4 no. */
 export const DLG_STRINGS = 0x8e;
 
@@ -74,6 +77,10 @@ export class ObjectDialog {
   modal = true;
   /** +0x3a */
   stackObj = 0;
+  /** +0x3c: the object is the tutorial object (ObjectModule::GetTutorialObject). */
+  tutorial = false;
+  /** +0x3d: the object is the tutorial guide (GUID 0xc3249a1d): no title, a see-through window. */
+  noTitle = false;
   /** +0x3e */
   flag3e = false;
   icon: DialogIcon | null = null;
@@ -99,6 +106,8 @@ export class ObjectDialog {
   setParams(elem: StackElem, op: Uint8Array, hooks: DialogHooks | null): void {
     const o = this.obj;
     const sel = o.obj.selector;
+    this.tutorial = o.module.tutorialObject === o;
+    this.noTitle = (sel.guid | 0) === (GUID_TUTORIAL_GUIDE | 0);
     this.type = op[5]! & 0x7f;
     this.flag3e = (op[5]! & 0x80) !== 0;
     this.resultIgnored = (op[7]! & 1) !== 0;

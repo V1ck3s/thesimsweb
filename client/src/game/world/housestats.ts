@@ -555,6 +555,8 @@ export interface HousePageStats {
   numBedrooms: number;
   numBathrooms: number;
   lotSize: number;
+  /** HouseStats +0x28 (GetObjectCount): the catalog objects FillInObjectStats counted. */
+  objectCount: number;
 }
 
 /**
@@ -664,5 +666,5 @@ export function getHouseStats(inp: HousePageInputs): HousePageStats {
   const ticks = Math.max(1, inp.layout.ticks.reduce((a, b) => a + b, 0));
   const routing = inp.layout.routing.reduce((a, b) => a + b, 0) * 2;
   const layoutScore = Math.trunc(100 * clamp01(Math.fround((ticks - routing) / ticks)));
-  return { sizeScore, furnishingsScore, yardScore, upkeepScore, layoutScore, squareFeet, numBedrooms, numBathrooms, lotSize };
+  return { sizeScore, furnishingsScore, yardScore, upkeepScore, layoutScore, squareFeet, numBedrooms, numBathrooms, lotSize, objectCount: count };
 }

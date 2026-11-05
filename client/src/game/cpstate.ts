@@ -528,6 +528,13 @@ export class CPState {
     this.touch(0xffffffff);
   }
 
+  /** Neighborhood::AddToFamily's UI side: the new member comes last (GlobalDispatch(0xe8): SetDirty(0xffffffff)). */
+  addFamilyMember(info: PersonInfo): void {
+    if (this.family.some((p) => ((p.guid ?? 0) | 0) === ((info.guid ?? 0) | 0))) return;
+    this.family.push(info);
+    this.touch(0xffffffff);
+  }
+
   /**
    * CPState::SetSelectedPerson: a member with no person on the lot gets one
    * (PersonFinder::GetInstance == 0 -> CreateInstance). Selecting the person

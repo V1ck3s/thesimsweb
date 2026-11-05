@@ -20,6 +20,7 @@
 import { assetFetch, fetchManifest } from "../../engine/assets.js";
 import { LANG_FRENCH } from "../res/uires.js";
 import { createCharacterFile, createCharacterFileFrom, deleteCharacterFile, GUID_TEMPLATE_PERSON } from "./character.js";
+import { serializeFamilyHistory } from "./familyhistory.js";
 import { deleteGameFile, writeGameFile } from "./files.js";
 import { buildIff, decodeStrSet, parseIff, stringSetBaseResave, stringSetMultiSave, stringSetMultiSaveLocal, type IffChunk } from "./iff.js";
 import { PD, type NeighborhoodData } from "./neighborhood.js";
@@ -987,6 +988,13 @@ export class NeighborhoodStore {
       f.memberGuids = [...kept];
       f.flags &= ~8;
       f.dirty = true;
+    }
+    // Family::SaveFamily: a history loaded in the lot (Family::GetHistory, +0x144) is saved
+    // (ReconSaveObject, FAMh version 1); one never loaded keeps the chunk as read.
+    for (const lf of live.data.families) {
+      if (!lf.history) continue;
+      const famh = this.chunks.find((c) => c.type === "FAMh" && c.id === lf.chunkId);
+      this.put({ type: "FAMh", id: lf.chunkId, flags: famh?.flags ?? 0x10, label: famh?.label ?? "", data: serializeFamilyHistory(lf.history) });
     }
     const ngbh = this.ngbh();
     if (ngbh.version > 0x3f || ngbh.inventory || live.data.inventories.length) {

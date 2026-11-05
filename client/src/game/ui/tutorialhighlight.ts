@@ -18,6 +18,9 @@
  * Deviation: the original also sets window flag 0x10000 on it; that bit is
  * the modal flag of the web window manager (keys go to the front-most modal
  * window), so it is left clear.
+ *
+ * Also here (TutorialEffects.cpp): Tut_CheckForEvents, the UI events the
+ * tutorial object waits for.
  */
 
 import type { GameContext } from "../context.js";
@@ -25,6 +28,10 @@ import { TSWinBtn } from "./btn.js";
 import { getStandardCursor } from "./cursor.js";
 import { Gfx, TSWin } from "./tswin.js";
 import { winMgr } from "./winmgr.js";
+import type { WinLivePopup } from "../cpanel/livepopup.js";
+import type { SimModule } from "../sim/simmodule.js";
+import type { SimObject } from "../sim/xobject.js";
+import { HouseViewer } from "../world/houseviewer.js";
 
 /** lbl_105BC0C8: frames per second. */
 const FPS = 6;
@@ -177,4 +184,118 @@ export async function tutFlashButtonByImageID(ctx: GameContext, id: number, on: 
   const image = await ctx.res.image(id).catch(() => null);
   const btn = image ? findButton(winMgr.main, image) : null;
   if (btn) await hiliteForTutorial(ctx, btn, on);
+}
+
+/** What Tut_CheckForEvents reads of the game around the tutorial object. */
+export interface TutEventSource {
+  readonly ctx: GameContext;
+  /** ObjectModule (+0x14 of the app's house): the tutorial object, the simulator's globals, the neighbors. */
+  readonly module: SimModule;
+  /** cRotatableWorld +0x84 */
+  rotation(): number;
+  /** PersonFinder::GetPictureBuffer of a person (by GUID), null without one. */
+  personPicture(guid: number): ImageBitmap | null;
+}
+
+/** lbl_105BBCAC: the tutorial object's trees and the live popup tags it waits on. */
+const QUERY_WAIT_EVENT = "query wait event";
+const GOT_WAIT_EVENT = "got wait event";
+const POPUP_TAGS: Record<number, string> = { 2: "motives", 9: "rel", 11: "job", 13: "skill", 15: "per.ity" };
+
+/** lbl_105BEEC0: the value the rotation / scroll events compare with (-1: none yet). */
+let lastEventValue = -1;
+
+/** cXObject::RunTree(tree by name, no stack object): its result, false without the tree or on error. */
+function runTree(o: SimObject, name: string): boolean {
+  const tree = o.behavior.getTreeID(name);
+  if (tree === 0) return false;
+  try {
+    return o.runOneTickTree(o.behavior, 0, tree, null);
+  } catch (e) {
+    console.warn(`[tutorial] ${name} failed`, e);
+    return false;
+  }
+}
+
+/** FindButton(cTSWin *, int): depth first, the first button whose bitmap is resource `id`. */
+function findButtonById(ctx: GameContext, win: TSWin, id: number): TSWinBtn | null {
+  for (const c of win.children) {
+    if (c instanceof TSWinBtn && c.image && ctx.res.idOf(c.image) === id) return c;
+    const found = findButtonById(ctx, c, id);
+    if (found) return found;
+  }
+  return null;
+}
+
+/**
+ * Tut_CheckForEvents (cDDDSimsView's idle, before the simulation runs):
+ * global 12 takes the resource id of the bitmap of the last button clicked
+ * (lbl_105BA498, 0 without one). With a tutorial object, its "query wait
+ * event" tree says whether it waits (false: the compared value is reset)
+ * and leaves the event in its temp 0 (temp 1 the data); when the event has
+ * happened its "got wait event" tree runs and the compared value is reset.
+ * Events: 1 the control panel shown (CPState::GetCPMode 0); 2 / 9 / 11 /
+ * 13 / 15 the live popup (cWinPeople +0x150) open on a client tagged
+ * "motives" / "rel" / "job" / "skill" / "per.ity"; 14 that popup closed;
+ * 4 the last button clicked shows bitmap temp 1; 5 its bitmap is the
+ * picture of neighbor temp 1; 6 the view rotated, 7 scrolled
+ * (HouseViewer::SetOffsets called) since the first check; 8 the button
+ * showing bitmap temp 1 is down; 0, 3, 10, 12 and others never happen.
+ */
+export function tutCheckForEvents(src: TutEventSource, popup: WinLivePopup | null): void {
+  const { ctx, module: m } = src;
+  const tut = m.tutorialObject;
+  const last = TSWinBtn.lastPressed;
+  const lastId = last?.image ? (ctx.res.idOf(last.image) ?? 0) : 0;
+  m.sim.globals[0xc] = (lastId << 16) >> 16;
+  if (!tut) return;
+  if (!runTree(tut, QUERY_WAIT_EVENT)) {
+    lastEventValue = -1;
+    return;
+  }
+  const event = tut.obj.temps[0]!;
+  const data = tut.obj.temps[1]!;
+  let fire = false;
+  const client = popup?.isEnabled() ? popup.getClient() : null;
+  switch (event) {
+    case 1:
+      fire = ctx.state.getCPMode() === 0;
+      break;
+    case 2:
+    case 9:
+    case 11:
+    case 13:
+    case 15:
+      fire = client !== null && client.kind === POPUP_TAGS[event];
+      break;
+    case 14:
+      fire = client === null;
+      break;
+    case 4:
+      fire = last?.image != null && lastId === data;
+      break;
+    case 5: {
+      const nb = last ? m.findNeighborByID(data) : null;
+      const pic = nb ? src.personPicture(nb.guid) : null;
+      fire = pic !== null && last?.image === pic;
+      break;
+    }
+    case 6:
+    case 7: {
+      const v = event === 6 ? src.rotation() : HouseViewer.setOffsetsCount;
+      if (lastEventValue === -1) lastEventValue = v;
+      else fire = lastEventValue !== v;
+      break;
+    }
+    case 8: {
+      const b = findButtonById(ctx, winMgr.main, data);
+      fire = b !== null && b.state !== 0;
+      break;
+    }
+    default:
+      break;
+  }
+  if (!fire) return;
+  runTree(tut, GOT_WAIT_EVENT);
+  lastEventValue = -1;
 }

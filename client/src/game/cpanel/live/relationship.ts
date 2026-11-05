@@ -335,7 +335,8 @@ export class RelationshipsPanel extends TSWin {
   readonly tiles: WinRelationship[] = [];
   /** cWinPeople+0x150: the Live panel's popup (set by WinPeople); +0x228 the tiles' client. */
   livePopup: WinLivePopup | null = null;
-  private readonly client = new WinLivePopupClient();
+  /** cWinPeople::BuildRelationships' client (+0x228), tagged "rel" (+0x18, read by Tut_CheckForEvents). */
+  private readonly client = Object.assign(new WinLivePopupClient(), { kind: "rel" });
   /** cWinPeople+0x1b0: people listed (PersonFinder::GetRelatedPeople). */
   private related: PersonInfo[] = [];
   /** cWinPeople+0x188: current page. */

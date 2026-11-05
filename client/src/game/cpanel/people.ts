@@ -227,6 +227,15 @@ export function findPersonPanelButton(win: TSWin, guid: number): TSWinBtn | null
   return null;
 }
 
+/** The description popup (+0x150) of the main window's WinPeople (Tut_CheckForEvents reads it), null without one. */
+export function findPeoplePopup(win: TSWin): WinLivePopup | null {
+  for (const c of win.children) {
+    const found = c instanceof WinPeople ? c.getLivePopup() : findPeoplePopup(c);
+    if (found) return found;
+  }
+  return null;
+}
+
 export class WinPeople extends TSWin implements TrackingPanel {
   /** cWinPeople+0x3d: shown page. */
   private panel = LivePanel.None;
@@ -339,7 +348,8 @@ export class WinPeople extends TSWin implements TrackingPanel {
     this.interests = new InterestsPanel(ctx);
     this.house = new WinSubpanelHouse(ctx);
     // cWinPeople+0x348: the gift popup client.
-    this.gifts = new GiftsPanel(ctx, new WinLivePopupClient());
+    // cWinPeople::BuildGiftPanel's client, tagged "gft" (+0x18).
+    this.gifts = new GiftsPanel(ctx, Object.assign(new WinLivePopupClient(), { kind: "gft" }));
     if (
       !(await placePage(this.job, true)) ||
       !(await placePage(this.fame, true)) ||
@@ -540,6 +550,11 @@ export class WinPeople extends TSWin implements TrackingPanel {
    * Tut_FlashPersonPanelButton: the button whose bitmap is the person's
    * PersonFinder::GetPictureBuffer).
    */
+  /** +0x150 (undefined before Init). */
+  getLivePopup(): WinLivePopup | null {
+    return (this.popup as WinLivePopup | undefined) ?? null;
+  }
+
   familyButtonOf(guid: number): TSWinBtn | null {
     const i = this.ctx.state.family.findIndex((p) => p.guid !== undefined && p.guid >>> 0 === guid >>> 0);
     const b = i >= 0 ? this.familyBtns[i] : undefined;

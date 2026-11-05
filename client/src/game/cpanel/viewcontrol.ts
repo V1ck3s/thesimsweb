@@ -14,8 +14,14 @@
  * each runs modally with the simulation blocked (DoSimsModalDialog with
  * cDDDSimsView::SetBlockSimulator).
  *
- * Not ported (no counterpart yet): HouseViewer::SetViewportHeight when the
- * control panel collapses, and BoboVision compositing.
+ * SetMode with interface effects (BoboVision) fades the control panel in
+ * and out (cTSWin::AsyncShowHideWin) instead of showing / hiding it, and the
+ * mode patch fades with it (BlitPrivateBufferToParent blends it at the
+ * panel's GetOpacity).
+ *
+ * Not ported: BlitPrivateBufferToParent's BoboVision Compose (the gadget
+ * blended through its 8-bit alpha mask; the bitmap's own alpha is used
+ * either way here).
  */
 
 import { Mode, WallState } from "../cpstate.js";
@@ -31,6 +37,7 @@ import { WinBudgetDlg } from "./budgetdlg.js";
 import type { WinCPanel } from "./cpanel.js";
 import { WinHelp } from "./help.js";
 import { getCursor } from "../ui/cursor.js";
+import { getOptionsMgr } from "../optionsmgr.js";
 import { stopTracking } from "../world/tracking.js";
 
 /** CPState dirty bits tested by UpdateViewFromCPState. */
@@ -441,13 +448,22 @@ export class WinViewControl extends TSWin {
     // Without Bobo vision: HouseViewer::SetViewportHeight to the lot view's
     // height less the panel's opaque part (its height - 0x32), or all of it
     // once the panel is hidden: the lot view then runs under the panel's area.
+    // With it, the panel fades in (the viewport is left as it is) or out (the
+    // viewport takes the whole view; SetOverlapsScrollArea(panel, true)).
     const parent = this.parent;
     const viewH = parent?.getH() ?? 0;
-    if (mode === VCMode.PanelShown) {
-      cpanel.showWindow();
-      if (parent) this.ctx.state.viewer?.setViewportHeight?.(viewH - (cpanel.getH() - 0x32));
+    if (!getOptionsMgr().getBoboVision()) {
+      if (mode === VCMode.PanelShown) {
+        cpanel.showWindow();
+        if (parent) this.ctx.state.viewer?.setViewportHeight?.(viewH - (cpanel.getH() - 0x32));
+      } else {
+        cpanel.hideWindow();
+        if (parent) this.ctx.state.viewer?.setViewportHeight?.(viewH);
+      }
+    } else if (mode === VCMode.PanelShown) {
+      cpanel.asyncShowHideWin(true, false);
     } else {
-      cpanel.hideWindow();
+      cpanel.asyncShowHideWin(false, false);
       if (parent) this.ctx.state.viewer?.setViewportHeight?.(viewH);
     }
     if (parent && this.background) {
@@ -745,15 +761,27 @@ export class WinViewControl extends TSWin {
 
   /**
    * PostChildDraw refreshes the friend count caption; BlitPrivateBufferToParent
-   * then draws the patch of the current mode while the control panel is shown.
+   * then draws the patch of the current mode while the control panel is shown,
+   * at the panel's opacity (opaque from 31 / 32, not drawn below 1 / 32).
    */
   override postChildDraw(g: Gfx): void {
     const count = String(this.ctx.state.getFamilyFriendCount());
     if (count !== this.friends.caption) this.friends.caption = count;
-    if (!this.controlPanel()?.isVisible()) return;
+    const cpanel = this.controlPanel();
+    if (!cpanel?.isVisible()) return;
     const mode = this.ctx.state.getMode();
     const patch = this.patches.get(mode);
-    if (patch) g.blit(patch, PATCH_POS[mode][0], PATCH_POS[mode][1]);
+    if (!patch) return;
+    const opacity = cpanel.getOpacity();
+    const level = (opacity >> 3) & 0x1f;
+    if (level === 0x1f) {
+      g.blit(patch, PATCH_POS[mode][0], PATCH_POS[mode][1]);
+    } else if (level !== 0) {
+      const a = g.ctx.globalAlpha;
+      g.ctx.globalAlpha = a * (opacity / 255);
+      g.blit(patch, PATCH_POS[mode][0], PATCH_POS[mode][1]);
+      g.ctx.globalAlpha = a;
+    }
   }
 
   /** Clicks only land where the background is at least half opaque. */

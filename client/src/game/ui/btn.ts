@@ -283,7 +283,11 @@ export class TSWinBtn extends TSWin {
     }
   }
 
+  /** lbl_105BA498: the last button that sent its command on a click (Tut_CheckForEvents reads it). */
+  static lastPressed: TSWinBtn | null = null;
+
   private fire(): void {
+    TSWinBtn.lastPressed = this;
     this.onClick?.(this);
     this.parent?.tsOnCommand(this.id, this);
   }

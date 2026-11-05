@@ -19,6 +19,7 @@
  */
 
 import { getWall } from "../world/tilewalls.js";
+import { ARRAY_SIZE } from "../world/world.js";
 import type { SimModule } from "./simmodule.js";
 import { EP } from "./objfntable.js";
 import { getOtherSide } from "./portals.js";
@@ -76,6 +77,29 @@ export function findIntersectingRect(r: PenaltyRect, v: readonly PenaltyRect[]):
   return -1;
 }
 
+/**
+ * SpacePartition::GetIntersectingPartitionRect's search: the first blocked
+ * obstacle or partition rectangle overlapping `r`, else the last one
+ * overlapping it, else null.
+ */
+function intersectingPartitionRect(r: PenaltyRect, obstacles: readonly PenaltyRect[], partition: readonly PenaltyRect[] | null): PenaltyRect | null {
+  let found: PenaltyRect | null = null;
+  for (const o of obstacles) {
+    if (overlaps(r, o)) {
+      found = o;
+      if (o.w === BLOCKED) return o;
+    }
+  }
+  if (!partition) return found;
+  for (const o of partition) {
+    if (overlaps(r, o)) {
+      found = o;
+      if (o.w === BLOCKED) return o;
+    }
+  }
+  return found;
+}
+
 /** C integer division (toward zero). */
 const idiv = (a: number, b: number): number => Math.trunc(a / b);
 
@@ -131,6 +155,11 @@ function astNode(goal: number, rect: number, weight: number): ASTNode {
   return { goal, rect, nSucc: -1, firstSucc: -1, weight, px: 0, py: 0, parent: -1, f: 0, g: 0, h: 0 };
 }
 
+/** A (goal, rectangle) pair as a map key (both >= -1). */
+function nodeKey(goal: number, rect: number): number {
+  return (goal + 1) * 0x10000 + rect + 1;
+}
+
 /** SpacePartition (the global lbl_105BA420). */
 export class SpacePartition {
   params!: RoutingParams;
@@ -142,11 +171,14 @@ export class SpacePartition {
   /** +0x30 the successor lists, +0x3c the nodes. */
   succ: number[] = [];
   nodes: ASTNode[] = [];
+  /** The first node of each (goal, rectangle) pair, for BuildSpatialSuccessorList's search of the node list (not in the original). */
+  private nodeOf = new Map<number, number>();
 
   /** SpacePartition::Clear. */
   clear(): void {
     this.rects = [];
     this.nodes = [];
+    this.nodeOf = new Map();
     this.goalNodes = [];
     this.startNodes = [];
     this.succ = [];
@@ -165,8 +197,8 @@ export class SpacePartition {
     const start = penaltyRect(params.x, params.y, params.x + 1, params.y + 1, 0);
     this.expandRect(start);
     this.rects.push(start);
-    this.nodes.push(astNode(-1, this.rects.length - 1, 0));
-    this.nodes.push(astNode(-1, -1, 0));
+    this.pushNode(astNode(-1, this.rects.length - 1, 0));
+    this.pushNode(astNode(-1, -1, 0));
     params.goals.forEach((g, gi) => {
       this.goalNodes.push(-1);
       this.startNodes.push(-1);
@@ -179,11 +211,18 @@ export class SpacePartition {
         this.rects.push(r);
         ri = this.rects.length - 1;
       }
-      this.nodes.push(astNode(gi, ri, this.rects[ri]!.w));
+      this.pushNode(astNode(gi, ri, this.rects[ri]!.w));
       this.goalNodes[gi] = this.nodes.length - 1;
-      this.nodes.push(astNode(gi, this.nodes[0]!.rect, g.w));
+      this.pushNode(astNode(gi, this.nodes[0]!.rect, g.w));
       this.startNodes[gi] = this.nodes.length - 1;
     });
+  }
+
+  /** Appends a node (its index is nodes.length - 1). */
+  private pushNode(n: ASTNode): void {
+    const k = nodeKey(n.goal, n.rect);
+    if (!this.nodeOf.has(k)) this.nodeOf.set(k, this.nodes.length);
+    this.nodes.push(n);
   }
 
   /** SpacePartition::GetNode. */
@@ -197,22 +236,7 @@ export class SpacePartition {
    * overlapping it, else null.
    */
   getIntersectingPartitionRect(r: PenaltyRect): PenaltyRect | null {
-    let found: PenaltyRect | null = null;
-    for (const o of this.params.obstacles) {
-      if (overlaps(r, o)) {
-        found = o;
-        if (o.w === BLOCKED) return o;
-      }
-    }
-    const part = this.params.partition;
-    if (!part) return found;
-    for (const o of part) {
-      if (overlaps(r, o)) {
-        found = o;
-        if (o.w === BLOCKED) return o;
-      }
-    }
-    return found;
+    return intersectingPartitionRect(r, this.params.obstacles, this.params.partition);
   }
 
   /**
@@ -227,9 +251,21 @@ export class SpacePartition {
     const max = p.maxSize;
     const sizeOk = (): boolean => !p.limitSize || (r.r - r.l <= max && r.b - r.t <= max);
     if (!sizeOk()) return false;
-    const blk = this.getIntersectingPartitionRect(r);
+    // With the size limit, `r` never leaves its start grown by the limit on every side: only
+    // the rectangles overlapping that box (in their order) can answer the tests below.
+    let obstacles = p.obstacles;
+    let partition = p.partition;
+    let rects: readonly PenaltyRect[] = this.rects;
+    if (p.limitSize) {
+      const box = penaltyRect(r.r - max - 1, r.b - max - 1, r.l + max + 1, r.t + max + 1, 0);
+      const near = (v: readonly PenaltyRect[]): PenaltyRect[] => v.filter((o) => overlaps(box, o));
+      obstacles = near(obstacles);
+      partition = partition && near(partition);
+      rects = near(rects);
+    }
+    const blk = intersectingPartitionRect(r, obstacles, partition);
     if (blk && blk.w === BLOCKED) return false;
-    if (findIntersectingRect(r, this.rects) !== -1) return false;
+    if (findIntersectingRect(r, rects) !== -1) return false;
     const step = p.limitSize ? Math.max(1, idiv(max, 4)) : 0x20;
     const delta = [-step, -step, step, step];
     const get = (side: number): number => (side === 0 ? r.l : side === 1 ? r.t : side === 2 ? r.r : r.b);
@@ -250,8 +286,8 @@ export class SpacePartition {
         zeros = 0;
         set(side, get(side) + d);
         if (sizeOk()) {
-          const q = this.getIntersectingPartitionRect(r);
-          if (q === blk && (!q || q.w !== BLOCKED) && findIntersectingRect(r, this.rects) === -1) {
+          const q = intersectingPartitionRect(r, obstacles, partition);
+          if (q === blk && (!q || q.w !== BLOCKED) && findIntersectingRect(r, rects) === -1) {
             if (!blk || (r.l >= blk.l && r.r <= blk.r && r.t >= blk.t && r.b <= blk.b)) {
               accepted = true;
               break;
@@ -305,9 +341,9 @@ export class SpacePartition {
           }
         }
         if (ri !== -1) {
-          next = this.nodes.findIndex((o) => o.goal === node.goal && o.rect === ri);
+          next = this.nodeOf.get(nodeKey(node.goal, ri)) ?? -1;
           if (next === -1) {
-            this.nodes.push(astNode(node.goal, ri, this.rects[ri]!.w));
+            this.pushNode(astNode(node.goal, ri, this.rects[ri]!.w));
             next = this.nodes.length - 1;
           }
           nb = this.rects[this.nodes[next]!.rect]!;
@@ -489,7 +525,9 @@ export class Path {
   steps = 0;
   /** +0x30 open list, +0x3c closed list. */
   open: number[] = [];
-  closed: number[] = [];
+  /** Membership of `open` (the array keeps the order FindSmallestOpenNode depends on) and the closed list (only tested for membership). */
+  private openSet = new Set<number>();
+  private closed = new Set<number>();
   /** +0x48 start node, +0x4c goal node, +0x50 current node, +0x54 the goal reached, +0x58 smoothing pass. */
   start = 0;
   goal = 1;
@@ -514,7 +552,8 @@ export class Path {
   /** Path::InitAST: the start node opened at the starting point. */
   initAST(): boolean {
     this.open = [];
-    this.closed = [];
+    this.openSet = new Set();
+    this.closed = new Set();
     this.start = 0;
     this.goal = 1;
     const n = this.sp.getNode(0)!;
@@ -527,6 +566,7 @@ export class Path {
     n.parent = -1;
     this.cur = this.start;
     this.open.push(this.start);
+    this.openSet.add(this.start);
     return true;
   }
 
@@ -585,15 +625,15 @@ export class Path {
       const sn = sp.getNode(s)!;
       const d = sp.measureDistance(this.cur, s, pt);
       const g = Math.fround(sp.getNode(this.cur)!.g + d);
-      const ci = this.closed.indexOf(s);
-      if (ci !== -1) {
+      if (this.closed.has(s)) {
         if (!(g < sn.g)) continue;
-        this.closed.splice(ci, 1);
+        this.closed.delete(s);
       }
-      if (this.open.includes(s)) {
+      if (this.openSet.has(s)) {
         if (sn.g <= g) continue;
       } else {
         this.open.push(s);
+        this.openSet.add(s);
       }
       sn.g = g;
       sn.px = pt.x;
@@ -603,9 +643,8 @@ export class Path {
       sn.f = Math.fround(sn.g + h);
       sn.parent = this.cur;
     }
-    const oi = this.open.indexOf(this.cur);
-    if (oi !== -1) this.open.splice(oi, 1);
-    this.closed.push(this.cur);
+    if (this.openSet.delete(this.cur)) this.open.splice(this.open.indexOf(this.cur), 1);
+    this.closed.add(this.cur);
     if (this.open.length === 0) return true;
     this.cur = this.findSmallestOpenNode();
     return false;
@@ -728,7 +767,18 @@ export function buildRoomPartition(module: SimModule, room: number, withPaths = 
   if (minY > 1) minY--;
   if (maxY < size - 2) maxY++;
   const tileRect = (l: number, t: number, r: number, b: number, w: number): PenaltyRect => penaltyRect(l << 4, t << 4, r << 4, b << 4, w);
+  // walkable() is asked again and again for the same tiles by the rectangle merges below:
+  // its answers are kept for this call (0 unknown, 1 no, 2 yes); the world does not change meanwhile.
+  const known = new Uint8Array(ARRAY_SIZE * ARRAY_SIZE);
   const walkable = (x: number, y: number): boolean => {
+    const k = y * ARRAY_SIZE + x;
+    const c = x >= 0 && y >= 0 && x < ARRAY_SIZE && y < ARRAY_SIZE ? known[k]! : 3;
+    if (c === 1 || c === 2) return c === 2;
+    const mine = walkableTile(x, y);
+    if (c === 0) known[k] = mine ? 2 : 1;
+    return mine;
+  };
+  const walkableTile = (x: number, y: number): boolean => {
     const id = rooms.u16(x, y);
     let mine = id === room || id === 0xfffb;
     if (!mine) {
