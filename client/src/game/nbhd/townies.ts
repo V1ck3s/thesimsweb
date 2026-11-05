@@ -49,8 +49,7 @@
  * The family sort (std::sort / customsort with lbl_105BB988 =
  * SortFamilyByCreation, Mac 100adc50): a before b when a's family number
  * (+0x114) is greater, or equal and a's id (+0x10c) is greater (signed
- * compares). Not applied here: the family vector is NeighborhoodStore's
- * private array, which has no reorder method yet.
+ * compares): NeighborhoodStore.sortFamiliesByCreation.
  *
  * Tourist families (Vacation), families 3000..3009:
  *  - DoFirstTimeTouristFamilies (Mac 100a1c20): only with Vacation (cSimsApp
@@ -176,6 +175,7 @@ export async function doFirstTimeTownies(ctx: GameContext, store: NeighborhoodSt
   await refillTownies(ctx, store, TOWNIE_COUNT, false);
   ngbh.townies = [true, false];
   store.touchNgbh();
+  store.sortFamiliesByCreation();
   await store.save();
 }
 
@@ -355,6 +355,7 @@ export async function doFirstTimeTouristFamilies(ctx: GameContext, store: Neighb
   await refillTouristFamilies(ctx, store, TOURIST_FAMILY_COUNT, false);
   ngbh.b19e = [true, false];
   store.touchNgbh();
+  store.sortFamiliesByCreation();
   await store.save();
 }
 

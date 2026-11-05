@@ -493,6 +493,17 @@ export class NeighborhoodStore {
     return this.nbrs.entries.filter((e): e is NeighborRaw => e !== null && e.personData[PD_67] === house).map((e) => e.guid >>> 0);
   }
 
+  /**
+   * std::sort of the family vector with SortFamilyByCreation (lbl_105BB988,
+   * Mac 100adc50), run after DoFirstTimeTownies / DoFirstTimeTouristFamilies:
+   * a before b when a's family number (+0x114) is greater, or equal and a's
+   * id (+0x10c) is greater (signed compares). Neighborhood::Save then writes
+   * the families in this order (Family::SaveFamily per vector entry).
+   */
+  sortFamiliesByCreation(): void {
+    this.families.sort((a, b) => (b.familyNumber | 0) - (a.familyNumber | 0) || (b.id | 0) - (a.id | 0));
+  }
+
   /** Neighborhood::MakeNewFamily */
   makeNewFamily(): number {
     let id = 1;
@@ -889,6 +900,22 @@ export class NeighborhoodStore {
     return false;
   }
 
+  /**
+   * Neighborhood::Save streams the families in vector order: the FAMI and
+   * FAMs chunks take the family order, each type within its own slots.
+   */
+  private orderFamilyChunks(): void {
+    const rank = new Map(this.families.map((f, i) => [f.id, i]));
+    for (const type of ["FAMI", "FAMs"]) {
+      const slots: number[] = [];
+      this.chunks.forEach((c, i) => {
+        if (c.type === type && rank.has(c.id)) slots.push(i);
+      });
+      const sorted = slots.map((i) => this.chunks[i]!).sort((a, b) => rank.get(a.id)! - rank.get(b.id)!);
+      slots.forEach((slot, k) => (this.chunks[slot] = sorted[k]!));
+    }
+  }
+
   private put(c: IffChunk): void {
     const i = this.chunks.findIndex((x) => x.type === c.type && x.id === c.id);
     if (i >= 0) this.chunks[i] = c;
@@ -914,6 +941,7 @@ export class NeighborhoodStore {
       });
       f.dirty = false;
     }
+    this.orderFamilyChunks();
     // NGBH, written in the current version once something changed it (townie flags).
     if (this.ngbhRaw?.dirty) {
       const ngbh = this.chunks.find((c) => c.type === "NGBH");
