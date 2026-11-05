@@ -82,8 +82,13 @@ other object id), `onKill`.
   instance on the lot, else defaults (floor/terrain, quarter turns, movable).
   Multi-tile parts are always seeded that way (Reset runs Init on masterId 0
   only in the VM).
-- Not ported: hilite drawing (SetHilite; the id is kept), IsDynamic
-  multi-tile objects are handled by ObjFnTable entry 8 only.
+- Hilites (+0x4c, `setHiliteId`): every change clears the old object
+  (SetHilite(+0x114 & 0xe)) and sets the new one (SetHilite(+0x114 & 0x1f
+  | 1)): Float's hover and held object, Select's new purchase, Release's
+  deleted door / window; Float's ctrl-delete door / window gets 0x11.
+  cXObject::SetHilite sets the whole chain of a non-dynamic multi-tile
+  object (ObjFnTable entry 8). Verified: the hovered dining table (both
+  parts) is drawn bright, cleared when the hand leaves it.
   ResetGrabPoint's door / window offsets (lbl_105BA53C..48, Windows
   0x6e5770..7c) are never written: 0.
 - PointToObjectID skips people (3D mesh rectangles).

@@ -46,6 +46,12 @@
  * townie runs on a lot. Like a Create-a-Sim person it gets
  * RandomizeAllInterests (cXPerson::Initialize of the CAS instance).
  *
+ * The family sort (std::sort / customsort with lbl_105BB988 =
+ * SortFamilyByCreation, Mac 100adc50): a before b when a's family number
+ * (+0x114) is greater, or equal and a's id (+0x10c) is greater (signed
+ * compares). Not applied here: the family vector is NeighborhoodStore's
+ * private array, which has no reorder method yet.
+ *
  * Tourist families (Vacation), families 3000..3009:
  *  - DoFirstTimeTouristFamilies (Mac 100a1c20): only with Vacation (cSimsApp
  *    +0x66 & 8) and the NGBH flag +0x19f ("tourists needed", 1 for files

@@ -156,7 +156,7 @@ Tutorial.FAM's first-run import and the town imports were ported on 2026-10-30).
 | Speed 3 is about 90 s per sim day | Faithful to the constants: SetSpeed's period = 172 - k x 171 ms with the buttons' k = 0.76023 / 0.92398 / 0.99415 (lbl_1059B8D8, lbl_1059A758), i.e. 42 / 14 / 2 ms per tick, 2 game seconds per tick: 30.2 min / 10.1 min / 86.4 s per sim day (speed 3 is capped by 30 ticks per frame, PulseGenerator::SetMaxPulses) |
 | PIP window: an object's vertical shift is 0 | BuildImage shifts by the object's damage rectangle height (cXObject::GetLastDamage); a person's shift is ported. The level change does not recompute the cutaway |
 | $TokenNameLocal needs the token's selector already opened | ObjectFolder.selectorByGUID is synchronous; an inventory object never opened in the session keeps the token |
-| Spell list: expansion flags (ids 0x16 / 10) and the cookbook's "Has Made" filters (recipes 9 and 4) not applied | cPickSpellList::Init reads the app's +0x66 pack flags |
+| Spell list: expansion flags (ids 0x16 / 10) and the cookbook's "Has Made" filters (recipes 9 and 4) not applied | Fixed: cPickSpellList::Init's filters ported (pack mask bits 0x20 / 0x40 = ObjectFolder.packs; +0xe4 / +0xe5 from "Has Made" (3, 5) / (4, 4) run on the person by CWinMagicBook::Init). Verified on House01 (UserData copy): spell book 21 entries (all packs), Fez cookbook 7 recipes on 2 pages (4 and 9 hidden) |
 
 ## Dev notes
 

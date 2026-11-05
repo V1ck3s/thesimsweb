@@ -55,9 +55,13 @@
  *    drawn at (3, 10) in the list, then frame 0 of kPickSpellItemBkg in each
  *    empty row; the list's private buffer is transparent elsewhere.
  *
- * Simplifications: the cookbook's two "Has Made" filters (recipes 9 and 4)
- * are not applied; the expansion flags of the spell list (ids 0x16 and 10)
- * are taken as set.
+ *  - the list's filters (cPickSpellList::Init, flags of cSimsApp +0x66 =
+ *    the installed-pack mask, ObjectFolder.packs): spell id 0x16 only with
+ *    bit 0x20 (Unleashed), spell id 10 only with bit 0x40 (Superstar),
+ *    recipe 7 only with bit 0x20; recipe 9 is dropped when the list's +0xe4
+ *    is set and recipe 4 when +0xe5 is set. CWinMagicBook::Init sets them
+ *    before the list is added: +0xe4 = "Has Made" run on the person with
+ *    (3, 5) is false, +0xe5 = the same with (4, 4) is false.
  */
 
 import { composeBtnImage, generateGraphics } from "../cpanel/buy/objecticon.js";
@@ -110,6 +114,9 @@ const INGREDIENT_ORIGIN = { x: 0x20, y: 6 };
 const LIST_POS = { x: 0x31, y: 0x36 };
 const LIST_BKG_OFFSET = { x: 3, y: 10 };
 const INGREDIENTS = 3;
+/** cSimsApp +0x66 bits tested by cPickSpellList::Init (ObjectFolder.packs: ExpansionPack5 / ExpansionPack6). */
+const PACK_UNLEASHED = 0x20;
+const PACK_SUPERSTAR = 0x40;
 const ID_CLOSE = 1;
 const ID_BACK = 2;
 const ID_NEXT = 3;
@@ -240,7 +247,11 @@ export class CWinMagicBook extends TSWinDlg {
     this.entryTitle = label(titleFont, 0x14b, 8, 0xf0, titleFont.height, false);
     this.description = label(descFont, 0x14b, 0x36, 0xf0, 0x10e, true);
 
-    this.ids = this.listIds();
+    // CWinMagicBook::Init: the two "Has Made" runs handed to the list (+0xe4 / +0xe5).
+    const hide9 = !this.hasMade(3, 5);
+    const hide4 = !this.hasMade(4, 4);
+    const packs = this.installedPacks();
+    this.ids = this.listIds(packs, hide9, hide4);
     this.tabDown();
     return true;
   }
@@ -251,16 +262,23 @@ export class CWinMagicBook extends TSWinDlg {
     return this.sim.module.nbhd?.families.find((f) => f.chunkId === n)?.name ?? "";
   }
 
-  /** cPickSpellList::Init's id list. */
-  private listIds(): number[] {
+  /** cSimsApp +0x66: the installed-pack mask (ObjectFolder.packs). */
+  private installedPacks(): number {
+    const folder = this.person.obj.selector.folder;
+    return folder instanceof ObjectFolder ? folder.packs : 0;
+  }
+
+  /** cPickSpellList::Init's id list (`hide9` / `hide4`: the list's +0xe4 / +0xe5). */
+  private listIds(packs: number, hide9: boolean, hide4: boolean): number[] {
     const out: number[] = [];
     const count = this.mode === Mode.Spells ? 0x16 : 9;
     for (let i = 1; i <= count; i++) {
       if (this.mode === Mode.Spells) {
-        if (i !== 0xc) out.push(this.magicId(STR_SPELL_IDS, i));
+        const id = this.magicId(STR_SPELL_IDS, i);
+        if (i !== 0xc && (packs & PACK_UNLEASHED || id !== 0x16) && (packs & PACK_SUPERSTAR || id !== 10)) out.push(id);
       } else if (this.mode === Mode.Kid) {
         out.push(this.magicId(STR_KID_IDS, i));
-      } else {
+      } else if ((packs & PACK_UNLEASHED || i !== 7) && (!hide9 || i !== 9) && (!hide4 || i !== 4)) {
         out.push(i);
       }
     }

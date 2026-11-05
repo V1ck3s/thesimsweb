@@ -60,7 +60,19 @@ Defaults (Product::Product): wallpaper 0, wallStyle 1, floorStyle 0.
 - Plugin floors / wallpapers (.flr / .wll): pattern numbers come from the
   graphics managers' number pools, pictures from RenderCatalogShot.
 - RenderCatalogShot (objects without a BMP_ thumbnail show kItemUnknown).
-- DrawWallIcon (product sheet picture of wall styles and wallpapers).
+- DrawWallIcon (product sheet picture of wall styles and wallpapers) and
+  RenderCatalogShot kinds 3 / 4 (catalog picture of plugin wallpapers): both
+  go through WallManager::DrawIconic (102b9270): a one-segment iconic Wall
+  (Wall::BuildIconic between two Vertex objects, direction 6) set to the
+  style / pattern, Wall::SetIconic(x = w / 2, y = ceil(3h / 4) + 0xe (-0x10
+  for styles 2 / 0xd / 0xe, -2 for 0xc in DrawWallIcon; -0x10 for 2 / 0xc in
+  RenderCatalogShot), scale 2), then Wall::Draw and Vertex::Draw of both
+  vertices in iconic mode (Wall +0x48: pixel origin +0x4c / +0x50 instead of
+  ComputePixelTopOfTile, RenderParam::SetState(3, 1, 1)), clipped to
+  (-800, -600, 800, 600); the drawn rect is (x -+ 8 << s, y + (4 << s) -
+  pixel shape height of walls.iff list style * 2 + (s - 1) * 0x200).
+  `world/walls.ts` draws through the WebGL Compositor of the house view and
+  has no iconic mode, so this needs an offscreen wall/vertex draw first.
 - cRoofLayer itself: the roof panel calls `CPState.archRoofHooks` (null until
   the lot view installs it; then no pitch / pattern button is down).
 - UI sounds.

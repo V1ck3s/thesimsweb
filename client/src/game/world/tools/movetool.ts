@@ -25,7 +25,11 @@
  * cursor is the delete cursor and the cutaway opens around the hilited
  * one (AdjustCutawayForTool).
  *
- * Not drawn: object hilites (SetHilite; the id is kept). FlipPortal and its
+ * Hilites (+0x4c): every change does the old object's SetHilite(+0x114 &
+ * 0xe) and the new one's SetHilite(+0x114 & 0x1f | 1): the hand's hover
+ * (Float), the held object (Float, Select), the deleted door or window
+ * (Release); Float's ctrl-delete door or window under the mouse sets 0x11.
+ * FlipPortal and its
  * cursor (0x23) are unreachable in both builds: Float (1016f3c0, Windows
  * 485bb5) clears +0x7a and +0xac and nothing sets them, so they are not
  * ported.
@@ -50,6 +54,7 @@ import { setFloor } from "./worldedit.js";
 import { adjustCutawayForTool, type CutawayTool } from "../cutaway.js";
 import type { CutawayMask } from "../walls.js";
 import type { DisposeItem } from "../../cpstate.js";
+import { EP, ObjFnTable } from "../../sim/objfntable.js";
 
 /** cMoveTool+0x34. */
 export const MoveMode = {
@@ -208,7 +213,7 @@ export class MoveTool implements FloorUndoTool, CutawayTool {
   private mouseY = 0;
   /** cTool +0..+0x18: time of the last play of each tool sound (400 ms apart). */
   private readonly soundTimes = new Map<string, number>();
-  /** +0x4c: the hilited object (kept for the hand's hover; hilites are not drawn). */
+  /** +0x4c: the hilited object (set through setHiliteId). */
   hiliteId = 0;
   /** lbl_105BA4B8: floors changed since the last room computation. */
   floorsChanged = false;
@@ -217,6 +222,37 @@ export class MoveTool implements FloorUndoTool, CutawayTool {
 
   private get p(): Placement {
     return this.host.placement;
+  }
+
+  /**
+   * The +0x4c change cMoveTool inlines: when `id` differs, the hilited
+   * object's SetHilite(+0x114 & 0xe), then the new one's SetHilite(+0x114 &
+   * 0x1f | bits).
+   */
+  private setHiliteId(id: number, bits = 1): void {
+    if (id === this.hiliteId) return;
+    const old = this.p.get(this.hiliteId);
+    if (old) this.setHilite(old, old.objFlags & 0xe);
+    this.hiliteId = id;
+    const obj = this.p.get(id);
+    if (obj) this.setHilite(obj, (obj.objFlags & 0x1f) | bits);
+  }
+
+  /**
+   * cXObject::SetHilite (100c1050): +0x114 bits 0..4 become `flags`; a
+   * multi-tile object (OBJD master id) that is not dynamic (cXMTObject::
+   * IsDynamic: no entry point 8) sets every part of its chain. A changed
+   * object goes to the dynamic layer (SetRenderLayer(1)): this port redraws
+   * the whole view, so it stands as a redraw.
+   */
+  private setHilite(obj: XObject, flags: number): void {
+    const p = this.p;
+    const parts = obj.selector.objd.masterId !== 0 && ObjFnTable.forSelector(obj.selector).getTreeID(EP.dynamicMultiTileUpdate) === 0 ? p.chain(obj) : [obj];
+    for (const o of parts) {
+      if ((o.objFlags & 0x1f) === (flags & 0x1f)) continue;
+      o.objFlags = (o.objFlags & ~0x1f) | (flags & 0x1f);
+      this.host.invalidate();
+    }
   }
 
   /** cTool::GetCurrentLevel. */
@@ -326,6 +362,7 @@ export class MoveTool implements FloorUndoTool, CutawayTool {
     this.objUndo = new ObjectUndoable(this.p, this.host.folder, obj.objectId, ObjectAction.Create, this.price, this);
     this.objUndo.addRef();
     if (this.mode === MoveMode.Door || this.mode === MoveMode.Window || this.mode === MoveMode.Stair) this.resetGrabPoint();
+    this.setHiliteId(obj.objectId);
     this.inWorld = false;
     this.validFeedback = false;
     this.lastValidFeedback = false;
@@ -391,7 +428,7 @@ export class MoveTool implements FloorUndoTool, CutawayTool {
       c.detachFloater();
     }
     this.cursor = null;
-    this.hiliteId = 0;
+    this.setHiliteId(0);
     this.stopDisposing();
     this.host.invalidate();
     this.updateCursor();
@@ -581,18 +618,19 @@ export class MoveTool implements FloorUndoTool, CutawayTool {
     if (this.buildItem && this.ctrlDelete) {
       // Ctrl-delete: the cursor goes, the door (window) under the mouse is hilited.
       if (c?.inWorld) c.pickup(true);
-      this.hiliteId = this.objectUnder(px, py, this.mode === MoveMode.Door ? PickMode.Flag8000 : PickMode.Flag4000);
+      const id = this.objectUnder(px, py, this.mode === MoveMode.Door ? PickMode.Flag8000 : PickMode.Flag4000);
+      this.setHiliteId(this.p.get(id) ? id : 0, 0x11);
       this.host.invalidate();
       return;
     }
     if (!c) {
       const id = this.objectUnder(px, py);
       if (id === 0) {
-        this.hiliteId = 0;
+        this.setHiliteId(0);
         this.cantGrab = false;
         this.expireTip();
       } else {
-        this.hiliteId = id;
+        this.setHiliteId(id);
       }
       return;
     }
@@ -642,7 +680,7 @@ export class MoveTool implements FloorUndoTool, CutawayTool {
     this.validFeedback = false;
     if (c.inWorld) c.pickup(true);
     const f = c.anchor;
-    if (f && f.objectId !== this.hiliteId) this.hiliteId = f.objectId;
+    if (f) this.setHiliteId(f.objectId);
     const tx = at.fx >> 4;
     const ty = at.fy >> 4;
     const size = this.p.world.size;
@@ -1022,7 +1060,7 @@ export class MoveTool implements FloorUndoTool, CutawayTool {
         id = 0;
       }
     }
-    this.hiliteId = obj ? id : 0;
+    this.setHiliteId(obj ? id : 0);
     if (!obj) return;
     if (obj.selector.objd.i16(0x8a) === 6) this.floorsChanged = true;
     if (!this.p.userCanDelete(obj)) return;

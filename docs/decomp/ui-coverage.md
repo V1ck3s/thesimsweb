@@ -83,7 +83,7 @@ or developer-only tools).
 | cWinRadioDialogBox | Radio choice dialog | ported | `ui/radiodialog.ts` |
 | CWinPhoneBook | Phone book | ported | `ui/phonebook.ts` |
 | cWinClothingChoiceDlg, cWinPetSelectDlg, cWinTransformMeDlg | Outfit, pet purchase, transform windows | ported | `ui/outfitdlg.ts` |
-| CWinMagicBook, cPickSpellList, cPickSpellItem | Spell book / cookbook | partial (expansion filters) | `ui/magicbook.ts` |
+| CWinMagicBook, cPickSpellList, cPickSpellItem | Spell book / cookbook | ported | `ui/magicbook.ts` |
 | cWinPictureInPicture | Event picture-in-picture | partial (scrapbook auto snapshot) | `world/winpictureinpicture.ts` |
 | cTutorialIcon | Close box of the tutorial dialogs | partial | `ui/picturedialog.ts` |
 | cTSWinTutorialHighlight | Tutorial arrow over a button or lot (neighborhood tutorial lots, prim 34 effect 0) | partial (Tut_CheckForEvents) | `ui/tutorialhighlight.ts` |
