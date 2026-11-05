@@ -94,8 +94,15 @@ export class HitControlGroup {
 }
 
 export class HitMan {
-  /** cHitTimer elapsed ticks (+0x58). Starts at 1: 0 means "idle" for a player. */
+  /**
+   * cHitTimer (+0x54): elapsed ticks (+0x58), counted while it runs (+0x54,
+   * set by cHitMan::Init, cleared by Shutdown). Init starts it at 1 (0
+   * means "idle" for a player); TimerCallback adds one a tick and Unpause
+   * one more (the clock drifts a tick ahead at each unpause: HIT waits due
+   * then end a tick early).
+   */
   time = 1;
+  timerRunning = true;
   private readonly objects = new Map<number, SoundObject>();
   private readonly labels = new Map<number, { code: HitCode; addr: number }>();
   private readonly hitLists = new Map<number, HitList>();
@@ -221,7 +228,7 @@ export class HitMan {
 
   /** cHitMan::TimerCallback: one engine tick. */
   timerCallback(): void {
-    this.time++;
+    if (this.timerRunning) this.time++;
     for (const p of [...this.updateList]) p.handleTimerCallback();
   }
 
@@ -247,8 +254,9 @@ export class HitMan {
     this.duckMapRemoveAll();
   }
 
-  /** cHitMan::Unpause: every sound object unpauses (cBoxX::Unpause). */
+  /** cHitMan::Unpause: the timer one tick on, every sound object unpauses (cBoxX::Unpause). */
   unpause(): void {
+    if (this.timerRunning) this.time++;
     this.paused = false;
     for (const o of this.objects.values()) (o as Partial<Pausable>).unpause?.();
   }

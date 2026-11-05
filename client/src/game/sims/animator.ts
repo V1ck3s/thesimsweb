@@ -34,8 +34,14 @@
  *   Styles 2 and 3 are not drawn when the carrier is hidden (object data
  *   34) or person data 74 bit 0 is set (VitaBoy::SetRenderFlags' hide flag).
  *
- * Not ported: the lit (+0xf7) branch with the room LightingRig, practices
- * (the bobs never animate) and the ghost / data 74 bit 1 render flags.
+ * Not ported: the lit (+0xf7) branch with the room LightingRig
+ * (RenderParam::GetAmbientLightLevel, or 1 with cXObject +0x114 bit 0,
+ * through SetTargetAmbient, then SetRoomAmbient / SetPosition at the root
+ * bone / EngageLights). UpdateStyle clears +0xf7 for all three bob styles, so
+ * the bobs are never lit by the room, and they are the only objects of the
+ * game with OBJD +0xcc bit 0 (every OBJD of the install scanned): the branch
+ * has nothing to draw. Also not ported: practices (the bobs never animate)
+ * and the ghost / data 74 bit 1 render flags.
  */
 
 import { BodyStrings } from "./bodystrings.js";

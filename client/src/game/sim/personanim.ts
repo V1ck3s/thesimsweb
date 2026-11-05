@@ -69,6 +69,12 @@ function findTagTime(skill: Skill, key: string, value: string): { time: number; 
   return { time: -1, bone: "" };
 }
 
+/** func_10595F30 (atoi): leading blanks, a sign, then decimal digits; 0 without any. */
+function atoi(s: string): number {
+  const m = /^\s*([+-]?\d+)/.exec(s);
+  return m ? Number.parseInt(m[1]!, 10) | 0 : 0;
+}
+
 /** StartVitaBoy's walk loop measures (SAnimator +0x168..+0x174). */
 interface WalkMeasures {
   phase1: number;
@@ -78,6 +84,9 @@ interface WalkMeasures {
 }
 
 const walkLoopMeasures = new Map<string, WalkMeasures>();
+
+/** SAnimator::SAnimator's +0x168..+0x174 (lbl_105BC8A8 + 0x28, 0). */
+const NO_WALK_MEASURES: WalkMeasures = { phase1: 0, phase2: 0, stop1: 0, stop2: 0 };
 
 /**
  * SAnimator::StartVitaBoy's walk loop measures: the phases of the
@@ -251,6 +260,12 @@ export interface AnimatorHost {
   record(kind: string, value: string | number): void;
   /** GetStdSkill's skill name for a StdAnimIdx (null: none). */
   stdSkillName(idx: number): string | null;
+  /** ObjSelector::GetBodyStrings(0): the person's body strings (STR# OBJD +0x26, as edited). */
+  bodyStrings(): readonly string[];
+  /** A STR# of the person's semi-global file (Behavior::GetMiddleFile), null when missing. */
+  middleStrings(id: number): readonly string[] | null;
+  /** OBJD +0xcc of the person's object (bit 2: StartVitaBoy measures no walk loop). */
+  objdFlags(): number;
   personData(index: number): number;
   objectData(index: number): number;
   /** cXObject +0x4c. */
@@ -332,14 +347,66 @@ export class PersonAnimator {
   constructor(readonly host: AnimatorHost) {}
 
   /**
-   * SAnimator::ResetSuits' simulation part: the hand gestures open
-   * (person data 0x16 / 0x17 := 0) and the accessories cleared
-   * (ClearAccessories); the renderer redresses from the body strings.
+   * +0xd8: set by Reset; the next GetSkill, StartReachAnimation or
+   * ResolveSkillForPrimitive runs ResetSuits first (checkResetSuits).
+   */
+  private suitsResetPending = false;
+  /**
+   * Bumped by ResetSuits: UndressSuits took every suit off and +0x1a8 /
+   * +0x1ac = -1 make the next UpdateOutfitAndHands (SAnimator::Render, the
+   * lot renderer here) dress everything again (sims/sanimator.ts).
+   */
+  suitsVersion = 0;
+
+  /**
+   * SAnimator::ResetSuits (Mac 0x103585a0): UndressSuits (suitsVersion),
+   * the body strings read again (ObjSelector::GetBodyStrings), the hand
+   * gestures open (person data 0x16 / 0x17 := 0), then from the body
+   * strings: the gender (13: "male" 0, "female" 1, "dogmale" 2,
+   * "dogfemale" 3, "catmale" 4, "catfemale" 5; person data 65 unchanged
+   * otherwise), the age (14, atoi; person data 58) and the skin color (15,
+   * matched without case against the semi-global's STR# 0x2000 entries 2..:
+   * person data 60 := entry - 1, 0 when none matches), then
+   * ClearAccessories. The renderer redresses from the body strings.
    */
   resetSuits(): void {
+    const bs = this.host.bodyStrings();
     this.host.setPersonData(0x16, 0);
     this.host.setPersonData(0x17, 0);
+    const gender = bs[12];
+    if (gender !== undefined) {
+      const g = ["male", "female", "dogmale", "dogfemale", "catmale", "catfemale"].indexOf(gender.toLowerCase());
+      if (g >= 0) this.host.setPersonData(65, g);
+    }
+    const age = bs[13];
+    if (age !== undefined) this.host.setPersonData(58, atoi(age));
+    const skin = bs[14];
+    if (skin !== undefined) {
+      const colors = this.host.middleStrings(0x2000) ?? [];
+      let v = 0;
+      for (let i = 2; i <= colors.length; i++) {
+        if ((colors[i - 1] ?? "").toLowerCase() === skin.toLowerCase()) {
+          v = i - 1;
+          break;
+        }
+      }
+      this.host.setPersonData(60, v);
+    }
     this.accessories.clear();
+    this.suitsVersion++;
+  }
+
+  /** The +0xd8 test of GetSkill / StartReachAnimation / ResolveSkillForPrimitive: ResetSuits once after a Reset. */
+  checkResetSuits(): void {
+    if (!this.suitsResetPending) return;
+    this.suitsResetPending = false;
+    this.resetSuits();
+  }
+
+  /** SAnimator::GetSkill(i)'s name: ResetSuits first when a Reset asked for it, then GetStdSkill. */
+  private getSkillName(idx: number): string | null {
+    this.checkResetSuits();
+    return this.host.stdSkillName(idx);
   }
 
   /**
@@ -356,9 +423,11 @@ export class PersonAnimator {
    * SAnimator::Reset's practices: the main, carry and background ones
    * stop, the carry state goes back to empty-handed (+0x1a0 = 0, +0x1a4 =
    * -1: the next tick's UpdateCarryPractice restarts the carry loop when
-   * the person still holds something).
+   * the person still holds something); +0xd8 = 1: the next skill lookup
+   * runs ResetSuits.
    */
   reset(): void {
+    this.suitsResetPending = true;
     this.stop("main");
     this.stop("carry");
     this.stop("background");
@@ -384,7 +453,7 @@ export class PersonAnimator {
     if (want === this.carryAnim) return;
     this.carry = null;
     if (want === 0) {
-      const n = this.host.stdSkillName(STD.carry);
+      const n = this.getSkillName(STD.carry);
       const sk = n ? requestSkill(n) : null;
       // The original loads the skill synchronously: until it is here, ask again next tick.
       if (sk === undefined) return;
@@ -576,7 +645,7 @@ export class PersonAnimator {
     this.stopping = false;
     // The walk skills (and the carry loop) load asynchronously here: ask for them now.
     for (const i of [STD.walkStart, STD.walkLoop, STD.runLoop, STD.runStart, STD.carry, 4, 5, 6, 7, 8, 9, 10]) {
-      const n = this.host.stdSkillName(i);
+      const n = this.getSkillName(i);
       if (n) requestSkill(n);
     }
   }
@@ -648,7 +717,7 @@ export class PersonAnimator {
   /** SetCurAnim(std, loop): the standard skill on the main practice (false while it loads or is missing). */
   private setCurAnim(idx: number, looping: boolean): boolean {
     if (this.curAnim === idx && this.main) return true;
-    const name = this.host.stdSkillName(idx);
+    const name = this.getSkillName(idx);
     const sk = name ? requestSkill(name) : null;
     if (!sk) {
       this.main = null;
@@ -691,7 +760,7 @@ export class PersonAnimator {
 
   /** SAnimator::StdAnimOffset(i): the ROOT translation at the last frame of a standard skill (zeros when it is not there). */
   private stdAnimOffset(i: number): [number, number, number] {
-    const n = this.host.stdSkillName(i);
+    const n = this.getSkillName(i);
     const sk = n ? requestSkill(n) : null;
     const m = sk?.motions.find((x) => x.boneName === "ROOT");
     const tr = sk?.translations;
@@ -702,7 +771,7 @@ export class PersonAnimator {
 
   /** StdAnimDist(i) x 16/3: a standard skill's distance in 1/16 tile (0 while it loads). */
   private stdDist(i: number): number {
-    const n = this.host.stdSkillName(i);
+    const n = this.getSkillName(i);
     const sk = n ? requestSkill(n) : null;
     return sk ? sk.distance * (16 / 3) : 0;
   }
@@ -712,7 +781,7 @@ export class PersonAnimator {
     const sit = this.host.personData(0);
     if (sit === this.bgSit && this.background) return;
     const idx = sit === 1 ? STD.sitLoop : sit === 2 ? STD.floorSitLoop : STD.standingLoop;
-    const n = this.host.stdSkillName(idx);
+    const n = this.getSkillName(idx);
     const sk = n ? requestSkill(n) : null;
     if (!sk) return;
     this.start("background", sk, false, true);
@@ -1153,7 +1222,7 @@ export class PersonAnimator {
       return true;
     }
     this.state = AS.walkingStop;
-    const n = this.host.stdSkillName(STD.walkStart);
+    const n = this.getSkillName(STD.walkStart);
     const sk = n ? requestSkill(n) : null;
     if (sk) this.start("main", sk, true, false);
     this.curAnim = STD.walkStart;
@@ -1178,7 +1247,8 @@ export class PersonAnimator {
    * over the duration) and the stop distances at each (+0x170 / +0x174:
    * how far the anchored foot is ahead of the other one), measured as
    * SAnimator::StartVitaBoy does once the walk loop and the skeleton are
-   * there (until then: phases 0 / 0.5, a quarter loop each).
+   * there (until then: phases 0 / 0.5, a quarter loop each); all 0 for an
+   * object whose OBJD +0xcc has bit 2.
    */
   private get anchor1(): number {
     return this.walkMeasures()?.phase1 ?? 0;
@@ -1194,7 +1264,9 @@ export class PersonAnimator {
   }
 
   private walkMeasures(): WalkMeasures | null {
-    const n = this.host.stdSkillName(STD.walkLoop);
+    // OBJD +0xcc bit 2 (NPC-FX): StartVitaBoy skips the measures, the constructor's zeros stay.
+    if ((this.host.objdFlags() & 2) !== 0) return NO_WALK_MEASURES;
+    const n = this.getSkillName(STD.walkLoop);
     const sk = n ? requestSkill(n) : null;
     return sk && this.skeleton ? measureWalkLoop(sk, this.skeleton) : null;
   }

@@ -252,7 +252,17 @@ reg 0x13 = a2, 0x14 = a3, and UpdateAmbienceLoop passes (0, 0, 0) — same as or
   stepping (it would run past `end`).
 - MP3 songs stream through `<audio>` + MediaElementSource; Pause/Unpause of
   sample (non-MP3) channels mutes them instead of resuming at the same offset.
-- CheckPriority (voice limits per SPL), cHitTimer drift, the debug events and
-  kSndobUpdate / SetPosition are not implemented.
+- cHitTimer (cHitMan +0x54): ticks counted only while it runs (Init .. Shutdown),
+  and cHitMan::Unpause adds one more tick (Mac 0x1030FD00, Windows FUN_0057d025):
+  every unpause moves the HIT clock a tick ahead (`hitman.ts`).
+- cBoxX::Event cases 4..10 (jump table lbl_106172A0): kSndobUpdate calls
+  cSoundObject::Update (no override: answers 1, does nothing); kSndobSetVolume /
+  SetPitch / SetPan / SetFxType / SetFxLevel call the track's setter (register
+  extvol, pitch, pan, 0x17, 0x18 := the third argument); kSndobSetPosition calls
+  cTrackPlayer::SetPosition (registers X, Y, Z 0x1e..0x20). On a cSamplePatch they
+  forward to its sound (+0xc8), not modelled. No .hot file maps an event to them
+  and no game code issues them (cSoundPlayer sends 0x14..0x2a, cSimsApp 0x15, 0x18,
+  0x19): unreachable in the shipped game.
+- CheckPriority's voice limits per SPL and the debug events are not implemented.
 - Expansion flags (+0x66) are assumed all set; neighborhood music uses
   `Music\Modes\Nhood` (French build) unless `initialize(options, true)`.

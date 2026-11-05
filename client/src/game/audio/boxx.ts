@@ -24,7 +24,11 @@ export const EV = {
   SndobKill: 3,
   SndobUpdate: 4,
   SndobSetVolume: 5,
+  SndobSetPitch: 6,
   SndobSetPan: 7,
+  SndobSetPosition: 8,
+  SndobSetFxType: 9,
+  SndobSetFxLevel: 10,
   SndobPause: 11,
   SndobUnpause: 12,
   SndobCancelNote: 19,
@@ -47,6 +51,15 @@ export const EV = {
   SetVoxVolume: 39,
   SetAmbienceMode: 52,
 } as const;
+
+/** The register each kSndobSet* event's track setter writes (cTrackPlayer::SetVolume .. SetFxLevel). */
+const SNDOB_SETTER_REGISTER: Readonly<Record<number, number>> = {
+  [EV.SndobSetVolume]: R.extvol,
+  [EV.SndobSetPitch]: R.pitch,
+  [EV.SndobSetPan]: R.pan,
+  [EV.SndobSetFxType]: 0x17,
+  [EV.SndobSetFxLevel]: 0x18,
+};
 
 /** cGameModeManager modes (kSetMusicMode arguments, SimsSound.hot bkground_*). */
 export const MODE = {
@@ -663,6 +676,25 @@ export class BoxX {
           this.ambienceCur.setXPos(Math.trunc(((HOUR_TO_X[info?.objectData(0, 4) ?? 0] ?? 12) * 1000) / 13));
         }
         this.updateAmbienceLoop();
+        return true;
+      }
+      case EV.SndobUpdate:
+        // cSoundObject::Update (no class overrides it) only answers 1.
+        return this.hm.soundObject(arg) !== null;
+      case EV.SndobSetVolume:
+      case EV.SndobSetPitch:
+      case EV.SndobSetPan:
+      case EV.SndobSetFxType:
+      case EV.SndobSetFxLevel:
+        // cTrackPlayer::SetVolume / SetPitch / SetPan / SetFxType / SetFxLevel (vtable +0x48..+0x5c): one
+        // register (extvol, pitch, pan, 0x17, 0x18) := the third argument. cSamplePatch forwards them to
+        // its sound (+0xc8), which the port does not model.
+        this.track(arg)?.setRegister(SNDOB_SETTER_REGISTER[kind]!, source);
+        return true;
+      case EV.SndobSetPosition: {
+        // cTrackPlayer::SetPosition: registers X, Y, Z (0x1e..0x20), stopping at the first refused one.
+        const t = this.track(arg);
+        if (t && t.setRegister(R.X, source) && t.setRegister(R.Y, a4)) t.setRegister(R.Z, a5);
         return true;
       }
       case EV.SndobStop:

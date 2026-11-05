@@ -7,7 +7,10 @@
  *   the person's outfit and hand gestures (sims/outfit.ts), redressed only
  *   when the outfit, costume offset or a gesture changed (the original runs
  *   it from SAnimator::Render each frame); the "dress" / "undress" props'
- *   accessories (SAnimator::Dress / Undress, +0x26c).
+ *   accessories (SAnimator::Dress / Undress, +0x26c). Objects whose OBJD
+ *   +0xcc has bit 8 only wear body string outfit + 1 on the body record.
+ * - SAnimator::ResetSuits (PersonLook.suitsVersion): UndressSuits, then the
+ *   next UpdateOutfitAndHands dresses everything again.
  * - Animator::StartSkill -> VitaBoy::StartPractice.
  */
 
@@ -31,6 +34,8 @@ export class SAnimator {
   private dressedFor: string | null = null;
   /** The accessories dressed (suit name -> texture spec). */
   private worn = new Map<string, string>();
+  /** The ResetSuits count last seen (PersonLook.suitsVersion). */
+  private suitsVersion = 0;
   /** UpdateOutfitAndHands runs one at a time (suits load asynchronously). */
   private dressing: Promise<void> = Promise.resolve();
   private look: PersonLook | null = null;
@@ -62,12 +67,44 @@ export class SAnimator {
   updateOutfitAndHands(look: PersonLook | null = this.look, force = false): Promise<void> {
     this.look = look;
     const pd = look?.pd;
+    // SAnimator::ResetSuits: UndressSuits, +0x1a8 / +0x1ac = -1 (everything dressed again).
+    const version = look?.suitsVersion ?? this.suitsVersion;
+    if (version !== this.suitsVersion) {
+      this.suitsVersion = version;
+      this.dressedFor = null;
+      this.chain(() => this.undressSuits());
+    }
+    if (pd && ((look?.objdFlags ?? 0) & 8) !== 0) {
+      // OBJD +0xcc bit 8: outfit n wears body string n + 1 on the body record (nothing below 1).
+      const outfit = pd[PD.outfit]!;
+      if (outfit < 1) return this.dressing;
+      const key = `objd8:${outfit}`;
+      if (!force && key === this.dressedFor) return this.dressing;
+      this.dressedFor = key;
+      return this.chain(async () => {
+        const { suit, texture } = this.bodyStrings.getSuitAndTexture(outfit + 1);
+        if (suit) await this.vitaboy.dress("body", suit, texture);
+      });
+    }
     let key = pd ? [PD.outfit, PD.costumeOffset, PD.leftHand, PD.rightHand].map((i) => pd[i]).join(",") : "";
     for (const [s, t] of look?.accessories ?? []) key += `|${s},${t}`;
     if (!force && key === this.dressedFor) return this.dressing;
     this.dressedFor = key;
-    this.dressing = this.dressing.then(() => this.dressOutfit(look)).catch((e: unknown) => console.warn("UpdateOutfitAndHands", e));
+    return this.chain(() => this.dressOutfit(look));
+  }
+
+  /** Queue a dressing step after the ones in progress. */
+  private chain(step: () => Promise<void> | void): Promise<void> {
+    this.dressing = this.dressing.then(step).catch((e: unknown) => console.warn("UpdateOutfitAndHands", e));
     return this.dressing;
+  }
+
+  /** SAnimator::UndressSuits: every dressing record, the accessories and the censor suit off. */
+  private undressSuits(): void {
+    for (const slot of [...this.vitaboy.dressings.keys()]) this.vitaboy.undress(slot);
+    this.worn.clear();
+    this.censorWanted = 0;
+    this.vitaboy.censor = null;
   }
 
   private async dressOutfit(look: PersonLook | null): Promise<void> {

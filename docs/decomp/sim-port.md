@@ -328,11 +328,13 @@ Practices now have their own clock and rate (SetSpeed). The renderer draws
 people at the animator's grid position while it moves them
 (`LotPeople.bindSim` pos hook).
 
-Not ported in the walk engine: the walk loop's foot phases and stop
-distances (StartVitaBoy reads the "anchor" tags and the feet bones; taken
-as phases 0 / 0.5 and a quarter loop), StdAnimOffset of the adjust anims
-(the step is interpolated without the anim's own offset), the root-motion
-correction (gated off in the original), the OBJD custom walk table.
+The walk loop's foot phases and stop distances, StdAnimOffset of the adjust
+anims and the OBJD custom walk table were ported later (Phase 5 "Walk
+animation" below; GetStdSkill's ObjSelector::GetCustomWalkAnimTable in
+"Pets and outfits"). OBJD +0xcc bit 2 (only NPC-FX, ExpansionPack7) makes
+StartVitaBoy skip the measures: phases and stop distances stay 0 (the
+constructor's lbl_105BC8A8 + 0x28). Not ported: the root-motion correction
+(gated off in the original).
 
 ### Pie menu (sims/popuphead.ts, ui/piemenu.ts, winlotview.ts `doMenu`)
 
@@ -617,9 +619,28 @@ not caught in TickAllObjects (none in the original either).
 - **cWinVitaBtnSolo**: the outfit is UpdateOutfitAndHands on the copy's person data (costumes in
   the Transform window); Build{Adult,Child,Cat,Dog}AnimationList (lbl_105BC78C) and AnimatePet:
   the list's skills played once each in turn (a cat starts at 8), people and pets.
-- Not ported: UpdateOutfitAndHands' OBJD flag 8 branch (objects with body strings: outfit + 1
-  only), SAnimator::Reset → ResetSuits on the next skill (only Cleanup clears), the background
-  practice restarted each tick for pets (their stand loop is still). The accessory record is
+- **UpdateOutfitAndHands' OBJD +0xcc bit 8 branch** (`sims/sanimator.ts`; only NPC-FX of
+  ExpansionPack7 has it, flags 0xe): outfit (person data 8) below 1 dresses nothing; else, when it
+  changed (+0x1a8), body string outfit + 1 on the body record (DressingRecord::Redress), no head,
+  hands, accessory or pet test (NPC-FX: outfits 15..22 = effects1-lightninga .. -fireblueb).
+- **SAnimator::Reset → ResetSuits** (`sim/personanim.ts`): Reset sets +0xd8; the next GetSkill
+  (every standard skill lookup of the walk engine), StartReachAnimation (after
+  FindReachAnimationIndex) or ResolveSkillForPrimitive runs ResetSuits once. **ResetSuits** (Mac
+  0x103585a0) now does all of it: UndressSuits and +0x1a8 / +0x1ac = -1 (`suitsVersion`, read by
+  the renderer: every record undressed, then everything dressed again), the body strings read
+  again, gestures 0, then person data 65 from body string 13 ("male" 0, "female" 1, "dogmale" 2,
+  "dogfemale" 3, "catmale" 4, "catfemale" 5, unchanged otherwise), 58 = atoi(body string 14), 60 =
+  the index - 1 of body string 15 in the semi-global's STR# 0x2000 (entries 2.., no case; 0 when
+  absent), ClearAccessories. The pending flag starts clear in the port: the original's first
+  ResetSuits runs in SAnimator::Initialize / StartVitaBoy at object creation.
+- Not ported: the background practice restarted each tick for pets (their stand loop is still).
+- Outfit 0x12 ("fashion", body string 0x23) of a child: EditPerson::BeginFill leaves the
+  placeholder `ADDED` there, which GetSuitAndTexture returns as the suit "added". FindSuit fails,
+  so DressingRecord::Redress keeps whatever the body record holds (original and port alike):
+  after an outfit change the previous clothes stay, but on a fresh VitaBoy (a reload) or after
+  ResetSuits' UndressSuits (Cleanup, Reset) the child has no body at all, in the original too.
+  The port's lot renderer first dresses day clothes when it creates the VitaBoy (fromBodyStrings,
+  outfit 0) and only then the person's look, so a reload in outfit 0x12 keeps day clothes. The accessory record is
   undressed when the job accessory is empty (the original's Redress with an empty name is
   probably a no-op).
 

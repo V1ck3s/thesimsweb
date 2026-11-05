@@ -246,6 +246,12 @@ export class PersonSim extends SimObject {
       },
       record: (kind, value) => this.module.record(this, kind, value),
       stdSkillName: (idx) => this.stdSkillName(idx),
+      bodyStrings: () => this.module.bodyStringEdits.get(this.obj.selector.guid | 0) ?? loadStringSet(this.obj.selector.res, this.obj.selector.objd.i16(0x26)) ?? [],
+      middleStrings: (id) => {
+        const f = this.obj.selector.semiGlobalName ? this.module.res.semiGlobal(this.obj.selector.semiGlobalName) : null;
+        return f ? loadStringSet(f, id) : null;
+      },
+      objdFlags: () => this.obj.selector.objd.i16(0xcc),
       personData: (i) => this.pd[i]!,
       objectData: (i) => this.obj.objectData[i]!,
       setDirection: (d) => {
@@ -263,7 +269,14 @@ export class PersonSim extends SimObject {
     });
     // What the lot renderer dresses (SAnimator::UpdateOutfitAndHands from SAnimator::Render).
     const personData = (): Int16Array => this.pd;
-    personLooks.set(obj, { get pd() { return personData(); }, accessories: this.animator.accessories, job: (child) => this.jobSuit(child) });
+    const animator = this.animator;
+    personLooks.set(obj, {
+      get pd() { return personData(); },
+      get suitsVersion() { return animator.suitsVersion; },
+      objdFlags: obj.selector.objd.i16(0xcc),
+      accessories: this.animator.accessories,
+      job: (child) => this.jobSuit(child),
+    });
   }
 
   /** cXPerson::GetJobSuitTex's cJob (GetCareerByID(person data 56), level 57, 0 for a child): suits, texture, accessory. */
@@ -709,6 +722,7 @@ export class PersonSim extends SimObject {
    * Error 0x17 when the object is missing.
    */
   protected resolveSkillName(elem: StackElem, index: number, source: number, flags: number): string | null {
+    this.animator.checkResetSuits();
     const m = this.module;
     const g = m.res.glob;
     let table: string[] | null = null;
@@ -992,6 +1006,7 @@ export class PersonSim extends SimObject {
     else if (height < 4) idx = 7;
     else return false;
     if (this.pd[PDX.sitting] === 1) idx++;
+    this.animator.checkResetSuits();
     const g = this.module.res.glob;
     const table = g ? loadStringSet(g, this.isChild ? 0x9b : 0x9a) : null;
     const name = table?.[idx]?.toLowerCase();

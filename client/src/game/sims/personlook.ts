@@ -22,6 +22,10 @@ export interface PersonLook {
   /** cCareer::GetJobs()[level] strings of the person's career (`child`: level 0), null without a job. */
   job?(child: boolean): JobSuit | null;
   readonly accessories?: ReadonlyMap<string, string>;
+  /** Bumped by SAnimator::ResetSuits (UndressSuits, then everything dressed again). */
+  readonly suitsVersion?: number;
+  /** OBJD +0xcc of the person's object (bit 8: UpdateOutfitAndHands' body-string-per-outfit branch). */
+  readonly objdFlags?: number;
 }
 
 /** The person each lot object stands for (set by the simulation's cXPerson), read by the lot renderer. */
