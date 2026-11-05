@@ -10,73 +10,49 @@ sous `client/src/game/`).
 
 ## 1. Bugs observés
 
-- **Sim 194 de House01 (Max) sans tenue.** Non reproduit (habillé au chargement et sur 14 h de jeu).
-  Piste : la tenue « mode » (0x23) des enfants est le nom provisoire `ADDED` (EditPerson::BeginFill) ;
-  une sauvegarde faite en tenue 0x12 le laisserait sans corps. Il faut le moment exact.
-- **$TokenNameLocal affiche le jeton brut** si le sélecteur de l'objet n'a pas encore été ouvert
-  dans la session (ObjectFolder.selectorByGUID synchrone). `sim/xobject.ts`.
-- **Erreurs d'arbre rares, cause non trouvée, non reproduites** : erreur 62 dans « do new adult
-  idle » (arbre 8330) en ville ; 0x15 de la bonne dans « get paper to read » du journal ; 0x15 du
-  majordome / de la bonne au compacteur (deux nettoyeurs sur la même assiette ?) ; Kyle resté un
-  jour en « Vibrer » après le départ de Jada.
+- **Enfant sans corps en tenue « mode » (0x12)** : fidèle à l'original (la chaîne 0x23 des enfants
+  est `ADDED`, FindSuit échoue ; après ResetSuits ou un rechargement l'enfant n'a plus de corps).
+  Reste à trouver quel arbre met un enfant dans cette tenue. `sims/sanimator.ts`.
+- **Erreurs d'arbre rares, non reproduites** (25 jours de jeu sur House01) : l'erreur 62 de « do
+  new adult idle » (8330) est un Breakpoint des données (attribut 5 > 12) ; reste à savoir qui le
+  pose en ville. 0x15 de la bonne (journal, compacteur) : pas de bonne sur les lots testés.
+- **Animaux bloqués** en « Action - Chase Tail » plus de 8 heures de jeu ; **besoins de la famille**
+  qui s'effondrent sur plusieurs jours sans intervention (fun, social à -100) : à comparer.
+- **Famille du tutoriel importée sans nom** : photos nommées `_17_NNNN`, membres « user00177 ».
 
 ## 2. Fonctionnalités manquantes (visibles en jeu)
 
 Live
-- **Popups des besoins des animaux** : portés, non vérifiés (pas d'animal dans la maison 1). Page
-  célébrité : niveau 0 (karaoké / scène ouverte) et niveaux en image (0x11..0x13) non vérifiés.
-- **Autonomie, fin de TryFindBestAction** : visiteurs ou meilleure entrée avec le drapeau TTAB
-  +0xc sur un lot résidentiel → meilleur score au lieu du tirage ; drapeau +0xc non identifié.
-  `sim/person.ts`.
-- **Pièces** : UpdateCurrentRoom de cXPerson::Place, reste de House::DoCommand(0xdc)
-  (ObjectModule::ComputeStats, drapeaux de famille), Room +0x74 (objets de catégorie 8, WantsRoof).
-- **PIP** : pas de photo automatique dans l'album, pas de BoboVision. `world/winpictureinpicture.ts`.
-- **Tutoriel** : icône / animation de fermeture des dialogues (cTutorialIcon), Tut_CheckForEvents,
-  appel générique 4. `ui/picturedialog.ts`, `ui/tutorialhighlight.ts`, `sim/xobject.ts`.
-- **Repli du panneau Live** : pas de variante BoboVision (cWinViewControl::SetMode).
-- **« Aller ici »** : test de l'herbe pour le type de lot 99 (cObjPickerTool::TryClick).
+- **Popups des besoins des animaux** : portés, non vérifiés. Page célébrité : niveaux 0 et
+  0x11..0x13 non vérifiés.
+- **PIP** : composition BoboVision du gadget par son masque alpha, message 0x1b de fin de fondu.
+- **Tutoriel** : drapeau d'opérande +0x3e (rapport de cible des dialogues), appels de focus,
+  SetOverlapsScrollArea.
 
 Achat / Construction
-- **Papiers peints en plugin absents du catalogue** (WallGraphicsMgr.getNextWallPaper non utilisé)
-  et **murs / papiers peints sans image** sur la fiche produit et pour les plugins : il faut porter
-  WallManager::DrawIconic, donc Wall::Draw / Vertex::Draw en mode iconique hors écran (~900 lignes).
-  Analyse dans `docs/decomp/build-panel-port.md`. `data/buildcatalog.ts`.
+- **Sols en plugin** (.flr) absents du catalogue. `data/buildcatalog.ts`.
+- **Outil papier peint** : la découpe des murs suit maintenant le curseur décalé
+  (ModifyCursorPos), non vérifié en jeu.
 
 Quartier / sauvegarde
-- **Vignettes** : la petite vignette faite au déménagement peut différer d'un pixel. `world/thumbnail.ts`.
-- **ExportFamily après la sauvegarde d'un lot résidentiel** (SaveGame) : non fait, car l'écran
-  d'import liste tous les `Export/*.FAM` et proposerait chaque famille sauvegardée. À décider.
-- **Diffusion « import lot »** à l'entrée normale d'un lot (LoadHouse, fichier avec EXPi) : faite au
-  déménagement seulement. `world/winlotview.ts`.
-- **Pages web de la famille** (ExportFamilyHTML, DoInternetUpdate) et drapeau « occupé » de la mise
-  à jour internet. `nbhd/winneighborhoodul.ts`.
-- **Import** : contrôle du jeu de caractères (STR# 154 20 / 21). `nbhd/winneighborhoodul.ts`,
-  `nbhd/wintown.ts`.
-- **Créer un Sim** : costumes d'animaux / de clown et recréation de l'instance au changement d'âge
-  (ResetInstanceSuits, SetAge). `cas/editperson.ts`.
-
-- **Papier peint** : cNewWallpaperTool::ModifyCursorPos (crochet de découpe des murs).
+- **Pages web de la famille** (ExportFamilyHTML, DoInternetUpdate, drapeau « occupé ») : ~4600 lignes
+  d'origine, rendus JPEG de visages / corps et vignettes de maison. Plan dans `docs/decomp/nbhd-port.md`.
+- **Vignettes** : la petite vignette du déménagement peut différer d'un pixel ; calculs vérifiés,
+  la cause serait dans le rendu (bords à 1/8) : comparer au pixel avec un fichier sauvé par le jeu.
+- **Créer un Sim** : l'arbre « design-a-person » est approché par l'attente de l'aperçu ;
+  costumes de clown portés mais RefillFans (seul appelant) ne l'est pas.
 
 Interface
-- **Champs de texte** : pas de sélection, presse-papiers, annulation ni barre de défilement
-  (cTSWinTextEdit2). `ui/textedit.ts`.
-- **Options** : pas de fondu entre les sous-panneaux, astuces de la maison du didacticiel non
-  désactivées, sons d'interface. `cpanel/options.ts`.
-- **Liste des familles** : position de l'infobulle (cPickFamilyList::GetTTPosition), présélection
-  +0x130. `cas/winpickfamily.ts`.
-- **Générique** : cadence de l'AnimDevice et remplissage au changement de page. `nbhd/wincredits.ts`.
+- **Champs de texte** : double-clic et polices double octet.
 
 ## 3. Son
 
-- Dérive de cHitTimer, kSndobUpdate / SetPosition. `audio/`.
+- Événements kSndob* sur un cSamplePatch (objet son non modélisé ; inatteignables dans le jeu livré).
 
 ## 4. Animation
 
-- Moteur de marche : phases des pieds, distances d'arrêt, StdAnimOffset des animations d'ajustement,
-  table de marche personnalisée de l'OBJD.
-- SAnimator::UpdateOutfitAndHands, branche OBJD drapeau 8 ; Reset → ResetSuits.
-- Plumb bobs éclairés par la pièce (LightingRig) ; ObjectModule::DayChanged / historique de la
-  famille (`sim/simulator.ts`).
+- Correction de mouvement racine du moteur de marche (désactivée dans l'original aussi).
+- NPC-FX : le premier habillage « vêtements de jour » du rendu lui met des mains (l'original non).
 
 ## 5. Performance
 
@@ -85,7 +61,8 @@ Interface
   Voir `docs/perf-and-browsers.md`.
 - **Mémoire** : +11 à 17 Mo par jour de jeu, ce sont des caches remplis au premier usage (comportements,
   tables d'arbres, chunks IFF) ; redescend au rechargement.
-- **Pics de tick** de 20 à 50 ms sur les échecs de route.
+- **Pics de tick** : FindPath au pire 8,6 ms (était 35 à 39) ; reste un tick de 24 ms quand
+  trois routes tombent dans le même tick.
 
 ## 6. À vérifier (comparaison avec l'original à faire)
 
