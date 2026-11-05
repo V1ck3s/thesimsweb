@@ -1,6 +1,6 @@
 # Reste à faire
 
-Liste unique de ce qui reste ouvert, vérifiée contre le code le 2026-11-02. Les notes « not
+Liste unique de ce qui reste ouvert, vérifiée contre le code le 2026-11-05. Les notes « not
 ported » des documents de portage (`docs/decomp/*-port.md`) et les tableaux « Remaining » de
 `docs/decomp/playtest.md` sont l'historique ; cette liste est la référence. Quand un point est
 fait, le retirer d'ici et noter le correctif dans `playtest.md` / le journal de `PLAN.md`.
@@ -23,18 +23,13 @@ sous `client/src/game/`).
 ## 2. Fonctionnalités manquantes (visibles en jeu)
 
 Live
-- **Popups au survol sans icône d'objet** (cWinLivePopup::SetObject / DrawObjectIcon) ; **page
-  célébrité** : les aptitudes ne sont pas des objets de catalogue. `cpanel/livepopup.ts`,
-  `cpanel/live/fame.ts`.
-- **Score d'agencement de la maison figé** (House::AddLayoutTick, décalage de minuit) ; besoin
-  « pièce / éclairage » non porté (score de ComputeRoom, lumières de plafond Room +0x73).
-  `world/winlotview.ts`, `sim/person.ts`, `world/lighting.ts`.
-- **Tri des familles** après création des habitants / touristes (comparateur lbl_105BB988).
-  `nbhd/townies.ts`.
-- **Autonomie : filtres Hot Date centre-ville / vacances** de TryFindBestAction (lots 40..49 ou
-  zonage 2). `sim/person.ts`.
-- **Grimoire / livre de cuisine** : filtres d'extension et « déjà préparé » non appliqués
-  (cPickSpellList::Init, drapeaux +0x66). `ui/magicbook.ts`.
+- **Popups des besoins des animaux** : portés, non vérifiés (pas d'animal dans la maison 1). Page
+  célébrité : niveau 0 (karaoké / scène ouverte) et niveaux en image (0x11..0x13) non vérifiés.
+- **Autonomie, fin de TryFindBestAction** : visiteurs ou meilleure entrée avec le drapeau TTAB
+  +0xc sur un lot résidentiel → meilleur score au lieu du tirage ; drapeau +0xc non identifié.
+  `sim/person.ts`.
+- **Pièces** : UpdateCurrentRoom de cXPerson::Place, reste de House::DoCommand(0xdc)
+  (ObjectModule::ComputeStats, drapeaux de famille), Room +0x74 (objets de catégorie 8, WantsRoof).
 - **PIP** : pas de photo automatique dans l'album, pas de BoboVision. `world/winpictureinpicture.ts`.
 - **Tutoriel** : icône / animation de fermeture des dialogues (cTutorialIcon), Tut_CheckForEvents,
   appel générique 4. `ui/picturedialog.ts`, `ui/tutorialhighlight.ts`, `sim/xobject.ts`.
@@ -42,17 +37,17 @@ Live
 - **« Aller ici »** : test de l'herbe pour le type de lot 99 (cObjPickerTool::TryClick).
 
 Achat / Construction
-- **Papiers peints en plugin sans image de catalogue** ; murs et papiers peints sans image sur la
-  fiche produit (DrawWallIcon, WallManager::DrawIconic). `data/buildcatalog.ts`.
+- **Papiers peints en plugin absents du catalogue** (WallGraphicsMgr.getNextWallPaper non utilisé)
+  et **murs / papiers peints sans image** sur la fiche produit et pour les plugins : il faut porter
+  WallManager::DrawIconic, donc Wall::Draw / Vertex::Draw en mode iconique hors écran (~900 lignes).
+  Analyse dans `docs/decomp/build-panel-port.md`. `data/buildcatalog.ts`.
 
 Quartier / sauvegarde
 - **Vignettes** : la petite vignette faite au déménagement peut différer d'un pixel. `world/thumbnail.ts`.
-- **Quitter un lot communautaire** n'exécute pas SaveAllPersistentDataForMatterTransferance.
-  `world/savegame.ts`.
-- **Déménagement / SaveHouse** : ClearRouteHistory, remise à zéro du budget de la famille 0,
-  nettoyage DeleteCharacter, objet 0xc3249a1d, diffusion « import lot ». `world/moveout.ts`.
-- **Lot vide** : budget non sauvé, export impossible (ExportUnoccupiedLot).
-- **Famille créée dans Créer une famille non exportée en .FAM** (FinishFamily). `cas/windesignfamily.ts`.
+- **ExportFamily après la sauvegarde d'un lot résidentiel** (SaveGame) : non fait, car l'écran
+  d'import liste tous les `Export/*.FAM` et proposerait chaque famille sauvegardée. À décider.
+- **Diffusion « import lot »** à l'entrée normale d'un lot (LoadHouse, fichier avec EXPi) : faite au
+  déménagement seulement. `world/winlotview.ts`.
 - **Pages web de la famille** (ExportFamilyHTML, DoInternetUpdate) et drapeau « occupé » de la mise
   à jour internet. `nbhd/winneighborhoodul.ts`.
 - **Import** : contrôle du jeu de caractères (STR# 154 20 / 21). `nbhd/winneighborhoodul.ts`,
@@ -60,8 +55,6 @@ Quartier / sauvegarde
 - **Créer un Sim** : costumes d'animaux / de clown et recréation de l'instance au changement d'âge
   (ResetInstanceSuits, SetAge). `cas/editperson.ts`.
 
-- **Outil de déplacement** : la main du mode Achat ne pose pas le bit de surbrillance (+0x114 bit 1)
-  sur l'objet survolé (le dessin est porté, `world/tools/movetool.ts`).
 - **Papier peint** : cNewWallpaperTool::ModifyCursorPos (crochet de découpe des murs).
 
 Interface
@@ -87,9 +80,9 @@ Interface
 
 ## 5. Performance
 
-- **Fichiers de sauvegarde lus plusieurs fois par chargement** (`Neighborhood.iff` 5 fois, certains
-  personnages 2 à 4 fois) : non mis en cache exprès ; il faudrait un cache par chargement.
-- **Chargement à froid d'un lot sous Chrome** : environ 2 minutes d'attente sur les dernières requêtes.
+- **Chargement à froid d'un lot** : 15 à 19 s jusqu'à la vue du lot (Chrome), puis le mode Live
+  charge animations et sons à la demande (1 à 2 min de réseau actif, ce n'est pas une attente).
+  Voir `docs/perf-and-browsers.md`.
 - **Mémoire** : +11 à 17 Mo par jour de jeu, ce sont des caches remplis au premier usage (comportements,
   tables d'arbres, chunks IFF) ; redescend au rechargement.
 - **Pics de tick** de 20 à 50 ms sur les échecs de route.
