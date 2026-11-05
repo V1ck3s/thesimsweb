@@ -40,7 +40,9 @@ async function walk(dir: string, base = dir): Promise<ManifestEntry[]> {
     if (isDir) {
       entries.push(...(await walk(full, base)));
     } else if (isFile) {
-      const s = await stat(full);
+      // A file can vanish between readdir and stat (a save being replaced): skip it.
+      const s = await stat(full).catch(() => null);
+      if (!s) continue;
       const rel = relative(base, full).split("\\").join("/");
       entries.push({
         path: rel,
@@ -72,9 +74,18 @@ export async function registerManifestRoute(
       files = walk(assetsDir);
       overlay = null;
     }
-    let list = await files;
+    // A failed walk is not kept: the next request walks again.
+    const filesWalk = files;
+    let list = await filesWalk.catch((e: unknown) => {
+      if (files === filesWalk) files = walk(assetsDir);
+      throw e;
+    });
     if (overlayDir) {
-      const over = await (overlay ??= walk(overlayDir));
+      const overWalk = (overlay ??= walk(overlayDir));
+      const over = await overWalk.catch((e: unknown) => {
+        if (overlay === overWalk) overlay = null;
+        throw e;
+      });
       if (over.length) {
         const byPath = new Map(list.map((f) => [f.path, f]));
         for (const f of over) byPath.set(f.path, f);
