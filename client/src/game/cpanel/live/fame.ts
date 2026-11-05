@@ -32,7 +32,8 @@ import { ASYNC_ON_ENTER, BTN_TOGGLE, CMD_ASYNC_EXIT } from "../../ui/btn.js";
 import { UI_FONT_COLOR } from "../../ui/syscolors.js";
 import { Gfx, TSWin } from "../../ui/tswin.js";
 import { ResFile } from "../../world/iffres.js";
-import { popupClick, type WinLivePopup, WinLivePopupClient } from "../livepopup.js";
+import type { ObjSelector } from "../../world/objselector.js";
+import { popupClick, popupObject, type WinLivePopup, WinLivePopupClient } from "../livepopup.js";
 import { FlashyBtn } from "./job.js";
 
 /** cSimsApp language (+100); the client runs the French install. */
@@ -66,11 +67,40 @@ const FRIENDS_SIZE = [120, 15] as const;
 /** lbl_105BCCB0: the title. */
 const TITLE_POS = [5, 0] as const;
 /**
- * lbl_105BCCB8: the level popup's first pane by fame level. 0x11 / 0x12 /
- * 0x13 are kFameRunway / kFameMusicVideo / kFameMovieSet; the others are
- * catalog objects (GUIDs, cWinLivePopupClient::SetObject: not ported).
+ * lbl_105BCCB8 (sinit): the level popup's two panes by fame level. 0x11 /
+ * 0x12 / 0x13 (first pane only) are kFameRunway / kFameMusicVideo /
+ * kFameMovieSet; any other non-zero value is an object GUID (karaoke machine
+ * and open mic, photo shoot set, recording studio, soap opera set, the
+ * Simmy award), drawn by cWinLivePopupClient::SetObject.
  */
-const LEVEL_PANE = [0x6a8594ad, 0x4450e4e0, 0x1d772052, 0xf4126cc4, 0x4450e4e0, 0xf4126cc4, 0x1d772052, 0x11, 0x12, 0x13, 0x4b61d53e];
+const LEVEL_PANES: ReadonlyArray<readonly [number, number]> = [
+  [0x6a8594ad, 0x5a91cee0],
+  [0x4450e4e0, 0],
+  [0x1d772052, 0],
+  [0xf4126cc4, 0],
+  [0x4450e4e0, 0],
+  [0xf4126cc4, 0],
+  [0x1d772052, 0],
+  [0x11, 0],
+  [0x12, 0],
+  [0x13, 0],
+  [0x4b61d53e, 0],
+];
+/**
+ * lbl_105BCCBC (sinit): the panes of each label's popup, object GUIDs: the
+ * six skills (bookshelf for cooking and mechanical, wall mirror, exercise
+ * machine, chess table, easel and standing piano), then the level label,
+ * which UpdateFameLabel overwrites with the level's LEVEL_PANES entry.
+ */
+const SKILL_PANES: ReadonlyArray<readonly [number, number]> = [
+  [0x5cdc712f, 0],
+  [0x5cdc712f, 0],
+  [0xc041ed5b, 0],
+  [0xddecd497, 0],
+  [0x94aa32f4, 0],
+  [0x9fb223ce, 0x112039a0],
+  [0x1d772052, 0xedf221b1],
+];
 /** lbl_105BCC08 + 0x8a / + 0x87 (cFameTrack::GetFamousFriendCount). */
 const HALF = [".0", ".5"];
 /** lbl_105BB808: a famous friend counts half. */
@@ -98,6 +128,10 @@ export class WinSubpanelFame extends TSWin {
   /** cWinPeople+0x150: the Live panel's popup (set by WinPeople); +0x1b8 this page's client. */
   livePopup: WinLivePopup | null = null;
   private readonly client = new WinLivePopupClient();
+  /** lbl_105BCCBC as UpdateFameLabel leaves it (entry 6 follows the fame level). */
+  private readonly panes = SKILL_PANES.map((p) => [...p] as [number, number]);
+  /** ObjectFolder::GetSelectorByGUID of the tables' GUIDs, looked up once the folder is open. */
+  private readonly selectors = new Map<number, ObjSelector | null>();
 
   constructor(readonly ctx: GameContext) {
     super();
@@ -148,6 +182,10 @@ export class WinSubpanelFame extends TSWin {
       this.labelBtns.push(btn);
     }
     this.popupTexts = ctx.strings.list(LIVE, STR_POPUP);
+    // The original's GetSelectorByGUID is synchronous: look the panes' objects up ahead.
+    for (const guid of new Set([...SKILL_PANES, ...LEVEL_PANES].flat())) {
+      if (guid > 0x13) void popupObject(ctx, guid).then((sel) => this.selectors.set(guid, sel), () => this.selectors.set(guid, null));
+    }
 
     // The famous friends line: kFameFriendSmileyBMP (4 columns), the text after it, two lines high.
     const friends = new FlashyBtn();
@@ -211,23 +249,33 @@ export class WinSubpanelFame extends TSWin {
     return super.tsOnCommand(cmd, source);
   }
 
-  /** The popup of a skill (+0x104 / +0x110) or of the level label (UpdateFamePopup: the level's text). */
+  /**
+   * TSOnCommand's setup of a label's popup: the texts of a skill (+0x104 /
+   * +0x110) or of the level label (UpdateFamePopup: the level's), then the
+   * panes of lbl_105BCCBC: the first one empty (0), kFameRunway (0x11),
+   * kFameMusicVideo (0x12), kFameMovieSet (0x13) or an object, the second
+   * one an object or empty.
+   */
   private setupLabelClient(i: number): void {
     const c = this.client;
-    c.setBitmap(1, null);
     if (i < 6) {
       c.setName(this.popupTexts[2 * i] ?? "");
       c.setDesc(this.popupTexts[2 * i + 1] ?? "");
-      // lbl_105BCCBC: the skills' panes are catalog objects (not ported).
-      c.setBitmap(0, null);
-      return;
+    } else {
+      const level = this.level(this.ctx.state.personGetSelected());
+      const k = level >= 0 && level < LEVELS ? level : 1;
+      c.setName(this.text(FAME.levelPopups + 2 * k));
+      c.setDesc(this.text(FAME.levelPopups + 2 * k + 1));
     }
-    const level = this.level(this.ctx.state.personGetSelected());
-    const k = level >= 0 && level < LEVELS ? level : 1;
-    c.setName(this.text(FAME.levelPopups + 2 * k));
-    c.setDesc(this.text(FAME.levelPopups + 2 * k + 1));
-    const pane = LEVEL_PANE[k] ?? 0;
-    c.setBitmap(0, pane === 0x11 ? this.runway : pane === 0x12 ? this.musicVideo : pane === 0x13 ? this.movieSet : null);
+    c.setBitmap(0, null);
+    const [first, second] = this.panes[i]!;
+    // The values are compared as signed ints: a GUID with the top bit set takes the object branch.
+    if (first === 0) c.setObject(0, null);
+    else if (first === 0x11) c.setBitmap(0, this.runway);
+    else if (first === 0x12) c.setBitmap(0, this.musicVideo);
+    else if (first === 0x13) c.setBitmap(0, this.movieSet);
+    else c.setObject(0, this.selectors.get(first) ?? null);
+    c.setObject(1, second === 0 ? null : (this.selectors.get(second) ?? null));
   }
 
   // --- cFameTrack queries -----------------------------------------------------
@@ -291,7 +339,10 @@ export class WinSubpanelFame extends TSWin {
   private updateFameLabel(p: PersonInfo | null): void {
     const level = this.level(p);
     const btn = this.labelBtns[6];
-    if (btn && level >= 0 && level < LEVELS) btn.caption = this.text(FAME.levelTitles + level);
+    if (btn && level >= 0 && level < LEVELS) {
+      btn.caption = this.text(FAME.levelTitles + level);
+      this.panes[6] = [...LEVEL_PANES[level]!];
+    }
   }
 
   /**

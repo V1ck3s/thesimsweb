@@ -27,12 +27,12 @@
  */
 
 import { OBJD, readObjdTable } from "../../data/catalog.js";
+import { DrawGroup } from "../../world/drawgroup.js";
 import { drawShadow, FloorShadowMgr, rotateShadowID } from "../../world/floorshadow.js";
 import { ResFile } from "../../world/iffres.js";
 import { SHADOW_VALID } from "../../world/objselector.js";
 import { Renderer } from "../../world/renderer.js";
 import { PX_ALPHA, PX_NONE } from "../../world/spr.js";
-import { engine } from "../../../engine/wasm.js";
 import { decodeImage } from "../../res/bmp.js";
 
 interface DrawItem {
@@ -42,19 +42,6 @@ interface DrawItem {
   y: number;
   z: number;
   flags: number;
-}
-
-interface DgrpImage {
-  directionFlags: number;
-  zoomLevel: number;
-  sprites: Array<{
-    sprChunkId: number;
-    sprFrameNumber: number;
-    spriteXOffset: number;
-    spriteYOffset: number;
-    objectZOffset: number;
-    flags: number;
-  }>;
 }
 
 interface Part {
@@ -97,17 +84,10 @@ interface Placed {
 }
 
 /** The item list of a draw group for a direction and scale (DrawGroup::GetItemList). */
-function itemList(images: DgrpImage[], dir: number, scale: number): DrawItem[] {
-  const img = images.find((i) => (i.directionFlags & (1 << dir)) !== 0 && i.zoomLevel === scale);
-  if (!img) return [];
-  return img.sprites.map((s) => ({
-    spr: s.sprChunkId,
-    frame: s.sprFrameNumber,
-    x: s.spriteXOffset,
-    y: s.spriteYOffset,
-    z: s.objectZOffset,
-    flags: s.flags,
-  }));
+function itemList(group: DrawGroup | undefined, dir: number, scale: number): DrawItem[] {
+  const list = group?.getItemList(dir, scale);
+  if (!list) return [];
+  return list.items.map((s) => ({ spr: s.sprId, frame: s.frame, x: s.xOff, y: s.yOff, z: s.objZ, flags: s.flags }));
 }
 
 export class ObjectIcon {
@@ -119,7 +99,7 @@ export class ObjectIcon {
     private readonly file: ResFile,
     private readonly parts: Part[],
     private readonly dir: number,
-    private readonly dgrps: Map<number, DgrpImage[]>,
+    private readonly dgrps: Map<number, DrawGroup>,
     private readonly shadows: FloorShadowMgr[],
     /** ObjSelector::GetThumbnailHasShadow: the master's OBJD +0x98 bit 0 clear. */
     readonly thumbnailHasShadow: boolean,
@@ -171,35 +151,35 @@ export class ObjectIcon {
     } else {
       parts.push({ fields: self.fields, tx: 0, ty: 0, shadowId: f(self, OBJD_SHADOW) });
     }
-    const wasm = await engine();
-    const dgrps = new Map<number, DgrpImage[]>();
+    // DrawGroup::Load (every version: the old record lists of the original objects too).
+    const dgrps = new Map<number, DrawGroup>();
     for (const c of file.list("DGRP")) {
       try {
-        dgrps.set(c.id, (wasm.parseDgrp(file.payload(c)) as { images: DgrpImage[] }).images);
+        dgrps.set(c.id, DrawGroup.load(c.id, file.payload(c)));
       } catch {
-        // A draw group the parser does not know draws nothing.
+        // An unreadable draw group draws nothing.
       }
     }
     return new ObjectIcon(file, parts, dir, dgrps, await floorShadowMgrs(), (f(self, OBJD.shadowFlags) & 1) === 0);
   }
 
-  /** ObjSelector::GetDrawGroup(thumbnail graphic) of a part. */
-  private drawGroup(p: Part): DgrpImage[] {
+  /** ObjSelector::GetDrawGroup(graphic) of a part: its thumbnail graphic unless DrawIconic was given one. */
+  private drawGroup(p: Part, graphic: number | null): DrawGroup | undefined {
     const f = (i: number): number => p.fields[i] ?? 0;
-    let idx = f(OBJD.thumbnailGraphic);
+    let idx = graphic ?? f(OBJD.thumbnailGraphic);
     if (f(OBJD.numGraphics) <= idx) idx = 0;
-    return this.dgrps.get(f(OBJD.baseGraphic) + idx) ?? [];
+    return this.dgrps.get(f(OBJD.baseGraphic) + idx);
   }
 
   /** DoIconic: the sprites of every part at `scale`, positioned around (0, 0), each part's shadow first. */
-  private layout(scale: number, props: IconProps | null): Placed[] {
+  private layout(scale: number, props: IconProps | null, graphic: number | null): Placed[] {
     const out: Placed[] = [];
     const halfW = 8 << scale;
     const halfH = 4 << scale;
     for (const [k, p] of this.parts.entries()) {
       const ox = (p.tx - p.ty) * halfW;
       const oy = (p.tx + p.ty) * halfH;
-      const items = itemList(this.drawGroup(p), this.dir, scale);
+      const items = itemList(this.drawGroup(p, graphic), this.dir, scale);
       if (!items.length) continue;
       if (props?.shadow && p.shadowId !== -1) out.push({ part: k, item: null, x: ox - halfW, y: oy - halfH, w: 2 * halfW, h: 2 * halfH });
       for (const it of items) {
@@ -214,24 +194,40 @@ export class ObjectIcon {
     return out;
   }
 
-  /** cXObject::DrawIconic into `ctx` inside (x, y, w, h) with IconProps `props`; returns the scale used. */
-  draw(ctx: CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D, x: number, y: number, w: number, h: number, props: IconProps | null = null): number {
-    let scale = 3;
+  /**
+   * cXObject::DrawIconic into `ctx` inside (x, y, w, h) with IconProps `props`;
+   * returns the scale used. `graphic` is the draw group index (null: each
+   * part's thumbnail graphic); `fixedScale` (the int const * argument) skips
+   * the 3, 2, 1 search and draws at that scale, centered.
+   */
+  draw(
+    ctx: CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D,
+    x: number,
+    y: number,
+    w: number,
+    h: number,
+    props: IconProps | null = null,
+    graphic: number | null = null,
+    fixedScale: number | null = null,
+  ): number {
+    let scale = fixedScale ?? 3;
     let placed: Placed[] = [];
     let dx = 0;
     let dy = 0;
     for (; scale > 0; scale--) {
-      placed = this.layout(scale, props);
-      if (!placed.length) continue;
-      const left = Math.min(...placed.map((p) => p.x));
-      const top = Math.min(...placed.map((p) => p.y));
-      const right = Math.max(...placed.map((p) => p.x + p.w));
-      const bottom = Math.max(...placed.map((p) => p.y + p.h));
-      const cx = Math.trunc((w - (right - left)) / 2);
-      const cy = Math.trunc((h - (bottom - top)) / 2);
-      dx = cx - left;
-      dy = cy - top;
-      if (cx > 2 && cy > 2) break;
+      placed = this.layout(scale, props, graphic);
+      if (placed.length) {
+        const left = Math.min(...placed.map((p) => p.x));
+        const top = Math.min(...placed.map((p) => p.y));
+        const right = Math.max(...placed.map((p) => p.x + p.w));
+        const bottom = Math.max(...placed.map((p) => p.y + p.h));
+        const cx = Math.trunc((w - (right - left)) / 2);
+        const cy = Math.trunc((h - (bottom - top)) / 2);
+        dx = cx - left;
+        dy = cy - top;
+        if (cx > 2 && cy > 2) break;
+      }
+      if (fixedScale !== null) break;
     }
     if (scale < 1) scale = 1;
     this.bounds = null;

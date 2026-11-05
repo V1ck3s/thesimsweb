@@ -18,10 +18,25 @@
  *    0 -> 1, the top rows hidden); closing slides it back down, then hides it
  *    and tells the client (which resets its button). With interface effects
  *    (BoboVision) on it fades instead (alpha = 255 * ramp).
- * Object icon panes (SetObject / DrawObjectIcon) are not ported.
+ *
+ * A pane (cWinLivePopupClient+0x2c, type at +0) is empty (0), an object (1,
+ * SetObject / the constructor's ObjSelector arguments) or a bitmap (2,
+ * SetBitmap). RebuildBuffer clears the z-buffer over each pane, then
+ * DrawPane: a bitmap is centered in the pane; an object goes through
+ * DrawObjectIcon (ObjectIcon.cpp): SetupDrawIconic draws only when the pane
+ * lies inside the buffer, then cXObject::DrawIconic draws the object itself
+ * from its sprites (no catalog picture) with graphic index +0x34 (0 for
+ * SetObject), no IconProps (no shadow, no highlight), and the scale
+ * SetSpecialScale stored at +0x4c when not 0 (else the largest of 3, 2, 1
+ * that fits), centered in the pane. A part of a multi-tile object draws
+ * nothing (DrawIconic only draws masters and single-tile objects).
+ * SetObject and SetBitmap reset the special scale to 0.
  */
 
 import type { GameContext } from "../context.js";
+import { ObjectFolder } from "../world/objectfolder.js";
+import type { ObjSelector } from "../world/objselector.js";
+import { ObjectIcon } from "./buy/objecticon.js";
 import { soundPlayer, UI } from "../audio/index.js";
 import { getOptionsMgr } from "../optionsmgr.js";
 import { ALIGN_LEFT, type FfnFont } from "../res/ffn.js";
@@ -39,11 +54,43 @@ export { ASYNC_ON_DOWN, ASYNC_ON_ENTER, ASYNC_ON_UP, CMD_ASYNC_EXIT, CMD_ASYNC_T
 /** A captioned/bitmap button with cTSWinBtn's async timer (TSWinBtn.setAsync). */
 export class AsyncBtn extends CaptionBtn {}
 
-/** One of the two panes (cWinLivePopupClient+0x2c, 0x28 bytes each): a bitmap, or a part of one. */
+/** One of the two panes (cWinLivePopupClient+0x2c, 0x28 bytes each): a bitmap or a part of one, or an object. */
 interface Pane {
   bitmap: ImageBitmap | null;
   /** SetBitmap(int, cTSBuffer*, cTSRect*): the part of the bitmap shown, null = all of it. */
   rect: Rect | null;
+  /** +4 of a type 1 pane: the object (SetObject). */
+  object: ObjSelector | null;
+  /** +8: the graphic index DrawObjectIcon draws. */
+  graphic: number;
+  /** +0x20 (SetSpecialScale): DrawIconic's scale, 0 = the largest that fits. */
+  scale: number;
+}
+
+const emptyPane = (): Pane => ({ bitmap: null, rect: null, object: null, graphic: 0, scale: 0 });
+
+/** cXObject::DrawIconic's view of each selector (its sprites and draw groups), made once. */
+const objectIcons = new Map<ObjSelector, Promise<ObjectIcon | null>>();
+const readyIcons = new Map<ObjSelector, ObjectIcon | null>();
+
+function objectIcon(sel: ObjSelector): Promise<ObjectIcon | null> {
+  let p = objectIcons.get(sel);
+  if (!p) {
+    p = ObjectIcon.create(sel.res, sel.objdId).catch(() => null);
+    p.then((icon) => readyIcons.set(sel, icon));
+    objectIcons.set(sel, p);
+  }
+  return p;
+}
+
+/**
+ * ObjectFolder::GetSelectorByGUID over the current neighborhood's folder
+ * (cSimsApp+0x28): null for 0 or an unknown GUID.
+ */
+export async function popupObject(ctx: GameContext, guid: number): Promise<ObjSelector | null> {
+  if (guid === 0) return null;
+  const folder = await ObjectFolder.get(ctx.hooks?.neighborhoodDir?.() ?? "UserData");
+  return folder.getSelectorByGUID(guid);
 }
 
 /** cWinLivePopupClient: what a popup shows and which button opened it. */
@@ -59,14 +106,16 @@ export class WinLivePopupClient {
   resetTargetOnClose = true;
   /** +0x7c */
   popup: WinLivePopup | null = null;
-  readonly panes: [Pane, Pane] = [
-    { bitmap: null, rect: null },
-    { bitmap: null, rect: null },
-  ];
+  readonly panes: [Pane, Pane] = [emptyPane(), emptyPane()];
 
   constructor(name = "", desc = "") {
     this.name = name;
     this.desc = desc;
+  }
+
+  /** cWinLivePopupClient::SetSpecialScale */
+  setSpecialScale(pane: 0 | 1, scale: number): void {
+    this.panes[pane].scale = scale;
   }
 
   /** cWinLivePopupClient::SetPopup */
@@ -87,13 +136,53 @@ export class WinLivePopupClient {
 
   /** cWinLivePopupClient::SetBitmap(int, cTSBuffer*[, cTSRect*]): null clears the pane. */
   setBitmap(pane: 0 | 1, bitmap: ImageBitmap | null, rect: Rect | null = null): void {
-    this.panes[pane].bitmap = bitmap;
-    this.panes[pane].rect = rect;
+    this.panes[pane] = { ...emptyPane(), bitmap, rect };
     this.popup?.rebuildBuffer();
   }
 
+  /**
+   * cWinLivePopupClient::SetObject: null clears the pane. The object's
+   * sprites load in the background; the popup is rebuilt once they are in.
+   */
+  setObject(pane: 0 | 1, sel: ObjSelector | null): void {
+    this.panes[pane] = { ...emptyPane(), object: sel };
+    if (sel && !readyIcons.has(sel)) {
+      void objectIcon(sel).then(() => {
+        if (this.panes[pane].object === sel) this.popup?.rebuildBuffer();
+      });
+    }
+    this.popup?.rebuildBuffer();
+  }
+
+  /** cWinLivePopupClient::HasPane: the pane's type is not 0. */
   hasPane(pane: number): boolean {
-    return (pane === 0 || pane === 1) && this.panes[pane].bitmap !== null;
+    if (pane !== 0 && pane !== 1) return false;
+    const p = this.panes[pane];
+    return p.bitmap !== null || p.object !== null;
+  }
+
+  /** cWinLivePopupClient::DrawPane into the popup's buffer, inside `r`. */
+  drawPane(pane: 0 | 1, g: Gfx, bufW: number, bufH: number, r: Rect): void {
+    const { bitmap: bmp, rect: src, object, graphic, scale } = this.panes[pane];
+    if (bmp) {
+      // Centered when smaller than the pane.
+      const s = src ?? { left: 0, top: 0, right: bmp.width, bottom: bmp.height };
+      const bw = s.right - s.left;
+      const bh = s.bottom - s.top;
+      let x = r.left;
+      let y = r.top;
+      if (bw < r.right - r.left) x += Math.trunc((r.right - r.left - bw) / 2);
+      if (bh < r.bottom - r.top) y += Math.trunc((r.bottom - r.top - bh) / 2);
+      g.blitPart(bmp, s.left, s.top, bw, bh, x, y);
+      return;
+    }
+    if (!object) return;
+    // DrawObjectIcon: SetupDrawIconic fails unless the rectangle lies inside the buffer.
+    if (r.left < 0 || r.top < 0 || r.right > bufW || r.bottom > bufH || r.left >= r.right || r.top >= r.bottom) return;
+    // cXObject::DrawIconic returns at once for a part of a multi-tile object.
+    if (object.objd.masterId !== 0 && object.objd.subIndex !== -1) return;
+    const icon = readyIcons.get(object);
+    icon?.draw(g.ctx, r.left, r.top, r.right - r.left, r.bottom - r.top, null, graphic, scale !== 0 ? scale : null);
   }
 }
 
@@ -236,17 +325,7 @@ export class WinLivePopup extends TSWin {
           r.top -= d;
           r.bottom += d;
         }
-        const { bitmap: bmp, rect: src } = c.panes[i]!;
-        if (!bmp) return;
-        // cWinLivePopupClient::DrawPane: centered when smaller than the pane.
-        const s = src ?? { left: 0, top: 0, right: bmp.width, bottom: bmp.height };
-        const bw = s.right - s.left;
-        const bh = s.bottom - s.top;
-        let x = r.left;
-        let y = r.top;
-        if (bw < r.right - r.left) x += Math.trunc((r.right - r.left - bw) / 2);
-        if (bh < r.bottom - r.top) y += Math.trunc((r.bottom - r.top - bh) / 2);
-        g.blitPart(bmp, s.left, s.top, bw, bh, x, y);
+        if (c.hasPane(i)) c.drawPane(i as 0 | 1, g, POPUP_W, h, r);
       });
       const titleRect = {
         left: textLeft + 10,

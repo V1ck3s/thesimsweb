@@ -21,8 +21,10 @@
  * cAverageHistory(10, 5) per person in the house (+0x1ac) with the rounded
  * motive, and SetPerson hands the selected person's to the meter.
  *
- * Not ported: the popup's object panes (cWinLivePopupClient::SetObject with the
- * lbl_105BC498 GUIDs).
+ * The constructor's two GUIDs (cWinPeople::Init: lbl_105BC498 for Sims,
+ * lbl_105BC48C for pets) become the popup's object panes
+ * (ObjectFolder::GetSelectorByGUID, the cWinLivePopupClient constructor),
+ * and its two scales, when not 0, their SetSpecialScale.
  */
 
 import type { GameContext } from "../../context.js";
@@ -31,7 +33,8 @@ import { ALIGN_CENTER } from "../../res/ffn.js";
 import { BTN_TOGGLE_ON_DOWN, TSWinBtn } from "../../ui/btn.js";
 import { hiliteColor, rgb } from "../../ui/syscolors.js";
 import type { Gfx } from "../../ui/tswin.js";
-import { WinLivePopupClient } from "../livepopup.js";
+import { popupObject, WinLivePopupClient } from "../livepopup.js";
+import { ObjectFolder } from "../../world/objectfolder.js";
 import { AverageHistory, WinDeltaMeter } from "./deltameter.js";
 
 /** lbl_105BC444 (sinit WinMotive.cpp): bar top-left in the window. */
@@ -69,12 +72,29 @@ export class WinMotive extends TSWinBtn {
     readonly desc: string,
     /** cWinMotive+0x194: index into the person's motives. */
     readonly motive: number,
+    /** The GUIDs of the popup's two object panes (0 = none). */
+    objects: readonly [number, number] = [0, 0],
+    /** Their special scales (0 = none). */
+    scales: readonly [number, number] = [0, 0],
+    /** cSimsApp+0x66 bits the scales need (0 = none): cWinPeople::Init passes the pets' only with ExpansionPack5. */
+    scalesNeedPacks = 0,
   ) {
     super();
     this.caption = name;
     this.client = new WinLivePopupClient(name, desc);
     this.client.target = this;
     this.resetHistory();
+    // The original looks the selectors up synchronously; here they come in once the folder is open.
+    ([0, 1] as const).forEach((pane) => {
+      const guid = objects[pane];
+      if (guid === 0) return;
+      void popupObject(ctx, guid).then((sel) => {
+        if (!sel) return;
+        this.client.setObject(pane, sel);
+        const packs = sel.folder instanceof ObjectFolder ? sel.folder.packs : 0;
+        if (scales[pane] !== 0 && (packs & scalesNeedPacks) === scalesNeedPacks) this.client.setSpecialScale(pane, scales[pane]);
+      }, () => undefined);
+    });
   }
 
   override async init(): Promise<boolean> {

@@ -57,13 +57,13 @@ or developer-only tools).
 | cWinSubpanelJob, cFlashyBtn, cPerformanceBtn | Job page (adult) | ported | `cpanel/live/job.ts` |
 | cWinSubpanelReportCard | Job page of a child: blinking grade ("Bulletin"), school popup | ported | `cpanel/live/reportcard.ts` |
 | cWinSubpanelCatSkills, cWinSubpanelDogSkills | Job page of a cat / dog (pet skills and popups) | ported | `cpanel/live/petskills.ts` |
-| cWinSubpanelFame | Job page of a celebrity (Superstar) | partial (skill panes as catalog objects) | `cpanel/live/fame.ts` |
+| cWinSubpanelFame | Job page of a celebrity (Superstar) | ported (popup panes: the lbl_105BCCBC skill objects, the lbl_105BCCB8 level objects or kFameRunway / kFameMusicVideo / kFameMovieSet) | `cpanel/live/fame.ts` |
 | cWinSubpanelHouse | House page | ported | `cpanel/live/house.ts` |
 | cWinRelationship | Relationships page | ported | `cpanel/live/relationship.ts` |
 | cWinInterest (+ BufferCleanup) | Interests page | ported | `cpanel/live/interest.ts` |
 | cWinGift | Gifts / inventory page | ported | `cpanel/live/gifts.ts` |
 | cWinEditBio | Biography editor (Ctrl+click on a portrait), saved into the character's CTSS | ported | `cpanel/live/editbio.ts` |
-| cWinLivePopup, cWinLivePopupClient | Description popup of the pages and options | partial (object icon panes) | `cpanel/livepopup.ts` |
+| cWinLivePopup, cWinLivePopupClient | Description popup of the pages and options | ported (object panes: SetObject / SetSpecialScale -> DrawObjectIcon -> cXObject::DrawIconic, the object's own sprites at graphic 0; the needs' lbl_105BC498 / lbl_105BC48C GUIDs, `cpanel/live/motive.ts`, `cpanel/people.ts`) | `cpanel/livepopup.ts`, `cpanel/buy/objecticon.ts` |
 | cWinCatalog, ProductButton | Buy mode catalog | ported | `cpanel/catalog.ts`, `cpanel/buy/` |
 | cWinCatalogPopup | Catalog product popup | ported | `cpanel/buy/catalogpopup.ts` |
 | cWinDisposePopup | Sell page of the control panel while a lot object is held in Buy / Build mode (picture, "click here to sell X for $", refund) | ported (its slide-in ramp is never started in either build) | `cpanel/disposepopup.ts` |

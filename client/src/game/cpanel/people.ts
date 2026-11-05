@@ -139,6 +139,21 @@ const STR_PERSONALITY = 0x83;
 const STR_MODE_TIPS = 0x86;
 const STR_PET_PERSONALITY = 0xaa;
 const STR_PET_MOTIVES = 0xb4;
+/**
+ * lbl_105BC498 / lbl_105BC48C (sinit WinPeople.cpp): the GUIDs of each
+ * need's popup panes, Sims then pets (fridge and stove, double bed, espresso
+ * machine, dining chair and garden bench, bookshelf and pinball machine, tub
+ * and shower, none (the social icon), toilet, trash pile and still life;
+ * pet food bowl and treats, dog houses, pet beds, chew toy and pet gym, pet
+ * bath, none, mailbox and litter box, trash pile and still life).
+ */
+const MOTIVE_OBJECTS: ReadonlyArray<ReadonlyArray<readonly [number, number]>> = [
+  [[0xb94755df, 0xff9f18e0], [0x82e04c5b, 0xbf137195], [0xd97681db, 0x7cb11019], [0x5cdc712f, 0x481a74ec], [0x85e00942, 0x85e02a40], [0, 0], [0x84e0774c, 0], [0x7f907075, 0xbc3ba088]],
+  [[0x8eec19f7, 0xffc0ea58], [0xbc537c52, 0x96cb67ae], [0xe23f9020, 0x2b4502a2], [0x914e5a74, 0xb26ab256], [0x2ecdb068, 0], [0, 0], [0x39ccf441, 0xbedd7b26], [0x7f907075, 0xbc3ba088]],
+];
+/** lbl_105BC49C / lbl_105BC490: their special scales (the first need's second pane at 2); the pets' only with ExpansionPack5 (app +0x66 & 0x20). */
+const MOTIVE_SCALES: readonly [number, number] = [0, 2];
+const PACK_UNLEASHED = 0x20;
 const STR_MISC = 0x9a;
 const STR_SIGNS = 0xa4;
 /** UIText STR# 0xa5: name and description of each sign (cWinPeople::Init, +0x1c4 / +0x1f4). */
@@ -341,12 +356,13 @@ export class WinPeople extends TSWin implements TrackingPanel {
     }
 
     // Needs: STR# 130 (Sims) and 180 (pets), a title then (name, description) per motive.
-    for (const [set, id, win] of [
+    for (const [k, [set, id, win]] of ([
       [this.motives, STR_MOTIVES, this.motivesWin],
       [this.petMotives, STR_PET_MOTIVES, this.petMotivesWin],
-    ] as const) {
+    ] as const).entries()) {
       for (const [i, motive] of MOTIVES.entries()) {
-        const m = new WinMotive(ctx, str(id, 1 + 2 * i), str(id, 2 + 2 * i), motive);
+        const scales = i === 0 ? MOTIVE_SCALES : ([0, 0] as const);
+        const m = new WinMotive(ctx, str(id, 1 + 2 * i), str(id, 2 + 2 * i), motive, MOTIVE_OBJECTS[k]![i]!, scales, k === 1 ? PACK_UNLEASHED : 0);
         // The social need's popup shows kSocialPopupIcon in its left pane.
         if (i === 5) m.client.setBitmap(0, await res.image("kSocialPopupIcon"));
         if (await m.init()) win.childAdd(m);
