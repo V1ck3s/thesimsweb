@@ -38,12 +38,14 @@
  *
  * FinishFamily(family): Neighborhood::Save, then (family != -1)
  * Neighborhood::ExportFamily into the neighborhood's Export folder
- * (NeighborhoodStore.exportFamily: <name>_<id>.FAM). Not ported: its
- * ExportFamilyHTML (an option).
+ * (NeighborhoodStore.exportFamily: <name>_<id>.FAM) and, when the "export
+ * HTML" option is on, ExportFamilyHTML (nbhd/exporthtml.ts).
  */
 
 import type { GameContext } from "../context.js";
 import { buildPersonBtn } from "../cpanel/live/peoplebuttons.js";
+import { exportFamilyHTML } from "../nbhd/exporthtml.js";
+import { getOptionsMgr } from "../optionsmgr.js";
 import { ALIGN_CENTER, type FfnFont } from "../res/ffn.js";
 import { TSWinBtn } from "../ui/btn.js";
 import { TSWinCtrlMgr } from "../ui/ctrlmgr.js";
@@ -368,9 +370,13 @@ export class WinDesignFamily extends TSWinGenDlg {
     const family = store.makeNewFamily();
     store.setFamilyName(family, this.familyName);
     for (const p of this.members) store.addToFamily(p.guid, family);
-    // FinishFamily: the neighborhood is saved, then the family exported (its result ignored).
+    // FinishFamily: the neighborhood is saved, then the family exported (its result ignored)
+    // and its web pages when the option is on.
     await store.save();
     if (!(await store.exportFamily(family))) console.warn(`[cas] ExportFamily ${family} failed`);
+    if (getOptionsMgr().getExportHTML()) {
+      await exportFamilyHTML(this.ctx, store, family).catch((e: unknown) => console.warn(`[cas] ExportFamilyHTML ${family} failed`, e));
+    }
     this.target?.familyDesigned(family);
     this.tsEndDialog(1);
   }

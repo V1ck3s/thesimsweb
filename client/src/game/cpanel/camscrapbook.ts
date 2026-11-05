@@ -194,6 +194,31 @@ export class Scrapbook {
     return this.pages[this.cur]?.file ?? null;
   }
 
+  /** cScrapbook::GetThumbFilename */
+  getThumbFilename(): string | null {
+    return this.pages[this.cur]?.thumb ?? null;
+  }
+
+  /**
+   * cScrapbook::MakeCurThumb: the current page's photo (when loaded) saved
+   * into its thumbnail file, scaled into 100 x 75 (SaveScaledGimex, the
+   * page's quality, 0x5a when unset).
+   */
+  async makeCurThumb(): Promise<boolean> {
+    const p = this.pages[this.cur];
+    if (!p?.photo) return false;
+    if (p.quality < 0) p.quality = DEFAULT_QUALITY;
+    try {
+      const t = thumbSize(p.photo.width, p.photo.height);
+      const thumb = await encodeJpeg(p.photo, t.w, t.h, p.quality);
+      await writeGameFile(p.thumb, new Uint8Array(await thumb.arrayBuffer()));
+      return true;
+    } catch (e) {
+      console.warn("scrapbook: thumbnail failed", e);
+      return false;
+    }
+  }
+
   /** cScrapbook::GetDescription (loads the page first). */
   getDescription(): string | null {
     return this.pages[this.cur]?.description ?? null;
