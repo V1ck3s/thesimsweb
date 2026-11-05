@@ -1130,6 +1130,9 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
     };
   }
 
+  /** The object and the person (whose head is shown) of the pie menu that is up. */
+  private pieTarget: { objectId: number; personId: number } | null = null;
+
   /** The Live mode pie menu (cWinPeople's cTSPieMenu), made on first use. */
   private pie: TSPieMenu | null = null;
 
@@ -1179,6 +1182,7 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
           this.doDeniedSound();
           return;
         }
+        this.pieTarget = { objectId: t.id, personId: p.id };
         const ok = await this.doMenu(p, entries, this.area.left + x, this.area.top + y, (e) => {
           const action = p.makeInteraction(t, e.entry, 50, e);
           const done = p.addAction(action);
@@ -1193,6 +1197,7 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
         if (!ok) return;
       }
     } finally {
+      this.pieTarget = null;
       if (helper && !picked && sim.module.getObject(helper.id) === helper) sim.module.killObject(helper);
     }
   }
@@ -1613,6 +1618,12 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
       sim.module.onKill = (o): void => {
         // cObjPickerTool::DeletingObject: the hilite goes with its object (SetHiliteObject(0)).
         if (o.id === this.liveHilite) this.setHiliteObject(0, null);
+        // The pie menus close when their object or the person whose head they show goes.
+        const pt = this.pieTarget;
+        if (pt && (o.id === pt.objectId || o.id === pt.personId)) {
+          if (this.subPie?.getPoppedUp()) this.subPie.endPopup(-1);
+          if (this.pie?.getPoppedUp()) this.pie.endPopup(-1);
+        }
         o.obj.objectData[34] = 1;
         if (this.viewer) this.viewer.dirty = true;
       };
