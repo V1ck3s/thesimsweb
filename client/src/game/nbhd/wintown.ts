@@ -46,7 +46,7 @@ import { WinPickFamily } from "../cas/winpickfamily.js";
 import { IDOK, IDYES, MB_OK, MB_YESNO, TSWinMsgBox } from "../ui/msgbox.js";
 import { PD_AVOID_RECT, WinPictureDialog } from "../ui/picturedialog.js";
 import { deleteGameFile } from "../data/files.js";
-import { getImportInfoForFile, getLotImportInfo, importFamily, importLotFile, listTownImports, pickAndUploadImports, setLotDescription } from "./imports.js";
+import { getImportInfoForFile, getLotImportInfo, importFamily, importLotFile, isWrongCharacterSet, listTownImports, pickAndUploadImports, setLotDescription } from "./imports.js";
 import { Gfx, TSWin } from "../ui/tswin.js";
 import { winMgr } from "../ui/winmgr.js";
 import { Zone, type Neighborhood } from "./nghinterface.js";
@@ -363,7 +363,7 @@ const STR_BULLDOZE = 131;
 const STR_MOVE_IN = 132;
 /** UIText STR# 171: the filter tooltips. */
 const STR_FILTER_TIPS = 171;
-/** UIText STR# 143 (the family import dialog), 144 (entry 5: "Delete"), 154 (entries 0x12 / 0x13: delete the file?). */
+/** UIText STR# 143 (the family import dialog), 144 (entry 5: "Delete"), 154 (entries 0x12 / 0x13: delete the file?; 0x14 / 0x15: wrong character set). */
 const STR_IMPORT_FAMILY = 0x8f;
 const STR_IMPORT_DELETE = 0x90;
 const STR_IMPORT_MISC = 0x9a;
@@ -1221,12 +1221,23 @@ export class WinTown extends TSWin implements LotBtnOwner {
    * picture, title entry 9, the lot outlined. A lot whose family is on
    * vacation: STR# 131 entries 22 / 23. Yes: the lot zoned residential,
    * ImportFamily (failure: the zoning back, "Couldn't import the family").
-   * Not ported: the character set test (STR# 154 entries 20 / 21), as on the
-   * neighborhood screen. Resolves with the house when a family came onto one.
+   * A file of another character set (isWrongCharacterSet; not the tutorial
+   * lot) gets the STR# 154 entries 20 / 21 box instead: OK
+   * (cTSWinMsgBox::GetButtonLabel(1)) / Delete (STR# 144 entry 5, then the
+   * STR# 154 question). Resolves with the house when a family came onto one.
    */
   private async residentialImport(path: string): Promise<number> {
     const info = await getImportInfoForFile(path);
     if (!info) return 0;
+    if (isWrongCharacterSet(info)) {
+      const box = new WinPictureDialog(this.ctx);
+      box.addText(this.importStr(STR_IMPORT_MISC, 0x13));
+      box.addText(this.importStr(STR_IMPORT_MISC, 0x14));
+      box.addButton(TSWinMsgBox.getButtonLabel(this.ctx, IDOK), 1);
+      box.addButton(this.importStr(STR_IMPORT_DELETE, 4), 2);
+      if ((await box.run()) === 2) await this.confirmDeleteImport(path);
+      return 0;
+    }
     const house = info.house;
     const s = (i: number): string => this.importStr(STR_IMPORT_FAMILY, i - 1);
     const dlg = new WinPictureDialog(this.ctx);

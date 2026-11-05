@@ -342,6 +342,42 @@ Files: `client/src/game/screens/frozen.ts` (new), `world/moveout.ts` (new), `mai
   the game leaves uninitialized after string sets; FAMI differs only by the state (house 0, budget = net
   worth after the eviction); the game's file was exported with its house, ours has none (eviction).
 
+### Import character set test (cWinNeighborhoodUL / cWinMagicland CycleThroughImports)
+- After GetImportInfoForFile: cTSFrameWork::GetLanguageManager()->(+0x60)(0) gives the cTSLanguageUtility,
+  whose GetCharacterSetFromLanguage (+0x80) is called with the game's language (cSimsApp +100) and with
+  ImportInfo +0x188 (ExpFamilyInfo byte 0: the language streamed after the 9 shorts from version 0x3f on, else
+  the game's language). GetCharacterSetFromLanguage: DoesLanguageUseWesternCharacterSet (languages 1..11, 14)
+  1252, DoesLanguageUseEasternCharacterSet (13, 16) 1250, else the jump table lbl_105BCEB8 (mac.bin 0x1062a308)
+  for 12..20: 12 1255, 15 932, 17 950, 18 936, 19 874, 20 949; otherwise 1252.
+- When they differ and the file is not the tutorial lot (ImportInfo +0x110: GetHouseInfo found a SIMI, and
+  HouseInfo +0x14: its global 26, Neighborhood::GetHouseFileInfo reads cSimulator +0x44): a cWinPictureDialog
+  with STR# 154 entries 20 and 21 (1-based), OK (cTSWinMsgBox::GetButtonLabel(1), id 1) and Delete (STR# 144
+  entry 5, id 2); Delete asks STR# 154 entries 18 / 19 (Yes / No) and deletes the file on Yes. Then the next file.
+  cWinMagicland::CycleResidentialImports (the .MTF families) does the same; the Downtown / Vacation / Studio
+  Town lot imports have no such test.
+- Port: `getCharacterSetFromLanguage`, `isWrongCharacterSet`, ImportInfo `language` / `tutorial`
+  (nbhd/imports.ts); the box in `WinNeighborhoodUL.wrongCharacterSetDialog` and `WinTown.residentialImport`.
+  The tutorial lot's direct import (no dialog) stays with nbhd/tutorial.ts.
+
+### Family web pages (ExportFamilyHTML, DoInternetUpdate): not ported
+- Callers: cSimsApp::SaveGame (after ExportFamily, option on), EvictFamily (after ExportFamily, option on),
+  cWinNeighborhoodUL::DoInternetUpdate (Inet button and TSOnTimerMsg while the busy flag +0x1b4 is set).
+- DoInternetUpdate: first call (+0x1b4 clear) GetFamiliesNeedingHTMLExport (families without Family +0x138
+  bit 3; on the first two runs with Neighborhood +0x66 bit 5, every housed family of 1..9 once), a STR# (lbl_105BCD48)
+  1 / 2 confirmation when any, then +0x1b4 = 1, SetBlockSimulator, a 100 ms timer, every lot button flag 0x400
+  and 2 off. Each timer tick: a cWinPictureDialog (STR# 1 / 3 with the family name, kNghInetUpdateIcon 0x14e6)
+  for the next family, then ExportFamilyHTML(family) and the dialog closed; at the end +0x1b4 = 0,
+  ExportNghHTML (ExportHTMLNeighborhood), ShellExecute of <UserData>/Web Pages/<index page>, the buttons back.
+- ExportFamilyHTML (Mac 102288e0): LoadHouse of the family's house when it is not loaded, ExportHTML (or
+  ExportHTMLHomelessFamilies without a house), Family +0x138 bits 3-4 set and the family re-saved.
+  ExportHTML (Mac 10218070, ~500 lines of pseudo-C) builds two 0x1ab-entry tables (GenerateLookupTagsList,
+  GenerateHouseData, GenerateFamilyAndScrapbookData), copies <Web Templates>/<language>/StockGFX, runs
+  MakeWebPagesFromTemplate (~700 lines) / MakeWebPageX on every .html / .css template, renders
+  GenerateFamilyMemberJPEGs (PersonFinder::GenerateJPEGs: a face and a full-body 3D render per member, JPEG) and
+  four HouseViewer::MakeWebPageThumbnail renders (exterior with roof, thumb, floor 1, floor 2 when visited, JPEG),
+  then MakePublishingInfo (the .pub / faminfo files, htmlEncrypt). In all about 4,600 lines of pseudo-C
+  (exporthtml.cpp, Mac 10216510..10220d10) plus the two render paths and a JPEG writer: left for a dedicated task.
+
 ### The game at "/" (task: game.html as the main entry)
 - `client/vite.config.ts`: a `game-as-root` plugin rewrites `/` and `/index.html` (query kept) to
   `/game.html` in the dev and preview servers; the build has two inputs (game, legacy). `game.html?...`

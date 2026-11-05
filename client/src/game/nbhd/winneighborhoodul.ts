@@ -49,7 +49,7 @@ import { deleteGameFile, writeGameFile } from "../data/files.js";
 import { buildIff, parseIff, stringSetMultiSave } from "../data/iff.js";
 import { makeMoneyString, Zone } from "./nghinterface.js";
 import { WinCredits } from "./wincredits.js";
-import { getImportInfoForFile, getLotImportInfo, hasImports, importFamily, importLotFile, listImports, pickAndUploadImports, uploadImports, type ImportInfo, type LotImportInfo } from "./imports.js";
+import { getImportInfoForFile, getLotImportInfo, hasImports, importFamily, importLotFile, isWrongCharacterSet, listImports, pickAndUploadImports, uploadImports, type ImportInfo, type LotImportInfo } from "./imports.js";
 import { PD_AVOID_RECT, WinPictureDialog } from "../ui/picturedialog.js";
 import { getCheatCodeManager, type CheatCommandLine } from "../ui/cheat.js";
 import {
@@ -746,8 +746,9 @@ export class WinNeighborhoodUL extends TSWin implements LotBtnOwner {
    * the lot residential and runs ImportFamily (the zoning comes back and
    * "Couldn't import the family" shows when it fails). Then the residential
    * and community lot files; DoNbhdScreen(1) when a lot changed.
-   * Not ported: the character set test (STR# 154 entries 20 / 21: all the
-   * shipped languages share one here) and ReportMissingTextures.
+   * A file of another character set (isWrongCharacterSet; not the tutorial
+   * lot) gets the STR# 154 entries 20 / 21 box instead (OK / Delete).
+   * Not ported: ReportMissingTextures.
    * Web: with nothing to import, the file picker opens first.
    */
   private async cycleThroughImports(): Promise<void> {
@@ -760,6 +761,10 @@ export class WinNeighborhoodUL extends TSWin implements LotBtnOwner {
     for (const path of files.families) {
       const info = await getImportInfoForFile(path);
       if (!info) continue;
+      if (isWrongCharacterSet(info)) {
+        await this.wrongCharacterSetDialog(path);
+        continue;
+      }
       const r = await this.importFamilyDialog(info);
       if (r === 1) {
         if (await this.runImportFamily(info)) reload ||= info.house !== 0;
@@ -775,6 +780,20 @@ export class WinNeighborhoodUL extends TSWin implements LotBtnOwner {
     }
     await this.nb.reloadData();
     await this.checkForNewImports();
+  }
+
+  /**
+   * CycleThroughImports' character set box: a cWinPictureDialog with STR# 154
+   * entries 20 and 21 (1-based), OK (cTSWinMsgBox::GetButtonLabel(1), id 1)
+   * and Delete (STR# 144 entry 5, id 2); Delete asks the STR# 154 question.
+   */
+  private async wrongCharacterSetDialog(path: string): Promise<void> {
+    const dlg = new WinPictureDialog(this.ctx);
+    dlg.addText(this.str(STR_IMPORT_MISC, 0x13));
+    dlg.addText(this.str(STR_IMPORT_MISC, 0x14));
+    dlg.addButton(TSWinMsgBox.getButtonLabel(this.ctx, IDOK), 1);
+    dlg.addButton(this.str(STR_IMPORT_DELETE, 4), 2);
+    if ((await dlg.run()) === 2) await this.confirmDeleteImport(path);
   }
 
   private async importFamilyDialog(info: ImportInfo): Promise<number> {

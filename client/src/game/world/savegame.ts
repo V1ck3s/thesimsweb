@@ -10,9 +10,11 @@
  * when the lot was opened without sims (global 32), by ExportUnoccupiedLot.
  * On a community or town lot with sims on it only the visiting family's
  * budget is kept, Neighborhood::SaveAllPersistentDataForMatterTransferance
- * runs and the neighborhood is saved. Not ported: the ExportFamily (and
- * ExportFamilyHTML) SaveGame does after saving a residential lot with a
- * family (see docs/decomp/save-port.md).
+ * runs and the neighborhood is saved. After saving a residential lot whose
+ * house family (House +0x10) is not family 0, SaveGame exports it
+ * (Neighborhood::ExportFamily into <neighborhood>/Export/). Not ported: the
+ * ExportFamilyHTML that follows (FreeMem > 0xa00000 and the "export HTML"
+ * option; see docs/decomp/save-port.md).
  *
  * DoSave asks UIText STR# 0x99 entries 4 / 5 (message, title) with
  * Yes / No / Cancel when the lot is dirty: Cancel stays, Yes saves, No leaves.
@@ -276,6 +278,10 @@ export async function saveGame(ctx: GameContext, lv: WinLotView | null, nbhdDir:
         if (sim) for (const p of [...sim.module.persons]) if (!p.killed && p.obj.selector.guid >>> 0 === guid >>> 0) sim.module.killObject(p);
       });
       await store.save();
+      // The house family (House +0x10) when it is not family 0 and the lot is residential:
+      // Neighborhood::ExportFamily(<dir>/Export/, family), result ignored.
+      const family = houseFamilyOf(store, n);
+      if (family !== 0 && zoning === 1 && !(await store.exportFamily(family))) console.warn(`[save] ExportFamily ${family} failed`);
     }
     if (noSims) await exportUnoccupiedLot(nbhdDir, n, zoning, bytes);
     markLotClean(lv);

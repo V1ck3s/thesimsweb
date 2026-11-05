@@ -314,6 +314,9 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
     // Neighborhood::LoadHouse: the Tutorial object on a tutorial lot (nbhd/tutorial.ts).
     if (this.lotObjects && this.sim && this.placement) await makeTutorialObject(this.placement, this.lotObjects.folder, this.sim.module, this.housePath.split("/")[0] ?? "UserData");
     if (this.moveIn && this.lotObjects && this.sim) await this.resetLotForMoveIn(this.lotObjects, this.moveIn);
+    // Neighborhood::LoadHouse, after the person pass: BroadcastMessage("import lot", 0)
+    // (lbl_105BB990 + 0x13e) when the house file holds EXPi resources (a lot that came with an imported family).
+    if (this.sim && house.count("EXPi") > 0) this.sim.module.broadcastMessage("import lot", 0);
     if (this.lotObjects && this.sim) await this.bringInFamily(v, this.lotObjects);
     if (this.lotObjects && this.sim && this.placement) await this.initPlumbBobs(this.lotObjects, this.sim, this.placement);
     this.exploreAnchor = await this.ctx.res.image("kExploreAnchor");

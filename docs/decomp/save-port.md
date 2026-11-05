@@ -200,11 +200,26 @@ Port of the house save path. Code: `client/src/game/world/{reconwriter,usagemap,
   `saveHouseRecon` re-encodes the shipped version 0x49 HOUS 1 chunks byte for byte (older versions differ only in
   the version word and the string pad byte).
 
+## SaveGame's ExportFamily, LoadHouse's "import lot" (2026-11-05)
+
+- cSimsApp::SaveGame (Mac 1024f010), after Neighborhood::SaveHouse succeeds: when the house family (House +0x10,
+  `houseFamilyOf`) is not family 0 and GetZoningType(current house) == 1, Neighborhood::ExportFamily(<neighborhood
+  dir> + GetStringConstant(0x57) "Export" + "/", family), result ignored; then, when FreeMem > 0xa00000 and
+  cOptionsMgr::GetExportHTML, ExportFamilyHTML(family id) (not ported); then ExportUnoccupiedLot when global 32.
+  Port: `saveGame` (world/savegame.ts) calls `NeighborhoodStore.exportFamily` after `store.save()`, before
+  `exportUnoccupiedLot`.
+- The import list: the original's CycleThroughImports / CheckForNewImports only read <dir>/Import
+  (cTSDirectory + pattern); GetImportInfoForFile checks only EXPi 0 and the FAMI it names. There is no filter of
+  exported families in the original: it never looks at Export/. The port's web stand-in (the other
+  neighborhoods' Export/*.FAM offered after Import/, nbhd/imports.ts) now leaves the current neighborhood's own
+  Export/ out, so a save does not offer the family it just saved.
+- Neighborhood::LoadHouse (Mac 100a7010): after the Tutorial object, the move-in "reset lot" and the person pass,
+  BroadcastMessage("import lot", 0) (lbl_105BB990 + 0x13e) when the house file's count of EXPi resources (read
+  before the file is closed) is not 0. WinLotView.init does the same after `resetLotForMoveIn`.
+
 ## Gaps
 
-- SaveGame's ExportFamily (and ExportFamilyHTML) of the resident family after a residential save is not ported:
-  the port lists every neighborhood's `Export/*.FAM` as importable families (nbhd/imports.ts), so each save would
-  offer the family it just saved for import.
-- The lot view's own LoadHouse (world/winlotview.ts) does not broadcast "import lot" for a house file with EXPi.
+- ExportFamilyHTML after a residential save (and DoInternetUpdate) is not ported; see nbhd-port.md "Family web
+  pages".
 - Save failure: the message uses UIText 0x99 entries 0xf/0x10, which is not verified visually.
 - RelMatrix null entries are dropped when loading, so they are not written back.

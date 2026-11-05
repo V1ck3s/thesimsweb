@@ -9,10 +9,15 @@
  * player fills from the Explorer. A page cannot browse the disk, so:
  *  - the files come from the server manifest (the game folder plus the
  *    writable overlay), like every other game file;
- *  - the families every neighborhood exported (UserData<N>/Export/*.FAM,
- *    written by Neighborhood::ExportFamily on an eviction) are offered after
- *    the Import/ ones, standing for the copy into Import/ the player did by
- *    hand;
+ *  - the families the other neighborhoods exported (UserData<N>/Export/*.FAM,
+ *    written by Neighborhood::ExportFamily on a save, an eviction, a new
+ *    family or an import) are offered after the Import/ ones, standing for
+ *    the copy into Import/ the player did by hand. The original lists only
+ *    Import/ (CycleThroughImports, CheckForNewImports: cTSDirectory on
+ *    <dir>/Import with the pattern, GetImportInfoForFile only checks EXPi and
+ *    FAMI), so it never offers a neighborhood's own exports: the current
+ *    neighborhood's Export/ is left out here for the same reason (each
+ *    SaveGame re-exports the family it saved);
  *  - files from the player's computer are uploaded into the overlay's
  *    <neighborhood>/Import/ (`uploadImports`, file input or drop).
  * Only overlay files can be deleted: a family imported from a read-only
@@ -34,6 +39,11 @@ export function importDir(nbhdDir: string): string {
   return `${nbhdDir}/Import`;
 }
 
+/** A lower-cased manifest path ("sims/userdata2/export/...") in the neighborhood's own Export folder. */
+function isOwnExport(nbhdDir: string, lowerPath: string): boolean {
+  return lowerPath.startsWith(`sims/${nbhdDir.toLowerCase()}/export/`);
+}
+
 /** The import kinds CycleThroughImports walks: "*.FAM", then "*.rdt" and "*.cmt" (lbl_105BCD5C +0x158 / +0x15e / +0x164). */
 export interface ImportFiles {
   families: string[];
@@ -43,7 +53,7 @@ export interface ImportFiles {
 
 /**
  * The files of <dir>/Import/ by kind (cTSDirectory with the pattern), then the
- * exported families of every neighborhood (see the file comment). Paths are
+ * exported families of the other neighborhoods (see the file comment). Paths are
  * relative to the game folder.
  */
 export async function listImports(nbhdDir: string): Promise<ImportFiles> {
@@ -57,7 +67,7 @@ export async function listImports(nbhdDir: string): Promise<ImportFiles> {
       if (p.endsWith(".fam")) out.families.push(f.path.slice(5));
       else if (p.endsWith(".rdt")) out.residential.push(f.path.slice(5));
       else if (p.endsWith(".cmt")) out.community.push(f.path.slice(5));
-    } else if (/^sims\/userdata\d*\/export\/[^/]+\.fam$/.test(p)) {
+    } else if (/^sims\/userdata\d*\/export\/[^/]+\.fam$/.test(p) && !isOwnExport(nbhdDir, p)) {
       exported.push(f.path.slice(5));
     }
   }
@@ -69,8 +79,8 @@ export async function listImports(nbhdDir: string): Promise<ImportFiles> {
  * The town screens' import files (cWinDowntown / cWinVacation /
  * cWinStudiotown::CycleThroughImports, cWinMagicland::CycleCommunityImports
  * and CycleResidentialImports): <dir>/Import/*.<ext> (dtl, vil, stl, mtl,
- * mtf). For the Magic Town families (mtf), the .MTF files every
- * neighborhood exported follow, as the .FAM ones do on the neighborhood
+ * mtf). For the Magic Town families (mtf), the .MTF files the other
+ * neighborhoods exported follow, as the .FAM ones do on the neighborhood
  * screen.
  */
 export async function listTownImports(nbhdDir: string, ext: string): Promise<string[]> {
@@ -83,7 +93,7 @@ export async function listTownImports(nbhdDir: string, ext: string): Promise<str
     const p = f.path.toLowerCase();
     if (!p.endsWith(suffix)) continue;
     if (p.startsWith(prefix) && !p.slice(prefix.length).includes("/")) out.push(f.path.slice(5));
-    else if (ext.toLowerCase() === "mtf" && /^sims\/userdata\d*\/export\/[^/]+$/.test(p)) exported.push(f.path.slice(5));
+    else if (ext.toLowerCase() === "mtf" && /^sims\/userdata\d*\/export\/[^/]+$/.test(p) && !isOwnExport(nbhdDir, p)) exported.push(f.path.slice(5));
   }
   out.push(...exported.sort());
   return out;
@@ -158,6 +168,53 @@ export interface ImportInfo {
   house: number;
   /** The lot's thumbnail (GetHouseInfo with images: BMP_ 0x400 / 0x464, else 0x200 / 0x264 halved). */
   image: ImageBitmap | null;
+  /** ImportInfo +0x188: ExpFamilyInfo's language byte (streamed from version 0x3f on, else the game's language). */
+  language: number;
+  /**
+   * ImportInfo +0x110 and HouseInfo +0x14 (+0x128): the file holds a SIMI
+   * and its global 26 (Neighborhood::GetHouseFileInfo, cSimulator +0x44),
+   * the tutorial lot. CycleThroughImports skips the character set test and the
+   * dialog for it.
+   */
+  tutorial: boolean;
+}
+
+/**
+ * cTSLanguageUtility::GetCharacterSetFromLanguage: the Windows code page of a
+ * language. DoesLanguageUseWesternCharacterSet (1..11, 14) gives 1252,
+ * DoesLanguageUseEasternCharacterSet (13, 16) 1250, then the jump table
+ * lbl_105BCEB8 for 12..20 (mac.bin 0x1062a308), else 1252.
+ */
+export function getCharacterSetFromLanguage(lang: number): number {
+  if (lang - 1 >= 0 && lang - 1 <= 0xd && ((1 << (lang - 1)) & 0x27ff) !== 0) return 1252;
+  if (lang === 0x10 || lang === 0xd) return 1250;
+  switch (lang) {
+    case 12:
+      return 1255;
+    case 15:
+      return 932;
+    case 17:
+      return 950;
+    case 18:
+      return 936;
+    case 19:
+      return 874;
+    case 20:
+      return 949;
+    default:
+      return 1252;
+  }
+}
+
+/**
+ * The test CycleThroughImports (cWinNeighborhoodUL, cWinMagicland
+ * CycleResidentialImports) makes before the family dialog: the family file was
+ * written in a language of another character set than the game's (cSimsApp
+ * +100), and it is not the tutorial lot. The screen then shows STR# 154
+ * entries 20 / 21 (OK / Delete) instead.
+ */
+export function isWrongCharacterSet(info: ImportInfo): boolean {
+  return getCharacterSetFromLanguage(LANG_FRENCH) !== getCharacterSetFromLanguage(info.language) && !info.tutorial;
 }
 
 /**
@@ -168,12 +225,18 @@ export async function getImportInfoForFile(path: string): Promise<ImportInfo | n
   const chunks = await readImportFile(path);
   const expi = chunks?.find((c) => c.type === "EXPi" && c.id === 0);
   if (!chunks || !expi || expi.data.length < 14) return null;
-  const id = new DataView(expi.data.buffer, expi.data.byteOffset, expi.data.byteLength).getInt16(12, true);
+  const ev = new DataView(expi.data.buffer, expi.data.byteOffset, expi.data.byteLength);
+  const id = ev.getInt16(12, true);
+  // SimpleReconObject<ExpFamilyInfo>::DoStream: id, 8 member ids, then (version > 0x3e) the language byte.
+  const language = ev.getInt32(4, true) > 0x3e && expi.data.length > 30 ? expi.data[30]! : LANG_FRENCH;
   const fami = chunks.find((c) => c.type === "FAMI" && c.id === id);
   if (!fami || fami.data.length < 16) return null;
   const house = new DataView(fami.data.buffer, fami.data.byteOffset, fami.data.byteLength).getInt32(12, true);
   const familyName = strEntry(chunks, "CTSS", 1000, 0) || strEntry(chunks, "FAMs", id, 0);
   let image: ImageBitmap | null = null;
+  // GetHouseInfo succeeds (ImportInfo +0x110) when the file holds a SIMI; HouseInfo +0x14 is its global 26.
+  const simi = chunks.find((c) => c.type === "SIMI");
+  const tutorial = simi ? (readSimi(simi.data).globals[26] ?? 0) !== 0 : false;
   if (house !== 0) {
     image = await bitmapOf(chunks, 0x400, 0x464);
     if (!image) {
@@ -185,7 +248,7 @@ export async function getImportInfoForFile(path: string): Promise<ImportInfo | n
       }
     }
   }
-  return { path, chunks, familyName, house, image };
+  return { path, chunks, familyName, house, image, language, tutorial };
 }
 
 /** Neighborhood::AddNewCharacter's templates: 0 TemplatePerson 0x7fd96b54, 1 the dog 0x4a70df92, 2 the cat 0x7bea0977. */
