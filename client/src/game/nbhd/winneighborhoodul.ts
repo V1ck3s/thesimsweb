@@ -57,6 +57,7 @@ import { getCheatCodeManager, type CheatCommandLine } from "../ui/cheat.js";
 import {
   doFirstTimeTouristFamilies,
   doFirstTimeTownies,
+  refillNpcPools,
   refillTouristFamilies,
   refillTownies,
   TOURIST_FAMILY_COUNT,
@@ -1536,6 +1537,9 @@ export class WinNeighborhoodUL extends TSWin implements LotBtnOwner {
       if (this.firstTick) {
         this.firstTick = false;
         if (this.hoveredLot) void this.showPopup(this.hoveredLot);
+        // TSOnTimerMsg's first tick (not busy): DoFirstTimeCelebs, RefillCelebs(12),
+        // DoFirstTimeFans, RefillFans(18), DoFirstTimeMagicSims, RefillMagicSims(30).
+        if (!this.busy) void NeighborhoodStore.open(this.nb.dir).then((store) => refillNpcPools(this.ctx, store));
         // TSOnTimerMsg's first tick: every lot's tutorial arrow off, then, on the
         // regular screen (+0x111) while Neighborhood +0x12e (data[3]) is 0, on over
         // the tutorial lots (cWinLotBtn +0x1a0 == 1).
