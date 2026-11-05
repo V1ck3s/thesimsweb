@@ -33,6 +33,14 @@ diagonal half-tile enables).
   setCutaway / setDynamicCutaway / setWallState as CPState::SetWallState calls them,
   level / rotation / scale hooks, UpdateWorld's per-frame call for an outside sim).
 - WallManager.cutawayMask is the +0x204 mask; maskVersion is bumped on change.
+- Wall state at load (House::LoadFile): GlobalDispatch(0x93) streams HOUS 0 into the
+  HouseViewer (+0x48 walls down = high byte of the first int, +0x49 dynamic cutaway = low
+  byte, cleared when +0x48 is set; +0x51 roof), then 0xe8 marks CPState dirty and
+  UpdateCPStateFromWorld sets the wall button from the view (walls down 2, else cutaway 4,
+  else roof 8, else 1) with SetWallState(state, 1), which does not push it back. The lot
+  view does the same (`WinLotView` after `readSavedView`, `CPState.setWallStateFromWorld`);
+  a file without HOUS 0 keeps the current state. HouseViewer::SetCutaway /
+  SetDynamicCutaway keep +0x48 (`HouseViewer.cutaway`, which HOUS 0 saves) up to date.
 
 ## Gaps
 

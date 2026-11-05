@@ -16,7 +16,7 @@ import { WinCPanel } from "../cpanel/cpanel.js";
 import type { GameContext } from "../context.js";
 import { soundPlayer, UI_SOURCE } from "../audio/index.js";
 import { getOptionsMgr, type OptionsMgr } from "../optionsmgr.js";
-import { ArchTool, DIRTY_ARCH_SUBTOOL, DIRTY_ARCH_TOOL, DIRTY_ARCH_UNDO, DIRTY_LEVEL, DIRTY_SHOP_ITEM, Mode, type CPState, type HouseViewerHooks, type WallState } from "../cpstate.js";
+import { ArchTool, DIRTY_ARCH_SUBTOOL, DIRTY_ARCH_TOOL, DIRTY_ARCH_UNDO, DIRTY_LEVEL, DIRTY_SHOP_ITEM, Mode, WallState, type CPState, type HouseViewerHooks } from "../cpstate.js";
 import { DefaultTTWindow } from "../ui/ttwindow.js";
 import { Gfx, type Rect, TSWin, WF_GLOBAL_CURSOR } from "../ui/tswin.js";
 import { Compositor } from "./compositor.js";
@@ -99,7 +99,9 @@ const ARCHITECTURE_VALUE_MULTIPLIER = Math.fround(0.7);
 
 /** HOUS chunk id 0: HouseViewer::DoStream (saved camera). */
 interface SavedView {
+  /** +0x48 (walls down) and +0x49 (dynamic cutaway; cleared when +0x48 is set). */
   cutaway: boolean;
+  dynamicCutaway: boolean;
   scale: number;
   originX: number;
   originY: number;
@@ -131,7 +133,8 @@ function readSavedView(house: ResFile): SavedView | null {
     p += 2;
   }
   if (version > 0x29) drawRoof = v.getInt16(p, true) !== 0;
-  return { cutaway: cut >> 8 !== 0, scale, originX, originY, rotation, level, drawRoof };
+  const cutaway = cut >> 8 !== 0;
+  return { cutaway, dynamicCutaway: !cutaway && (cut & 0xff) !== 0, scale, originX, originY, rotation, level, drawRoof };
 }
 
 /**
@@ -301,6 +304,17 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
       v.cutaway = saved.cutaway;
       v.drawRoof = saved.drawRoof;
       v.setOffsets(saved.originX, saved.originY);
+      // House::LoadFile: DoStream's flags are the view's wall state; GlobalDispatch(0xe8)
+      // then makes CPState::UpdateCPStateFromWorld set the button from them
+      // (cutaway 2, else dynamic cutaway 4, else roof 8, else 1), without pushing it back.
+      const walls = this.wallManager;
+      if (walls) {
+        walls.cutaway = saved.cutaway;
+        walls.dynamicCutaway = saved.dynamicCutaway;
+        walls.drawRoof = saved.drawRoof;
+        const state = saved.cutaway ? WallState.Down : saved.dynamicCutaway ? WallState.Cutaway : saved.drawRoof ? WallState.Roof : WallState.Up;
+        this.ctx.state.setWallStateFromWorld(state);
+      }
     } else {
       v.setOffsets(0, 0);
     }

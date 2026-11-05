@@ -98,11 +98,16 @@ RenderCatalogShot kinds 3 / 4).
   GetNextWallPaper / EndEnum (price, name, description it returns; button
   +8 = pattern + 1). The catalog has its own WallGraphicsMgr; plugin numbers
   are given in scan order, the same as the house's.
+- Plugin floors: Catalog::Init enumerates FloorGraphicsMgr::BeginEnum /
+  GetNextFloor / EndEnum (floors.iff 1..29, then the .flr files, 208 more
+  with the expansions; button +8 = the pattern). A plugin floor has no BMP_:
+  RenderCatalogShot kind 2 draws its scale 3 sprite (GetFloorGraphic, DrawFloor
+  at full ambient) at (100 - 0x40, 2 * 200 / 3 - 0x2d), rectangle 0x80 x 0x40;
+  the product sheet's DrawFloorIcon goes through GetFloorGraphic too. The
+  catalog has its own FloorGraphicsMgr (same scan order as the house's).
 
 ## Gaps
 
-- Plugin floors (.flr): pattern numbers come from FloorGraphicsMgr's number
-  pool, pictures from RenderCatalogShot kind 2.
 - cRoofLayer itself: the roof panel calls `CPState.archRoofHooks` (null until
   the lot view installs it; then no pitch / pattern button is down).
 - UI sounds.

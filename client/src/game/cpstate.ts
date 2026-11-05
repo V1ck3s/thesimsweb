@@ -504,6 +504,15 @@ export class CPState {
     this.viewer?.setWallState(state);
   }
 
+  /**
+   * CPState::SetWallState(state, 1) as UpdateCPStateFromWorld calls it: the
+   * button follows the view (marked dirty), nothing is pushed to the view.
+   */
+  setWallStateFromWorld(state: WallState): void {
+    this.wallState = state;
+    this.touch(DIRTY_WALLS);
+  }
+
   // --- people ----------------------------------------------------------------
 
   personGetSelected(): PersonInfo | null {

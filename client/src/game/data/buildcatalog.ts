@@ -7,7 +7,9 @@
  *  - every floor of FloorGraphicsMgr::BeginEnum / GetNextFloor: kind 2, arch
  *    tool 7 (floor), +0x34 the floor pattern, ProductButton +8 the pattern.
  *    The built-in floors 1..29 read price, name and description from
- *    GameData/Build.iff STR# 0x82 entries (p - 1) * 3 + 1..3;
+ *    GameData/Build.iff STR# 0x82 entries (p - 1) * 3 + 1..3, the plugin
+ *    .flr floors (patterns from the manager's number pool) their own STR# 0
+ *    or the STR# 0x86 defaults;
  *  - the terrain tools (STR# 0x80 entries 1..12, three per tool): kind 5,
  *    arch tool 0, button +8 = 0 raise, 1 lower, 2 level, 3 grass; the button
  *    image is the tool's own 4-frame bitmap (kBldSbTl*), the product sheet
@@ -39,16 +41,17 @@
  * highlighted 37x37 halves) of the global renderer's file: floors.iff id =
  * pattern (1..29), walls.iff id = style for wall styles and pattern + 0x200
  * for wallpapers 0..30 / 0xf8..0xff; anything else is rendered by
- * RenderCatalogShot: kinds 3 / 4 draw WallManager::DrawIconic (one wall
- * segment, scale 2, direction 6) at (100, 3 * 200 / 4 + 0xe; - 0x10 for
- * styles 2 / 0xc) of the 200x200 work buffer.
+ * RenderCatalogShot: kind 2 (plugin floors) draws the pattern's scale 3
+ * sprite (FloorGraphicsMgr::GetFloorGraphic, cRenderer::DrawFloor at full
+ * ambient light) at (100 - 0x40, 2 * 200 / 3 - 0x2d), rectangle
+ * (x, y, x + 0x80, y + 0x40); kinds 3 / 4 draw WallManager::DrawIconic (one
+ * wall segment, scale 2, direction 6) at (100, 3 * 200 / 4 + 0xe; - 0x10
+ * for styles 2 / 0xc) of the 200x200 work buffer.
  *
- * The wallpapers come from a WallGraphicsMgr of the catalog's own (the
- * original's single global one): its plugin pattern numbers are handed out
- * in the same scan order as the house's, so they name the same patterns.
- *
- * Not ported: plugin floors (.flr files: their pattern numbers come from
- * FloorGraphicsMgr's number pool and their pictures from RenderCatalogShot).
+ * The floors and wallpapers come from a FloorGraphicsMgr / WallGraphicsMgr
+ * of the catalog's own (the original's single global ones): their plugin
+ * pattern numbers are handed out in the same scan order as the house's, so
+ * they name the same patterns.
  */
 
 import { renderShots } from "../cpanel/buy/objecticon.js";
@@ -56,7 +59,8 @@ import { ArchTool, type ArchProduct } from "../cpstate.js";
 import type { GameContext } from "../context.js";
 import { decodeImage } from "../res/bmp.js";
 import { ResFile } from "../world/iffres.js";
-import { Renderer } from "../world/renderer.js";
+import { FloorGraphicsMgr } from "../world/floors.js";
+import type { Renderer } from "../world/renderer.js";
 import { PX_ALPHA, PX_NONE } from "../world/spr.js";
 import { WallGraphicsMgr } from "../world/wallgraphics.js";
 import { IconicWallBlitter } from "../world/wallicon.js";
@@ -75,7 +79,6 @@ export const enum ProductKind {
 /** Build.iff string sets. */
 const STR_TERRAIN = 0x80;
 const STR_WALL = 0x81;
-const STR_FLOOR = 0x82;
 const STR_HAND = 0x84;
 const STR_POOL = 0x85;
 
@@ -121,6 +124,17 @@ function wallsIff(): Promise<ResFile> {
 }
 
 let wallGraphics: Promise<WallGraphicsMgr> | null = null;
+let floorGraphics: Promise<FloorGraphicsMgr> | null = null;
+
+/** The global FloorGraphicsMgr (lbl_105BA114) as the catalog sees it: floors.iff and the plugin floors. */
+function catalogFloorGraphics(): Promise<FloorGraphicsMgr> {
+  floorGraphics ??= (async () => {
+    const gfx = new FloorGraphicsMgr();
+    await gfx.initialize();
+    return gfx;
+  })();
+  return floorGraphics;
+}
 
 /** The global WallGraphicsMgr (lbl_105BA118) as the catalog sees it: walls.iff and the plugin wallpapers. */
 function catalogWallGraphics(): Promise<WallGraphicsMgr> {
@@ -266,11 +280,25 @@ export class BuildProduct implements ArchProduct {
   }
 
   /**
-   * RenderCatalogShot for wall styles and wallpapers without a BMP_ (kinds
-   * 3 / 4): DrawIconic at (100, 3 * 200 / 4 + 0xe), - 0x10 instead of + 0xe
-   * for styles 2 / 0xc, on each template color; other kinds draw nothing.
+   * RenderCatalogShot for floors, wall styles and wallpapers without a BMP_
+   * (kinds 2..4): the scale 3 floor sprite at (100 - 0x40, 2 * 200 / 3 -
+   * 0x2d), or DrawIconic at (100, 3 * 200 / 4 + 0xe), - 0x10 instead of
+   * + 0xe for styles 2 / 0xc, on each template color; other kinds draw
+   * nothing.
    */
   async renderCatalogShot(template: ImageBitmap): Promise<ImageBitmap | null> {
+    if (this.kind === ProductKind.Floor) {
+      const floor = (await catalogFloorGraphics()).getFloorGraphic(this.floorStyle, 3);
+      if (!floor) return null;
+      const x = Math.trunc(SHOT_BUFFER / 2) - 0x40;
+      const y = Math.trunc((2 * SHOT_BUFFER) / 3) - 0x2d;
+      return renderShots(template, (g) => {
+        const img = g.getImageData(0, 0, SHOT_BUFFER, SHOT_BUFFER);
+        drawFloorSprite(floor.renderer, floor.id, img, x, y);
+        g.putImageData(img, 0, 0);
+        return { left: x, top: y, right: x + 0x80, bottom: y + 0x40 };
+      });
+    }
     if (this.kind !== ProductKind.WallStyle && this.kind !== ProductKind.Wallpaper) return null;
     const gfx = await catalogWallGraphics();
     const style = this.wallStyle;
@@ -288,9 +316,9 @@ export class BuildProduct implements ArchProduct {
    * Product::DrawIcon for the product sheet (cWinCatalogPopup) of products
    * that are not objects, into (0, 0, w, h) of `g`.
    *  - tool products: the popup bitmap (+0x38), centered when smaller;
-   *  - floors: DrawFloorIcon, the pattern's large-zoom sprite (scale 3,
-   *    floors.iff SPR2 pattern + 0x200) at (w / 2 - 0x40, 2h / 3 - 0x2d), at
-   *    full light (RenderParam::SetMaxAmbient);
+   *  - floors: DrawFloorIcon, the pattern's large-zoom sprite
+   *    (FloorGraphicsMgr::GetFloorGraphic scale 3) at (w / 2 - 0x40,
+   *    2h / 3 - 0x2d), at full light (RenderParam::SetMaxAmbient);
    *  - wall styles and wallpapers: DrawWallIcon.
    */
   async drawPopupIcon(ctx: GameContext, g: CanvasRenderingContext2D, w: number, h: number): Promise<void> {
@@ -301,9 +329,9 @@ export class BuildProduct implements ArchProduct {
       const x = img.width < w ? Math.trunc((w - img.width) / 2) : 0;
       const y = img.height < h ? Math.trunc((h - img.height) / 2) : 0;
       g.drawImage(img, x, y);
-    } else if (this.kind === ProductKind.Floor && this.floorStyle > 0 && this.floorStyle < BUILTIN_FLOORS) {
-      const file = await floorsIff().catch(() => null);
-      if (file) drawFloorIcon(new Renderer(file), this.floorStyle + 0x200, g, w, h);
+    } else if (this.kind === ProductKind.Floor) {
+      const floor = (await catalogFloorGraphics().catch(() => null))?.getFloorGraphic(this.floorStyle, 3);
+      if (floor) drawFloorIcon(floor.renderer, floor.id, g, w, h);
     } else if (this.kind === ProductKind.WallStyle || this.kind === ProductKind.Wallpaper) {
       const gfx = await catalogWallGraphics().catch(() => null);
       if (gfx) drawWallIcon(gfx, this.wallStyle, this.wallpaper, g, w, h);
@@ -328,12 +356,18 @@ function drawWallIcon(gfx: WallGraphicsMgr, style: number, pattern: number, g: C
 
 /** DrawFloorIcon: one floor sprite at scale 3, cRenderer::DrawFloor at full ambient light. */
 function drawFloorIcon(r: Renderer, spriteId: number, g: CanvasRenderingContext2D, w: number, h: number): void {
+  const img = g.getImageData(0, 0, w, h);
+  drawFloorSprite(r, spriteId, img, Math.trunc(w / 2) - 0x40, Math.trunc((2 * h) / 3) - 0x2d);
+  g.putImageData(img, 0, 0);
+}
+
+/** cRenderer::DrawFloor at full ambient light: frame 0 of a floor sprite with its top-left corner at (x0, y0) of `img`. */
+function drawFloorSprite(r: Renderer, spriteId: number, img: ImageData, x0: number, y0: number): void {
   const f = r.frame(spriteId, 0);
   if (!f) return;
   const pal = r.palette(f.paletteId);
-  const x0 = Math.trunc(w / 2) - 0x40;
-  const y0 = Math.trunc((2 * h) / 3) - 0x2d;
-  const img = g.getImageData(0, 0, w, h);
+  const w = img.width;
+  const h = img.height;
   const px = img.data;
   for (let sy = 0; sy < f.height; sy++) {
     const dy = y0 + sy;
@@ -353,7 +387,6 @@ function drawFloorIcon(r: Renderer, spriteId: number, g: CanvasRenderingContext2
       px[q + 3] = 255;
     }
   }
-  g.putImageData(img, 0, 0);
 }
 
 /** The prices Catalog::Init also stores for the build tools (cost of a tile / wall segment). */
@@ -385,14 +418,13 @@ async function build(ctx: GameContext): Promise<BuildCatalog> {
   ];
   const products: BuildProduct[] = [];
 
-  // FloorGraphicsMgr::GetNextFloor (built-in patterns; it stops when the strings run out).
-  const floors = set(STR_FLOOR);
-  for (let p = 1; p < BUILTIN_FLOORS; p++) {
-    const first = (p - 1) * 3 + 1;
-    if (floors.length < first + 2) break;
-    const [price, name, desc] = triple(floors, first);
-    products.push(new BuildProduct(ProductKind.Floor, ArchTool.Floor, name, desc, price, { toolIndex: p, floorStyle: p }));
+  // FloorGraphicsMgr::BeginEnum / GetNextFloor / EndEnum (built-in patterns 1..29, then the plugins; it stops when the strings run out).
+  const floorGfx = await catalogFloorGraphics();
+  floorGfx.beginEnum();
+  for (let e = floorGfx.getNextFloor(); e; e = floorGfx.getNextFloor()) {
+    products.push(new BuildProduct(ProductKind.Floor, ArchTool.Floor, e.name, e.description, e.cost, { toolIndex: e.pattern, floorStyle: e.pattern }));
   }
+  floorGfx.endEnum();
 
   const terrain = set(STR_TERRAIN);
   const terrainTools: Array<[string, string]> = [

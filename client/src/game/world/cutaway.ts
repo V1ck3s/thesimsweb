@@ -233,6 +233,8 @@ export class DynamicCutaway {
   setCutaway(on: boolean): void {
     if (this.walls.cutaway === on) return;
     this.walls.cutaway = on;
+    // +0x48, the flag HouseViewer::DoStream saves.
+    this.viewer.cutaway = on;
     if (this.walls.dynamicCutaway) {
       this.resetDynamicCutaway();
       this.walls.dynamicCutaway = false;
@@ -245,6 +247,7 @@ export class DynamicCutaway {
     if (this.walls.dynamicCutaway === on) return;
     this.walls.dynamicCutaway = on;
     this.walls.cutaway = false;
+    this.viewer.cutaway = false;
     this.set.length = 0;
     this.walls.cutawayMask.clear();
     this.markChanged();
