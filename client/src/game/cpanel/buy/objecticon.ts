@@ -476,6 +476,22 @@ function scaleBitmap(src: ImageData, r: { left: number; top: number; right: numb
 export async function renderCatalogShot(file: ResFile, objdId: number, template: ImageBitmap): Promise<ImageBitmap | null> {
   const icon = await ObjectIcon.create(file, objdId);
   if (!icon) return null;
+  return renderShots(template, (wg, hilite) => {
+    icon.draw(wg, 0, 0, SHOT_BUFFER, SHOT_BUFFER, { hilite, shadow: icon.thumbnailHasShadow });
+    return icon.bounds;
+  });
+}
+
+/**
+ * RenderCatalogShot's loop for any product kind: two shots (normal, then
+ * highlighted) on the template's frame 0 / 1 center colors, each drawn by
+ * `draw` into the 200x200 work buffer (it returns the drawn rectangle),
+ * cropped and scaled by SquareOffAndShrink, put side by side.
+ */
+export async function renderShots(
+  template: ImageBitmap,
+  draw: (g: OffscreenCanvasRenderingContext2D, hilite: boolean) => { left: number; top: number; right: number; bottom: number } | null,
+): Promise<ImageBitmap | null> {
   const th = template.height;
   const size = th - 8;
   const tpl = new OffscreenCanvas(template.width, th).getContext("2d", { willReadFrequently: true })!;
@@ -489,8 +505,8 @@ export async function renderCatalogShot(file: ResFile, objdId: number, template:
     const [r, g, b] = tpl.getImageData(Math.min(template.width - 1, (th >> 1) + th * frame), th >> 1, 1, 1).data;
     wg.fillStyle = `rgb(${r},${g},${b})`;
     wg.fillRect(0, 0, SHOT_BUFFER, SHOT_BUFFER);
-    icon.draw(wg, 0, 0, SHOT_BUFFER, SHOT_BUFFER, { hilite: frame === 1, shadow: icon.thumbnailHasShadow });
-    const rect = icon.bounds && squareOffAndShrink(icon.bounds, size);
+    const bounds = draw(wg, frame === 1);
+    const rect = bounds && squareOffAndShrink(bounds, size);
     if (!rect) return null;
     const drawn = wg.getImageData(0, 0, SHOT_BUFFER, SHOT_BUFFER);
     to565(drawn.data);

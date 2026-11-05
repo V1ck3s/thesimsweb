@@ -55,24 +55,54 @@ Files:
 
 Defaults (Product::Product): wallpaper 0, wallStyle 1, floorStyle 0.
 
+## Wall pictures (WallManager::DrawIconic)
+
+`world/walls.ts` (Wall / Vertex iconic mode, `WallManager.drawIconic`),
+`world/wallicon.ts` (the 2D blitters), `data/buildcatalog.ts` (DrawWallIcon,
+RenderCatalogShot kinds 3 / 4).
+
+- WallManager::DrawIconic(x, y, scale, style, pattern, dir, rect) (102b9270):
+  on the first call two Vertex objects (size / 2, size / 2, level 1) and
+  (+ DIRS[dir]) and a Wall::BuildIconic between them (one segment, style 1,
+  pattern 0; side and config bits from jump table lbl_105BC6A0 by
+  direction); then Wall::SetWallStyle / SetWallPattern (both sides) /
+  SetIconic, clip lbl_105BA5F4 = (-800, -600, 800, 600), Wall::Draw then
+  Vertex::Draw of both vertices. The rect: x -/+ (8 << s), bottom
+  y + (4 << s), top = bottom - height of the style's sprite
+  (walls.iff style * 2 + (s - 1) * 0x200, frame 2; GetPixelShape is the
+  frame's bounds).
+- Wall::SetIconic: +0x48 = 1, +0x4c / +0x50 = (x, y), +0x54 scale; the
+  vertices go to (x -/+ (8 << s), y + (4 << s)) for direction 6, else
+  (x, y) and (x + (8 << s) (dx + dy), y + (4 << s) (dx - dy)) with d the
+  tile step. Vertex::SetIconic: +0x50 = 1, +0x54 scale, +0x58 / +0x5c
+  position, config = the wall's bit only (jump tables lbl_105BC684 first,
+  lbl_105BC680 last vertex: wall slot and bit by direction), full = config
+  (b = config for a fence), end caps precomputed.
+- Wall::Draw iconic: RenderParam::SetState(3, 1, 1), every segment's top
+  corner is (+0x4c, +0x50), altitude 0, ambient lbl_105BC690 = 1.0, no
+  light entry. The iconic segment is never cut, so it is one WallBlit.
+  Vertex::Draw iconic: top corner (+0x58, +0x5c), altitude 0; full-height
+  top piece; end cap neighbour at (8 << s) (dx - dy), (4 << s) (dx + dy).
+- The 2D blitter writes every opaque pixel: the original's z test cannot
+  reject anything in this one-wall draw (state 3 depths). Vertex::Draw's
+  ambient is RoomManager::GetRoom(0)'s, taken as full light.
+- DrawWallIcon(style, pattern, buffer, rect) (product sheet, 0xa8 wide):
+  DrawIconic(w / 2, trunc(3h / 4) + 0xe; - 0x10 for styles 2 / 0xd / 0xe,
+  - 2 for 0xc; scale 2, direction 6).
+- RenderCatalogShot kinds 3 / 4 (no BMP_: plugin wallpapers): DrawIconic
+  into the 200x200 work buffer at (100, 150 + 0xe; 150 - 0x10 for styles
+  2 / 0xc), scale 2, direction 6, then SquareOffAndShrink on the returned
+  rect, on both template colors (`renderShots` in `cpanel/buy/objecticon.ts`,
+  `ProductButton` asks `renderCatalogShot` of non-object products).
+- Plugin wallpapers: Catalog::Init enumerates WallGraphicsMgr::BeginEnum /
+  GetNextWallPaper / EndEnum (price, name, description it returns; button
+  +8 = pattern + 1). The catalog has its own WallGraphicsMgr; plugin numbers
+  are given in scan order, the same as the house's.
+
 ## Gaps
 
-- Plugin floors / wallpapers (.flr / .wll): pattern numbers come from the
-  graphics managers' number pools, pictures from RenderCatalogShot.
-- RenderCatalogShot (objects without a BMP_ thumbnail show kItemUnknown).
-- DrawWallIcon (product sheet picture of wall styles and wallpapers) and
-  RenderCatalogShot kinds 3 / 4 (catalog picture of plugin wallpapers): both
-  go through WallManager::DrawIconic (102b9270): a one-segment iconic Wall
-  (Wall::BuildIconic between two Vertex objects, direction 6) set to the
-  style / pattern, Wall::SetIconic(x = w / 2, y = ceil(3h / 4) + 0xe (-0x10
-  for styles 2 / 0xd / 0xe, -2 for 0xc in DrawWallIcon; -0x10 for 2 / 0xc in
-  RenderCatalogShot), scale 2), then Wall::Draw and Vertex::Draw of both
-  vertices in iconic mode (Wall +0x48: pixel origin +0x4c / +0x50 instead of
-  ComputePixelTopOfTile, RenderParam::SetState(3, 1, 1)), clipped to
-  (-800, -600, 800, 600); the drawn rect is (x -+ 8 << s, y + (4 << s) -
-  pixel shape height of walls.iff list style * 2 + (s - 1) * 0x200).
-  `world/walls.ts` draws through the WebGL Compositor of the house view and
-  has no iconic mode, so this needs an offscreen wall/vertex draw first.
+- Plugin floors (.flr): pattern numbers come from FloorGraphicsMgr's number
+  pool, pictures from RenderCatalogShot kind 2.
 - cRoofLayer itself: the roof panel calls `CPState.archRoofHooks` (null until
   the lot view installs it; then no pitch / pattern button is down).
 - UI sounds.

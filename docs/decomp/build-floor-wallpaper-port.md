@@ -35,7 +35,9 @@ Both tools are registered in `BUILD_TOOLS` (`world/tools/buildtools.ts`).
 
 ### Wallpaper
 - Cursor is the "Wall Cursor" object (GUID 0x439, graphic 2), moved by
-  `ModifyCursorPos` (`v += 100 >> (3 - scale)`).
+  `ModifyCursorPos` (`v += 100 >> (3 - scale)`), which XViewer applies to the
+  mouse events and DoDynamicCutaway to the cursor (the tool's `modifyCursorPos`
+  is the cutaway hook).
 - Click/drag paints the nearest wall side; Shift paints the room's sides;
   Ctrl removes (refund of `0.8 *` old cost). Fences refuse (code 0x2e).
 - Tips: `cMoveTool::ShowPlacementTip` codes (UIText STR# 137), money tip

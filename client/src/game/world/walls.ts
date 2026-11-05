@@ -58,7 +58,9 @@ import {
   VERTEX_JOINT,
 } from "./tilewalls.js";
 import { WallGraphicsMgr } from "./wallgraphics.js";
+import type { IconicWallBlitter } from "./wallicon.js";
 import { WallBlitter, type ClipRect } from "./wallrender.js";
+import { LEVEL_PX } from "./zbuffer.js";
 import { ARRAY_SIZE, DIRS, rotateTile, type FixedWorld, type RotatableWorld } from "./world.js";
 
 /** CTilePt (x, y, level). */
@@ -150,7 +152,11 @@ function isoCompare(a: { x: number; y: number }, b: { x: number; y: number }): n
 
 /** HouseViewer::GetWallBounds: a wall sprite's rectangle relative to its tile's top corner. */
 function getWallBounds(viewer: HouseViewer, seg: number, s: number): ClipRect {
-  const lp = viewer.levelPx(s);
+  return wallBounds(viewer.levelPx(s), seg, s);
+}
+
+/** GetWallBounds for a level height `lp` (ZBufferLookup +0x6c, LEVEL_PX). */
+function wallBounds(lp: number, seg: number, s: number): ClipRect {
   let r: ClipRect;
   if (seg === SEG_HORIZ) r = { left: -1 - (8 << s), right: (8 << s) - 1, top: (4 << s) - lp, bottom: 4 << s };
   else if (seg === SEG_TR) r = { left: -1, right: (8 << s) - 1, top: -lp, bottom: 8 << s };
@@ -187,6 +193,37 @@ interface DrawCtx {
   clip: ClipRect;
   mgr: WallManager;
 }
+
+/** State shared by one WallManager::DrawIconic call (RenderParam state (3, 1): pixel positions from the iconic fields, no world). */
+interface IconicCtx {
+  blit: IconicWallBlitter;
+  gfx: WallGraphicsMgr;
+  /** lbl_105BA5F4, set to (-800, -600, 800, 600) by DrawIconic. */
+  clip: ClipRect;
+}
+
+/** Iconic fields of a Wall (+0x48 flag, +0x4c / +0x50 pixel position, +0x54 scale) or Vertex (+0x50, +0x58 / +0x5c, +0x54). */
+interface Iconic {
+  x: number;
+  y: number;
+  scale: number;
+}
+
+/** Vertex::SetIconic jump tables (lbl_105BC684 first vertex, lbl_105BC680 last) by wall direction: [wall slot, configuration bit]. */
+const ICONIC_FIRST: ReadonlyArray<readonly [number, number]> = [[0, 0x01], [2, 0x04], [1, 0x02], [3, 0x08], [0, 0x10], [2, 0x40], [3, 0x80], [1, 0x20]];
+const ICONIC_LAST: ReadonlyArray<readonly [number, number]> = [[2, 0x04], [0, 0x01], [3, 0x08], [1, 0x02], [2, 0x40], [0, 0x10], [1, 0x20], [3, 0x80]];
+
+/** Wall::BuildIconic jump table lbl_105BC6A0 by direction: [side, bit at v0, bit at v1]. */
+const BUILD_ICONIC: ReadonlyArray<readonly [number, number, number]> = [
+  [0, 0x01, 0x04],
+  [1, 0x04, 0x01],
+  [1, 0x02, 0x08],
+  [0, 0x08, 0x02],
+  [0, 0x10, 0x40],
+  [0, 0x40, 0x10],
+  [0, 0x80, 0x20],
+  [1, 0x20, 0x80],
+];
 
 /** World fixed-point center of a view tile. */
 function centerOfView(world: RotatableWorld, x: number, y: number): [number, number] {
@@ -260,6 +297,8 @@ export class Vertex {
   walls: [Wall | null, Wall | null, Wall | null, Wall | null] = [null, null, null, null];
   /** +0x24/+0x28 and +0x25/+0x3c. */
   endcaps: [Endcap | null, Endcap | null] = [null, null];
+  /** +0x50 / +0x54 / +0x58 / +0x5c: drawn at a pixel position (WallManager::DrawIconic) instead of its tile. */
+  iconic: Iconic | null = null;
 
   constructor(public x: number, public y: number, readonly level: number) {}
 
@@ -386,6 +425,68 @@ export class Vertex {
     this.rot = rot;
   }
 
+  /**
+   * Vertex::SetIconic: the vertex of an iconic wall, drawn at pixel (x, y)
+   * (its top corner) at `scale`: its configuration is the wall's bit only
+   * (jump tables by the wall's direction), a full-height top unless the wall
+   * is a fence.
+   */
+  setIconic(x: number, y: number, scale: number, wall: Wall, first: boolean): void {
+    this.iconic = { x, y, scale };
+    this.config = 0;
+    this.cut = 0;
+    this.full = 0;
+    this.b = 0;
+    this.c = 0;
+    this.walls[2] = null;
+    this.walls[3] = null;
+    const e = (first ? ICONIC_FIRST : ICONIC_LAST)[wall.dir];
+    if (e) {
+      this.walls[e[0]] = wall;
+      this.config |= e[1];
+    }
+    if (isFence(this.segAt(wall).style)) this.b = this.config;
+    else this.full = this.config;
+    this.endcaps[0] = precomputeEndcapState(this.full, this.b, this.c);
+    this.endcaps[1] = precomputeEndcapState(this.cut, this.b, this.c);
+  }
+
+  /**
+   * Vertex::Draw in iconic mode (+0x50): the top corner is the iconic pixel
+   * position, the altitude 0, and the end cap's neighbor tile is placed at
+   * (8 << s) * (dx - dy), (4 << s) * (dx + dy) from it. SetIconic leaves no
+   * cut half-walls, so only the full-height top piece and the end cap can
+   * be drawn.
+   */
+  drawIconic(ctx: IconicCtx): void {
+    const { blit, gfx, clip } = ctx;
+    const { x: th, y: tv, scale: s } = this.iconic!;
+    const u = 8 << s;
+    const h4 = 4 << s;
+    const lp = LEVEL_PX[s]!;
+    if (this.full !== 0) {
+      const m = this.full & ~this.b & ~this.c;
+      if (m !== 0) blit.drawThickWallPiece(clip, 0xfff + s, PIECE[m]! - 1, th - u - 1, tv - h4 - lp);
+    }
+    const ec = this.endcaps[0] ?? this.endcaps[1];
+    if (!ec) return;
+    const wall = this.walls[ec.slot];
+    if (!wall) return;
+    const seg = this.segAt(wall);
+    // The iconic segment has no cut flags: the cut style is the cut end cap's.
+    const cutStyle = this.endcaps[1] ? 1 : 0;
+    const saved = { ...clip };
+    const w = ec.width << (s - 1);
+    clip.left = Math.max(clip.left, ec.right ? th - 1 : th - w);
+    clip.right = Math.min(clip.right, ec.right ? th + w - 1 : th);
+    const r = wallBounds(lp, ec.seg, s);
+    offsetRect(r, th + u * (ec.dx - ec.dy), tv + h4 * (ec.dx + ec.dy));
+    const g = gfx.getWallPatternGraphic(seg.pattern[wall.side]!, s) ?? { renderer: null, id: (s - 1) * 0x100 + 0x6ff };
+    const st = seg.style === 0xff ? 0xff : 1;
+    blit.drawWall(clip, null, st * 2 + (s - 1) * 0x200 + cutStyle, g.renderer, g.id, segFrame(ec.seg), r.left, r.top);
+    Object.assign(clip, saved);
+  }
+
   /** Vertex::Draw: wall tops (thick pieces) and the end cap. */
   draw(ctx: DrawCtx): void {
     const { viewer, world, rp, blit, clip } = ctx;
@@ -491,6 +592,83 @@ export class Wall {
   end: Vertex | null = null;
   /** +0x30. */
   segs: WallSegment[] = [];
+  /** +0x48 / +0x4c / +0x50 / +0x54: drawn at a pixel position (WallManager::DrawIconic) instead of its tiles. */
+  iconic: Iconic | null = null;
+
+  /** Wall::BuildIconic: a one-segment wall (style 1, pattern 0) from v0 to v1. */
+  buildIconic(v0: Vertex, v1: Vertex): void {
+    this.v0 = { x: v0.x, y: v0.y, level: v0.level };
+    this.v1 = { x: v1.x, y: v1.y, level: v1.level };
+    this.dir = computeDirection(this.v0, this.v1);
+    [this.dx, this.dy] = DIRS[this.dir] ?? [-1, -1];
+    this.start = v0;
+    this.end = v1;
+    this.rot = 0;
+    const e = BUILD_ICONIC[this.dir];
+    if (e) {
+      this.side = e[0];
+      this.c0 |= e[1];
+      this.c1 |= e[2];
+    }
+    this.segs.push({ flags: 0, style: 1, pattern: [0, 0] });
+  }
+
+  /** Wall::SetWallStyle */
+  setWallStyle(style: number): void {
+    for (const s of this.segs) s.style = style;
+  }
+
+  /** Wall::SetWallPattern: both sides. */
+  setWallPattern(pattern: number): void {
+    for (const s of this.segs) s.pattern = [pattern, pattern];
+  }
+
+  /**
+   * Wall::SetIconic: the wall's first tile top corner at pixel (x, y), and
+   * its vertices placed from it (direction 6: one tile to the left and to
+   * the right, half a tile down).
+   */
+  setIconic(x: number, y: number, scale: number): void {
+    this.iconic = { x, y, scale };
+    const t0 = vertexToTile(this.v0, this.dir);
+    const t1 = vertexToTile(this.v1, this.dir);
+    const dx = t1.x - t0.x;
+    const dy = t1.y - t0.y;
+    const u = 8 << scale;
+    const h4 = 4 << scale;
+    if (this.dir === 6) {
+      this.start!.setIconic(x - u, y + h4, scale, this, true);
+      this.end!.setIconic(x + u, y + h4, scale, this, false);
+    } else {
+      this.start!.setIconic(x, y, scale, this, true);
+      this.end!.setIconic(x + u * (dx + dy), y + h4 * (dx - dy), scale, this, false);
+    }
+  }
+
+  /**
+   * Wall::Draw in iconic mode (+0x48): every segment's top corner is the
+   * iconic pixel position at altitude 0, at full ambient (lbl_105BC690),
+   * without light entry. BuildIconic's segment is never cut (flags 0) and
+   * the first segment has no joint, so each segment is one WallBlit of its
+   * style over its pattern. (Styles 0x16 / 0x17 would need a door / window
+   * object's sprite; no iconic caller uses them.)
+   */
+  drawIconic(ctx: IconicCtx): void {
+    const { blit, gfx, clip } = ctx;
+    const { x, y, scale: s } = this.iconic!;
+    const u = 8 << s;
+    const seg = dirToWallSeg(this.dir);
+    const frame = segFrame(seg);
+    if (frame < 0) return;
+    for (const cur of this.segs) {
+      const r = wallBounds(LEVEL_PX[s]!, seg, s);
+      if (seg === SEG_VERT) offsetRect(r, x - 1, y + u + (4 >> (3 - s)));
+      else offsetRect(r, x, y);
+      const g = gfx.getWallPatternGraphic(cur.pattern[this.side]!, s);
+      if (!g) continue;
+      blit.drawWall(clip, null, cur.style * 2 + (s - 1) * 0x200, g.renderer, g.id, frame, r.left, r.top);
+    }
+  }
 
   /** Wall::BuildFromVertex (world coordinates, rotation 0). */
   buildFromVertex(mgr: WallManager, v: Vertex, dir: number): void {
@@ -1061,6 +1239,41 @@ export class WallManager implements WallDrawer {
     }
   }
 
+  /**
+   * WallManager::DrawIconic(x, y, scale, style, pattern, dir, rect): one
+   * wall segment of `style` / `pattern` whose first tile's top corner is at
+   * pixel (x, y) of `blit`'s buffer. The two vertices (at the middle of the
+   * lot, level 1, and one step in `dir`) and the wall are built on the
+   * first call and kept (WallManager +0x2c / +0x30 / +0x34). Wall::Draw then
+   * both Vertex::Draw, clipped to (-800, -600, 800, 600). Returns the drawn
+   * rectangle: x -/+ (8 << s), bottom y + (4 << s), height that of the
+   * style's sprite (scale s, frame 2).
+   */
+  static drawIconic(blit: IconicWallBlitter, gfx: WallGraphicsMgr, x: number, y: number, scale: number, style: number, pattern: number, dir: number): ClipRect {
+    if (!iconicParts) {
+      // cFixedWorld size / 2 (the position only matters for depths, which the 2D blitter does not keep).
+      const c = ARRAY_SIZE / 2;
+      const d = DIRS[dir] ?? [0, 0];
+      const v0 = new Vertex(c, c, 1);
+      const v1 = new Vertex(c + d[0], c + d[1], 1);
+      const wall = new Wall();
+      wall.buildIconic(v0, v1);
+      iconicParts = { v0, v1, wall };
+    }
+    const { v0, v1, wall } = iconicParts;
+    wall.setWallStyle(style);
+    wall.setWallPattern(pattern);
+    wall.setIconic(x, y, scale);
+    const ctx: IconicCtx = { blit, gfx, clip: { left: -800, top: -600, right: 800, bottom: 600 } };
+    wall.drawIconic(ctx);
+    v0.drawIconic(ctx);
+    v1.drawIconic(ctx);
+    const h = gfx.global.getListInfo(style * 2 + (scale - 1) * 0x200)?.frame(2)?.height ?? 0;
+    const u = 8 << scale;
+    const bottom = y + (4 << scale);
+    return { left: x - u, top: bottom - h, right: x + u, bottom };
+  }
+
   /** WallManager::DrawWalls: walls, then vertices (tops and end caps), in iso order. */
   drawWalls(viewer: HouseViewer, comp: Compositor, level: number, rp: RenderParam): void {
     if (level === 1) this.prepare(viewer);
@@ -1082,6 +1295,9 @@ export class WallManager implements WallDrawer {
     comp.ambient = 1;
   }
 }
+
+/** WallManager +0x2c / +0x30 / +0x34: the iconic wall and its vertices. */
+let iconicParts: { v0: Vertex; v1: Vertex; wall: Wall } | null = null;
 
 /** std::lower_bound with IsoCompare on `pos(element)`. */
 function lowerBoundBy<T>(list: readonly T[], key: { x: number; y: number }, pos: (t: T) => { x: number; y: number }): number {

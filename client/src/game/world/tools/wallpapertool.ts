@@ -250,17 +250,27 @@ export class NewWallpaperTool extends Tool implements WallpaperUndoTool {
     return this.onKeyDown(key);
   }
 
-  /** cNewWallpaperTool::ModifyCursorPos: the point moves down 100 >> (3 - scale) pixels. */
-  private modifyCursorPos(e: ToolEvent): WEvent {
-    const v = this.host.viewer;
-    const y = e.y + (100 >> (3 - v.scale));
-    const t = pointToFTile(v, e.x, y, this.currentLevel());
-    return { x: e.x, y, fx: t.fx, fy: t.fy };
+  /**
+   * cNewWallpaperTool::ModifyCursorPos (vtable +0x4c): the point moves down
+   * 100 >> (3 - scale) pixels. XViewer applies it to the mouse events'
+   * point, DoDynamicCutaway to the cursor before cutting the tile 4 tiles
+   * back from it (world/cutaway.ts).
+   */
+  modifyCursorPos(p: { x: number; y: number }): void {
+    p.y += 100 >> (3 - this.host.viewer.scale);
+  }
+
+  /** A mouse event after ModifyCursorPos, with the tile under the moved point. */
+  private modifiedEvent(e: ToolEvent): WEvent {
+    const p = { x: e.x, y: e.y };
+    this.modifyCursorPos(p);
+    const t = pointToFTile(this.host.viewer, p.x, p.y, this.currentLevel());
+    return { x: p.x, y: p.y, fx: t.fx, fy: t.fy };
   }
 
   /** cNewWallpaperTool::Float: the hover preview. */
   override float(ev: ToolEvent): void {
-    const e = this.modifyCursorPos(ev);
+    const e = this.modifiedEvent(ev);
     const x = e.fx >> 4;
     const y = e.fy >> 4;
     if (!this.host.world.inInterior(x, y)) return;
@@ -287,7 +297,7 @@ export class NewWallpaperTool extends Tool implements WallpaperUndoTool {
 
   /** cNewWallpaperTool::Click: paints the side under the mouse. */
   override click(ev: ToolEvent): void {
-    const e = this.modifyCursorPos(ev);
+    const e = this.modifiedEvent(ev);
     const x = e.fx >> 4;
     const y = e.fy >> 4;
     if (!this.host.world.inInterior(x, y)) return;
@@ -334,7 +344,7 @@ export class NewWallpaperTool extends Tool implements WallpaperUndoTool {
   /** cNewWallpaperTool::Drag: keeps painting. */
   override drag(ev: ToolEvent): void {
     if (this.buttonUp) return;
-    const e = this.modifyCursorPos(ev);
+    const e = this.modifiedEvent(ev);
     const x = e.fx >> 4;
     const y = e.fy >> 4;
     if (!this.host.world.inInterior(x, y)) {
@@ -378,7 +388,7 @@ export class NewWallpaperTool extends Tool implements WallpaperUndoTool {
 
   /** cNewWallpaperTool::Release: the last side, then the gesture goes to the UndoManager. */
   override release(ev: ToolEvent): void {
-    const e = this.modifyCursorPos(ev);
+    const e = this.modifiedEvent(ev);
     const x = e.fx >> 4;
     const y = e.fy >> 4;
     if (this.host.world.inInterior(x, y) && mayEditTile(this.host.world, x, y)) {

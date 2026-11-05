@@ -17,8 +17,9 @@
  *    (0xfa, 0xd), privacy fence (0xf9, 0xc), Italian railing (0xfb, 0xe),
  *    button +8 = 0, 1, 3, 2, 4;
  *  - every wallpaper of WallGraphicsMgr::BeginEnum / GetNextWallPaper
- *    (patterns 1..30 of walls.iff, STR# 0x83): kind 4, arch tool 3,
- *    +0x2c the pattern, button +8 = pattern + 1;
+ *    (patterns 1..30 of walls.iff, STR# 0x83, then the plugin .wll files'
+ *    patterns with their own strings): kind 4, arch tool 3, +0x2c the
+ *    pattern, button +8 = pattern + 1, the price and strings it returns;
  *  - the hand (STR# 0x84): kind 5, arch tool 11, button +8 = 0;
  *  - pool and water (STR# 0x85 entries 1..3, 4..6): kind 5, arch tool 1,
  *    button +8 = 0, 1;
@@ -38,19 +39,28 @@
  * highlighted 37x37 halves) of the global renderer's file: floors.iff id =
  * pattern (1..29), walls.iff id = style for wall styles and pattern + 0x200
  * for wallpapers 0..30 / 0xf8..0xff; anything else is rendered by
- * RenderCatalogShot (not needed for the shipped patterns).
+ * RenderCatalogShot: kinds 3 / 4 draw WallManager::DrawIconic (one wall
+ * segment, scale 2, direction 6) at (100, 3 * 200 / 4 + 0xe; - 0x10 for
+ * styles 2 / 0xc) of the 200x200 work buffer.
  *
- * Not ported: plugin floors and wallpapers (.flr / .wll files: their
- * pattern numbers come from the graphics managers' number pools and their
- * pictures from RenderCatalogShot).
+ * The wallpapers come from a WallGraphicsMgr of the catalog's own (the
+ * original's single global one): its plugin pattern numbers are handed out
+ * in the same scan order as the house's, so they name the same patterns.
+ *
+ * Not ported: plugin floors (.flr files: their pattern numbers come from
+ * FloorGraphicsMgr's number pool and their pictures from RenderCatalogShot).
  */
 
+import { renderShots } from "../cpanel/buy/objecticon.js";
 import { ArchTool, type ArchProduct } from "../cpstate.js";
 import type { GameContext } from "../context.js";
 import { decodeImage } from "../res/bmp.js";
 import { ResFile } from "../world/iffres.js";
 import { Renderer } from "../world/renderer.js";
 import { PX_ALPHA, PX_NONE } from "../world/spr.js";
+import { WallGraphicsMgr } from "../world/wallgraphics.js";
+import { IconicWallBlitter } from "../world/wallicon.js";
+import { WallManager } from "../world/walls.js";
 import { catalogSortPred, loadCatalog, OBJD, type Product } from "./catalog.js";
 
 /** Product +0x14 */
@@ -66,14 +76,11 @@ export const enum ProductKind {
 const STR_TERRAIN = 0x80;
 const STR_WALL = 0x81;
 const STR_FLOOR = 0x82;
-const STR_WALLPAPER = 0x83;
 const STR_HAND = 0x84;
 const STR_POOL = 0x85;
 
 /** FloorGraphicsMgr::Initialize: built-in floor patterns 1..0x1d. */
 const BUILTIN_FLOORS = 0x1e;
-/** WallGraphicsMgr::Initialize: built-in wallpapers 0..0x1e (BeginEnum skips 0) and 0xf8..0xff (GetNextWallPaper skips them). */
-const BUILTIN_WALLPAPERS = 0x1f;
 
 const ICON_W = 0x4a;
 const ICON_H = 0x25;
@@ -112,6 +119,26 @@ function wallsIff(): Promise<ResFile> {
   wallsFile ??= ResFile.open("GameData/walls.iff");
   return wallsFile;
 }
+
+let wallGraphics: Promise<WallGraphicsMgr> | null = null;
+
+/** The global WallGraphicsMgr (lbl_105BA118) as the catalog sees it: walls.iff and the plugin wallpapers. */
+function catalogWallGraphics(): Promise<WallGraphicsMgr> {
+  wallGraphics ??= (async () => {
+    const gfx = new WallGraphicsMgr();
+    await gfx.initialize();
+    return gfx;
+  })();
+  return wallGraphics;
+}
+
+/** WallManager::DrawIconic of a wall style / pattern into `img` (scale 2, direction 6); the drawn rectangle. */
+function drawIconicWall(gfx: WallGraphicsMgr, img: ImageData, x: number, y: number, style: number, pattern: number): { left: number; top: number; right: number; bottom: number } {
+  return WallManager.drawIconic(new IconicWallBlitter(img, gfx.global), gfx, x, y, 2, style, pattern, 6);
+}
+
+/** RenderCatalogShot's work buffer size. */
+const SHOT_BUFFER = 200;
 
 /** nsSMResFac::LoadBuffer(renderer file, id): a 74x37 BMP_ or null. */
 async function loadBmp(file: Promise<ResFile>, id: number): Promise<ImageBitmap | null> {
@@ -239,13 +266,32 @@ export class BuildProduct implements ArchProduct {
   }
 
   /**
+   * RenderCatalogShot for wall styles and wallpapers without a BMP_ (kinds
+   * 3 / 4): DrawIconic at (100, 3 * 200 / 4 + 0xe), - 0x10 instead of + 0xe
+   * for styles 2 / 0xc, on each template color; other kinds draw nothing.
+   */
+  async renderCatalogShot(template: ImageBitmap): Promise<ImageBitmap | null> {
+    if (this.kind !== ProductKind.WallStyle && this.kind !== ProductKind.Wallpaper) return null;
+    const gfx = await catalogWallGraphics();
+    const style = this.wallStyle;
+    const base = Math.trunc((SHOT_BUFFER * 3) / 4);
+    const y = style === 2 || style === 0xc ? base - 0x10 : base + 0xe;
+    return renderShots(template, (g) => {
+      const img = g.getImageData(0, 0, SHOT_BUFFER, SHOT_BUFFER);
+      const rect = drawIconicWall(gfx, img, Math.trunc(SHOT_BUFFER / 2), y, style, this.wallpaper);
+      g.putImageData(img, 0, 0);
+      return rect;
+    });
+  }
+
+  /**
    * Product::DrawIcon for the product sheet (cWinCatalogPopup) of products
    * that are not objects, into (0, 0, w, h) of `g`.
    *  - tool products: the popup bitmap (+0x38), centered when smaller;
    *  - floors: DrawFloorIcon, the pattern's large-zoom sprite (scale 3,
    *    floors.iff SPR2 pattern + 0x200) at (w / 2 - 0x40, 2h / 3 - 0x2d), at
    *    full light (RenderParam::SetMaxAmbient);
-   *  - wall styles and wallpapers: DrawWallIcon (WallManager::DrawIconic), not ported.
+   *  - wall styles and wallpapers: DrawWallIcon.
    */
   async drawPopupIcon(ctx: GameContext, g: CanvasRenderingContext2D, w: number, h: number): Promise<void> {
     if (this.kind === ProductKind.Tool) {
@@ -258,8 +304,26 @@ export class BuildProduct implements ArchProduct {
     } else if (this.kind === ProductKind.Floor && this.floorStyle > 0 && this.floorStyle < BUILTIN_FLOORS) {
       const file = await floorsIff().catch(() => null);
       if (file) drawFloorIcon(new Renderer(file), this.floorStyle + 0x200, g, w, h);
+    } else if (this.kind === ProductKind.WallStyle || this.kind === ProductKind.Wallpaper) {
+      const gfx = await catalogWallGraphics().catch(() => null);
+      if (gfx) drawWallIcon(gfx, this.wallStyle, this.wallpaper, g, w, h);
     }
   }
+}
+
+/**
+ * DrawWallIcon(style, pattern, buffer, rect): WallManager::DrawIconic at
+ * scale 2, direction 6, x = w / 2, y = 3h / 4 + 0xe (- 0x10 for styles 2,
+ * 0xd and 0xe, - 2 for 0xc).
+ */
+function drawWallIcon(gfx: WallGraphicsMgr, style: number, pattern: number, g: CanvasRenderingContext2D, w: number, h: number): void {
+  const base = Math.trunc((h * 3) / 4);
+  let y = base + 0xe;
+  if (style === 2 || style === 0xd || style === 0xe) y = base - 0x10;
+  else if (style === 0xc) y = base - 2;
+  const img = g.getImageData(0, 0, w, h);
+  drawIconicWall(gfx, img, Math.trunc(w / 2), y, style, pattern);
+  g.putImageData(img, 0, 0);
 }
 
 /** DrawFloorIcon: one floor sprite at scale 3, cRenderer::DrawFloor at full ambient light. */
@@ -366,14 +430,13 @@ async function build(ctx: GameContext): Promise<BuildCatalog> {
     products.push(new BuildProduct(ProductKind.WallStyle, ArchTool.Wall, name, desc, price, { toolIndex: index, wallpaper, wallStyle: style }));
   }
 
-  // WallGraphicsMgr::GetNextWallPaper (built-in patterns 1..30).
-  const papers = set(STR_WALLPAPER);
-  for (let p = 1; p < BUILTIN_WALLPAPERS; p++) {
-    const first = (p - 1) * 3 + 1;
-    if (papers.length < first + 2) break;
-    const [price, name, desc] = triple(papers, first);
-    products.push(new BuildProduct(ProductKind.Wallpaper, ArchTool.Wallpaper, name, desc, price, { toolIndex: p + 1, wallpaper: p }));
+  // WallGraphicsMgr::BeginEnum / GetNextWallPaper / EndEnum (built-in patterns 1..30, then the plugins).
+  const gfx = await catalogWallGraphics();
+  gfx.beginEnum();
+  for (let e = gfx.getNextWallPaper(); e; e = gfx.getNextWallPaper()) {
+    products.push(new BuildProduct(ProductKind.Wallpaper, ArchTool.Wallpaper, e.name, e.description, e.cost, { toolIndex: e.pattern + 1, wallpaper: e.pattern }));
   }
+  gfx.endEnum();
 
   const hand = triple(set(STR_HAND), 1);
   products.push(

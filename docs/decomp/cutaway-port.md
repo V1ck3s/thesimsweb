@@ -38,8 +38,9 @@ diagonal half-tile enables).
 
 - PointToTile(Point, true) is approximated by pointToWholeTile.
 - Tool hook (lbl_105BA4A8 vtable +0x4c ModifyCursorPos / +0x48 AdjustCutawayForTool):
-  ported (`CutawayHooks.tool`, `adjustCutawayForTool` = cTool's, cMoveTool's in movetool.ts);
-  cNewWallpaperTool::ModifyCursorPos is not.
+  ported (`CutawayHooks.tool`, `adjustCutawayForTool` = cTool's, cMoveTool's in movetool.ts,
+  cNewWallpaperTool::ModifyCursorPos in wallpapertool.ts: the cursor point moves down
+  100 >> (3 - scale) pixels before the tile 4 tiles back is cut).
 - ScrollingStrategy::IsWaitingForClick assumed false.
 - Room tile lists contain duplicates (tiles re-pushed while queued), exactly like the
   original flood; harmless for the cutaway.

@@ -35,6 +35,8 @@ export interface ButtonProduct {
   icon(): Promise<ImageBitmap | null>;
   /** The object product to render when the file has no picture (RenderCatalogShot). */
   catalogObject?(): Product | null;
+  /** RenderCatalogShot of a non-object product without a picture (on the catalog template); null when it draws nothing. */
+  renderCatalogShot?(template: ImageBitmap): Promise<ImageBitmap | null>;
 }
 
 /** Product +0x1c once RenderCatalogShot made it (the game writes it back into the object file). */
@@ -73,14 +75,17 @@ export class ProductButton<P extends ButtonProduct = Product> extends TSWinBtn i
 
   /**
    * Product::GenerateGraphics without a picture in the file: an object with
-   * graphics is rendered (RenderCatalogShot on `template`, the 4-frame
-   * kCatalogTemplate), anything else shows kItemUnknown.
+   * graphics, or a plugin wallpaper, is rendered (RenderCatalogShot on
+   * `template`, the 4-frame kCatalogTemplate), anything else shows
+   * kItemUnknown.
    */
   setFallbackIcon(img: ImageBitmap, template: ImageBitmap | null): void {
     void this.product.icon().then(async (icon) => {
       if (icon) return;
       const obj = this.product.catalogObject?.() ?? null;
-      this.icon = (obj && template ? await renderedShot(obj, template) : null) ?? img;
+      let shot: ImageBitmap | null = null;
+      if (template) shot = obj ? await renderedShot(obj, template) : ((await this.product.renderCatalogShot?.(template)) ?? null);
+      this.icon = shot ?? img;
     });
   }
 
