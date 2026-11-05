@@ -163,4 +163,4 @@ They are placed by cMoveTool modes 3 (door) and 4 (window), set from the build l
   - `cTool::AdjustCutawayForTool` ;
   - the system tool cursor (`SetToolCursor`).
 - **Real pointer events in the test harness** do not reach the tools reliably (`pointerdown`), so the tests drive `GameTools` directly.
-- **Duplicated helpers:** `worldedit.ts` (floor / wallpaper agent) duplicates parts of `wallworld.ts` (GetWall / SetWall / Rotate). The two should be merged.
+- **Helpers merged (2026-11-05):** `worldedit.ts` (floor / wallpaper) now uses `wallworld.ts`'s TileWalls::Rotate, cFixedWorld::SetWall, pattern slots (the eight-slot loop, -1 for a side the segment does not have), SetFloor and MayEditTile.

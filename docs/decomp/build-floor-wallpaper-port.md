@@ -65,4 +65,7 @@ Both tools are registered in `BUILD_TOOLS` (`world/tools/buildtools.ts`).
   `cRenderer::DrawFloor` with scanline clipping).
 - Tool mouse cursors (`SetToolCursor`) not wired.
 - `cFixedWorld::SetWall` vertex analysis (`AnalyzeWallVertex`) skipped.
-- `worldedit.ts` duplicates parts of `wallworld.ts` (wall tool port); merge.
+- `worldedit.ts` and `wallworld.ts` (wall tool port) are merged (2026-11-05): the wall primitives
+  (TileWalls::Rotate, cFixedWorld::SetWall, the pattern slots, SetFloor, MayEditTile) live in
+  `wallworld.ts`; `worldedit.ts` keeps the rotation-carrying `RotWalls` API on top of them. Checked
+  equal to the old code on 100 000 random tiles (bytes written, rotated slots of present segments).

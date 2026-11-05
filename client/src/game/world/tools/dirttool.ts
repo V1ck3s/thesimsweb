@@ -301,7 +301,14 @@ export abstract class DirtTool extends Tool {
     this.released = true;
   }
 
-  /** cDirtTool::OnChar: the cTerrain display commands ('o' 0xbc grid overlay, 'h' 800 steep tiles only). */
+  /**
+   * cDirtTool::OnChar: the cTerrain display commands ('o' 0xbc grid overlay, 'h' 800 steep tiles only).
+   * '1'..'9' (first press) send GlobalDispatch(ch + 0x69) = 0x9a..0xa2 to cTerrain::DoCommand, which
+   * swaps the terrain renderer: 0x9a cGouraudSwatch, 0x9b cColorSwatch (the normal one), 0x9c / 0x9d a
+   * cLineRender16 (2, 3) / (4, 3); 0x9e..0xa2 do nothing. The view takes '1'..'3' first (speed keys,
+   * cDDDSimsView::TSOnCharacter), so only '4' reaches the tool in the game: not ported (the line
+   * renderer is not in terrain.ts, and nothing switches back short of reloading the lot).
+   */
   override onChar(ch: string): boolean {
     const t = this.host.viewer.terrain;
     if (ch === "o") {

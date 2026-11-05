@@ -25,11 +25,34 @@ export function rotateSide(side: number, r: number): number {
   return ((side - 1 + r) & 3) + 1;
 }
 
-/** The pattern slot of a segment side (side 0 = an ortho segment's own slot). */
+/**
+ * The pattern slot of a segment side (the loop over the eight slots in
+ * TileWalls::Rotate and WallpaperUndoable::ChangeTile): slots 0..3 are the
+ * ortho segments (side 0), 4 / 5 the sides 2 / 4 of 0x10, 6 / 7 the sides
+ * 1 / 3 of 0x20; side 0 of a diagonal means 4 for 0x10, 1 for 0x20. -1 for a
+ * side the segment does not have.
+ */
 export function patternSlot(seg: number, side: number): number {
-  if (seg === SEG_HORIZ) return side === 2 ? 4 : 5;
-  if (seg === SEG_VERT) return side === 1 ? 6 : 7;
-  return segIndex(seg);
+  let s = side;
+  if (seg === SEG_HORIZ && s === 0) s = 4;
+  else if (seg === SEG_VERT && s === 0) s = 1;
+  for (let i = 0; i < 8; i++) {
+    let bit = 1 << i;
+    let bs = 0;
+    if (bit === 0x10) bs = 2;
+    else if (bit === 0x20) {
+      bs = 4;
+      bit = 0x10;
+    } else if (bit === 0x40) {
+      bs = 1;
+      bit = 0x20;
+    } else if (bit === 0x80) {
+      bs = 3;
+      bit = 0x20;
+    }
+    if (seg & bit && bs === s) return i;
+  }
+  return -1;
 }
 
 /** The slot a tool writes a new wall's pattern to (side 0; 0x10 -> side 4, 0x20 -> side 1). */

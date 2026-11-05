@@ -113,10 +113,12 @@ or developer-only tools).
 
 | Class | What it is | Status | Where |
 |---|---|---|---|
-| cTSCheatCodeManager, cCheatCommandLine, SimsAppCheat | Cheat console (Ctrl+Shift+C): parsing, ";" / "!", error boxes, the shipped 27-name restriction (`?devcheats` lifts it); rosebud, move_objects, autonomy, sim_speed, rotation, route_balloons, bubble_tweak, interests, xyzzy; neighborhood load / show_zones / show_filter | partial (map_edit, prepare_lot, sim_log, tile_info, history, w, graphics cheats, move_lots, nessie: not ported) | `ui/cheat.ts`, `cheatflags.ts`, `nbhd/winneighborhoodul.ts` |
+| cTSCheatCodeManager, cCheatCommandLine, SimsAppCheat | Cheat console (Ctrl+Shift+C): parsing, ";" / "!", error boxes, the shipped 27-name restriction (`?devcheats` lifts it); rosebud, move_objects, autonomy, sim_speed, rotation, route_balloons, bubble_tweak, interests, xyzzy, prepare_lot, history (FamilyHistory.txt as a download), grid; neighborhood load / show_zones / show_filter / nessie | partial (map_edit, sim_log, tile_info, w, draw_routes / draw_floorable drawing, genable / damagelist / sweep, move_lots: not ported, see the header of `ui/cheat.ts` for what each does) | `ui/cheat.ts`, `cheatflags.ts`, `nbhd/winneighborhoodul.ts`, `nbhd/nessie.ts` |
+| cDDDSimsView's frame rate text (+0x18c) | "FPS: %3.1lf" in red at the view's bottom right, toggled by 't' | ported | `ui/framerate.ts`, `cpanel/modekeys.ts` |
+| cStalkerCam | "w" cheat / F8: SimsWebCam.jpg written every 10 s | not ported (no web equivalent) | - |
 | cTSWinCheatHelp | Cheat list window ("help", only registered unrestricted) | ported | `ui/cheat.ts` |
 | cHeadTextRenderer, cHeadTextItem | Text over heads (debug action names, sound captions) | n/a (debug) | - |
-| cWinMemView | Memory / heap viewer | n/a (debug) | - |
-| cWinSweepMeter | Frame-time sweep meter | n/a (debug) | - |
-| cWinTileInfo | Tile inspector | n/a (debug) | - |
+| cWinMemView | Memory / heap viewer ("memview", not in the shipped cheat list) | n/a (debug, unreachable in the shipped build) | - |
+| cWinSweepMeter | Frame-time sweep meter ("sweep on/off") | n/a (debug) | - |
+| cWinTileInfo | Tile inspector ("tile_info on/off"; the shipped build never sizes it nor gives it a tile: nothing shows) | n/a (debug) | - |
 | MTIcon | Empty helper (destructor only) | n/a | - |

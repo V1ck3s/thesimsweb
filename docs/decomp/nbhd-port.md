@@ -265,8 +265,21 @@ Files: `client/src/game/nbhd/winneighborhoodul.ts`, `nbhd/winlotbtn.ts`, `nbhd/n
 
 ### Gaps
 - Tourist families (DoFirstTimeTouristFamilies /
-  RefillTouristFamilies(10)) are not called; the dev Move mode (5) and the digit / arrow keys are not ported;
-  the internet update busy flag (+0x1b4) is never set.
+  RefillTouristFamilies(10)) are not called; the dev Move mode (5, the "move_lots" cheat: a lot
+  clicked in that mode (MoveModeLotHandler) is nudged a pixel per arrow key (MoveModeProcess,
+  cWinLotBtn::CenterOn), the other lots disabled; Escape (SetMode(0)) runs SaveLotPositions, which
+  rewrites the neighborhood's LotLocations.iff STR# 4 entries "%d, %d, %d" and says "Lot Positions
+  have been saved" or "...not writeable...") is not ported; the internet update busy flag (+0x1b4)
+  is never set.
+- Keys (TSOnKeyDown, jump table lbl_105BCD44): '1'..'7' (VK 0x31..0x37) are SetFilterMode(1 << (n - 1))
+  in the picker (+0x111 cleared) and swallowed on the main screen; the arrows go to MoveModeProcess
+  in move mode only; Escape leaves move in, evict, rezone and move mode.
+- **Nessie** (`nbhd/nessie.ts`, 2026-11-05): the "nessie" cheat ("Sorry only one Nessie at a time."
+  while one is up) or one chance in 1000 per TSOnTimerMsg second starts it at (0x76, 0x207);
+  DoNessie (PostChildDraw, before the filters) steps on each change of the wave clock (+0x1dc):
+  kNess1, then "nessie_sfx" and kNess2, kNess3, 2 pixels left and 1 down per step until x < 0x3d,
+  kNess2, kNess1, gone. The ness*.bmp backgrounds are (255, 1, 255), keyed at 5:6:5 precision like
+  the town water.
 
 ## Lot transitions, MoveOut house side, ExportFamily, the game at "/"
 

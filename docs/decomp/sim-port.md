@@ -648,6 +648,9 @@ not caught in TickAllObjects (none in the original either).
   ExpansionPack7 has it, flags 0xe): outfit (person data 8) below 1 dresses nothing; else, when it
   changed (+0x1a8), body string outfit + 1 on the body record (DressingRecord::Redress), no head,
   hands, accessory or pet test (NPC-FX: outfits 15..22 = effects1-lightninga .. -fireblueb).
+  The renderer's first dress (`SAnimator.fromBodyStrings`, before the person is known: day
+  clothes and open hands) is not in the original, whose records stay empty until this branch: the
+  first look with bit 8 now takes the head, body, accessory and hand records off again (2026-11-05).
 - **SAnimator::Reset → ResetSuits** (`sim/personanim.ts`): Reset sets +0xd8; the next GetSkill
   (every standard skill lookup of the walk engine), StartReachAnimation (after
   FindReachAnimationIndex) or ResolveSkillForPrimitive runs ResetSuits once. **ResetSuits** (Mac

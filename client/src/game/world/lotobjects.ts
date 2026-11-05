@@ -113,7 +113,8 @@ export async function loadLotObjectDrawer(house: ResFile, world: IntegrityWorld)
     }
     return r;
   };
-  const drawables = new Map<PlacedObject, DrawableLotObject>();
+  // Weak: a deleted object (gone from `objects`) must not stay alive through its drawable.
+  const drawables = new WeakMap<PlacedObject, DrawableLotObject>();
   // People stand in the tile links too (cXObject::Place) but are drawn by LotPeople: a tile's
   // chain skips them. So are the 3D objects (OBJD +0xcc bit 0, the plumb bobs: cXObject::DrawIso
   // goes to Draw3D, LotPeople draws them with their carrier).

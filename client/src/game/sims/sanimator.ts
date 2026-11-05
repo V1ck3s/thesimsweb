@@ -29,6 +29,9 @@ const IDLE: Readonly<Record<string, string>> = {
   kat: "k2o-stand-breathe-loop",
 };
 
+/** The dressing records dressOutfit fills (head, body, accessory, both hands). */
+const DEFAULT_SLOTS = ["head", "body", "accessory", "lhand", "rhand"] as const;
+
 export class SAnimator {
   /** +0x1a8 outfit, +0x1ac costume offset, +0x1b0 / +0x1b4 gestures (and the accessories) last dressed for (null: never). */
   private dressedFor: string | null = null;
@@ -76,6 +79,14 @@ export class SAnimator {
     }
     if (pd && ((look?.objdFlags ?? 0) & 8) !== 0) {
       // OBJD +0xcc bit 8: outfit n wears body string n + 1 on the body record (nothing below 1).
+      if (this.dressedFor !== null && !this.dressedFor.startsWith("objd8:")) {
+        // The first dress (fromBodyStrings, before the person was known) put on the day
+        // clothes and hands; the original only ever dresses these objects' body record.
+        this.dressedFor = null;
+        this.chain(() => {
+          for (const slot of DEFAULT_SLOTS) this.vitaboy.undress(slot);
+        });
+      }
       const outfit = pd[PD.outfit]!;
       if (outfit < 1) return this.dressing;
       const key = `objd8:${outfit}`;

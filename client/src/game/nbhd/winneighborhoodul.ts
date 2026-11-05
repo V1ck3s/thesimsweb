@@ -61,6 +61,8 @@ import {
   TOWNIE_COUNT,
 } from "./townies.js";
 import { importTutorialIfPresent } from "./tutorial.js";
+import { NESSIE_BUSY, Nessie } from "./nessie.js";
+import { getNextRandomNumber } from "../world/random.js";
 
 /** cWinNeighborhood::Mode */
 export const enum NbhdMode {
@@ -325,7 +327,11 @@ export class WinNeighborhoodUL extends TSWin implements LotBtnOwner {
     private readonly picker = false,
   ) {
     super();
+    this.nessie = new Nessie(ctx);
   }
+
+  /** +0xf0..+0x104: the Nessie easter egg (nessie.ts). */
+  private readonly nessie: Nessie;
 
   /** cWinNeighborhoodUL::Init (main screen) */
   override async init(): Promise<boolean> {
@@ -526,8 +532,9 @@ export class WinNeighborhoodUL extends TSWin implements LotBtnOwner {
    * cWinNeighborhoodUL::CheatCallback. load n (0..18): cSimsApp::LoadGame and
    * the screen ends with the house; show_zones on/off: +0x108 then
    * HighlightLotsForMode; show_filter n (0..7): the filter shown over the
-   * community lots. move_lots (SetMode(5), lot dragging), nessie (DoNessie's
-   * sprite), stream_fps and reload_neighborhood are not ported.
+   * community lots; nessie: the Nessie sprite (nessie.ts). move_lots (SetMode(5),
+   * lots nudged with the arrows, LotLocations.iff rewritten on leaving),
+   * stream_fps and reload_neighborhood (not in the shipped cheat list) are not ported.
    */
   private cheatCallback(cmd: CheatCommandLine): boolean {
     const [name, arg] = cmd.args;
@@ -561,6 +568,12 @@ export class WinNeighborhoodUL extends TSWin implements LotBtnOwner {
         void this.setFilterMode(CHEAT_FILTER_BITS[n]!);
         return true;
       }
+      case "nessie":
+        if (!this.nessie.start()) {
+          cmd.errMsg = NESSIE_BUSY;
+          return false;
+        }
+        return true;
       default:
         break;
     }
@@ -1451,9 +1464,18 @@ export class WinNeighborhoodUL extends TSWin implements LotBtnOwner {
     }
   }
 
-  /** cWinNeighborhoodUL::TSOnKeyDown: Escape leaves move in (back to the picker), evict and rezone. */
+  /**
+   * cWinNeighborhoodUL::TSOnKeyDown: Escape leaves move in (back to the
+   * picker), evict and rezone; '1'..'7' (VK 0x31..0x37) set the filter
+   * (SetFilterMode(1 << (n - 1))) in the picker (+0x111 cleared) and are
+   * swallowed on the main screen.
+   */
   override tsOnKeyDown(key: string): boolean {
     if (this.busy) return false;
+    if (key.length === 1 && key >= "1" && key <= "7") {
+      if (this.picker) void this.setFilterMode(1 << (key.charCodeAt(0) - 0x31));
+      return true;
+    }
     if (key === "Escape") {
       if (this.mode === NbhdMode.MoveIn) {
         this.setMode(NbhdMode.Regular);
@@ -1504,6 +1526,8 @@ export class WinNeighborhoodUL extends TSWin implements LotBtnOwner {
           for (const lot of this.lots.values()) if (lot.info?.isTutorial) void lot.hiliteForTutorial(this.ctx, true);
         }
       }
+      // TSOnTimerMsg (not busy): one chance in 1000 of a Nessie.
+      if (!this.busy && !this.nessie.active && getNextRandomNumber() % 1000 === 1) this.nessie.start();
     }
     // Popup unfurl (lot buttons: cTSWin+0xa0 = 75 ms), growing upward from its bottom edge.
     const popup = this.popup;
@@ -1549,6 +1573,7 @@ export class WinNeighborhoodUL extends TSWin implements LotBtnOwner {
     } else {
       this.drawNeighborhoodNumber(g);
     }
+    this.nessie.doNessie(g, this.waveTick, this.offX, this.offY);
     this.drawFilters(g);
   }
 

@@ -240,6 +240,27 @@ lot, 180 GETs left (FAR heads and tails); the lot-view time is within noise (16.
 The entries are byte-identical (301 entries sampled from IndexedDB vs direct `Range` reads).
 Firefox cold lot after the change: 23.4 s to the lot view, as before.
 
+## Long play memory (2026-11-05)
+
+House01 (a copy of the user's neighborhood) at speed 3 in Chrome, heap after a forced GC
+(CDP `HeapProfiler.collectGarbage`) once per sim day, heap snapshots on day +1, +3 and +6 compared
+by (type, constructor) with retainer paths for the new nodes.
+
+- Heap per sim day: 540 → 597 → 614 → 650 → 654 → 664 MB; the growth goes down day after day
+  (+57, +17, +36, +4, +10 MB). Most of it is caches filling on first use, not a leak:
+  `VBAnimMgr`'s CMX cache (animation `Skill` rotations, 24 MB on days 1..3, 13 MB on days 3..6), the
+  raw FAR entry cache in `engine/assets.ts` (`entryCache`, 16 then 15 MB: entries are kept even
+  when their consumer keeps its own parsed copy), `VBAnimMgr`'s texture cache (3..4 MB) and the
+  tree tables (bounded by the BHAVs in use).
+- **One real leak, fixed**: `world/lotobjects.ts` kept each object's drawable in a `Map` keyed by
+  the object, so every deleted object (food, dishes, visitors' objects, ...) stayed alive with its
+  drawable: +480..700 `XObject` / `DrawableLotObject` per 2..3 sim days. It is a `WeakMap` now;
+  after the fix the day +1 → +3 snapshot diff is 34 MB in all, 31 MB of it ArrayBuffers (the caches
+  above), and no game object type is among the growers.
+- Not done: `entryCache` could drop entries once their parsed form is cached (or not cache them for
+  consumers that cache), which would remove most of the remaining growth; `engine/assets.ts` was
+  being changed by other work at the time.
+
 ## Remaining issues
 
 - **Firefox: WebGL -> 2D readback, ~7 ms per frame.** The lot is rendered in a WebGL canvas and

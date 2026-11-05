@@ -35,17 +35,45 @@
  *    first row, or shows "Sorry, no cheats match the search string."; OK puts
  *    "<cheat> " in the widget and shows it.
  *
- * Not ported: the cheats whose systems are debug tools or not ported (see
- * APP_CHEATS / GRAPHICS_CHEATS: they log "not ported"), the neighborhood
- * screens' cheats (cWinNeighborhoodUL / cWinDowntown / cWinStudiotown
- * CheatCallback register "show_zones", "show_filter", "nessie", "move_lots"
- * while they are up), cTSWinMgrW95's own cheat (not in the list), the
- * ExecCheatFile and object dialog cheats.
+ * The shipped list's cheats: autonomy, bubble_tweak, draw_all_frames,
+ * interests, log_mask, move_objects, rosebud, rotation, route_balloons,
+ * sim_speed, xyzzy, prepare_lot, history (the file becomes a download) and
+ * grid are ported here; the neighborhood screen's show_zones, show_filter and
+ * nessie in nbhd/winneighborhoodul.ts.
+ * Not ported, with what they do in the original:
+ *  - draw_routes / draw_floorable (lbl_105BA914 / lbl_105BA690, the latter
+ *    with GViewer::DirtyAll): debug drawings of the routes and the floorable
+ *    tiles in the renderer; the flags are kept (cheatflags.ts), nothing draws them.
+ *  - map_edit on|off: CPState::SetCheatTool(cGameTools tool 8, cTileTool),
+ *    which paints the tiles' 0x20 "not editable" flag (rectangles with
+ *    Shift); needs XViewer's cheat tool routing.
+ *  - sim_log begin|end: SimLog records each person's interactions and motive
+ *    changes every tick (SimTickCompleted) and writes them to a text file at
+ *    "end"; needs a per-tick hook in the simulator.
+ *  - tile_info on|off: cDDDSimsView::ShowTileInfo shows or hides cWinTileInfo,
+ *    which the shipped build never sizes nor points at a tile (SetTile is only
+ *    called from its own keys): nothing appears.
+ *  - w <text>: cDDDSimsView::SetStalkerCamText makes the cStalkerCam, which
+ *    every 10 s (stalk.ini can change it) renders a 320x240 snapshot of the
+ *    lot with the text and the logo and saves it as SimsWebCam.jpg (F8 forces
+ *    a shot, Shift+F8 clears the text): a file written every 10 s has no web
+ *    equivalent.
+ *  - genable, damagelist, sweep: renderer passes, damage rectangles and the
+ *    cWinSweepMeter profiler, which this renderer does not have.
+ *  - move_lots: see nbhd/winneighborhoodul.ts.
+ * Not in the shipped list (only with `?devcheats`): every other APP_CHEATS /
+ * GRAPHICS_CHEATS name logs "not ported"; also cTSWinMgrW95's own cheat, the
+ * ExecCheatFile and object dialog cheats, memview (cWinMemView) and the
+ * neighborhood's stream_fps / reload_neighborhood.
  */
 
 import { readStandaloneIff } from "../../engine/assets.js";
 import type { GameContext } from "../context.js";
 import { cheatFlags } from "../cheatflags.js";
+import { WallState } from "../cpstate.js";
+import { type FamilyStat, getFamilyHistory } from "../data/familyhistory.js";
+import { ObjectFolder } from "../world/objectfolder.js";
+import { Terrain } from "../world/terrain.js";
 import type { FfnFont } from "../res/ffn.js";
 import type { WinLotView } from "../world/winlotview.js";
 import { TSWinCtrlMgr } from "./ctrlmgr.js";
@@ -552,6 +580,36 @@ const GRAPHICS_CHEATS: ReadonlyArray<readonly [string, string]> = [
   ["starbob", "starbob ([on|off]) - replace standard plumbbob with star model"],
 ];
 
+/** lbl_105BBF2C + 0x4cc. */
+const ON_OFF_ONLY = '"on" and "off" are the only acceptable parameters.';
+
+/**
+ * GraphicsCheats.cpp's Callback: case 4 ("grid on|off", in the shipped list)
+ * checks for exactly one "on" / "off" word, shows or hides the terrain's
+ * grid overlay (cTerrain::ShowOverlay, when the world has a terrain) and
+ * redraws the world (XViewer::IssueWorldDirty). The other cases switch
+ * renderer debug features (sprite decoder flags, genable's HouseViewer
+ * passes, damagelist, the sweep meter, people quality...) that this port's
+ * renderer does not have: they only log.
+ */
+function graphicsCheatCallback(host: CheatAppHost, cmd: CheatCommandLine, id: number): boolean {
+  const name = GRAPHICS_CHEATS[id]?.[0] ?? "";
+  if (name !== "grid") {
+    console.log(`not ported: graphics cheat "${name}"`);
+    return true;
+  }
+  const arg = cmd.args[1];
+  if (cmd.args.length !== 2 || (arg !== A.on && arg !== A.off)) {
+    cmd.errMsg = ON_OFF_ONLY;
+    return false;
+  }
+  const viewer = host.lotView()?.viewer ?? null;
+  const terrain = viewer?.terrain;
+  if (terrain instanceof Terrain) terrain.showOverlay(arg === A.on);
+  if (viewer) viewer.dirty = true;
+  return true;
+}
+
 /** lbl_105BC2E0 strings used by AppCheatCallback. */
 const A = {
   codeProblem: "Code problem",
@@ -569,7 +627,83 @@ const A = {
   interestsTitle: "Selected Person Interests",
   rotationRange: "Rotation must be 0, 1, 2, or 3. ",
   nothingHappens: "Nothing happens here.",
+  historyFile: "FamilyHistory.txt",
+  prepareLot: "Prepare Lot",
 } as const;
+
+/** lbl_105BB860: FamilyHistory::DumpToFile's column titles ("%s\t" each, then "\n"). */
+const HISTORY_COLUMNS = [
+  "Lot#", "#Members", "#Adult Males", "#Adult Females", "#Kid Males", "#Kid Females", "#Workers", "#Objects",
+  "Objects Value", "Architecture Value", "House Square Feet", "House Size", "Furnishings Rating", "Size Rating",
+  "Yard Rating", "Upkeep Rating", "Layout Rating", "$Income", "$Bills", "$Food", "$Maintenance", "$Objects", "$Misc",
+  "$Arch", "$Funds", "Romances Out", "Romances In", "Friends Out", "Friends In", "#Friends",
+];
+
+/** FamilyHistory::DumpToFile: the title row, then one row per FamilyStat ("%d\t" each field, then "\n"). */
+function dumpFamilyHistory(stats: readonly FamilyStat[]): string {
+  let text = `${HISTORY_COLUMNS.map((c) => `${c}\t`).join("")}\n`;
+  for (const s of stats) text += `${[...s].map((v) => `${v}\t`).join("")}\n`;
+  return text;
+}
+
+/** The file the original writes (fopen "w" in the game folder) is handed to the browser as a download. */
+function downloadText(name: string, text: string): void {
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(new Blob([text], { type: "text/plain" }));
+  a.download = name;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 0);
+}
+
+/** lbl_105BB814: RemoveComeSeeMeObjects' selector (ObjectFolder::GetSelectorByName, the OBJD label). */
+const COME_SEE_ME = "comeandsee";
+/** lbl_105BB97C: the objects PrepareAndTestLot wants on the lot (0-terminated in the original). */
+const PREPARE_LOT_GUIDS = [0x81e6bef9, 0x865a6812, 0xef121974, 0xa4258067, 0xaed879c5] as const;
+/** lbl_105BB990 + 0x187 / + 0x185. */
+const NO_INSTANCE = "Lot doesn't have an instance of ";
+/** cSimulator::PeriodToSimSpeed(cSimulator::MedPeriod() = 0x2a) = 760: the first speed button (CPState speeds are buttons here). */
+const MED_SPEED_BUTTON = 1;
+
+/**
+ * AppCheatCallback case 22 ("prepare_lot"): Neighborhood::PrepareAndTestLot
+ * (RemoveComeSeeMeObjects, then the first of the wanted objects missing from
+ * the lot while the folder has it is reported), CPState rotation 0, unpaused,
+ * the medium speed, zoom 2, walls cut away; every person's autonomy (person
+ * data 0x24) 50 and person data 0x1d 0; ObjectModule::CleanupPeople(0); the
+ * report, if any, in a "Prepare Lot" box. (The map_edit cheat tool it also
+ * clears is not ported.)
+ */
+async function prepareLot(ctx: GameContext, host: CheatAppHost): Promise<boolean> {
+  const sim = host.lotView()?.sim ?? null;
+  let report = "";
+  if (sim) {
+    const m = sim.module;
+    for (const o of [...m.list]) if (!o.killed && o.obj.selector.name.toLowerCase() === COME_SEE_ME) m.killObject(o);
+    const folder = await ObjectFolder.get(ctx.hooks?.neighborhoodDir?.() ?? "UserData");
+    for (const guid of PREPARE_LOT_GUIDS) {
+      if (m.getInstances(guid | 0).some((o) => !o.killed)) continue;
+      const sel = await folder.getSelectorByGUID(guid | 0);
+      if (!sel) continue;
+      report = `${NO_INSTANCE}${sel.name}.`;
+      break;
+    }
+  }
+  const s = ctx.state;
+  s.setRotation(0);
+  s.pause(false);
+  s.setSpeed(MED_SPEED_BUTTON);
+  s.setZoom(2);
+  s.setWallState(WallState.Cutaway);
+  if (sim) {
+    for (const p of sim.module.persons) {
+      p.pd[0x24] = 50;
+      p.pd[0x1d] = 0;
+    }
+    for (const p of [...sim.module.people]) p.cleanup();
+  }
+  if (report) await TSWinMsgBox.show(ctx, report, A.prepareLot);
+  return true;
+}
 
 /** What the app cheats reach: the loaded lot (cSimsApp's simulator, views and CPState). */
 export interface CheatAppHost {
@@ -656,6 +790,8 @@ async function appCheatCallback(ctx: GameContext, host: CheatAppHost, cmd: Cheat
       // Every person's person data 0x24 (cXPerson +0x5d4), the autonomy level ObjTestSim reads.
       if (sim) for (const p of sim.module.persons) p.pd[0x24] = n;
       return true;
+    case 22:
+      return prepareLot(ctx, host);
     case 25:
       ctx.state.setSpeed(n);
       return true;
@@ -672,6 +808,16 @@ async function appCheatCallback(ctx: GameContext, host: CheatAppHost, cmd: Cheat
     case 54:
       cheatFlags.logMask = n;
       return true;
+    case 68: {
+      // cSimulator +0x10's Family (the lot's family, global 9) -> Family::GetHistory.
+      const fn = sim?.globals[9] ?? 0;
+      const fam = fn === 0 ? undefined : sim?.module.nbhd?.families.find((f) => f.chunkId === fn);
+      if (!fam) return false;
+      // StringBuffer "FamilyHistory.txt", or the second word as typed.
+      const path = cmd.raw.length === 2 ? cmd.raw[1]! : A.historyFile;
+      downloadText(path.slice(path.search(/[^\\/:]*$/)), dumpFamilyHistory(getFamilyHistory(fam)));
+      return true;
+    }
     case 77:
       cheatFlags.bubbleTweak = n;
       return true;
@@ -707,17 +853,9 @@ function personDataLabels(ctx: GameContext): Promise<string[] | null> {
 export async function installCheatConsole(ctx: GameContext, host: CheatAppHost, restricted: boolean): Promise<TSCheatCodeManager> {
   const mgr = new TSCheatCodeManager(ctx, restricted);
   manager = mgr;
-  for (const [name, usage] of GRAPHICS_CHEATS) {
-    mgr.registerCheat(
-      name,
-      () => {
-        console.log(`not ported: graphics cheat "${name}"`);
-        return true;
-      },
-      0,
-      usage,
-    );
-  }
+  GRAPHICS_CHEATS.forEach(([name, usage], i) => {
+    mgr.registerCheat(name, (cmd, data) => graphicsCheatCallback(host, cmd, data), i, usage);
+  });
   for (const [id, , name] of APP_CHEATS) {
     // GetUsageStr: name + " " + arguments + " - " + description.
     mgr.registerCheat(name, (cmd, data) => appCheatCallback(ctx, host, cmd, data), id, `${name}  - `);

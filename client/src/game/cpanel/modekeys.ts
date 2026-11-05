@@ -17,8 +17,11 @@ import { CatalogSort, type CPState, Mode, WallState } from "../cpstate.js";
 import { currentTaxiDialog } from "../nbhd/winpicturesplashdialog.js";
 import type { Strings } from "../res/strings.js";
 import { TSWinMsgBox } from "../ui/msgbox.js";
+import { getOptionsMgr } from "../optionsmgr.js";
+import { FrameRateText } from "../ui/framerate.js";
+import { TSWin } from "../ui/tswin.js";
 import { winMgr } from "../ui/winmgr.js";
-import type { WinCPanel } from "./cpanel.js";
+import { WinCPanel } from "./cpanel.js";
 
 /** cDDDSimsView::TSOnKeyDown for F1..F5; true when `key` is one of them. */
 export function modeKeyDown(state: CPState, key: string): boolean {
@@ -83,7 +86,8 @@ function canGoUp(state: CPState): boolean {
 
 /**
  * cDDDSimsView::TSOnKeyDown (Windows 004d1450, Mac 0x1020E700), the view keys
- * besides F1..F5 (the developer stalker camera F8 is not ported):
+ * besides F1..F5 (F8, which forces a shot of the "w" cheat's stalker camera
+ * once it exists, Shift+F8 clearing its text, is not ported: see ui/cheat.ts):
  *  - Tab: level 1 -> 2 when {@link canGoUp} (else UI_error), level 2 -> 1;
  *  - Page Up: level 2 when below it and {@link canGoUp}, else UI_error;
  *    Page Down: level 1 from level 2, else UI_error;
@@ -253,16 +257,41 @@ const STR_VERSION = 0x9a;
 /** Windows 006c7b70: the build date (__DATE__ ", " __TIME__). */
 const BUILD_DATE = "Sep 25 2003, 14:23:46";
 
+/** cDDDSimsView +0x18c, made on the first 't' (cDDDSimsView::Init makes it with the view). */
+const frameRateTexts = new WeakMap<TSWin, Promise<FrameRateText>>();
+
+function frameRateText(ctx: GameContext, view: TSWin): Promise<FrameRateText> {
+  let p = frameRateTexts.get(view);
+  if (!p) {
+    const panel = (): TSWin | null => view.children.find((c) => c instanceof WinCPanel) ?? null;
+    const t = new FrameRateText(view, panel, () => ctx.state.getCPMode());
+    p = t.create(ctx).then(() => t);
+    frameRateTexts.set(view, p);
+  }
+  return p;
+}
+
 /**
  * cDDDSimsView::TSOnCharacter after the tool's OnChar: ',' '<' rotate left,
  * '.' '>' rotate right, 'v' the version box: STR# 0x9a 0xb, "\n" and the build
  * date, titled STR# 0x9a 0xc ("Build Version" when the set is missing), OK
- * only. ('q' quit, 's' the shadow flag and 't' the frame rate window are not
- * ported.)
+ * only; 's' flips lbl_105BA240[0x38] (the shadows setting of the options,
+ * cOptionsMgr::GetShadows) and redraws the world; 't' shows or hides the
+ * frame rate text (ui/framerate.ts). ('q' quits the game: no web equivalent.)
  */
 export function characterAfterTool(ctx: GameContext, ch: string): boolean {
   const state = ctx.state;
   switch (ch) {
+    case "s": {
+      const o = getOptionsMgr();
+      o.setShadows(!o.getShadows());
+      return true;
+    }
+    case "t": {
+      const view = ctx.state.viewer;
+      if (view instanceof TSWin) void frameRateText(ctx, view).then((t) => t.toggle());
+      return true;
+    }
     case "v": {
       const name = ctx.strings.get("UIText", STR_VERSION, 0xb - 1);
       const title = ctx.strings.get("UIText", STR_VERSION, 0xc - 1) || "Build Version";
