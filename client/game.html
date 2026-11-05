@@ -10,6 +10,9 @@
       html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
       #screen { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; }
       #screen canvas { display: block; cursor: default; }
+      /* Touch screens: the game takes every gesture (no page scroll, zoom, callout or selection). */
+      #screen, #screen canvas { touch-action: none; -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; -webkit-tap-highlight-color: transparent; }
+      html, body { overscroll-behavior: none; }
     </style>
   </head>
   <body>

@@ -19,6 +19,29 @@ const TT_SHOWN = 3;
 /** A shown tooltip goes away after this long (SetupToolTipsWindow). */
 const TT_SHOW_MS = 5000;
 
+/** Touch mapping (not in the original): see WinMgr's touch section. */
+const TOUCH_LONG_PRESS_MS = 500;
+/** CSS pixels a finger may move and still tap. */
+const TOUCH_SLOP = 10;
+/** GetDoubleClickTime's default; the distance in game pixels (a finger is wider than SM_CXDOUBLECLK). */
+const TOUCH_DOUBLE_MS = 500;
+const TOUCH_DOUBLE_DIST = 16;
+const TOUCH_SETTLE_FRAMES = 2;
+/** Pinch ratio per zoom step, twist angle per rotation step. */
+const TOUCH_PINCH = 1.4;
+const TOUCH_TWIST = Math.PI / 4;
+/** What the hidden text input holds between changes. */
+const TEXT_SENTINEL = "~~";
+
+/** A window taking typed text (cTSWinTextEdit2): the on-screen keyboard comes up over it. */
+export interface TextInputWindow {
+  acceptsTextInput(): boolean;
+}
+
+function isTextInput(w: TSWin | null): boolean {
+  return !!w && (w as Partial<TextInputWindow>).acceptsTextInput?.() === true;
+}
+
 /** A tooltip window: placed and faded in by UnfurlToolTip(rect, t). */
 export type ToolTipWindow = TSWin & { unfurlToolTip(rect: Rect, t: number): void };
 
@@ -394,6 +417,7 @@ export class WinMgr {
 
   start(): void {
     const frame = (t: number): void => {
+      this.pumpTouch();
       this.main.pump(t);
       this.ctx.fillStyle = "#000";
       this.ctx.fillRect(0, 0, this.width, this.height);
@@ -407,13 +431,27 @@ export class WinMgr {
     requestAnimationFrame(frame);
   }
 
+  /**
+   * The canvas keeps the game's resolution, scaled to the page with its
+   * aspect ratio (black bars). With the on-screen keyboard up (touch), the
+   * game fits the visible part of the page above it.
+   */
   private fit(): void {
-    const scale = Math.min(window.innerWidth / this.width, window.innerHeight / this.height);
+    const host = this.canvas.parentElement;
+    const vv = this.textInput && document.activeElement === this.textInput ? window.visualViewport : null;
+    if (host) {
+      host.style.top = vv ? `${vv.offsetTop}px` : "";
+      host.style.height = vv ? `${vv.height}px` : "";
+      host.style.bottom = vv ? "auto" : "";
+    }
+    const w = vv?.width ?? window.innerWidth;
+    const h = vv?.height ?? window.innerHeight;
+    const scale = Math.min(w / this.width, h / this.height);
     this.canvas.style.width = `${Math.floor(this.width * scale)}px`;
     this.canvas.style.height = `${Math.floor(this.height * scale)}px`;
   }
 
-  private toLogical(e: MouseEvent): { x: number; y: number } {
+  private toLogical(e: { clientX: number; clientY: number }): { x: number; y: number } {
     const r = this.canvas.getBoundingClientRect();
     return {
       x: Math.floor(((e.clientX - r.left) * this.width) / r.width),
@@ -516,32 +554,75 @@ export class WinMgr {
     }
   }
 
+  // --- pointer input (the mouse, and the touch mapping below) -----------------
+
+  private pointerMove(x: number, y: number): void {
+    this.cursorInside = true;
+    this.mouseX = x;
+    this.mouseY = y;
+    this.updateHover(x, y);
+    this.dispatch(x, y, (w, wx, wy) => w.tsOnMouseMove(wx, wy));
+  }
+
+  /**
+   * A button press; `double` is the second press of a double click
+   * (WM_LBUTTONDBLCLK / WM_RBUTTONDBLCLK: the game's window class has
+   * CS_DBLCLKS, ConvertNativeMsgToTSMsg makes them messages 9 / 10).
+   */
+  private pointerDown(button: number, x: number, y: number, double: boolean): void {
+    // cTSWin::ProcessCursorMessage (and the capture branch of ProcessSystemMessage):
+    // a button press (7 / 8, not a double click) gives the focus to the window under it when it accepts it.
+    if (!double && (button === 0 || button === 2)) this.offerFocus(this.route(x, y)?.win ?? null);
+    if (button === 0) this.dispatch(x, y, (w, wx, wy) => (double ? w.tsOnMouseDoubleL(wx, wy) : w.tsOnMouseDownL(wx, wy)));
+    if (button === 2) this.dispatch(x, y, (w, wx, wy) => (double ? w.tsOnMouseDoubleR(wx, wy) : w.tsOnMouseDownR(wx, wy)));
+  }
+
+  private pointerUp(button: number, x: number, y: number): void {
+    if (button === 0) this.dispatch(x, y, (w, wx, wy) => w.tsOnMouseUpL(wx, wy));
+    if (button === 2) this.dispatch(x, y, (w, wx, wy) => w.tsOnMouseUpR(wx, wy));
+    this.updateHover(x, y);
+  }
+
+  private pointerLeave(): void {
+    this.cursorInside = false;
+    this.hover?.tsOnMouseExit();
+    this.hover = null;
+  }
+
+  /** Key messages: to the focus, up its parents (see bindInput). True when consumed. */
+  private keyDown(key: string): boolean {
+    // cTSWinMgrW95::ProcessSystemMessage: key messages (4..6) go to the focus
+    // only; cTSWin::TSOnKeyDown passes what a window leaves to its parent, up
+    // to the main window (cTSMainWindowW95::TSOnKeyDown).
+    for (let w = this.focus; w; w = w.parent) {
+      if (w === this.main ? this.mainKeyDown?.(key) : w.tsOnKeyDown(key)) return true;
+    }
+    return false;
+  }
+
+  private keyUp(key: string): boolean {
+    // cTSWinMgrW95::ProcessSystemMessage: key up messages go to the focus too, up its parents.
+    for (let w = this.focus; w && w !== this.main; w = w.parent) if (w.tsOnKeyUp(key)) return true;
+    return false;
+  }
+
   private bindInput(): void {
     const c = this.canvas;
     c.addEventListener("contextmenu", (e) => e.preventDefault());
     c.addEventListener("mousemove", (e) => {
-      this.cursorInside = true;
       const p = this.toLogical(e);
-      this.mouseX = p.x;
-      this.mouseY = p.y;
-      this.updateHover(p.x, p.y);
-      this.dispatch(p.x, p.y, (w, x, y) => w.tsOnMouseMove(x, y));
+      this.pointerMove(p.x, p.y);
     });
     c.addEventListener("mousedown", (e) => {
       this.buttons = e.buttons;
       const p = this.toLogical(e);
-      // cTSWin::ProcessCursorMessage (and the capture branch of ProcessSystemMessage):
-      // a button press gives the focus to the window under it when it accepts it.
-      if (e.button === 0 || e.button === 2) this.offerFocus(this.route(p.x, p.y)?.win ?? null);
-      if (e.button === 0) this.dispatch(p.x, p.y, (w, x, y) => w.tsOnMouseDownL(x, y));
-      if (e.button === 2) this.dispatch(p.x, p.y, (w, x, y) => w.tsOnMouseDownR(x, y));
+      // The browser's click count: Windows follows a double click with a plain press.
+      this.pointerDown(e.button, p.x, p.y, e.detail >= 2 && e.detail % 2 === 0);
     });
     window.addEventListener("mouseup", (e) => {
       this.buttons = e.buttons;
       const p = this.toLogical(e);
-      if (e.button === 0) this.dispatch(p.x, p.y, (w, x, y) => w.tsOnMouseUpL(x, y));
-      if (e.button === 2) this.dispatch(p.x, p.y, (w, x, y) => w.tsOnMouseUpR(x, y));
-      this.updateHover(p.x, p.y);
+      this.pointerUp(e.button, p.x, p.y);
     });
     c.addEventListener(
       "wheel",
@@ -560,16 +641,11 @@ export class WinMgr {
         e.preventDefault();
         return;
       }
-      // cTSWinMgrW95::ProcessSystemMessage: key messages (4..6) go to the focus
-      // only; cTSWin::TSOnKeyDown passes what a window leaves to its parent, up
-      // to the main window (cTSMainWindowW95::TSOnKeyDown).
-      for (let w = this.focus; w; w = w.parent) {
+      this.keyDefaultKept = false;
+      if (this.keyDown(e.key)) {
+        if (!this.keyDefaultKept) e.preventDefault();
         this.keyDefaultKept = false;
-        if (w === this.main ? this.mainKeyDown?.(e.key) : w.tsOnKeyDown(e.key)) {
-          if (!this.keyDefaultKept) e.preventDefault();
-          this.keyDefaultKept = false;
-          return;
-        }
+        return;
       }
       // Firefox opens its Quick Find bar on "/" and "'" (which then takes
       // every key); the game page has no text to search.
@@ -577,18 +653,334 @@ export class WinMgr {
     });
     window.addEventListener("keyup", (e) => {
       if (this.inputBlocked) return;
-      // cTSWinMgrW95::ProcessSystemMessage: key up messages go to the focus too, up its parents.
-      for (let w = this.focus; w && w !== this.main; w = w.parent) {
-        if (w.tsOnKeyUp(e.key)) {
-          e.preventDefault();
-          return;
-        }
-      }
+      if (this.keyUp(e.key)) e.preventDefault();
     });
-    c.addEventListener("mouseleave", () => {
-      this.cursorInside = false;
-      this.hover?.tsOnMouseExit();
-      this.hover = null;
+    c.addEventListener("mouseleave", () => this.pointerLeave());
+    this.bindTouch();
+  }
+
+  // --- touch screens -----------------------------------------------------------
+  //
+  // Not in the original (a mouse game): touches are turned into the mouse
+  // and key messages above, so every window keeps its own behavior.
+  //  - a finger down hovers (enter / exit, tooltips, live popups);
+  //  - a tap is a left click, two quick taps a double click;
+  //  - moving before the long press time is a left drag from the start point;
+  //  - a long press on a window with a right button handler (the lot view,
+  //    the pie menu, the people panel, ...) is a right press, dragging on is
+  //    the right drag (the lot's explore scroll), lifting is the release;
+  //    elsewhere it only hovers (tooltips) and lifting clicks nothing;
+  //  - two fingers: the pan of the Alt key (the lot follows the fingers),
+  //    pinching zooms one step per TOUCH_PINCH ratio ('+' / '-'), twisting
+  //    rotates one step per TOUCH_TWIST ('.' clockwise / ',');
+  //  - lifting the last finger is a mouse leave (no hover, no edge scroll).
+  // Presses wait TOUCH_SETTLE_FRAMES after the hover move so the views pick
+  // what is under the finger (the people's picking happens while drawing).
+  // A hidden <input> brings up the on-screen keyboard over a text field.
+
+  /** A touch was seen: the hidden text input and the keyboard viewport are in use. */
+  private touchMode = false;
+  private readonly touches = new Map<number, { x: number; y: number }>();
+  private touchPrimary = -1;
+  private touchState: "idle" | "pending" | "left" | "right" | "hover" | "gesture" | "done" = "idle";
+  private touchStart = { x: 0, y: 0 };
+  private touchLast = { x: 0, y: 0 };
+  private touchTimer = 0;
+  private lastTap = { t: -Infinity, x: 0, y: 0 };
+  private gestureDist = 0;
+  private gestureAngle = 0;
+  private gestureKeys = false;
+  private readonly touchQueue: Array<{ press: boolean; move: boolean; run: () => void }> = [];
+  private frameCount = 0;
+  private moveFrame = -Infinity;
+  private textInput: HTMLInputElement | null = null;
+  private textValue = "";
+  private composing = false;
+
+  private bindTouch(): void {
+    const c = this.canvas;
+    const opts = { passive: false };
+    c.addEventListener("touchstart", (e) => this.onTouchStart(e), opts);
+    c.addEventListener("touchmove", (e) => this.onTouchMove(e), opts);
+    c.addEventListener("touchend", (e) => this.onTouchEnd(e, false), opts);
+    c.addEventListener("touchcancel", (e) => this.onTouchEnd(e, true), opts);
+  }
+
+  private clientToLogical(p: { x: number; y: number }): { x: number; y: number } {
+    return this.toLogical({ clientX: p.x, clientY: p.y });
+  }
+
+  /** Queues a synthesized message; presses wait for the hover move to be drawn. */
+  private touchPost(run: () => void, kind: "press" | "move" | "other" = "other"): void {
+    this.touchQueue.push({ press: kind === "press", move: kind === "move", run });
+    this.flushTouch();
+  }
+
+  private flushTouch(): void {
+    for (let e = this.touchQueue[0]; e; e = this.touchQueue[0]) {
+      if (e.press && this.frameCount - this.moveFrame < TOUCH_SETTLE_FRAMES) return;
+      this.touchQueue.shift();
+      e.run();
+      if (e.move) this.moveFrame = this.frameCount;
+    }
+  }
+
+  private touchMoveTo(p: { x: number; y: number }): void {
+    const l = this.clientToLogical(p);
+    this.touchPost(() => this.pointerMove(l.x, l.y), "move");
+  }
+
+  private touchPress(button: number, p: { x: number; y: number }, double = false): void {
+    const l = this.clientToLogical(p);
+    this.touchPost(() => {
+      this.buttons |= button === 0 ? 1 : 2;
+      this.pointerDown(button, l.x, l.y, double);
+    }, "press");
+  }
+
+  private touchRelease(button: number, p: { x: number; y: number }): void {
+    const l = this.clientToLogical(p);
+    this.touchPost(() => {
+      this.buttons &= button === 0 ? ~1 : ~2;
+      this.pointerUp(button, l.x, l.y);
     });
+  }
+
+  /** The end of a touch: the mouse leaves, the tooltip goes. */
+  private touchLeave(): void {
+    this.touchPost(() => {
+      this.pointerLeave();
+      this.untriggerToolTips();
+      this.ttTarget = null;
+    });
+  }
+
+  private onTouchStart(e: TouchEvent): void {
+    e.preventDefault();
+    this.touchMode = true;
+    this.ensureTextInput();
+    for (const t of Array.from(e.changedTouches)) this.touches.set(t.identifier, { x: t.clientX, y: t.clientY });
+    if (this.touchState === "idle" && this.touches.size === 1) {
+      const t = e.changedTouches[0]!;
+      this.touchPrimary = t.identifier;
+      this.touchStart = { x: t.clientX, y: t.clientY };
+      this.touchLast = this.touchStart;
+      this.touchState = "pending";
+      this.touchMoveTo(this.touchStart);
+      this.touchTimer = window.setTimeout(() => this.onLongPress(), TOUCH_LONG_PRESS_MS);
+    } else if (this.touchState === "pending" && this.touches.size === 2) {
+      clearTimeout(this.touchTimer);
+      this.startGesture();
+    }
+  }
+
+  private onLongPress(): void {
+    if (this.touchState !== "pending") return;
+    const l = this.clientToLogical(this.touchStart);
+    const w = this.route(l.x, l.y)?.win ?? null;
+    if (w && w.tsOnMouseDownR !== TSWin.prototype.tsOnMouseDownR) {
+      this.touchState = "right";
+      this.touchPress(2, this.touchStart);
+    } else {
+      this.touchState = "hover";
+    }
+  }
+
+  private onTouchMove(e: TouchEvent): void {
+    e.preventDefault();
+    for (const t of Array.from(e.changedTouches)) if (this.touches.has(t.identifier)) this.touches.set(t.identifier, { x: t.clientX, y: t.clientY });
+    const p = this.touches.get(this.touchPrimary);
+    if (this.touchState === "gesture") {
+      this.updateGesture();
+      return;
+    }
+    if (!p) return;
+    this.touchLast = p;
+    if (this.touchState === "pending") {
+      if (Math.hypot(p.x - this.touchStart.x, p.y - this.touchStart.y) <= TOUCH_SLOP) return;
+      clearTimeout(this.touchTimer);
+      this.touchState = "left";
+      this.touchPress(0, this.touchStart);
+    }
+    if (this.touchState === "left" || this.touchState === "right" || this.touchState === "hover") this.touchMoveTo(p);
+  }
+
+  private onTouchEnd(e: TouchEvent, cancel: boolean): void {
+    e.preventDefault();
+    let primaryUp = false;
+    for (const t of Array.from(e.changedTouches)) {
+      this.touches.delete(t.identifier);
+      if (t.identifier === this.touchPrimary) primaryUp = true;
+    }
+    switch (this.touchState) {
+      case "pending":
+        if (!primaryUp) break;
+        clearTimeout(this.touchTimer);
+        if (!cancel) this.tap();
+        this.touchLeave();
+        this.touchState = "done";
+        break;
+      case "left":
+      case "right":
+        if (!primaryUp) break;
+        this.touchRelease(this.touchState === "left" ? 0 : 2, this.touchLast);
+        this.touchLeave();
+        this.touchState = "done";
+        break;
+      case "hover":
+        if (!primaryUp) break;
+        this.touchLeave();
+        this.touchState = "done";
+        break;
+      case "gesture":
+        // One finger lifted: the gesture ends (the other finger alone would make the pan jump).
+        this.endGesture();
+        this.touchState = "done";
+        break;
+      default:
+        break;
+    }
+    if (this.touches.size === 0) this.touchState = "idle";
+  }
+
+  private tap(): void {
+    const p = this.touchStart;
+    const l = this.clientToLogical(p);
+    const now = performance.now();
+    const double = now - this.lastTap.t <= TOUCH_DOUBLE_MS && Math.hypot(l.x - this.lastTap.x, l.y - this.lastTap.y) <= TOUCH_DOUBLE_DIST;
+    // A double tap ends the click count (Windows: down, double, down, double...).
+    this.lastTap = double ? { t: -Infinity, x: 0, y: 0 } : { t: now, x: l.x, y: l.y };
+    // The on-screen keyboard only opens from the tap's own event handler.
+    if (isTextInput(this.route(l.x, l.y)?.win ?? null)) this.focusTextInput();
+    this.touchPress(0, p, double);
+    this.touchRelease(0, p);
+  }
+
+  private gestureCenter(): { x: number; y: number; dist: number; angle: number } | null {
+    const [a, b] = Array.from(this.touches.values());
+    if (!a || !b) return null;
+    return { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2, dist: Math.hypot(b.x - a.x, b.y - a.y), angle: Math.atan2(b.y - a.y, b.x - a.x) };
+  }
+
+  private startGesture(): void {
+    const g = this.gestureCenter();
+    if (!g) return;
+    this.touchState = "gesture";
+    this.gestureDist = Math.max(1, g.dist);
+    this.gestureAngle = g.angle;
+    const l = this.clientToLogical(g);
+    this.touchMoveTo(g);
+    this.touchPost(() => {
+      // Like a press there, the window under the fingers takes the focus (the
+      // lot view gets the keys); none while a text field would type them.
+      this.offerFocus(this.route(l.x, l.y)?.win ?? null);
+      this.gestureKeys = !isTextInput(this.focus);
+      if (this.gestureKeys) this.keyDown("Alt");
+      // Queued as a press: the pan starts once the move to the fingers' center
+      // has been drawn (EdgeDetectScroller::PreDraw measures from the last frame).
+    }, "press");
+  }
+
+  private updateGesture(): void {
+    const g = this.gestureCenter();
+    if (!g) return;
+    this.touchMoveTo(g);
+    const key = (k: string): void => this.touchPost(() => void (this.gestureKeys && this.keyDown(k)));
+    const ratio = g.dist / this.gestureDist;
+    if (ratio >= TOUCH_PINCH || ratio <= 1 / TOUCH_PINCH) {
+      key(ratio > 1 ? "+" : "-");
+      this.gestureDist = Math.max(1, g.dist);
+    }
+    let turn = g.angle - this.gestureAngle;
+    if (turn > Math.PI) turn -= 2 * Math.PI;
+    if (turn < -Math.PI) turn += 2 * Math.PI;
+    if (Math.abs(turn) >= TOUCH_TWIST) {
+      key(turn > 0 ? "." : ",");
+      this.gestureAngle = g.angle;
+    }
+  }
+
+  private endGesture(): void {
+    this.touchPost(() => {
+      if (this.gestureKeys) this.keyUp("Alt");
+      this.gestureKeys = false;
+    });
+    this.touchLeave();
+  }
+
+  // --- the on-screen keyboard ----------------------------------------------------
+
+  /**
+   * A hidden text input, focused when a tap lands on a text field: the
+   * keyboard's characters (which often come as input events rather than
+   * key events) reach the focus as keys. The input always holds a short
+   * sentinel so Backspace has something to delete; each change is diffed
+   * into Backspaces and characters.
+   */
+  private ensureTextInput(): void {
+    if (this.textInput) return;
+    const input = document.createElement("input");
+    input.type = "text";
+    input.autocomplete = "off";
+    input.spellcheck = false;
+    input.setAttribute("autocapitalize", "off");
+    input.setAttribute("autocorrect", "off");
+    input.setAttribute("aria-hidden", "true");
+    input.tabIndex = -1;
+    // 16px: no zoom on focus (iOS); off screen to the left, nothing shows.
+    Object.assign(input.style, { position: "fixed", left: "-1000px", top: "0", width: "1px", height: "1px", opacity: "0", fontSize: "16px", border: "0", padding: "0" });
+    input.addEventListener("input", () => this.onTextInput());
+    input.addEventListener("compositionstart", () => (this.composing = true));
+    input.addEventListener("compositionend", () => {
+      this.composing = false;
+      this.onTextInput();
+    });
+    input.addEventListener("focus", () => this.fit());
+    input.addEventListener("blur", () => this.fit());
+    window.visualViewport?.addEventListener("resize", () => this.fit());
+    this.canvas.parentElement?.appendChild(input);
+    this.textInput = input;
+    this.resetTextInput();
+  }
+
+  private resetTextInput(): void {
+    const input = this.textInput;
+    if (!input) return;
+    input.value = TEXT_SENTINEL;
+    this.textValue = TEXT_SENTINEL;
+    input.setSelectionRange(TEXT_SENTINEL.length, TEXT_SENTINEL.length);
+  }
+
+  private focusTextInput(): void {
+    const input = this.textInput;
+    if (!input) return;
+    // Refocusing brings the keyboard back after the system closed it.
+    if (document.activeElement === input) input.blur();
+    this.resetTextInput();
+    input.focus({ preventScroll: true });
+  }
+
+  private onTextInput(): void {
+    const input = this.textInput;
+    if (!input) return;
+    const v = input.value;
+    const old = this.textValue;
+    let same = 0;
+    while (same < old.length && same < v.length && old[same] === v[same]) same++;
+    this.textValue = v;
+    if (!this.inputBlocked) {
+      for (let i = same; i < old.length; i++) this.keyDown("Backspace");
+      for (const ch of v.slice(same)) this.keyDown(ch === "\n" ? "Enter" : ch);
+    }
+    if (!this.composing && (v.length > 32 || !v.startsWith(TEXT_SENTINEL))) this.resetTextInput();
+  }
+
+  /** Each frame: the queued touch messages, and the keyboard goes when the focus leaves the text. */
+  private pumpTouch(): void {
+    this.frameCount++;
+    if (!this.touchMode) return;
+    this.flushTouch();
+    const input = this.textInput;
+    if (input && document.activeElement === input && !isTextInput(this.focus)) input.blur();
   }
 }

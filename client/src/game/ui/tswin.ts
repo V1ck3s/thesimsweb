@@ -410,6 +410,14 @@ export class TSWin {
   tsOnMouseUpR(_x: number, _y: number): boolean {
     return false;
   }
+  /** cTSWin::TSOnMouseDoubleL (message 9, WM_LBUTTONDBLCLK): a press like any other. */
+  tsOnMouseDoubleL(x: number, y: number): boolean {
+    return this.tsOnMouseDownL(x, y);
+  }
+  /** cTSWin::TSOnMouseDoubleR (message 10, WM_RBUTTONDBLCLK): a press like any other. */
+  tsOnMouseDoubleR(x: number, y: number): boolean {
+    return this.tsOnMouseDownR(x, y);
+  }
   tsOnMouseMove(_x: number, _y: number): boolean {
     return false;
   }

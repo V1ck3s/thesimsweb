@@ -21,12 +21,12 @@ or developer-only tools).
 | Class | What it is | Status | Where |
 |---|---|---|---|
 | cTSWin | Window base: area, flags, children, plot, hit testing | ported | `ui/tswin.ts` |
-| cTSWinMgrW95 | Window manager: input routing, capture, modal loop, paint | ported (focus / modal key routing, WF_NO_FOCUS, TSSetFocus kill / set messages) | `ui/winmgr.ts` |
+| cTSWinMgrW95 | Window manager: input routing, capture, modal loop, paint | ported (focus / modal key routing, WF_NO_FOCUS, TSSetFocus kill / set messages, double clicks as messages 9 / 10: CS_DBLCLKS, the browser's click count). Web addition: the touch mapping (tap, double tap, long press = right button where the window has a handler, two-finger Alt pan, pinch '+' / '-', twist ',' / '.') and a hidden input for the on-screen keyboard | `ui/winmgr.ts` |
 | cTSWinCtrlMgr | System bitmaps and fonts of the controls | ported | `ui/ctrlmgr.ts`, `ui/syscolors.ts` |
 | cTSWinBtn | Button (frame columns, push / toggle, async timers) | ported | `ui/btn.ts` |
 | cTSWinCheck | Check box | ported | `ui/check.ts` |
 | cTSWinText | Static text | ported | `ui/text.ts` |
-| cTSWinTextEdit2 | Edit field | ported (selection, clipboard, undo, scrollbar; not double-click or double-byte fonts) | `ui/textedit.ts` |
+| cTSWinTextEdit2 | Edit field | ported (selection, clipboard, undo, scrollbar, double-click word selection; not double-byte fonts) | `ui/textedit.ts` |
 | cTSWinTextList | Text list | ported | `ui/textlist.ts` |
 | cTSWinScrollbar | Scroll bar | ported | `ui/scrollbar.ts` |
 | cTSWinSlider | Slider | ported | `ui/slider.ts` |

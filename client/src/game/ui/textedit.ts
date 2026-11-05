@@ -55,7 +55,10 @@
  *    snapshot clears the redo stack; undo / redo do not notify the target;
  *  - mouse: a press captures and places the cursor (Shift extends the
  *    selection), dragging extends it, the release places it again. The hit
- *    test goes line by line: the character whose middle is past the point;
+ *    test goes line by line: the character whose middle is past the point.
+ *    A double click (TSOnMouseDoubleL, after the first click's press and
+ *    release) selects the word: MoveWord(-1) without selecting, then
+ *    MoveWord(1) extending the selection;
  *  - every change posts 0x16 to the target (DeleteText even when nothing
  *    was deleted, twice for Backspace);
  *  - TSPaint: the fill color (+0x138) unless transparent; the visible lines
@@ -66,8 +69,7 @@
  *    focused (SetDrawFrameOnFocus) or flashing while empty
  *    (SetFlashFrameOnEmpty).
  *
- * Not ported: double-click word selection (TSOnMouseDoubleL: the window
- * manager has no double-click message), the double-byte font paths.
+ * Not ported: the double-byte font paths.
  */
 
 import type { FfnFont } from "../res/ffn.js";
@@ -978,6 +980,19 @@ export class TSWinTextEdit2 extends TSWin {
     }
     if (this.anchor >= 0) this.moveCursor(this.anchor - this.cursor, winMgr.isKeyDown("Shift"), false);
     return true;
+  }
+
+  /** cTSWinTextEdit2::TSOnMouseDoubleL: selects the word around the cursor. */
+  override tsOnMouseDoubleL(): boolean {
+    if (!this.ensureInit()) return true;
+    this.moveWord(-1, false);
+    this.moveWord(1, true);
+    return true;
+  }
+
+  /** The window manager's on-screen keyboard (touch screens) serves editable text. */
+  acceptsTextInput(): boolean {
+    return this.mode !== MODE_READ_ONLY;
   }
 
   override tsOnMouseMove(x: number, y: number): boolean {
