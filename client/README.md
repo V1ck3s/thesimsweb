@@ -1,15 +1,19 @@
 # @thesimsweb/client
 
 Vite + TypeScript frontend. The game is `game.html` (`src/game/`, ported from
-the decompiled shell); `legacy.html` (`src/main.ts`) is the old prototype.
+the decompiled shell). `index.html` (`src/landing/`) is the landing page around
+it: play button, saves export / import (`src/engine/saves.ts`, `zip.ts`),
+storage and offline state. `src/sw/sw.ts` is the service worker (built to
+`/sw.js` by `vite.config.ts`, production builds only; `src/engine/pwa.ts`
+registers it); `public/` holds the web manifest and icons.
 
 ## Dev
 
 ```bash
 # from repo root: client (vite :5173) + server (Fastify :3000) together
 pnpm dev
-# → http://localhost:5173/            the game (game.html)
-# → http://localhost:5173/legacy.html the old prototype client
+# → http://localhost:5173/            the landing page (index.html)
+# → http://localhost:5173/game.html   the game ("/?house=1" etc. also start the game)
 ```
 
 Vite proxies `/api/*` and `/assets/*` to the server on port 3000.

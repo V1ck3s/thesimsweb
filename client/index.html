@@ -1,0 +1,147 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>The Sims (web)</title>
+    <meta name="description" content="A web port of The Sims (2000) running on your own copy of the game." />
+    <meta name="theme-color" content="#1d3a5f" />
+    <link rel="icon" href="/icons/icon.svg" type="image/svg+xml" />
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <style>
+      :root {
+        color-scheme: light dark;
+        --bg: #f4f5f7;
+        --panel: #ffffff;
+        --text: #1b1f24;
+        --muted: #5b6470;
+        --line: #d9dde3;
+        --accent: #1d5fa8;
+        --accent-text: #ffffff;
+        --ok: #1f7a3a;
+        --warn: #9a5b00;
+        --err: #b3261e;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --bg: #15181c;
+          --panel: #1e2227;
+          --text: #e6e8eb;
+          --muted: #9aa3ad;
+          --line: #343a42;
+          --accent: #5b9be0;
+          --accent-text: #0d1117;
+          --ok: #5cc27a;
+          --warn: #e0a84a;
+          --err: #f08178;
+        }
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--text);
+        font: 15px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+      }
+      main { max-width: 760px; margin: 0 auto; padding: 32px 16px 48px; }
+      h1 { font-size: 28px; margin: 0 0 4px; }
+      h2 { font-size: 17px; margin: 0 0 8px; }
+      p { margin: 0 0 8px; }
+      .lead { color: var(--muted); margin-bottom: 24px; }
+      section {
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        padding: 16px 18px;
+        margin-bottom: 16px;
+      }
+      .play { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 16px; }
+      a.button, button {
+        font: inherit;
+        border-radius: 6px;
+        border: 1px solid var(--line);
+        background: var(--panel);
+        color: var(--text);
+        padding: 7px 14px;
+        cursor: pointer;
+        text-decoration: none;
+        display: inline-block;
+      }
+      a.button.primary {
+        background: var(--accent);
+        border-color: var(--accent);
+        color: var(--accent-text);
+        font-size: 18px;
+        font-weight: 600;
+        padding: 10px 28px;
+      }
+      button:disabled { opacity: 0.55; cursor: default; }
+      button:not(:disabled):hover, a.button:hover { filter: brightness(0.95); }
+      .row { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+      .muted { color: var(--muted); }
+      .status { min-height: 1.5em; margin-top: 8px; }
+      .ok { color: var(--ok); }
+      .warn { color: var(--warn); }
+      .err { color: var(--err); }
+      dl { display: grid; grid-template-columns: max-content 1fr; gap: 4px 16px; margin: 0; }
+      dt { color: var(--muted); }
+      dd { margin: 0; }
+      ul { margin: 0; padding-left: 20px; }
+      li { margin-bottom: 4px; }
+      code { font-size: 13px; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>The Sims</h1>
+      <p class="lead">A web port of The Sims (2000, Complete Collection), running on the game files of this server.</p>
+
+      <section class="play">
+        <a class="button primary" href="game.html" id="play">Play</a>
+        <span class="muted" id="play-note">The game opens in this tab. Close other tabs of the game first.</span>
+      </section>
+
+      <section>
+        <h2>Saves</h2>
+        <p id="saves-mode" class="muted">Checking the server…</p>
+        <dl>
+          <dt>Saved files</dt>
+          <dd id="saves-count">–</dd>
+        </dl>
+        <div class="row">
+          <button type="button" id="export" disabled>Export saves (.zip)</button>
+          <button type="button" id="import" disabled>Import saves…</button>
+          <input type="file" id="import-file" accept=".zip,application/zip" hidden />
+        </div>
+        <p class="status" id="saves-status" role="status"></p>
+      </section>
+
+      <section>
+        <h2>Storage and offline play</h2>
+        <dl>
+          <dt>Browser storage</dt>
+          <dd id="storage-persist">–</dd>
+          <dt>Used by this site</dt>
+          <dd id="storage-usage">–</dd>
+          <dt>Offline</dt>
+          <dd id="offline">–</dd>
+        </dl>
+        <div class="row">
+          <button type="button" id="persist" hidden>Keep this site's data</button>
+        </div>
+      </section>
+
+      <section>
+        <h2>Help</h2>
+        <ul>
+          <li>The first start reads the whole object catalog and takes a minute or two; the game files are then kept in this browser and later starts are much faster.</li>
+          <li>Firefox and Chrome (or Edge) are supported. The game is made for a mouse and a keyboard.</li>
+          <li>The game saves as the original does. Export the saves now and then: when they are kept in the browser, clearing this site's data loses them.</li>
+          <li>Offline: once the game has been played on this device, it starts without a network connection, with what it has already loaded (neighborhoods, lots and catalog pages visited). Anything never opened needs the server, and when the saves are kept on the server the game cannot save offline.</li>
+          <li>Install it as an app from the browser's address bar or menu (Chrome, Edge) for a window of its own.</li>
+        </ul>
+      </section>
+    </main>
+    <script type="module" src="/src/landing/main.ts"></script>
+  </body>
+</html>

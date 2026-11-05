@@ -12,7 +12,8 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 const repoRoot = resolve(__dirname, "..", "..");
 const assetsDir = resolve(repoRoot, "server", "assets");
-const overlayDir = overlayDirOf(repoRoot);
+// OVERLAY_DIR: where the saves are written in SAVES=server mode (default server/data/overlay).
+const overlayDir = process.env["OVERLAY_DIR"] ? resolve(process.env["OVERLAY_DIR"]) : overlayDirOf(repoRoot);
 const clientDir = resolve(process.env["CLIENT_DIST"] ?? resolve(repoRoot, "client", "dist"));
 
 const HOST = process.env["HOST"] ?? "127.0.0.1";

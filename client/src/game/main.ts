@@ -397,6 +397,8 @@ async function boot(): Promise<void> {
   else await game.showNeighborhood();
 }
 
+// Offline support (engine/pwa.ts: production builds only).
+void import("../engine/pwa.js").then((m) => m.registerServiceWorker());
 boot().then(
   () => console.log("boot ok"),
   (e: unknown) => console.error("boot failed", e),

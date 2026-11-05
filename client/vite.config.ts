@@ -1,19 +1,24 @@
+import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { defineConfig, type Connect, type Plugin } from "vite";
+import { defineConfig, transformWithEsbuild, type Connect, type Plugin } from "vite";
 
 /**
- * The game (game.html, src/game/) is the page served at "/".
+ * "/" is the landing page (index.html, src/landing/); the game is game.html
+ * (src/game/). "/" with a query string (bookmarks from before the landing
+ * page: /?house=1, /?nbhd=UserData2, /?test=lot) still starts the game, like
+ * the server's route (server/src/routes/client.ts).
  */
-function gameAsRoot(): Plugin {
+function gameWithQuery(): Plugin {
   const rewrite: Connect.NextHandleFunction = (req, _res, next) => {
     const url = req.url ?? "/";
     const q = url.indexOf("?");
     const path = q < 0 ? url : url.slice(0, q);
-    if (path === "/" || path === "/index.html") req.url = `/game.html${q < 0 ? "" : url.slice(q)}`;
+    if (q >= 0 && q < url.length - 1 && (path === "/" || path === "/index.html")) req.url = `/game.html${url.slice(q)}`;
     next();
   };
   return {
-    name: "game-as-root",
+    name: "game-with-query",
     configureServer(server) {
       server.middlewares.use(rewrite);
     },
@@ -23,8 +28,43 @@ function gameAsRoot(): Plugin {
   };
 }
 
+/** Files of public/ the service worker precaches with the bundles. */
+const PUBLIC_SHELL = ["/manifest.webmanifest", "/icons/icon.svg", "/icons/icon-192.png", "/icons/icon-512.png"];
+
+/**
+ * Builds the service worker (src/sw/sw.ts) to /sw.js, with the list of the
+ * build's files to precache (pages, bundles, WASM; not the source maps) and a
+ * hash of their content as its version. Build only: the dev server has none.
+ */
+function serviceWorker(): Plugin {
+  return {
+    name: "service-worker",
+    apply: "build",
+    enforce: "post",
+    async generateBundle(_options, bundle) {
+      const hash = createHash("sha256");
+      const files: string[] = [];
+      for (const [name, out] of Object.entries(bundle).sort(([a], [b]) => a.localeCompare(b))) {
+        if (name.endsWith(".map")) continue;
+        files.push(`/${name}`);
+        hash.update(name).update(out.type === "chunk" ? out.code : out.source);
+      }
+      const shell = [...new Set(["/index.html", "/game.html", ...files, ...PUBLIC_SHELL])];
+      const source = readFileSync(fileURLToPath(new URL("src/sw/sw.ts", import.meta.url)), "utf8");
+      const { code } = await transformWithEsbuild(source, "sw.ts", { loader: "ts", target: "es2022", format: "esm" });
+      this.emitFile({
+        type: "asset",
+        fileName: "sw.js",
+        source: code
+          .replaceAll("__SW_SHELL__", JSON.stringify(shell))
+          .replaceAll("__SW_VERSION__", JSON.stringify(hash.digest("hex").slice(0, 16))),
+      });
+    },
+  };
+}
+
 export default defineConfig({
-  plugins: [gameAsRoot()],
+  plugins: [gameWithQuery(), serviceWorker()],
   server: {
     port: 5173,
     strictPort: true,
@@ -45,6 +85,7 @@ export default defineConfig({
     sourcemap: true,
     rollupOptions: {
       input: {
+        index: fileURLToPath(new URL("index.html", import.meta.url)),
         game: fileURLToPath(new URL("game.html", import.meta.url)),
       },
     },

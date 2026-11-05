@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import { mkdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { dirname, resolve, sep } from "node:path";
 import type { FastifyInstance } from "fastify";
 import fastifyStatic from "@fastify/static";
@@ -70,6 +70,29 @@ export async function registerUserDataRoute(
     await writeFile(full, req.body);
     onChange?.();
     return { ok: true, path, size: req.body.length };
+  });
+
+  /**
+   * GET /api/saves: every file the game saved (the overlay's Sims/UserData*
+   * files), for the saves export (client/src/engine/saves.ts). Paths are
+   * relative to /assets/ ("Sims/UserData2/Neighborhood.iff").
+   */
+  app.get("/api/saves", async () => {
+    const files: Array<{ path: string; size: number; mtime: number }> = [];
+    let names: string[] = [];
+    try {
+      names = await readdir(resolve(overlayDir, "Sims"), { recursive: true });
+    } catch {
+      // no saves yet
+    }
+    for (const name of names) {
+      const rel = `Sims/${name.split(sep).join("/")}`;
+      if (!WRITABLE.test(rel)) continue;
+      const s = await stat(resolve(overlayDir, rel)).catch(() => null);
+      if (s?.isFile()) files.push({ path: rel, size: s.size, mtime: s.mtimeMs });
+    }
+    files.sort((a, b) => a.path.localeCompare(b.path));
+    return { files };
   });
 
   /** Drops the overlay copy: the original file shows through again. */

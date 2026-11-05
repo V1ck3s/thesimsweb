@@ -137,3 +137,138 @@ export async function requestPersistentStorage(): Promise<void> {
     // not supported
   }
 }
+
+// --- Export / import (the landing page, client/src/landing/) --------------------
+
+/** A save file of this instance, as listed for the export. */
+export interface SaveListing {
+  path: string;
+  size: number;
+  mtime: number;
+}
+
+/**
+ * Every save file the game wrote: this browser's (client mode), or the
+ * server's (server mode: GET /api/saves lists the overlay's files). The
+ * unchanged originals of the game folder are not saves and are left out.
+ */
+export async function listSaves(): Promise<SaveListing[]> {
+  if ((await getSaveMode()) === "client") {
+    const all = await request<SavedFile[]>("readonly", (s) => s.getAll() as IDBRequest<SavedFile[]>);
+    return all.map((f) => ({ path: f.path, size: f.bytes.length, mtime: f.mtime })).sort((a, b) => a.path.localeCompare(b.path));
+  }
+  const res = await fetch("/api/saves", { cache: "no-store" });
+  if (!res.ok) throw new Error(`listing the server's saves failed (${res.status})`);
+  return ((await res.json()) as { files: SaveListing[] }).files;
+}
+
+function assetUrl(path: string): string {
+  return `/assets/${path.split("/").map(encodeURIComponent).join("/")}`;
+}
+
+/** Runs `fn` over `items`, `limit` at a time. */
+async function eachLimited<T>(items: readonly T[], limit: number, fn: (item: T) => Promise<void>): Promise<void> {
+  let next = 0;
+  const worker = async (): Promise<void> => {
+    while (next < items.length) await fn(items[next++]!);
+  };
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+}
+
+export type Progress = (done: number, total: number) => void;
+
+/**
+ * One ZIP archive (engine/zip.ts) of every save file (listSaves), paths
+ * relative to the game folder's parent ("Sims/UserData2/Houses/House01.iff").
+ */
+export async function exportSaves(onProgress?: Progress): Promise<{ blob: Blob; count: number; bytes: number }> {
+  const { zipStore } = await import("./zip.js");
+  const list = await listSaves();
+  const client = (await getSaveMode()) === "client";
+  const entries: Array<{ path: string; bytes: Uint8Array; mtime: number }> = [];
+  let done = 0;
+  await eachLimited(list, 6, async (f) => {
+    let bytes: Uint8Array | null;
+    if (client) bytes = await localSaveRead(f.path);
+    else {
+      const res = await fetch(assetUrl(f.path), { cache: "no-store" });
+      if (!res.ok) throw new Error(`${f.path}: ${res.status}`);
+      bytes = new Uint8Array(await res.arrayBuffer());
+    }
+    if (bytes) entries.push({ path: f.path, bytes, mtime: f.mtime });
+    onProgress?.(++done, list.length);
+  });
+  entries.sort((a, b) => a.path.localeCompare(b.path));
+  return { blob: zipStore(entries), count: entries.length, bytes: entries.reduce((n, e) => n + e.bytes.length, 0) };
+}
+
+/**
+ * The save path ("Sims/UserData2/...") of an archive member, or null when it
+ * is not one. Accepts archives made elsewhere: any folder above the
+ * UserData* folder is dropped ("saves/Sims/UserData2/x" and "UserData2/x"
+ * both give "Sims/UserData2/x"); ".." anywhere refuses the member.
+ */
+export function savePathOfArchiveMember(member: string): string | null {
+  const parts = member.replace(/\\/g, "/").split("/").filter((p) => p !== "" && p !== ".");
+  if (parts.some((p) => p === "..")) return null;
+  const i = parts.findIndex((p) => /^UserData\d*$/i.test(p));
+  if (i < 0 || i === parts.length - 1) return null;
+  const path = ["Sims", ...parts.slice(i)].join("/");
+  return isSavePath(path) ? path : null;
+}
+
+/**
+ * Replaces every save file of this instance with the archive's: the saves
+ * the archive does not hold are dropped (the game folder's originals show
+ * through again), then its files are written. In client mode that is one
+ * IndexedDB transaction (all or nothing); in server mode it goes through
+ * DELETE and PUT /api/files, file by file. Members outside UserData* are
+ * ignored. Refuses an archive without any save file (nothing is changed).
+ */
+export async function importSaves(archive: Blob, onProgress?: Progress): Promise<{ count: number; ignored: number }> {
+  const { unzip } = await import("./zip.js");
+  const members = await unzip(new Uint8Array(await archive.arrayBuffer()));
+  const files = new Map<string, { path: string; bytes: Uint8Array; mtime: number }>();
+  let ignored = 0;
+  for (const m of members) {
+    const path = savePathOfArchiveMember(m.path);
+    if (path) files.set(keyOf(path), { path, bytes: m.bytes, mtime: m.mtime ?? Date.now() });
+    else ignored++;
+  }
+  if (!files.size) throw new Error("this archive holds no save file (no UserData folder)");
+  const incoming = [...files.values()];
+
+  if ((await getSaveMode()) === "client") {
+    const db = await openDb();
+    await new Promise<void>((resolve, reject) => {
+      const tx = db.transaction(STORE, "readwrite");
+      const store = tx.objectStore(STORE);
+      store.clear();
+      for (const f of incoming) store.put({ path: f.path, bytes: f.bytes, mtime: f.mtime } satisfies SavedFile, keyOf(f.path));
+      tx.oncomplete = () => resolve();
+      tx.onabort = tx.onerror = () => reject(tx.error ?? new Error("saves: import failed"));
+    });
+    onProgress?.(incoming.length, incoming.length);
+    return { count: incoming.length, ignored };
+  }
+
+  const stale = (await listSaves()).filter((f) => !files.has(keyOf(f.path)));
+  const total = stale.length + incoming.length;
+  let done = 0;
+  const api = (path: string): string => `/api/files/${path.split("/").map(encodeURIComponent).join("/")}`;
+  await eachLimited(stale, 4, async (f) => {
+    const res = await fetch(api(f.path), { method: "DELETE" });
+    if (!res.ok) throw new Error(`delete ${f.path}: ${res.status}`);
+    onProgress?.(++done, total);
+  });
+  await eachLimited(incoming, 4, async (f) => {
+    const res = await fetch(api(f.path), {
+      method: "PUT",
+      headers: { "Content-Type": "application/octet-stream" },
+      body: new Blob([f.bytes as Uint8Array<ArrayBuffer>]),
+    });
+    if (!res.ok) throw new Error(`write ${f.path}: ${res.status}`);
+    onProgress?.(++done, total);
+  });
+  return { count: incoming.length, ignored };
+}
