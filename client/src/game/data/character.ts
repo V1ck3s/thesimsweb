@@ -22,7 +22,7 @@
  */
 
 import { assetFetch, readFarEntry } from "../../engine/assets.js";
-import { LANG_FRENCH } from "../res/uires.js";
+import { UI_LANGUAGE } from "../res/uires.js";
 import { deleteGameFile, writeGameFile } from "./files.js";
 import { buildIff, decodeStrSet, encodeStrSet, parseIffMapOrder, stringSetMultiSave, type IffChunk } from "./iff.js";
 
@@ -56,7 +56,7 @@ export const PORTRAIT_LABELS: Record<number, string> = {
 const BODY_STRINGS_LABEL = "bodystring";
 
 /** The game's current language (cSimsApp +100), the slot StringSetMulti saves into. */
-const CURRENT_LANG = LANG_FRENCH;
+const CURRENT_LANG: number = UI_LANGUAGE;
 
 /** rand_override: the game's rand(), 15 bits. */
 function rand(): number {

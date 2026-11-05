@@ -34,7 +34,7 @@ import type { DisposeItem } from "../cpstate.js";
 import { loadCatalog } from "../data/catalog.js";
 import { makeMoneyString } from "../nbhd/nghinterface.js";
 import { ALIGN_LEFT, type FfnFont } from "../res/ffn.js";
-import { LANG_FRENCH } from "../res/uires.js";
+import { UI_LANGUAGE } from "../res/uires.js";
 import { TSWinCtrlMgr } from "../ui/ctrlmgr.js";
 import { UI_FONT_COLOR } from "../ui/syscolors.js";
 import { Gfx, TSWin } from "../ui/tswin.js";
@@ -116,7 +116,7 @@ export class WinDisposePopup extends TSWin {
       const at = text.indexOf(NAME_TOKEN);
       if (at >= 0) text = text.slice(0, at) + (product ? product.getProductName() : UNKNOWN) + text.slice(at + 1);
       const money = text.indexOf(MONEY_TOKEN);
-      if (money >= 0) text = text.slice(0, money) + makeMoneyString(refund, LANG_FRENCH) + text.slice(money + 1);
+      if (money >= 0) text = text.slice(0, money) + makeMoneyString(refund, UI_LANGUAGE) + text.slice(money + 1);
       this.font?.drawTextPara(g, TEXT_RECT, text, ALIGN_LEFT, UI_FONT_COLOR);
     }
     this.buffer = c;

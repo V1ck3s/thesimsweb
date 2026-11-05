@@ -8,7 +8,7 @@
 
 import { readStandaloneIff } from "../../engine/assets.js";
 import { engine } from "../../engine/wasm.js";
-import { LANG_FRENCH } from "./uires.js";
+import { UI_LANGUAGE } from "./uires.js";
 
 interface StrEntry {
   kind: "single" | "pair" | "lang";
@@ -29,7 +29,7 @@ export class Strings {
   /** The US English entries of the format -3 chunks (StringSetBase::GetString(index, 0)). */
   private readonly usTables = new Map<string, Map<number, Str[]>>();
 
-  constructor(private readonly lang = LANG_FRENCH) {}
+  constructor(private readonly lang = UI_LANGUAGE) {}
 
   /** Load every STR# chunk of `Sims/<path>`; the table is named after the file. */
   async load(path: string): Promise<void> {

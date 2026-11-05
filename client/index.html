@@ -76,6 +76,16 @@
         font-weight: 600;
         padding: 10px 28px;
       }
+      select {
+        font: inherit;
+        border-radius: 6px;
+        border: 1px solid var(--line);
+        background: var(--panel);
+        color: var(--text);
+        padding: 6px 10px;
+        max-width: 100%;
+      }
+      label { display: inline-flex; align-items: center; gap: 10px; flex-wrap: wrap; }
       button:disabled { opacity: 0.55; cursor: default; }
       a.button.primary[aria-disabled="true"] { opacity: 0.55; pointer-events: none; }
       progress { width: 100%; height: 10px; margin-top: 10px; }
@@ -102,6 +112,18 @@
       <section class="play">
         <a class="button primary" href="game.html" id="play">Play</a>
         <span class="muted" id="play-note">The game opens in this tab. Close other tabs of the game first.</span>
+      </section>
+
+      <section>
+        <h2>Language</h2>
+        <label>
+          <span>Language of the game</span>
+          <select id="language"></select>
+        </label>
+        <p class="muted">
+          The game files hold the texts of every language; the choice applies at the next start of the game (reload
+          its tab). The neighborhoods and families keep the names they were given.
+        </p>
       </section>
 
       <section id="gamefiles" hidden>
@@ -139,6 +161,10 @@
           <input type="file" id="import-file" accept=".zip,application/zip" hidden />
         </div>
         <p class="status" id="saves-status" role="status"></p>
+        <p id="webpages" hidden>
+          Family web pages (written by the game when “Export HTML” is on, or by its Internet update button in the
+          neighborhood): <span id="webpages-links"></span>
+        </p>
       </section>
 
       <section>

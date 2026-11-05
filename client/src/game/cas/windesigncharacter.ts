@@ -35,7 +35,7 @@
 
 import type { GameContext } from "../context.js";
 import { PD } from "../data/neighborhood.js";
-import { LANG_FRENCH } from "../res/uires.js";
+import { UI_LANGUAGE } from "../res/uires.js";
 import type { SAnimator } from "../sims/index.js";
 import { TSWinBtn } from "../ui/btn.js";
 import { TSWinCtrlMgr } from "../ui/ctrlmgr.js";
@@ -301,7 +301,7 @@ export class WinDesignCharacter extends TSWinGenDlg implements PersonalityOwner 
     this.childAdd(vita);
     this.vita = vita;
 
-    await this.buildPersonalityBtns(LANG_FRENCH >= 3 && LANG_FRENCH <= 4 ? fonts.f12 : fonts.f14);
+    await this.buildPersonalityBtns(UI_LANGUAGE >= 3 && UI_LANGUAGE <= 4 ? fonts.f12 : fonts.f14);
 
     const name = new TSWinTextEdit2();
     name.setFont(fonts.f10);

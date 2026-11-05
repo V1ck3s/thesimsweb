@@ -22,6 +22,7 @@
  */
 
 import type { ResFile } from "../world/iffres.js";
+import { UI_LANGUAGE } from "../res/uires.js";
 
 /** BHAV header size and node size (BehaviorTree / BehaviorNode). */
 export const TREE_HEADER = 0xc;
@@ -158,9 +159,6 @@ export function loadStringSet(res: ResFile, id: number, type = "STR#"): string[]
   return s;
 }
 
-/** Language code of the UI (StringSetBase +0x59: cTSLanguageManager's current language). */
-const UI_LANGUAGE = 3; // French (res/uires.ts LANG_FRENCH)
-
 /**
  * StringSetBase::GetString with the default language (+0x59): the entries
  * of the UI language in a format -3 set, those of the first language when
@@ -177,7 +175,7 @@ export function loadUIStringSet(res: ResFile, id: number, type = "STR#"): string
   let s = m.get(key);
   if (s === undefined) {
     const b = res.get(type, id);
-    s = b ? parseStringSet(b, UI_LANGUAGE) : null;
+    s = b ? parseStringSet(b, UI_LANGUAGE /* StringSetBase +0x59: cTSLanguageManager's current language */) : null;
     m.set(key, s);
   }
   return s;

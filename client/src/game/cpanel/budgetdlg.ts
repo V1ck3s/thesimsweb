@@ -39,7 +39,7 @@
 
 import type { GameContext } from "../context.js";
 import type { FfnFont } from "../res/ffn.js";
-import { LANG_FRENCH } from "../res/uires.js";
+import { UI_LANGUAGE } from "../res/uires.js";
 import { TSWinBtn } from "../ui/btn.js";
 import { bltEdge, TSWinDlg } from "../ui/dlg.js";
 import { hiliteColor, rgb, UI_FONT_COLOR } from "../ui/syscolors.js";
@@ -130,7 +130,7 @@ export interface BudgetSource {
 
 /** cTSLanguageUtility::MakeMoneyString as the window calls it. */
 function money(amount: number): string {
-  return makeMoneyString(amount, LANG_FRENCH);
+  return makeMoneyString(amount, UI_LANGUAGE);
 }
 
 export class WinBudgetRow extends TSWin {

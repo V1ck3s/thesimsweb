@@ -39,7 +39,7 @@ import { writeGameFile } from "../data/files.js";
 import { NeighborhoodStore } from "../data/nbhdstore.js";
 import { getOptionsMgr, TriState } from "../optionsmgr.js";
 import type { FfnFont } from "../res/ffn.js";
-import { LANG_FRENCH } from "../res/uires.js";
+import { UI_LANGUAGE } from "../res/uires.js";
 import { BTN_TOGGLE, TSWinBtn } from "../ui/btn.js";
 import { getCursor, getStandardCursor } from "../ui/cursor.js";
 import { WinPickFamily } from "../cas/winpickfamily.js";
@@ -570,7 +570,7 @@ export class WinTown extends TSWin implements LotBtnOwner {
     map.childAdd(barBtn);
     if (this.mainScreen) {
       for (let i = 0; i < def.buttons.length; i++) {
-        const id = i === BTN_LOGO ? logoImage(LANG_FRENCH) : def.buttons[i]!;
+        const id = i === BTN_LOGO ? logoImage(UI_LANGUAGE) : def.buttons[i]!;
         const btn = new TSWinBtn(1, await res.image(id), i === BTN_LOGO ? 1 : 4);
         btn.tooltip = ctx.strings.get("UIText", def.tipsStr, i);
         const [x, y] = def.buttonPos[i]!;

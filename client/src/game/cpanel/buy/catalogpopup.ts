@@ -28,7 +28,7 @@ import type { GameContext } from "../../context.js";
 import { OBJD, Product } from "../../data/catalog.js";
 import { makeMoneyString } from "../../nbhd/nghinterface.js";
 import { ALIGN_LEFT, type FfnFont } from "../../res/ffn.js";
-import { LANG_FRENCH } from "../../res/uires.js";
+import { UI_LANGUAGE } from "../../res/uires.js";
 import { SYS_POPUP_TILES, TSWinCtrlMgr } from "../../ui/ctrlmgr.js";
 import { rgb, UI_FONT_COLOR } from "../../ui/syscolors.js";
 import { Gfx, TSWin } from "../../ui/tswin.js";
@@ -231,7 +231,7 @@ export class WinCatalogPopup extends TSWin {
     x += title.stringWidth(name);
     title.drawText(g, SEPARATOR, x, TEXT_Y, UI_FONT_COLOR);
     x += title.stringWidth(SEPARATOR);
-    title.drawText(g, makeMoneyString(p.getPrice(), LANG_FRENCH), x, TEXT_Y, UI_FONT_COLOR);
+    title.drawText(g, makeMoneyString(p.getPrice(), UI_LANGUAGE), x, TEXT_Y, UI_FONT_COLOR);
 
     text.drawTextPara(g, { left: TEXT_X, top: descTop, right, bottom: descBottom }, p.getDescription(), ALIGN_LEFT, UI_FONT_COLOR);
     if (ratingBottom > descBottom) {

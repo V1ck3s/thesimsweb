@@ -20,7 +20,7 @@
 import { personGender, type PersonInfo } from "../../cpstate.js";
 import type { GameContext } from "../../context.js";
 import type { FfnFont } from "../../res/ffn.js";
-import { LANG_FRENCH } from "../../res/uires.js";
+import { LANG_FRENCH, UI_LANGUAGE } from "../../res/uires.js";
 import { getOptionsMgr } from "../../optionsmgr.js";
 import { ASYNC_ON_ENTER, BTN_TOGGLE, CMD_ASYNC_EXIT } from "../../ui/btn.js";
 import { rgb, UI_FONT_COLOR } from "../../ui/syscolors.js";
@@ -29,8 +29,6 @@ import { CaptionBtn } from "./captionbtn.js";
 import { careerById, JobReq, jobName, jobShortName, loadCareers, type Career, type Job } from "./careers.js";
 import { popupClick, type WinLivePopup, WinLivePopupClient } from "../livepopup.js";
 
-/** cSimsApp language (+100); the client runs the French install. */
-const UI_LANGUAGE = LANG_FRENCH;
 
 const LIVE = "Live";
 const STR_LABELS = 0x88;

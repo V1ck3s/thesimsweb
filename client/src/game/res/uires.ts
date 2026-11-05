@@ -14,6 +14,7 @@
  */
 
 import { fetchManifest, readAssetFile, readFarEntry } from "../../engine/assets.js";
+import { readLanguage } from "../../engine/language.js";
 import { decodeImage, type RgbaImage } from "./bmp.js";
 
 const ROOT = "Sims/UIGraphics/";
@@ -22,6 +23,8 @@ const TABLES = ["Res_CPanel", "Res_Nbhd", "Res_Other", "SMCtrlMgrRes"];
 
 export const LANG_DEFAULT = 0;
 export const LANG_FRENCH = 3;
+/** cSimsApp +100: the game's language, chosen on the landing page (engine/language.ts), read once at startup. */
+export const UI_LANGUAGE: number = readLanguage();
 
 interface RtEntry {
   kind: string;
@@ -40,7 +43,7 @@ export class UIRes {
   private static readonly loaded = new Map<number, Promise<UIRes>>();
 
   /** The tables of a language, read once (later calls share the instance). */
-  static load(lang = LANG_FRENCH): Promise<UIRes> {
+  static load(lang = UI_LANGUAGE): Promise<UIRes> {
     let p = UIRes.loaded.get(lang);
     if (!p) {
       p = UIRes.read(lang);

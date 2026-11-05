@@ -25,7 +25,7 @@ import type { GameContext } from "../context.js";
 import { loadCharacter, neighborByGuid } from "../data/neighborhood.js";
 import { ALIGN_LEFT, type FfnFont } from "../res/ffn.js";
 import { decodeImage } from "../res/bmp.js";
-import { LANG_FRENCH } from "../res/uires.js";
+import { UI_LANGUAGE } from "../res/uires.js";
 import { Gfx, TSWin } from "../ui/tswin.js";
 import { loadStrSet, makeMoneyString, Zone, type HouseInfo, type Neighborhood } from "./nghinterface.js";
 
@@ -191,11 +191,11 @@ export class WinLotPopup extends TSWin {
     if (!first) return null;
     const num = String(n);
     let address = sprintf(s[n <= first.low ? first.lowEntry : first.highEntry]!, num);
-    const custom = first.file ? await loadStrSet(`${this.nb.dir}/${first.file}`, 0x80, LANG_FRENCH) : null;
+    const custom = first.file ? await loadStrSet(`${this.nb.dir}/${first.file}`, 0x80, UI_LANGUAGE) : null;
     if (custom) address = sprintf(`%s ${custom[n <= first.low ? 0 : 1] ?? ""}`, num);
     let name = s[22]!;
     let text = s[23]!;
-    const d = await loadStrSet(`${this.nb.dir}/Houses/${desc}`, 2000 + n, LANG_FRENCH);
+    const d = await loadStrSet(`${this.nb.dir}/Houses/${desc}`, 2000 + n, UI_LANGUAGE);
     if (d?.[0]) name = d[0];
     if (d?.[1]) text = d[1];
     return `${address}\n\n${name}\n${text}\n `;
@@ -204,8 +204,8 @@ export class WinLotPopup extends TSWin {
   private async address(house: number): Promise<string> {
     const num = String(house);
     const file = `${this.nb.dir}/StreetNames.iff`;
-    const streets = await loadStrSet(file, 2000, LANG_FRENCH);
-    const assignments = await loadStrSet(file, 2001, LANG_FRENCH);
+    const streets = await loadStrSet(file, 2000, UI_LANGUAGE);
+    const assignments = await loadStrSet(file, 2001, UI_LANGUAGE);
     if (!streets || !assignments) return sprintf(this.strings[7]!, num);
     // StringSetMulti::GetString is 1-based.
     const street = Number.parseInt(assignments[house - 1] ?? "", 10) || 0;
@@ -229,7 +229,7 @@ export class WinLotPopup extends TSWin {
     let desc = s[23]!;
     if (this.nb.getZoningType(h.houseNumber) !== Zone.None) {
       const descFile = h.houseNumber >= 0x5a && h.houseNumber <= 0x63 ? "MTDesc.iff" : "NeighborhoodDesc.iff";
-      const d = await loadStrSet(`${this.nb.dir}/Houses/${descFile}`, 2000 + h.houseNumber, LANG_FRENCH);
+      const d = await loadStrSet(`${this.nb.dir}/Houses/${descFile}`, 2000 + h.houseNumber, UI_LANGUAGE);
       if (d?.[0]) name = d[0];
       if (d?.[1]) desc = d[1];
     }
@@ -243,7 +243,7 @@ export class WinLotPopup extends TSWin {
       text += sprintf(s[idx]!, name, desc);
     } else if (zone === Zone.Residential && this.magic && h.houseNumber >= 0x5a && h.houseNumber <= 0x5c) {
       // The lbl_105BC754 formats of the Magic Town indices (see getMagicPopupIndex).
-      const lang = LANG_FRENCH;
+      const lang = UI_LANGUAGE;
       const v: MagicValues = { familyName: "", funds: 0, coins: 0 };
       const cost = this.magic.cost(h.houseNumber);
       const i = await this.getMagicPopupIndex(h, cost, v);
@@ -256,7 +256,7 @@ export class WinLotPopup extends TSWin {
       else if (i === 0x1c) text += sprintf(s[i]!, name, desc);
       else text += s[i]!;
     } else if (zone === Zone.Residential) {
-      const lang = LANG_FRENCH;
+      const lang = UI_LANGUAGE;
       if (idx === POPUP_FAMILY) text += sprintf(s[idx]!, h.familyName, makeMoneyString(h.netWorth, lang), h.friends);
       else if (idx === POPUP_EMPTY_RESIDENTIAL) text += sprintf(s[idx]!, name, desc, makeMoneyString(h.value, lang));
       else text += s[idx]!;

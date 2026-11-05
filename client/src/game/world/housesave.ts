@@ -23,7 +23,7 @@
  */
 
 import { buildIff, decodeStrSet, parseIff, type IffChunk } from "../data/iff.js";
-import { LANG_FRENCH } from "../res/uires.js";
+import { UI_LANGUAGE } from "../res/uires.js";
 import { loadStringSet } from "../sim/behavior.js";
 import { ObjFnTable, EP } from "../sim/objfntable.js";
 import type { Simulator } from "../sim/simulator.js";
@@ -340,7 +340,7 @@ function catalogName(sel: ObjSelector): string {
       const format = ctss.length >= 2 ? ctss[0]! | (ctss[1]! << 8) : 0;
       name =
         format === 0xfffd
-          ? (decodeStrSet(ctss).filter((e) => e.lang === LANG_FRENCH)[0]?.value ?? "")
+          ? (decodeStrSet(ctss).filter((e) => e.lang === UI_LANGUAGE)[0]?.value ?? "")
           : (loadStringSet(sel.res, id, "CTSS")?.[0] ?? "");
     }
   }

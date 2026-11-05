@@ -75,7 +75,7 @@ import { makeMoneyString } from "../nbhd/nghinterface.js";
 import { decodeImage } from "../res/bmp.js";
 import { getOptionsMgr } from "../optionsmgr.js";
 import type { FfnFont } from "../res/ffn.js";
-import { LANG_FRENCH } from "../res/uires.js";
+import { UI_LANGUAGE } from "../res/uires.js";
 import { TSWinBtn } from "../ui/btn.js";
 import { TSWinCtrlMgr } from "../ui/ctrlmgr.js";
 import { GENDLG_FILL, TSWinGenDlg } from "../ui/gendlg.js";
@@ -315,7 +315,7 @@ class PickFamilyItem extends TSWinBtn {
     const color = TEXT_COLORS[this.frameRow()]!;
     const { f10, f12 } = this.fonts;
     f12.drawText(g.ctx, this.family.name, g.ox + ITEM_NAME.x, g.oy + ITEM_NAME.y, color);
-    const worth = makeMoneyString(this.family.netWorth, LANG_FRENCH);
+    const worth = makeMoneyString(this.family.netWorth, UI_LANGUAGE);
     const worthAt = this.magic ? ITEM_WORTH_MAGIC : ITEM_WORTH;
     const friendsAt = this.magic ? ITEM_FRIENDS_MAGIC : ITEM_FRIENDS;
     // Alignment 3: right-aligned on the column position.

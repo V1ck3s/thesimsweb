@@ -30,7 +30,7 @@
  */
 
 import type { GameContext } from "../context.js";
-import { LANG_FRENCH } from "../res/uires.js";
+import { UI_LANGUAGE } from "../res/uires.js";
 import { bltEdge, TSWinDlg } from "../ui/dlg.js";
 import { TSWinCtrlMgr } from "../ui/ctrlmgr.js";
 import { TSSystemButton } from "../ui/systembutton.js";
@@ -63,8 +63,6 @@ const LIST_EXTRA_W = 0x19;
 const GAP = 0x14;
 /** cSimsApp+100: the UI language; 0x13 narrows the text by 10 px. */
 const LANGUAGE_NARROW_TEXT = 0x13;
-/** The game runs in French (cSimsApp+100). */
-const UI_LANGUAGE: number = LANG_FRENCH;
 
 export class WinHelp extends TSWinDlg {
   /** +0x110 */

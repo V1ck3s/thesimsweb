@@ -38,7 +38,7 @@ import { fetchManifest, readAssetRangeBatched, readAssetRangeCached, readFarMani
 import { idbGetFarManifest, idbPutFarManifest } from "../../engine/idb.js";
 import { engine } from "../../engine/wasm.js";
 import { decodeImage } from "../res/bmp.js";
-import { LANG_FRENCH } from "../res/uires.js";
+import { UI_LANGUAGE } from "../res/uires.js";
 import { ResFile } from "../world/iffres.js";
 
 /** OBJD field indices (in-memory offset in the comment). */
@@ -354,7 +354,7 @@ async function stringSet(data: Uint8Array): Promise<string[]> {
   const { entries } = wasm.parseStrTable(data) as { entries: StrEntry[] };
   const text = (e: StrEntry | undefined): string => (e ? latin1.decode(e.data) : "");
   if (!entries.some((e) => e.kind === "lang")) return entries.map((e) => text(e));
-  const ours = entries.filter((e) => e.langCode === LANG_FRENCH);
+  const ours = entries.filter((e) => e.langCode === UI_LANGUAGE);
   const us = entries.filter((e) => e.langCode === 1);
   const n = Math.max(ours.length, us.length);
   const out: string[] = [];

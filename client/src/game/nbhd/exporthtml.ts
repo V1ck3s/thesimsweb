@@ -69,9 +69,7 @@
  * (world/thumbnail.ts) at quality 90 with ApplyLogo (kWebcamLogo /
  * kWebcamLogoAlpha in the bottom right corner).
  *
- * Not ported: cScrapbook::MakeCurThumb (an album page without its
- * thumbnail file gets no FamilyGFX/scrapbookN_thumb.jpg; the game's pages
- * always have one), cTSFile::SetAttribute (read-only bits), the
+ * Not ported: cTSFile::SetAttribute (read-only bits), the
  * FreeMem() test (taken as true), cRZVersion::GetModuleVersion (the
  * shipped Sims.exe's FileVersion "1.91" is used), empty folders (the
  * overlay has none: StockGFX / FamilyGFX exist once a file is in them).
@@ -91,7 +89,7 @@ import { loadCharacter, loadNeighborhood } from "../data/neighborhood.js";
 import { encodeCp1252 } from "../data/recon.js";
 import { getOptionsMgr } from "../optionsmgr.js";
 import { decodeImage } from "../res/bmp.js";
-import { LANG_FRENCH, UIRes } from "../res/uires.js";
+import { UI_LANGUAGE, UIRes } from "../res/uires.js";
 import { loadStringSet } from "../sim/behavior.js";
 import { getGrade, loadJobGrades } from "../sim/careers.js";
 import { getTitleFromLevel, loadFameTitles } from "../sim/fametrack.js";
@@ -129,8 +127,8 @@ import { getHouseInfo, Neighborhood, readSimi } from "./nghinterface.js";
 // ---------------------------------------------------------------------------
 // Constants (lbl_105BC140 strings, lbl_105BC13C, GetStringConstant)
 
-/** app +100: the game's language (this port runs the French build). */
-const LANG: number = LANG_FRENCH;
+/** app +100: the game's language (engine/language.ts). */
+const LANG: number = UI_LANGUAGE;
 /** GetStringConstant(7) + GetStringConstant(0x56): the templates (runtime path, always UserData). */
 const TEMPLATES = "UserData/Web Templates/";
 /** GetStringConstant(0x55) / (0x57): the neighborhood's folders. */
@@ -594,8 +592,11 @@ async function makeWebPagesFromTemplate(
         const pic = `scrapbook${i + 1}.jpg`;
         if (photo) await copyGameFile(photo, `${outDir}${FAMILY_GFX}${pic}`);
         values[T.snapshot] = pic;
-        // cScrapbook::GetThumbFilename (MakeJPEGThumbFileName); MakeCurThumb when missing is not ported.
-        if (photo) await copyGameFile(photo.replace(/\.[^./]*$/, "") + "_thumb.jpg", `${outDir}${FAMILY_GFX}scrapbook${i + 1}_thumb.jpg`);
+        // cScrapbook::GetThumbFilename; cScrapbook::MakeCurThumb when the file is missing.
+        const thumb = book.getThumbFilename();
+        if (thumb && ((await readGameFile(thumb)) !== null || (await book.makeCurThumb()))) {
+          await copyGameFile(thumb, `${outDir}${FAMILY_GFX}scrapbook${i + 1}_thumb.jpg`);
+        }
         await writePage(src, `${outDir}scrapbook_popup${i + 1}.html`, tags, values, -1);
       }
     }
@@ -1669,9 +1670,16 @@ async function loadExportLot(path: string, members: number): Promise<{ lot: Expo
 // ---------------------------------------------------------------------------
 // ExportHTML / ExportHTMLHomelessFamilies / ExportHTMLNeighborhood
 
-/** The language folder of the templates, spelled as on disk. */
+/**
+ * The language folder of the templates, spelled as on disk. An install has
+ * its own language's folder and the English one; for another language chosen
+ * on the landing page (engine/language.ts) the English templates are used.
+ */
 async function templatesDir(): Promise<string> {
-  return resolveDir(`${TEMPLATES}${languageDir(LANG)}`);
+  const dir = `${TEMPLATES}${languageDir(LANG)}`;
+  const prefix = `sims/${dir}`.toLowerCase();
+  if ((await fetchManifest()).files.some((f) => f.path.toLowerCase().startsWith(prefix))) return resolveDir(dir);
+  return resolveDir(`${TEMPLATES}${languageDir(1)}`);
 }
 
 /** Steps 1 and 2 of ExportHTML / ExportHTMLHomelessFamilies: StockGFX, then the template's files. */
@@ -1917,7 +1925,7 @@ function sleep(ms: number): Promise<void> {
  *    closes it;
  *  - when none is left: not busy, ExportNghHTML, ShellExecute("open",
  *    <neighborhood>/Web Pages/neighborhood.html) (here a new browser tab on
- *    the overlay's copy), the lots back, "bkground_nhood1".
+ *    /webpages/, the saved copy with webpages-compat.js), the lots back, "bkground_nhood1".
  * SetBlockSimulator (the hidden lot view's simulator) has nothing to block here.
  */
 export async function doInternetUpdate(host: InternetUpdateHost): Promise<void> {
@@ -1960,8 +1968,9 @@ export async function doInternetUpdate(host: InternetUpdateHost): Promise<void> 
     }
     await sleep(TICK_MS);
     await exportNghHTML(store).catch((e: unknown) => console.warn("[exporthtml] ExportNghHTML", e));
-    // ShellExecute("open", <neighborhood>/Web Pages/neighborhood.html): the overlay serves the page.
-    const url = `/assets/Sims/${[nbhdDir, "Web Pages", "neighborhood.html"].map(encodeURIComponent).join("/")}`;
+    // ShellExecute("open", <neighborhood>/Web Pages/neighborhood.html): /webpages/ serves the saved
+    // page with the compatibility script its 2000 scripts need (server/src/routes/webpages.ts).
+    const url = `/webpages/Sims/${[nbhdDir, "Web Pages", "neighborhood.html"].map(encodeURIComponent).join("/")}`;
     if (!window.open(url, "_blank")) console.warn(`[exporthtml] could not open ${url}`);
   } finally {
     host.setBusy(false);

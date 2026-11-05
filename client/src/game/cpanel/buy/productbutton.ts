@@ -18,7 +18,7 @@
 import type { Product } from "../../data/catalog.js";
 import { renderCatalogShot } from "./objecticon.js";
 import { makeMoneyString } from "../../nbhd/nghinterface.js";
-import { LANG_FRENCH } from "../../res/uires.js";
+import { UI_LANGUAGE } from "../../res/uires.js";
 import { BTN_TOGGLE, TSWinBtn } from "../../ui/btn.js";
 import type { Gfx } from "../../ui/tswin.js";
 import type { ToolTipColorSource } from "../../ui/winmgr.js";
@@ -69,7 +69,7 @@ export class ProductButton<P extends ButtonProduct = Product> extends TSWinBtn i
     super(0, template, cols, 1);
     this.mode = BTN_TOGGLE;
     this.sendOnDown = true;
-    this.tooltip = makeMoneyString(product.getPrice(), LANG_FRENCH);
+    this.tooltip = makeMoneyString(product.getPrice(), UI_LANGUAGE);
     void product.icon().then((img) => (this.icon = img));
   }
 

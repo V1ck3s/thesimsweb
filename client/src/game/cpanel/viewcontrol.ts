@@ -28,7 +28,7 @@ import { Mode, WallState } from "../cpstate.js";
 import { soundPlayer, speedTransitionSound, UI } from "../audio/index.js";
 import type { GameContext } from "../context.js";
 import type { FfnFont } from "../res/ffn.js";
-import { LANG_FRENCH } from "../res/uires.js";
+import { UI_LANGUAGE } from "../res/uires.js";
 import { BTN_PUSH, BTN_TOGGLE, TSWinBtn } from "../ui/btn.js";
 import { WinPictureDialog } from "../ui/picturedialog.js";
 import { Gfx, TSWin } from "../ui/tswin.js";
@@ -367,7 +367,7 @@ export class WinViewControl extends TSWin {
     if (d & DIRTY_FUNDS) this.updateFunds(performance.now());
     if (d & DIRTY_TIME) {
       const t = s.getTime();
-      this.timeText = makeTimeString(t.hour, t.minute, LANG_FRENCH);
+      this.timeText = makeTimeString(t.hour, t.minute, UI_LANGUAGE);
     }
     // 0x80000 (simulator sync: speed, pause, family name) is the simulation's job.
     if (d & DIRTY_SPEED_OR_MODE) {
@@ -407,7 +407,7 @@ export class WinViewControl extends TSWin {
    * bit set (CPState+0x10) until the flash ends, we re-run it from pump().
    */
   private updateFunds(now: number): void {
-    const funds = makeMoneyString(Math.min(this.ctx.state.getFunds(), 9999999), LANG_FRENCH);
+    const funds = makeMoneyString(Math.min(this.ctx.state.getFunds(), 9999999), UI_LANGUAGE);
     const btn = this.funds;
     if (funds.length === 0 || btn.caption.length === 0) {
       btn.caption = funds;

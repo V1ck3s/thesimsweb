@@ -39,7 +39,7 @@ import type { GameContext } from "../context.js";
 import { writeGameFile } from "../data/files.js";
 import { buildIff, parseIff, stringSetMultiSave } from "../data/iff.js";
 import type { FfnFont } from "../res/ffn.js";
-import { LANG_FRENCH } from "../res/uires.js";
+import { UI_LANGUAGE } from "../res/uires.js";
 import { bltEdge } from "../cpanel/buy/catalogpopup.js";
 import { TSWinCtrlMgr } from "../ui/ctrlmgr.js";
 import { IDCANCEL, IDNO, IDOK, IDYES, TSWinMsgBox } from "../ui/msgbox.js";
@@ -122,7 +122,7 @@ export class WinEditDTLotDesc extends TSWin {
   private async getLotInfo(): Promise<void> {
     const path = this.path;
     if (!path) return;
-    const set = await loadStrSet(path, DESC_SET_BASE + this.house, LANG_FRENCH);
+    const set = await loadStrSet(path, DESC_SET_BASE + this.house, UI_LANGUAGE);
     if (!set) return;
     if (set[0] !== undefined) this.lotName = set[0];
     if (set[1] !== undefined) this.lotDesc = set[1];
@@ -143,7 +143,7 @@ export class WinEditDTLotDesc extends TSWin {
       c = { type: "STR#", id, flags: 0, label: "", data: new Uint8Array(0) };
       chunks.push(c);
     }
-    c.data = stringSetMultiSave(c.data.length ? c.data : null, LANG_FRENCH, [this.lotName, this.lotDesc]);
+    c.data = stringSetMultiSave(c.data.length ? c.data : null, UI_LANGUAGE, [this.lotName, this.lotDesc]);
     await writeGameFile(path, buildIff(chunks));
   }
 

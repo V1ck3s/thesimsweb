@@ -30,7 +30,7 @@ import { deleteGameFile, writeGameFile } from "../data/files.js";
 import { buildIff, decodeStrSet, parseIff, parseIffMapOrder, stringSetMultiSave, type IffChunk } from "../data/iff.js";
 import { NeighborhoodStore } from "../data/nbhdstore.js";
 import { decodeImage } from "../res/bmp.js";
-import { LANG_FRENCH } from "../res/uires.js";
+import { UI_LANGUAGE } from "../res/uires.js";
 import { ObjectFolder } from "../world/objectfolder.js";
 import { readSimi } from "./nghinterface.js";
 
@@ -112,7 +112,7 @@ export async function setLotDescription(nbhdDir: string, file: string, house: nu
   const chunks = parseIff(new Uint8Array(await res.arrayBuffer()));
   const c = chunks.find((x): boolean => x.type === "STR#" && x.id === 2000 + house);
   if (!c) return;
-  c.data = stringSetMultiSave(c.data, LANG_FRENCH, [name, description]);
+  c.data = stringSetMultiSave(c.data, UI_LANGUAGE, [name, description]);
   await writeGameFile(path, buildIff(chunks));
 }
 
@@ -214,7 +214,7 @@ export function getCharacterSetFromLanguage(lang: number): number {
  * entries 20 / 21 (OK / Delete) instead.
  */
 export function isWrongCharacterSet(info: ImportInfo): boolean {
-  return getCharacterSetFromLanguage(LANG_FRENCH) !== getCharacterSetFromLanguage(info.language) && !info.tutorial;
+  return getCharacterSetFromLanguage(UI_LANGUAGE) !== getCharacterSetFromLanguage(info.language) && !info.tutorial;
 }
 
 /**
@@ -228,7 +228,7 @@ export async function getImportInfoForFile(path: string): Promise<ImportInfo | n
   const ev = new DataView(expi.data.buffer, expi.data.byteOffset, expi.data.byteLength);
   const id = ev.getInt16(12, true);
   // SimpleReconObject<ExpFamilyInfo>::DoStream: id, 8 member ids, then (version > 0x3e) the language byte.
-  const language = ev.getInt32(4, true) > 0x3e && expi.data.length > 30 ? expi.data[30]! : LANG_FRENCH;
+  const language = ev.getInt32(4, true) > 0x3e && expi.data.length > 30 ? expi.data[30]! : UI_LANGUAGE;
   const fami = chunks.find((c) => c.type === "FAMI" && c.id === id);
   if (!fami || fami.data.length < 16) return null;
   const house = new DataView(fami.data.buffer, fami.data.byteOffset, fami.data.byteLength).getInt32(12, true);

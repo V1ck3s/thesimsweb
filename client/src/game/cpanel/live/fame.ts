@@ -24,7 +24,7 @@
 import type { GameContext } from "../../context.js";
 import type { PersonInfo } from "../../cpstate.js";
 import type { FfnFont } from "../../res/ffn.js";
-import { LANG_FRENCH } from "../../res/uires.js";
+import { LANG_FRENCH, UI_LANGUAGE } from "../../res/uires.js";
 import { getOptionsMgr } from "../../optionsmgr.js";
 import { loadUIStringSet } from "../../sim/behavior.js";
 import { loadFameScoring, type FameScoring } from "../../sim/fametrack.js";
@@ -36,8 +36,6 @@ import type { ObjSelector } from "../../world/objselector.js";
 import { popupClick, popupObject, type WinLivePopup, WinLivePopupClient } from "../livepopup.js";
 import { FlashyBtn } from "./job.js";
 
-/** cSimsApp language (+100); the client runs the French install. */
-const UI_LANGUAGE = LANG_FRENCH;
 
 const LIVE = "Live";
 /** STR# 136: the skill labels (entries 1..6). */

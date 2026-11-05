@@ -33,7 +33,7 @@ import { assetFetch, fetchManifest } from "../../engine/assets.js";
 import { MUSIC, soundPlayer, UI } from "../audio/index.js";
 import type { GameContext } from "../context.js";
 import type { FfnFont } from "../res/ffn.js";
-import { LANG_FRENCH } from "../res/uires.js";
+import { UI_LANGUAGE } from "../res/uires.js";
 import { BTN_TOGGLE, TSWinBtn } from "../ui/btn.js";
 import { winMgr } from "../ui/winmgr.js";
 import { Gfx, TSWin, WF_ENABLED } from "../ui/tswin.js";
@@ -340,7 +340,7 @@ export class WinNeighborhoodUL extends TSWin implements LotBtnOwner {
   override async init(): Promise<boolean> {
     const { ctx } = this;
     const res = ctx.res;
-    const lang: number = LANG_FRENCH;
+    const lang: number = UI_LANGUAGE;
     const us = lang === 1;
 
     // The neighborhood may ship its own map (Neighborhood::GetDirectory + "neighborhoodul.jpg").
@@ -1273,7 +1273,7 @@ export class WinNeighborhoodUL extends TSWin implements LotBtnOwner {
     const id = 2000 + house;
     const c = chunks.find((x): boolean => x.type === "STR#" && x.id === id);
     if (!c) return;
-    c.data = stringSetMultiSave(c.data, LANG_FRENCH, [name, description]);
+    c.data = stringSetMultiSave(c.data, UI_LANGUAGE, [name, description]);
     await writeGameFile(path, buildIff(chunks));
   }
 
@@ -1313,7 +1313,7 @@ export class WinNeighborhoodUL extends TSWin implements LotBtnOwner {
       soundPlayer.playBySource(SND_DEMOLISH, -4);
       await this.runEvict(house, true);
     } else {
-      const text = this.str(STR_BULLDOZE, 3).replace("%s", info.familyName).replace("%s", makeMoneyString(info.netWorth, LANG_FRENCH));
+      const text = this.str(STR_BULLDOZE, 3).replace("%s", info.familyName).replace("%s", makeMoneyString(info.netWorth, UI_LANGUAGE));
       if ((await TSWinMsgBox.show(this.ctx, text, this.str(STR_BULLDOZE, 2), MB_YESNO)) !== IDYES) return;
       const bulldoze = info.hasHouse && (await this.message(STR_BULLDOZE, 1, 0, MB_YESNO)) === IDYES;
       soundPlayer.playBySource(bulldoze ? SND_DEMOLISH : SND_EVICT, -4);
@@ -1363,7 +1363,7 @@ export class WinNeighborhoodUL extends TSWin implements LotBtnOwner {
       }
       await this.nb.setZoningType(house, newZone);
     } else {
-      const text = this.str(STR_BULLDOZE, 7).replace("%s", info.familyName).replace("%s", makeMoneyString(info.netWorth, LANG_FRENCH));
+      const text = this.str(STR_BULLDOZE, 7).replace("%s", info.familyName).replace("%s", makeMoneyString(info.netWorth, UI_LANGUAGE));
       if ((await TSWinMsgBox.show(this.ctx, text, this.str(STR_BULLDOZE, 6), MB_YESNO)) !== IDYES) return;
       let bulldoze = false;
       if (info.hasHouse) {

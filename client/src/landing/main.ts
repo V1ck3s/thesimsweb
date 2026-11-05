@@ -5,10 +5,13 @@
  * offline support (engine/pwa.ts). On an instance that serves no game file
  * (GAME_FILES=client), the import of the player's own install folder into
  * this browser (engine/gamefiles.ts); the game cannot start before it.
+ * The game's language (engine/language.ts) and links to the family web pages
+ * the game wrote (served by /webpages/ with their compatibility script).
  */
 
 import { exportSaves, getSaveMode, importSaves, listSaves, type SaveMode } from "../engine/saves.js";
 import { offlineStatus, registerServiceWorker } from "../engine/pwa.js";
+import { LANGUAGES, readLanguage, storeLanguage } from "../engine/language.js";
 import {
   gameFilesStatus,
   hasFolderPicker,
@@ -55,6 +58,7 @@ async function refreshSaves(): Promise<void> {
       ? `${list.length} file${list.length > 1 ? "s" : ""}, ${formatBytes(total)}`
       : "none yet (the game starts from the neighborhoods of the game folder)";
     $<HTMLButtonElement>("export").disabled = busy || !list.length;
+    showWebPages(list.map((f) => f.path));
   } catch (e) {
     $("saves-count").textContent = `unavailable (${(e as Error).message})`;
     $<HTMLButtonElement>("export").disabled = true;
@@ -290,7 +294,44 @@ async function refreshOffline(): Promise<void> {
   $("offline").textContent = await offlineStatus();
 }
 
+/** One link per neighborhood whose saves hold the game's web pages (its Web Pages/neighborhood.html). */
+function showWebPages(paths: string[]): void {
+  const dirs = new Set<string>();
+  for (const p of paths) {
+    const m = /^Sims\/(UserData\d*)\/Web Pages\/neighborhood\.html$/i.exec(p);
+    if (m) dirs.add(m[1]!);
+  }
+  const links = $("webpages-links");
+  links.replaceChildren();
+  for (const dir of [...dirs].sort((a, b) => a.localeCompare(b, undefined, { numeric: true }))) {
+    if (links.childNodes.length) links.append(", ");
+    const a = document.createElement("a");
+    a.href = `/webpages/Sims/${encodeURIComponent(dir)}/Web%20Pages/neighborhood.html`;
+    a.target = "_blank";
+    a.rel = "noopener";
+    a.textContent = dir;
+    links.append(a);
+  }
+  $("webpages").hidden = dirs.size === 0;
+}
+
+function initLanguage(): void {
+  const select = $<HTMLSelectElement>("language");
+  const current = readLanguage();
+  for (const l of LANGUAGES) {
+    const opt = document.createElement("option");
+    opt.value = String(l.code);
+    opt.textContent = l.name;
+    opt.selected = l.code === current;
+    select.append(opt);
+  }
+  select.addEventListener("change", () => {
+    if (!storeLanguage(Number(select.value))) select.value = String(readLanguage());
+  });
+}
+
 async function main(): Promise<void> {
+  initLanguage();
   $<HTMLButtonElement>("export").addEventListener("click", () => void onExport());
   const input = $<HTMLInputElement>("import-file");
   $<HTMLButtonElement>("import").addEventListener("click", () => input.click());

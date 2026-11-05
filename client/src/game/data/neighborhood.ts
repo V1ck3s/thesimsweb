@@ -16,7 +16,7 @@
 
 import { readStandaloneIff, type IffChunkInfo } from "../../engine/assets.js";
 import { engine } from "../../engine/wasm.js";
-import { LANG_FRENCH } from "../res/uires.js";
+import { UI_LANGUAGE } from "../res/uires.js";
 import { decodeBmp } from "../res/bmp.js";
 import { ReconBuffer } from "../world/reconbuffer.js";
 import type { FamilyStat } from "./familyhistory.js";
@@ -258,7 +258,7 @@ export async function localizedStrings(bytes: Uint8Array, lang: number): Promise
   return pick.map((e) => cp1252.decode(e.data));
 }
 
-export async function loadNeighborhood(dir = "UserData", lang = LANG_FRENCH): Promise<NeighborhoodData> {
+export async function loadNeighborhood(dir = "UserData", lang = UI_LANGUAGE): Promise<NeighborhoodData> {
   const { data, chunks } = await readStandaloneIff(`Sims/${dir}/Neighborhood.iff`);
   const nbrs = chunks.find((c) => c.kind === "NBRS");
   const neighbors = nbrs ? parseNbrs(payload(data, nbrs)) : [];
@@ -283,7 +283,7 @@ export async function loadNeighborhood(dir = "UserData", lang = LANG_FRENCH): Pr
   return { dir, neighbors, families, inventories: ngbhData.inventories, data: ngbhData.data };
 }
 
-export async function loadCharacter(dir: string, shortName: string, lang = LANG_FRENCH): Promise<Character> {
+export async function loadCharacter(dir: string, shortName: string, lang = UI_LANGUAGE): Promise<Character> {
   const file = shortName.charAt(0).toUpperCase() + shortName.slice(1);
   const { data, chunks } = await readStandaloneIff(`Sims/${dir}/Characters/${file}.iff`);
   const ctss = chunks.find((c) => c.kind === "CTSS");

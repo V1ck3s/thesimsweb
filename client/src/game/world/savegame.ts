@@ -31,7 +31,7 @@ import { NeighborhoodStore } from "../data/nbhdstore.js";
 import { exportFamilyHTML } from "../nbhd/exporthtml.js";
 import { loadStrSet } from "../nbhd/nghinterface.js";
 import { getOptionsMgr } from "../optionsmgr.js";
-import { LANG_FRENCH } from "../res/uires.js";
+import { UI_LANGUAGE } from "../res/uires.js";
 import { PDX } from "../sim/person.js";
 import { G, type Simulator } from "../sim/simulator.js";
 import { IDCANCEL, IDYES, MB_YESNOCANCEL, TSWinMsgBox } from "../ui/msgbox.js";
@@ -184,18 +184,18 @@ export async function exportUnoccupiedLot(nbhdDir: string, house: number, zoning
   else if (community || zoning === 1) desc = "NeighborhoodDesc.iff";
   // IFFResFile2::Delete of both names, then CopyFile of the house file.
   for (const path of [`${base}${ext}`, `${base}.srf`]) await deleteGameFile(path).catch(() => undefined);
-  const strings = desc ? await loadStrSet(`${nbhdDir}/Houses/${desc}`, 2000 + house, LANG_FRENCH).catch(() => null) : null;
+  const strings = desc ? await loadStrSet(`${nbhdDir}/Houses/${desc}`, 2000 + house, UI_LANGUAGE).catch(() => null) : null;
   const name = strings?.[0] ?? "";
   const description = (strings?.[1] ?? "").replace(/\n/g, " ");
   // StringSetBase::Load(2000) of the copy, SetString 1..3, Save.
   const chunks = parseIff(houseBytes);
   const old = chunks.find((c) => c.type === "STR#" && c.id === 2000);
   const all = old ? decodeStrSet(old.data) : [];
-  const values = (all.some((e) => e.lang === LANG_FRENCH) ? all.filter((e) => e.lang === LANG_FRENCH) : all.filter((e) => e.lang === 1)).map((e) => e.value);
+  const values = (all.some((e) => e.lang === UI_LANGUAGE) ? all.filter((e) => e.lang === UI_LANGUAGE) : all.filter((e) => e.lang === 1)).map((e) => e.value);
   values[0] = name;
   values[1] = description;
   values[2] = String(house);
-  const data = encodeStrSet(values.map((value) => ({ lang: LANG_FRENCH, value: value ?? "", comment: "" })));
+  const data = encodeStrSet(values.map((value) => ({ lang: UI_LANGUAGE, value: value ?? "", comment: "" })));
   if (old) old.data = data;
   else chunks.push({ type: "STR#", id: 2000, flags: 0x10, label: "", data });
   await writeGameFile(`${base}${ext}`, buildIff(chunks));

@@ -18,7 +18,7 @@
  */
 
 import { assetFetch, fetchManifest } from "../../engine/assets.js";
-import { LANG_FRENCH } from "../res/uires.js";
+import { UI_LANGUAGE } from "../res/uires.js";
 import { createCharacterFile, createCharacterFileFrom, deleteCharacterFile, GUID_TEMPLATE_PERSON, readCharacterFirstName } from "./character.js";
 import { serializeFamilyHistory } from "./familyhistory.js";
 import { deleteGameFile, writeGameFile } from "./files.js";
@@ -145,7 +145,7 @@ export const PERSISTENT_DATA_FIELDS = [
 const PD_67 = 67;
 
 /** The game's current language (StringSetMulti saves the family name in it). */
-const CURRENT_LANG = LANG_FRENCH;
+const CURRENT_LANG: number = UI_LANGUAGE;
 
 /** A neighbor's character file name (its short name, capitalized: "user00000" -> "User00000.iff"). */
 function characterFileName(name: string): string {

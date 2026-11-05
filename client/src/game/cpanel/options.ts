@@ -40,7 +40,7 @@ import { soundPlayer, UI } from "../audio/index.js";
 import type { GameContext } from "../context.js";
 import { getOptionsMgr, type TriState } from "../optionsmgr.js";
 import type { FfnFont } from "../res/ffn.js";
-import { LANG_FRENCH } from "../res/uires.js";
+import { UI_LANGUAGE } from "../res/uires.js";
 import { BTN_PUSH, BTN_TOGGLE_ON_DOWN, TSWinBtn } from "../ui/btn.js";
 import { CMD_CHECK_CHANGED, TSWinCheck } from "../ui/check.js";
 import { TSWinCtrlMgr } from "../ui/ctrlmgr.js";
@@ -144,7 +144,7 @@ const ASYNC_SLOTS = (i: number): boolean =>
   (i >= 6 && i < 12) || (i >= 19 && i < 22) || (i >= 25 && i < 29) || (i >= 33 && i < 38);
 
 /** Language ids tested by the Build*Buttons functions (cGZApp+0x64). */
-const LANG: number = LANG_FRENCH;
+const LANG: number = UI_LANGUAGE;
 const LANG_0x11 = 0x11;
 const LANG_0x13 = 0x13;
 
