@@ -36,7 +36,9 @@ import type { FfnFont } from "../res/ffn.js";
 import { LANG_FRENCH } from "../res/uires.js";
 import { BTN_TOGGLE, TSWinBtn } from "../ui/btn.js";
 import { winMgr } from "../ui/winmgr.js";
-import { Gfx, TSWin } from "../ui/tswin.js";
+import { Gfx, TSWin, WF_ENABLED } from "../ui/tswin.js";
+import { doInternetUpdate, exportFamilyHTML } from "./exporthtml.js";
+import { getOptionsMgr } from "../optionsmgr.js";
 import { listNeighborhoodDirs, neighborhoodNumber, type Neighborhood } from "./nghinterface.js";
 import { WinLotBtn, type LotBtnOwner } from "./winlotbtn.js";
 import { WinLotPopup } from "./winlotpopup.js";
@@ -1232,8 +1234,9 @@ export class WinNeighborhoodUL extends TSWin implements LotBtnOwner {
   /**
    * EvictFamily(house, bulldoze): Neighborhood::MoveOut, then
    * Neighborhood::ExportFamily of the family that lived there
-   * (Export/<name>_<id>.FAM; its result is ignored, as in the original;
-   * ExportFamilyHTML, an option, is not ported). The family side of MoveOut
+   * (Export/<name>_<id>.FAM; its result is ignored, as in the original)
+   * and, when the "export HTML" option is on, ExportFamilyHTML
+   * (nbhd/exporthtml.ts). The family side of MoveOut
    * is NeighborhoodStore.moveOutFamily; the house file side goes to the
    * onMoveOutHouse callback when the lot code provides it. A bulldoze also
    * clears the lot's name and description (Houses\NeighborhoodDesc.iff
@@ -1247,7 +1250,10 @@ export class WinNeighborhoodUL extends TSWin implements LotBtnOwner {
     if (!this.callbacks.onMoveOutHouse) this.callbacks.onUnported(`Neighborhood::MoveOut house file side (house ${house}, bulldoze ${bulldoze})`);
     await store.save();
     if (bulldoze) await this.clearLotDescription(house);
-    if (fam !== -1 && !(await store.exportFamily(fam))) console.warn(`[evict] ExportFamily ${fam} failed`);
+    if (fam !== -1) {
+      if (!(await store.exportFamily(fam))) console.warn(`[evict] ExportFamily ${fam} failed`);
+      if (getOptionsMgr().getExportHTML()) await exportFamilyHTML(this.ctx, store, fam).catch((e: unknown) => console.warn(`[evict] ExportFamilyHTML ${fam} failed`, e));
+    }
     await this.nb.reloadData();
     return true;
   }
@@ -1414,10 +1420,22 @@ export class WinNeighborhoodUL extends TSWin implements LotBtnOwner {
         return;
       }
       case BTN_INET:
-        this.callbacks.onUnported(
-          "cWinNeighborhoodUL::DoInternetUpdate (STR# 167: update the families' web pages, ExportFamilyHTML, then open <neighborhood>/neighborhood.html in the browser)",
-        );
-        return;
+        // cWinNeighborhoodUL::DoInternetUpdate (nbhd/exporthtml.ts), +0x1b4 while it runs.
+        return doInternetUpdate({
+          ctx: this.ctx,
+          nbhdDir: this.nb.dir,
+          setBusy: (on) => {
+            this.busy = on;
+          },
+          setLotsActive: (on) => {
+            for (const lot of this.lots.values()) {
+              lot.setFlag(0x400, on);
+              lot.setFlag(WF_ENABLED, on);
+            }
+          },
+          // cDDDSimsView::StartWatchCursor; TSOnTimerMsg ends each tick with SetGlobalCursor(0, 1).
+          watchCursor: (on) => winMgr.setGlobalCursor(on ? getCursor(3) : null),
+        });
       case BTN_CREDITS:
       case BTN_LOGO:
         return this.showCredits();

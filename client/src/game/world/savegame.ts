@@ -12,9 +12,9 @@
  * budget is kept, Neighborhood::SaveAllPersistentDataForMatterTransferance
  * runs and the neighborhood is saved. After saving a residential lot whose
  * house family (House +0x10) is not family 0, SaveGame exports it
- * (Neighborhood::ExportFamily into <neighborhood>/Export/). Not ported: the
- * ExportFamilyHTML that follows (FreeMem > 0xa00000 and the "export HTML"
- * option; see docs/decomp/save-port.md).
+ * (Neighborhood::ExportFamily into <neighborhood>/Export/), then, when
+ * FreeMem() > 0xa00000 (taken as true) and the "export HTML" option is on,
+ * ExportFamilyHTML (nbhd/exporthtml.ts: the family's web pages).
  *
  * DoSave asks UIText STR# 0x99 entries 4 / 5 (message, title) with
  * Yes / No / Cancel when the lot is dirty: Cancel stays, Yes saves, No leaves.
@@ -28,7 +28,9 @@ import { loadBuildCatalog } from "../data/buildcatalog.js";
 import { deleteGameFile, writeGameFile } from "../data/files.js";
 import { buildIff, decodeStrSet, encodeStrSet, parseIff } from "../data/iff.js";
 import { NeighborhoodStore } from "../data/nbhdstore.js";
+import { exportFamilyHTML } from "../nbhd/exporthtml.js";
 import { loadStrSet } from "../nbhd/nghinterface.js";
+import { getOptionsMgr } from "../optionsmgr.js";
 import { LANG_FRENCH } from "../res/uires.js";
 import { PDX } from "../sim/person.js";
 import { G, type Simulator } from "../sim/simulator.js";
@@ -281,7 +283,11 @@ export async function saveGame(ctx: GameContext, lv: WinLotView | null, nbhdDir:
       // The house family (House +0x10) when it is not family 0 and the lot is residential:
       // Neighborhood::ExportFamily(<dir>/Export/, family), result ignored.
       const family = houseFamilyOf(store, n);
-      if (family !== 0 && zoning === 1 && !(await store.exportFamily(family))) console.warn(`[save] ExportFamily ${family} failed`);
+      if (family !== 0 && zoning === 1) {
+        if (!(await store.exportFamily(family))) console.warn(`[save] ExportFamily ${family} failed`);
+        // FreeMem() > 0xa00000 (taken as true) and cOptionsMgr::GetExportHTML: ExportFamilyHTML.
+        if (getOptionsMgr().getExportHTML()) await exportFamilyHTML(ctx, store, family, lv).catch((e: unknown) => console.warn(`[save] ExportFamilyHTML ${family} failed`, e));
+      }
     }
     if (noSims) await exportUnoccupiedLot(nbhdDir, n, zoning, bytes);
     markLotClean(lv);

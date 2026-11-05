@@ -205,8 +205,9 @@ Port of the house save path. Code: `client/src/game/world/{reconwriter,usagemap,
 - cSimsApp::SaveGame (Mac 1024f010), after Neighborhood::SaveHouse succeeds: when the house family (House +0x10,
   `houseFamilyOf`) is not family 0 and GetZoningType(current house) == 1, Neighborhood::ExportFamily(<neighborhood
   dir> + GetStringConstant(0x57) "Export" + "/", family), result ignored; then, when FreeMem > 0xa00000 and
-  cOptionsMgr::GetExportHTML, ExportFamilyHTML(family id) (not ported); then ExportUnoccupiedLot when global 32.
-  Port: `saveGame` (world/savegame.ts) calls `NeighborhoodStore.exportFamily` after `store.save()`, before
+  cOptionsMgr::GetExportHTML, ExportFamilyHTML(family id); then ExportUnoccupiedLot when global 32.
+  Port: `saveGame` (world/savegame.ts) calls `NeighborhoodStore.exportFamily` after `store.save()`, then
+  `exportFamilyHTML` (nbhd/exporthtml.ts; FreeMem taken as above the limit) with the lot view, before
   `exportUnoccupiedLot`.
 - The import list: the original's CycleThroughImports / CheckForNewImports only read <dir>/Import
   (cTSDirectory + pattern); GetImportInfoForFile checks only EXPi 0 and the FAMI it names. There is no filter of
@@ -219,7 +220,5 @@ Port of the house save path. Code: `client/src/game/world/{reconwriter,usagemap,
 
 ## Gaps
 
-- ExportFamilyHTML after a residential save (and DoInternetUpdate) is not ported; see nbhd-port.md "Family web
-  pages".
 - Save failure: the message uses UIText 0x99 entries 0xf/0x10, which is not verified visually.
 - RelMatrix null entries are dropped when loading, so they are not written back.

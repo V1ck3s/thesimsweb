@@ -278,7 +278,7 @@ Files: `client/src/game/nbhd/winneighborhoodul.ts`, `nbhd/winlotbtn.ts`, `nbhd/n
   code -1 (`NBHD_EXIT`). The browser cannot quit: main.ts logs the note.
 - Credits / logo: `WinCredits` modal over the screen (one at a time), `bkground_credits` then
   `bkground_nhood1`.
-- Inet (DoInternetUpdate) and Import (CycleThroughImports): `onUnported` with a precise note.
+- Inet: DoInternetUpdate (`nbhd/exporthtml.ts`, see "Family web pages"). Import (CycleThroughImports): `onUnported` with a precise note.
 - Previous / Next: wait cursor, all buttons disabled, Neighborhood::Previous / Next over the UserData*
   directories (wrapping), rebuild. The registry SIMS_CURRENT_NEIGHBORHOOD_NUM / _PATH is
   `localStorage["thesimsweb.currentNeighborhood"]` (`currentNeighborhoodDir` /
@@ -373,7 +373,7 @@ Files: `client/src/game/screens/frozen.ts` (new), `world/moveout.ts` (new), `mai
 
 ### ExportFamily (`NeighborhoodStore.exportFamily(id)`)
 - EvictFamily calls Neighborhood::ExportFamily(ConstructUserDataPath("Export"), family) after MoveOut when
-  the family exists (result ignored); ExportFamilyHTML (option) is not ported.
+  the family exists (result ignored), then ExportFamilyHTML when the "export HTML" option is on.
 - File `<dir>/Export/<name>_<id>.FAM` (Family::GetExportName; `.MTF` for a Magic Town house 0x5a-0x5c);
   with a house, the house file is the base (CopyFileA) and the chunks are added. Chunks in order: FAMI (v9),
   FAMs, FAMh (copied), CTSS 1000 (name, language slot 0), EXPi 0 (ExpFamilyInfo v0x3f: id, 8 member
@@ -405,24 +405,70 @@ Files: `client/src/game/screens/frozen.ts` (new), `world/moveout.ts` (new), `mai
   (nbhd/imports.ts); the box in `WinNeighborhoodUL.wrongCharacterSetDialog` and `WinTown.residentialImport`.
   The tutorial lot's direct import (no dialog) stays with nbhd/tutorial.ts.
 
-### Family web pages (ExportFamilyHTML, DoInternetUpdate): not ported
-- Callers: cSimsApp::SaveGame (after ExportFamily, option on), EvictFamily (after ExportFamily, option on),
-  cWinNeighborhoodUL::DoInternetUpdate (Inet button and TSOnTimerMsg while the busy flag +0x1b4 is set).
-- DoInternetUpdate: first call (+0x1b4 clear) GetFamiliesNeedingHTMLExport (families without Family +0x138
-  bit 3; on the first two runs with Neighborhood +0x66 bit 5, every housed family of 1..9 once), a STR# (lbl_105BCD48)
-  1 / 2 confirmation when any, then +0x1b4 = 1, SetBlockSimulator, a 100 ms timer, every lot button flag 0x400
-  and 2 off. Each timer tick: a cWinPictureDialog (STR# 1 / 3 with the family name, kNghInetUpdateIcon 0x14e6)
-  for the next family, then ExportFamilyHTML(family) and the dialog closed; at the end +0x1b4 = 0,
-  ExportNghHTML (ExportHTMLNeighborhood), ShellExecute of <UserData>/Web Pages/<index page>, the buttons back.
-- ExportFamilyHTML (Mac 102288e0): LoadHouse of the family's house when it is not loaded, ExportHTML (or
-  ExportHTMLHomelessFamilies without a house), Family +0x138 bits 3-4 set and the family re-saved.
-  ExportHTML (Mac 10218070, ~500 lines of pseudo-C) builds two 0x1ab-entry tables (GenerateLookupTagsList,
-  GenerateHouseData, GenerateFamilyAndScrapbookData), copies <Web Templates>/<language>/StockGFX, runs
-  MakeWebPagesFromTemplate (~700 lines) / MakeWebPageX on every .html / .css template, renders
-  GenerateFamilyMemberJPEGs (PersonFinder::GenerateJPEGs: a face and a full-body 3D render per member, JPEG) and
-  four HouseViewer::MakeWebPageThumbnail renders (exterior with roof, thumb, floor 1, floor 2 when visited, JPEG),
-  then MakePublishingInfo (the .pub / faminfo files, htmlEncrypt). In all about 4,600 lines of pseudo-C
-  (exporthtml.cpp, Mac 10216510..10220d10) plus the two render paths and a JPEG writer: left for a dedicated task.
+### Family web pages (ExportFamilyHTML, DoInternetUpdate): `nbhd/exporthtml.ts`
+- Callers: cSimsApp::SaveGame (after ExportFamily; FreeMem > 0xa00000, taken as true, and the "export HTML"
+  option), EvictFamily (after ExportFamily, option on), cWinNeighborhoodUL::DoInternetUpdate (Inet button).
+  FinishFamily (Create-a-Family) also calls it: not wired (cas/windesignfamily.ts is outside this task).
+- `doInternetUpdate(host)`: GetFamiliesNeedingHTMLExport (family numbers whose Family +0x138 bit 3 is clear;
+  once per session, with Unleashed (+0x66 bit 5) while cOptionsMgr::GetRunPAFMagicCount() < 2, every family of
+  houses 1..9 with bit 3 cleared); with any, `bkground_fade` and STR# 167 entries 2 / 1 yes / no (anything but
+  Yes: `bkground_nhood1`, stop). Then +0x1b4 (`busy`) set, every lot button's flags 0x400 and 2 off, and the
+  100 ms timer's ticks: per family (special numbers 2000, 4000, 5000, 5500, 6000, 3000..3009 skipped) a
+  cWinPictureDialog (title entry 1, entry 3 with `$family`, kNghInetUpdateIcon 0x14e6) shown modally, the next
+  tick the watch cursor, ExportFamilyHTML and the dialog closed; at the end +0x1b4 cleared, ExportNghHTML, the
+  ShellExecute("open", <neighborhood>/Web Pages/neighborhood.html) as `window.open` of the overlay's copy
+  (/assets/Sims/<dir>/Web Pages/neighborhood.html), the lots back, `bkground_nhood1`. Not ported:
+  SetBlockSimulator (no simulator behind this screen), the +0x180 window's flag 0x400, the ShellExecute error box.
+- `exportFamilyHTML(ctx, store, familyId, lv?)` (Mac 102288e0): nothing for the special families; no house:
+  ExportHTMLHomelessFamilies; else the lot view's lot when it is the family's house (SaveGame), or the house
+  loaded for the export (`loadExportLot`: the house file opened as withHouseThumbnails does, without the
+  simulator and the people; stats from SIMI's values / global 28 and HOUS 1). Then Family +0x138 =
+  (flags & ~0x18) | 0x18 and Neighborhood.iff saved.
+- ExportHTML (Mac 10218070): templates `UserData/Web Templates/<language>/` (always UserData: ConstructRuntimePath;
+  the language folder from Windows FUN_004dba5d, matched case-insensitively: the install has `French`),
+  T = `<house>_Sim_Lane/`, O = `<neighborhood>/Web Pages/<name>_<house>_Sim_Lane/` (spaces in the name made `_`):
+  T/StockGFX/* copied, each file of T (NTFS name order) through MakeWebPagesFromTemplate (.htm / .html) or
+  copied, GenerateFamilyMemberJPEGs, MakeWebPageThumbnail x 3 or 4, MakePublishingInfo
+  (`<name>_<house>_Sim_Lane/`, base `<name>_<family number>`). Homeless: T = `0_Sim_Lane/`, O = `<name>/`,
+  GenerateHomelessHouseData (all "0", lot size ""), no house pictures, empty [floors] / [walls] / [objects].
+- Tags (427, GenerateLookupTagsList): 12 house, 6 family, charset, language code, 7 scrapbook / magic,
+  8 x 25 member tags `^^^^sims_familymember<n>_...^^^^`, 200 captions `^^^^sims_scrapbook<n>_caption^^^^`.
+  Values: GenerateHouseData (Family +0x11c, house number, STR# 158 lot size, square feet x 0.092903 outside
+  English, bathrooms, bedrooms, "2" / "1" by HasBeenTo2ndLevel, the five House::GetHouseStats scores),
+  GenerateFamilyAndScrapbookData (budget, magicoins, days running, members, FAMI +0x120 friends, name,
+  AnyCheatUsed, page count), GenerateFamilyMemberData (first name, number, STR# 158 gender / age (US English
+  species), career / job / performance / salary (fame branch for an adult with fame score, no career and
+  Superstar: STR# 158 "Fame", the fame title, "N/A"; a child: STR# 154 entry 0x11 twice, cJob::GetGrade of
+  person data 57, the school job's salary), bio, signed GUID, personality and skills / 100, zodiac, fame
+  score (person data 80), wand tokens).
+- MakeWebPagesFromTemplate: familymemberX.html -> familymember<n>.html (X = n); scrapbookX.html ->
+  scrapbook1.html (captions: GetTruncatedScrapbookCaption); scrapbook_popupX.html -> scrapbook_popup<n>.html
+  per album page (previous / next wrapping, the description with `<br>`, the photo and its thumbnail copied to
+  FamilyGFX/scrapbook<n>.jpg / scrapbook<n>_thumb.jpg), one scrapbook_popup1.html without pages; familyX.html ->
+  family<n>.html (neighborhood only); others under their own name. MakeWebPageX is the original's byte
+  tokenizer (four carets, [0-9A-Za-z^_], the four closing carets counted down, the stopping character kept).
+  Values are written cp1252.
+- MakePublishingInfo: `<neighborhood>/Export/<base>.pub` = simpleEncode (running XOR from 0xbf, then the
+  little-endian product checksum) of the ini text; GameVersion "1.91" (Sims.exe's FileVersion; cRZVersion is
+  not ported), GameEdition app +0x66, [FamilyInfo] tags 0..19 and the members' tags without carets,
+  [FamilyDescription] WebPages, the body string sections (2 skin, 3 head, 0x12 / 0x13 hands; texture / suit),
+  [floors] / [walls] (FLRm / WALm usage maps of the saved house file), [objects] (selectors of source 2 / 3
+  used by the lot, folder order, short file names, lowercase as the Windows build writes them). Checked against
+  the game's Fez_7.pub: same text but the two live scores and the [objects] order (our ObjectFolder index order
+  is not the Windows build's).
+- Pictures (SaveGimex = the browser's JPEG encoder, `convertToBlob("image/jpeg", quality / 100)`: same size and
+  quality setting, other bytes):
+  - family<n>_face.jpg: PersonFinder::GetWebPictureBuffer (BMP_ 2007, or rendered), quality 100;
+  - family<n>_full.jpg: SAnimator::MakePersonBodyImage (200 x 440 white area, the day clothes and open hands,
+    a2o-idle-transition-handships-armscrossed at 0 / d2o-napfloor-sit-loop or k2o-sit-howl-start at 0.01,
+    Scale(9 / (1 << (zoom - 1))) * RotY * Translation(unproject(100, 396, 32767)), ShrinkWrap, re-centered with
+    the feet 40 pixels up, ScaleBitmap to 100 x 220), quality 100;
+  - faminfo_<n>_<GUID>: empty;
+  - house-*.jpg: HouseViewer::MakeWebPageThumbnail (MakeThumbnail 432 x 288 at f 0.25 / 0.5, daytime,
+    terrain detail 2, level 0 = level 2 with the roof, floors with the walls cut away; ShrinkWrap; the thumb on
+    its crop of kNghBkgnd 6308 x 2 (Unleashed: THMB 1024 offsets) or 5308; ApplyLogo kWebcamLogo /
+    kWebcamLogoAlpha 3 pixels from the bottom right), quality 90.
+- Not ported: cScrapbook::MakeCurThumb (a page without a thumbnail file gets none), SetAttribute, empty folders.
 
 ### The game at "/" (task: game.html as the main entry)
 - `client/vite.config.ts`: a `game-as-root` plugin rewrites `/` and `/index.html` (query kept) to
