@@ -29,7 +29,7 @@ function gameWithQuery(): Plugin {
 }
 
 /** Files of public/ the service worker precaches with the bundles. */
-const PUBLIC_SHELL = ["/manifest.webmanifest", "/icons/icon.svg", "/icons/icon-192.png", "/icons/icon-512.png"];
+const PUBLIC_SHELL = ["/manifest.webmanifest", "/webpages-compat.js", "/icons/icon.svg", "/icons/icon-192.png", "/icons/icon-512.png"];
 
 /**
  * Builds the service worker (src/sw/sw.ts) to /sw.js, with the list of the
@@ -73,6 +73,7 @@ export default defineConfig({
     proxy: {
       "/api": "http://127.0.0.1:3000",
       "/assets": "http://127.0.0.1:3000",
+      "/webpages": "http://127.0.0.1:3000",
     },
   },
   build: {

@@ -8,6 +8,7 @@ import { registerClientRoute } from "./routes/client.js";
 import { registerManifestRoute } from "./routes/manifest.js";
 import { registerRangesRoute } from "./routes/ranges.js";
 import { overlayDirOf, overlayRewrite, registerUserDataRoute } from "./routes/userdata.js";
+import { registerWebPagesRoute } from "./routes/webpages.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -105,6 +106,8 @@ if (!serverGameFiles) {
   await registerManifestRoute(app, { assetsDir });
   await registerRangesRoute(app, { assetsDir });
 }
+// The game's web pages with their compatibility script (in the browsers' saves when SAVES=client: the service worker).
+if (serverGameFiles) await registerWebPagesRoute(app, serverSaves ? { assetsDir, overlayDir } : { assetsDir });
 app.log.info(`game files: ${serverGameFiles ? `served from ${assetsDir}` : "imported by each browser (none served)"}`);
 if (serverGameFiles && (await readdir(resolve(assetsDir, "Sims")).catch(() => [])).length === 0) {
   app.log.warn(`no game folder in ${resolve(assetsDir, "Sims")}: link or mount the install of The Sims there (SIMS_DIR with Docker), or set GAME_FILES=client`);

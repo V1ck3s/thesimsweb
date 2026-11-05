@@ -27,8 +27,8 @@ export async function registerClientRoute(app: FastifyInstance, { clientDir }: {
     index: false,
     cacheControl: false,
     etag: true,
-    // Do not shadow /api/*, /assets/*, /overlay/* (registered elsewhere).
-    allowedPath: (path) => !/^\/(api|assets|overlay)\//.test(path),
+    // Do not shadow /api/*, /assets/*, /overlay/*, /webpages/* (registered elsewhere).
+    allowedPath: (path) => !/^\/(api|assets|overlay|webpages)\//.test(path),
     setHeaders: (res, path) => {
       const immutable = /[\\/]static[\\/]/.test(path) && !path.endsWith(".map");
       res.setHeader("cache-control", immutable ? "public, max-age=31536000, immutable" : "no-cache");

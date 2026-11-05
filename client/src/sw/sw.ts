@@ -17,6 +17,11 @@
  *   Offline, a Range request or a POST /api/ranges batch over a kept file is
  *   answered from it.
  *
+ * The game's web pages (/webpages/<path>, server/src/routes/webpages.ts):
+ * from this browser's saves when it keeps them (SAVES=client: the pages the
+ * game wrote are there), else from the server; HTML pages get the
+ * compatibility script (/webpages-compat.js) at the top, as the server does.
+ *
  * Range reads of the game folder (FAR archives) are not touched: the page
  * keeps what it read in IndexedDB (engine/idb.ts). What was never read needs
  * the server (a lot never visited, catalog pages never opened, music tracks,
@@ -156,6 +161,69 @@ async function ranges(request: Request): Promise<Response> {
   }
 }
 
+// --- The game's web pages ----------------------------------------------------------
+
+/** The saves database of engine/saves.ts (same name, version and store; keys are lower-cased paths). */
+function openSaves(): Promise<IDBDatabase> {
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open("thesimsweb-saves", 1);
+    req.onupgradeneeded = () => {
+      if (!req.result.objectStoreNames.contains("files")) req.result.createObjectStore("files");
+    };
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error ?? new Error("saves: open failed"));
+  });
+}
+
+async function savedFile(path: string): Promise<Uint8Array | null> {
+  const db = await openSaves();
+  try {
+    return await new Promise((resolve, reject) => {
+      const req = db.transaction("files", "readonly").objectStore("files").get(path.toLowerCase());
+      req.onsuccess = () => resolve((req.result as { bytes: Uint8Array } | undefined)?.bytes ?? null);
+      req.onerror = () => reject(req.error ?? new Error("saves: read failed"));
+    });
+  } finally {
+    db.close();
+  }
+}
+
+const WEB_TYPES: Record<string, string> = {
+  htm: "text/html; charset=windows-1252",
+  html: "text/html; charset=windows-1252",
+  css: "text/css; charset=windows-1252",
+  jpg: "image/jpeg",
+  jpeg: "image/jpeg",
+  gif: "image/gif",
+  png: "image/png",
+  bmp: "image/bmp",
+  js: "text/javascript; charset=windows-1252",
+};
+
+/** The page's bytes with the compatibility script right after `<head>` (server/src/routes/webpages.ts injectCompat). */
+function injectCompat(bytes: Uint8Array): Uint8Array {
+  let text = "";
+  for (let i = 0; i < bytes.length; i += 0x8000) text += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+  const m = /<head[^>]*>/i.exec(text);
+  const at = m ? m.index + m[0].length : 0;
+  const tag = new TextEncoder().encode('<script src="/webpages-compat.js"></script>');
+  const out = new Uint8Array(bytes.length + tag.length);
+  out.set(bytes.subarray(0, at), 0);
+  out.set(tag, at);
+  out.set(bytes.subarray(at), at + tag.length);
+  return out;
+}
+
+async function webPage(request: Request, path: string): Promise<Response> {
+  const bytes = /^Sims\/UserData\d*\/Web Pages\//i.test(path) ? await savedFile(path).catch(() => null) : null;
+  if (!bytes) return fetch(request);
+  const ext = path.slice(path.lastIndexOf(".") + 1).toLowerCase();
+  const html = ext === "htm" || ext === "html";
+  return new Response((html ? injectCompat(bytes) : bytes) as Uint8Array<ArrayBuffer>, {
+    headers: { "content-type": WEB_TYPES[ext] ?? "application/octet-stream", "cache-control": "no-cache" },
+  });
+}
+
 self.addEventListener("fetch", (event) => {
   const request = event.request;
   const url = new URL(request.url);
@@ -168,6 +236,10 @@ self.addEventListener("fetch", (event) => {
   }
   if (request.method !== "GET") return;
 
+  if (path.startsWith("/webpages/")) {
+    event.respondWith(webPage(request, decodeURIComponent(path.slice("/webpages/".length))));
+    return;
+  }
   if (request.mode === "navigate") {
     // "/" with a query string starts the game (bookmarks: /?house=1), as on the server.
     if (path === "/game.html" || (path === "/" && url.search)) event.respondWith(networkFirstPage(request, "/game.html"));
