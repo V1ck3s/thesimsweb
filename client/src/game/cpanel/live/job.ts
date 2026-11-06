@@ -10,6 +10,10 @@
  * skill level; the summary buttons stack from (3, 4): kJobIconGeneric (4
  * columns, 22 career rows) with the title under it, then kSalaryBtnBMP,
  * kPerformanceBtnBMP and kJobFriendSmileyBMP lines, each one font line high.
+ * A double-byte UI (CPState::IsDoubleByteUI) takes the kHouseSubpanelBars
+ * bars, the per-language skill label table and the double-byte bar and
+ * summary tables of Init (the 150 px high page), and draws the title at
+ * (0xd, 8).
  * Strings: STR# 136 "JobSubpanelLabels" of Live.iff; career names and the
  * performance words from ExpansionShared/work.iff (see careers.ts).
  *
@@ -20,7 +24,7 @@
 import { personGender, type PersonInfo } from "../../cpstate.js";
 import type { GameContext } from "../../context.js";
 import type { FfnFont } from "../../res/ffn.js";
-import { LANG_FRENCH, UI_LANGUAGE } from "../../res/uires.js";
+import { DOUBLE_BYTE_UI, LANG_FRENCH, UI_LANGUAGE } from "../../res/uires.js";
 import { getOptionsMgr } from "../../optionsmgr.js";
 import { ASYNC_ON_ENTER, BTN_TOGGLE, CMD_ASYNC_EXIT } from "../../ui/btn.js";
 import { rgb, UI_FONT_COLOR } from "../../ui/syscolors.js";
@@ -72,18 +76,46 @@ const SKILL_REQ: Record<number, JobReq> = {
   17: JobReq.Body,
   18: JobReq.Logic,
 };
-/** lbl_105BC5B0 / lbl_105BC5B8 */
-const SKILL_LABEL_X = 0x5d;
-const SKILL_LABEL_Y = [6, 0x15, 0x24, 0x33, 0x42, 0x51];
+/**
+ * lbl_105BC5B0: the skill labels' top-left. A double-byte UI copies the
+ * language's table over it (Init): lbl_105BC5B4 Korean (0x14), lbl_105BC5AC
+ * Thai (0x13), lbl_105BC5A8 Traditional Chinese (0x12), lbl_105BC5A4
+ * Japanese (0x0f), lbl_105BC5A0 otherwise (Simplified Chinese).
+ */
+const SKILL_LABEL_POS: readonly (readonly [number, number])[] = ((): (readonly [number, number])[] => {
+  const col = (x: number, ys: number[]): [number, number][] => ys.map((y) => [x, y]);
+  if (!DOUBLE_BYTE_UI) return col(0x5d, [6, 0x15, 0x24, 0x33, 0x42, 0x51]);
+  switch (UI_LANGUAGE) {
+    case 0x14:
+      return col(0x5d, [0x15, 0x29, 0x3d, 0x51, 0x65, 0x79]);
+    case 0x13:
+      return col(0x5b, [0xf, 0x23, 0x37, 0x4b, 0x5f, 0x73]);
+    case 0x12:
+      return col(0x5d, [0x11, 0x25, 0x39, 0x4d, 0x61, 0x75]);
+    case 0x0f:
+      return col(0x5d, [0x14, 0x28, 0x3c, 0x50, 0x64, 0x78]);
+    default:
+      return col(0x5d, [0xf, 0x23, 0x37, 0x4b, 0x5f, 0x73]);
+  }
+})();
+/** lbl_105BC5B8: the bars (lbl_105BC59C copied over it in a double-byte UI). */
 const BAR_X = 0x9d;
-const BAR_Y = [7, 0x16, 0x25, 0x34, 0x43, 0x52];
-/** lbl_105BC594 positions, lbl_105BC58C sizes, lbl_105BC580 font (0 = 8 pt, 1 = 7 pt). */
-const SUMMARY_POS = [
-  [3, 4], [3, 0x2d], [3, 0x41], [3, 0x55],
-] as const;
-const SUMMARY_SIZE = [
-  [0x5f, 0x2d], [0x5f, 0xf], [0x5f, 0xf], [0x5f, 0xf],
-] as const;
+const BAR_Y = DOUBLE_BYTE_UI ? [0x13, 0x27, 0x3b, 0x4f, 0x63, 0x77] : [7, 0x16, 0x25, 0x34, 0x43, 0x52];
+/**
+ * lbl_105BC594 positions, lbl_105BC58C sizes, lbl_105BC580 font (0 = 8 pt,
+ * 1 = 7 pt). A double-byte UI copies lbl_105BC588 (lbl_105BC598 in Thai) and
+ * lbl_105BC590 over the first two.
+ */
+const SUMMARY_POS = !DOUBLE_BYTE_UI
+  ? ([[3, 4], [3, 0x2d], [3, 0x41], [3, 0x55]] as const)
+  : UI_LANGUAGE === 0x13
+    ? ([[10, 0xf], [10, 0x41], [10, 0x5f], [10, 0x73]] as const)
+    : ([[10, 0x19], [10, 0x41], [10, 0x5f], [10, 0x73]] as const);
+const SUMMARY_SIZE = DOUBLE_BYTE_UI
+  ? ([[0x5f, 100], [0x5f, 0x14], [0x5f, 0x14], [0x5f, 0x14]] as const)
+  : ([[0x5f, 0x2d], [0x5f, 0xf], [0x5f, 0xf], [0x5f, 0xf]] as const);
+/** cWinPeople::DrawSubpanelTitle's position in TSPaint. */
+const TITLE_POS = DOUBLE_BYTE_UI ? { x: 0xd, y: 8 } : { x: 0x23, y: 3 };
 const SUMMARY_FONT = [1, 0, 1, 1];
 /** lbl_105BC584 */
 const SUMMARY_IMAGE = ["kJobIconGeneric", "kSalaryBtnBMP", "kPerformanceBtnBMP", "kJobFriendSmileyBMP"];
@@ -209,11 +241,11 @@ export class WinSubpanelJob extends TSWin {
   override async init(): Promise<boolean> {
     const { ctx } = this;
     const [bars, barsOff, font8, font7, titleFont, careers, ...images] = await Promise.all([
-      ctx.res.image("kJobSubpanelBars"),
-      ctx.res.image("kJobSubBarsOff"),
+      ctx.res.image(DOUBLE_BYTE_UI ? "kHouseSubpanelBars" : "kJobSubpanelBars"),
+      ctx.res.image(DOUBLE_BYTE_UI ? "kHouseSubBarsOff" : "kJobSubBarsOff"),
       ctx.fonts.acquire(8),
       ctx.fonts.acquire(7),
-      ctx.fonts.acquire(UI_LANGUAGE === LANG_FRENCH ? 10 : 11),
+      ctx.fonts.acquire(UI_LANGUAGE === LANG_FRENCH && !DOUBLE_BYTE_UI ? 10 : 11),
       loadCareers(ctx.strings),
       ...SUMMARY_IMAGE.map((id) => ctx.res.image(id)),
     ]);
@@ -231,7 +263,8 @@ export class WinSubpanelJob extends TSWin {
     for (let i = 0; i < 6; i++) {
       const btn = new FlashyBtn();
       btn.caption = labels[i + 1] ?? "";
-      btn.setArea(SKILL_LABEL_X, SKILL_LABEL_Y[i]!, SKILL_LABEL_X + 0x3e, SKILL_LABEL_Y[i]! + 0x10);
+      const [lx, ly] = SKILL_LABEL_POS[i]!;
+      btn.setArea(lx, ly, lx + 0x3e, ly + 0x10);
       btn.mode = BTN_TOGGLE;
       btn.textRect = { left: 0, top: 0, right: 0x3e, bottom: 0x10 };
       btn.textAlignment = 2;
@@ -503,7 +536,7 @@ export class WinSubpanelJob extends TSWin {
         }
       });
     }
-    this.titleFont?.drawText(g.ctx, this.title, g.ox + 0x23, g.oy + 3, UI_FONT_COLOR);
+    this.titleFont?.drawText(g.ctx, this.title, g.ox + TITLE_POS.x, g.oy + TITLE_POS.y, UI_FONT_COLOR);
     this.updateSummary(p);
     if (p && bars) {
       SKILLS.forEach((skill, i) => {

@@ -17,6 +17,11 @@
  * 11 level titles, the friends format, 11 level popups, the friends popup)
  * and STR# 136 / 137 of Live.iff (skill labels and popups).
  *
+ * A double-byte UI (CPState::IsDoubleByteUI) takes the kHouseSubpanelBars
+ * skill bars, a per-language label table (lbl_105BCC7C..lbl_105BCC90) and
+ * the double-byte bar, friends and title positions (lbl_105BCCA4,
+ * lbl_105BCC9C, lbl_105BCC94, lbl_105BCCB4) for the 150 px high page.
+ *
  * Person data (PersonFinder::GetData): skills 10..18, family 0x3d, star
  * points 0x50, fame level 0x51.
  */
@@ -24,7 +29,7 @@
 import type { GameContext } from "../../context.js";
 import type { PersonInfo } from "../../cpstate.js";
 import type { FfnFont } from "../../res/ffn.js";
-import { LANG_FRENCH, UI_LANGUAGE } from "../../res/uires.js";
+import { DOUBLE_BYTE_UI, LANG_FRENCH, UI_LANGUAGE } from "../../res/uires.js";
 import { getOptionsMgr } from "../../optionsmgr.js";
 import { loadUIStringSet } from "../../sim/behavior.js";
 import { loadFameScoring, type FameScoring } from "../../sim/fametrack.js";
@@ -55,15 +60,37 @@ const LEVELS = 11;
 
 /** lbl_105BCCA8: person data of each skill row (cooking, mechanical, charisma, body, logic, creativity). */
 const SKILLS = [10, 12, 11, 17, 18, 15];
-/** lbl_105BCC78 (single-byte UI): skill labels, then the level label. */
-const LABEL_POS = [[145, 6], [145, 21], [145, 36], [145, 51], [145, 66], [145, 81], [3, 45]] as const;
-/** lbl_105BCCAC: skill bars, then the fame bar. */
-const BAR_POS = [[210, 7], [210, 22], [210, 37], [210, 52], [210, 67], [210, 82], [3, 30]] as const;
-/** lbl_105BCCA0 / lbl_105BCC98: the famous friends line. */
-const FRIENDS_POS = [3, 75] as const;
-const FRIENDS_SIZE = [120, 15] as const;
-/** lbl_105BCCB0: the title. */
-const TITLE_POS = [5, 0] as const;
+/**
+ * lbl_105BCC78 (single-byte UI): skill labels, then the level label. A
+ * double-byte UI moves the labels to the language's table (Init):
+ * lbl_105BCC84 Japanese (0x0f), lbl_105BCC8C Simplified Chinese (0x11),
+ * lbl_105BCC90 Traditional Chinese (0x12), lbl_105BCC88 Thai (0x13),
+ * lbl_105BCC80 Korean (0x14).
+ */
+const LABEL_POS: readonly (readonly [number, number])[] = ((): (readonly [number, number])[] => {
+  const table = (ys: number[], last: [number, number]): [number, number][] => [...ys.map((y): [number, number] => [145, y]), last];
+  if (!DOUBLE_BYTE_UI) return table([6, 21, 36, 51, 66, 81], [3, 45]);
+  switch (UI_LANGUAGE) {
+    case 0x0f:
+      return table([0x14, 0x28, 0x3c, 0x50, 0x64, 0x78], [10, 0x4b]);
+    case 0x11:
+    case 0x14:
+      return table([0x15, 0x29, 0x3d, 0x51, 0x65, 0x79], [10, 0x4b]);
+    case 0x12:
+      return table([0x11, 0x25, 0x39, 0x4d, 0x61, 0x75], [10, 0x4b]);
+    default:
+      return table([0xf, 0x23, 0x37, 0x4b, 0x5f, 0x73], [10, 0x4b]);
+  }
+})();
+/** lbl_105BCCAC: skill bars, then the fame bar (lbl_105BCCA4 copied over it in a double-byte UI). */
+const BAR_POS = DOUBLE_BYTE_UI
+  ? ([[210, 0x13], [210, 0x27], [210, 0x3b], [210, 0x4f], [210, 0x63], [210, 0x77], [10, 30]] as const)
+  : ([[210, 7], [210, 22], [210, 37], [210, 52], [210, 67], [210, 82], [3, 30]] as const);
+/** lbl_105BCCA0 / lbl_105BCC98: the famous friends line (lbl_105BCC9C / lbl_105BCC94 double-byte). */
+const FRIENDS_POS = DOUBLE_BYTE_UI ? ([10, 0x69] as const) : ([3, 75] as const);
+const FRIENDS_SIZE = DOUBLE_BYTE_UI ? ([120, 20] as const) : ([120, 15] as const);
+/** lbl_105BCCB0: the title (lbl_105BCCB4 double-byte). */
+const TITLE_POS = DOUBLE_BYTE_UI ? ([10, 5] as const) : ([5, 0] as const);
 /**
  * lbl_105BCCB8 (sinit): the level popup's two panes by fame level. 0x11 /
  * 0x12 / 0x13 (first pane only) are kFameRunway / kFameMusicVideo /
@@ -139,8 +166,8 @@ export class WinSubpanelFame extends TSWin {
   override async init(): Promise<boolean> {
     const { ctx } = this;
     const [bars, barsOff, fameBars, fameBarsOff, runway, movieSet, musicVideo, smiley, font7, titleFont, scoring, fameFile] = await Promise.all([
-      ctx.res.image("kJobSubpanelBars"),
-      ctx.res.image("kJobSubBarsOff"),
+      ctx.res.image(DOUBLE_BYTE_UI ? "kHouseSubpanelBars" : "kJobSubpanelBars"),
+      ctx.res.image(DOUBLE_BYTE_UI ? "kHouseSubBarsOff" : "kJobSubBarsOff"),
       ctx.res.image("kFameSubpanelBars"),
       ctx.res.image("kFameSubBarsOff"),
       ctx.res.image("kFameRunway"),
@@ -148,7 +175,7 @@ export class WinSubpanelFame extends TSWin {
       ctx.res.image("kFameMusicVideo"),
       ctx.res.image("kFameFriendSmileyBMP"),
       ctx.fonts.acquire(7),
-      ctx.fonts.acquire(UI_LANGUAGE === LANG_FRENCH ? 10 : 11),
+      ctx.fonts.acquire(UI_LANGUAGE === LANG_FRENCH && !DOUBLE_BYTE_UI ? 10 : 11),
       loadFameScoring(),
       ResFile.open("GameData/fame.iff").catch(() => null),
     ]);

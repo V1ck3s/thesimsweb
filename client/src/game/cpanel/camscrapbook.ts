@@ -41,6 +41,7 @@ import { TSWinTextEdit2 } from "../ui/textedit.js";
 import { Gfx, type TSWin, WF_NO_FOCUS } from "../ui/tswin.js";
 import { winMgr } from "../ui/winmgr.js";
 import { UI_LANGUAGE } from "../res/uires.js";
+import { gameTextDecoder } from "../res/codepage.js";
 
 /** lbl_105BB85C: the album folder under the neighborhood. */
 const ALBUM_DIR = "PhotoAlbum/";
@@ -320,7 +321,7 @@ export class Scrapbook {
     p.description = "";
     const text = await assetFetch(`Sims/${p.text}`, { cache: "no-store" }).catch(() => null);
     if (!text?.ok) return false;
-    p.description = new TextDecoder("windows-1252").decode(await text.arrayBuffer());
+    p.description = gameTextDecoder.decode(await text.arrayBuffer());
     const img = await assetFetch(`Sims/${p.file}`, { cache: "no-store" }).catch(() => null);
     p.photo = img?.ok ? await createImageBitmap(await img.blob()).catch(() => null) : null;
     if (!p.photo) return false;

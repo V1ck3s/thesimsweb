@@ -46,7 +46,11 @@
  *    0x17 instead; other characters below 0x20 are ignored; with
  *    SetFilterFileChars the characters of lbl_105BD108 are refused with the
  *    +400 sound; a refused insertion (capacity, read only) plays the +0x18c
- *    sound (both "UI_Error" unless the owner sets them);
+ *    sound (both "UI_Error" unless the owner sets them); in the Korean and
+ *    Simplified Chinese games a character the double-byte font cannot draw
+ *    is entered as "-" (IsUnsupportedDBLeadByte, res/dbfont.ts). The
+ *    original collects a double-byte character's two WM_CHAR bytes before
+ *    inserting it; the browser hands whole characters;
  *  - undo / redo: cTEState snapshots (text, cursor, scroll, top line,
  *    selection) on two stacks. Inserting or replacing snapshots first unless
  *    it is one character other than a space typed within 3 s of the last
@@ -72,6 +76,7 @@
  * Not ported: the double-byte font paths.
  */
 
+import { dbInputChar } from "../res/dbfont.js";
 import type { FfnFont } from "../res/ffn.js";
 import { TSWinBtn } from "./btn.js";
 import { SYS_SCROLLBAR, TSWinCtrlMgr } from "./ctrlmgr.js";
@@ -934,6 +939,7 @@ export class TSWinTextEdit2 extends TSWin {
       return;
     }
     if (ch < " " && ch !== "\n") return;
+    ch = dbInputChar(ch);
     if (this.filterFileChars && FILE_CHARS.includes(ch)) {
       this.playSound(this.filterSound);
       return;

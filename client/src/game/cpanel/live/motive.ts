@@ -14,6 +14,11 @@
  *    equal ends, so the color switches at once;
  *  - a 1 px black divider ends the green part when the red part is wider than 1 px.
  *
+ * Double-byte UI (CPState::IsDoubleByteUI): the button is 25 px high (30 in
+ * Thai), the bar 6 px above its bottom (lbl_105BC444's y, Init), and the
+ * caption is drawn in (0, top, w, h - 5) with top 2 in Korean (0x14), 3 in
+ * Japanese (0x0f), else 0 (TSPaint).
+ *
  * The popup client (+0x198) holds the need's name and description; cWinPeople
  * opens it on a click or, with quick tips, on hover.
  *
@@ -30,6 +35,7 @@
 import type { GameContext } from "../../context.js";
 import type { FfnFont } from "../../res/ffn.js";
 import { ALIGN_CENTER } from "../../res/ffn.js";
+import { DOUBLE_BYTE_UI, UI_LANGUAGE } from "../../res/uires.js";
 import { BTN_TOGGLE_ON_DOWN, TSWinBtn } from "../../ui/btn.js";
 import { hiliteColor, rgb } from "../../ui/syscolors.js";
 import type { Gfx } from "../../ui/tswin.js";
@@ -37,8 +43,11 @@ import { popupObject, WinLivePopupClient } from "../livepopup.js";
 import { ObjectFolder } from "../../world/objectfolder.js";
 import { AverageHistory, WinDeltaMeter } from "./deltameter.js";
 
-/** lbl_105BC444 (sinit WinMotive.cpp): bar top-left in the window. */
+/** lbl_105BC444 (sinit WinMotive.cpp): bar top-left in the window (Init moves it down in a double-byte UI). */
 const BAR_ORIGIN = { x: 20, y: 12 };
+const LANG_JAPANESE = 0x0f;
+const LANG_THAI = 0x13;
+const LANG_KOREAN = 0x14;
 const BAR_W = 60;
 const BAR_H = 5;
 
@@ -55,6 +64,8 @@ export class WinMotive extends TSWinBtn {
   private green = "";
   private red = "";
   private captionFont: FfnFont | null = null;
+  /** lbl_105BC444's y as Init leaves it. */
+  private barY = BAR_ORIGIN.y;
   /** +0x198: the popup client (name, description; this button is its target). */
   readonly client: WinLivePopupClient;
   /** +0x1a8 */
@@ -103,12 +114,17 @@ export class WinMotive extends TSWinBtn {
     this.captionFont = await this.ctx.fonts.acquire(8);
     this.font = this.captionFont;
     this.cols = 4;
-    this.setArea(this.area.left, this.area.top, this.area.left + 100, this.area.top + 0x14);
+    if (!DOUBLE_BYTE_UI) this.setArea(this.area.left, this.area.top, this.area.left + 100, this.area.top + 0x14);
+    else {
+      const h = UI_LANGUAGE === LANG_THAI ? 0x1e : 0x19;
+      this.setArea(this.area.left, this.area.top, this.area.left + 100, this.area.top + h);
+      this.barY = this.getH() - 6;
+    }
     this.mode = BTN_TOGGLE_ON_DOWN;
     this.sendOnDown = true;
     this.meter.setArea(0, 0, this.getW(), this.getH());
     this.childAdd(this.meter);
-    this.meter.setTopLefts({ x: BAR_ORIGIN.x - 0x14, y: BAR_ORIGIN.y }, { x: BAR_ORIGIN.x + 0x3d, y: BAR_ORIGIN.y });
+    this.meter.setTopLefts({ x: BAR_ORIGIN.x - 0x14, y: this.barY }, { x: BAR_ORIGIN.x + 0x3d, y: this.barY });
     return true;
   }
 
@@ -163,13 +179,19 @@ export class WinMotive extends TSWinBtn {
   override tsPaint(g: Gfx): void {
     const font = this.captionFont;
     if (font && this.caption) {
-      const top = Math.trunc((10 - font.height) / 2);
-      const rect = { left: g.ox, top: g.oy + top, right: g.ox + this.getW(), bottom: g.oy + this.getH() };
+      let top = Math.trunc((10 - font.height) / 2);
+      let bottom = this.getH();
+      if (DOUBLE_BYTE_UI) {
+        top = UI_LANGUAGE === LANG_KOREAN ? 2 : UI_LANGUAGE === LANG_JAPANESE ? 3 : 0;
+        bottom -= 5;
+      }
+      const rect = { left: g.ox, top: g.oy + top, right: g.ox + this.getW(), bottom: g.oy + bottom };
       font.drawTextPara(g.ctx, rect, this.caption, ALIGN_CENTER, hiliteColor(this.cols, this.frameColumn()));
     }
     let w = Math.trunc(0.5 + (BAR_W * (this.val + 100)) / 200);
     w = Math.min(BAR_W, Math.max(0, w));
-    const { x, y } = BAR_ORIGIN;
+    const { x } = BAR_ORIGIN;
+    const y = this.barY;
     g.fill(x, y, w, BAR_H, this.green);
     g.fill(x + w, y, BAR_W - w, BAR_H, this.red);
     if (BAR_W - w > 1) g.fill(x + w - 1, y, 1, BAR_H, "#000000");

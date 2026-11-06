@@ -22,6 +22,7 @@
  */
 
 import type { ResFile } from "../world/iffres.js";
+import { gameTextDecoder } from "../res/codepage.js";
 import { UI_LANGUAGE } from "../res/uires.js";
 
 /** BHAV header size and node size (BehaviorTree / BehaviorNode). */
@@ -135,7 +136,20 @@ export function loadConstants(res: ResFile, id: number): Int16Array | null {
   return k;
 }
 
-const cp1252 = new TextDecoder("windows-1252");
+/** The strings are bytes of the game's code page (res/codepage.ts): Windows-1252 for most languages. */
+const cp1252 = gameTextDecoder;
+
+/** b[start, end) in the game's code page; short ASCII runs skip TextDecoder (same result, much cheaper per call). */
+function decodeCp1252(b: Uint8Array, start: number, end: number): string {
+  if (end - start > 256) return cp1252.decode(b.subarray(start, end));
+  let t = "";
+  for (let i = start; i < end; i++) {
+    const c = b[i]!;
+    if (c >= 0x80) return cp1252.decode(b.subarray(start, end));
+    t += String.fromCharCode(c);
+  }
+  return t;
+}
 
 /**
  * StringSetBase::Load + GetString for STR# `id`: formats 0 (Pascal), -1
@@ -191,9 +205,14 @@ export function parseStringSet(b: Uint8Array, language = -1): string[] {
   const cstr = (): string => {
     const end = b.indexOf(0, p);
     const e = end < 0 ? b.length : end;
-    const t = cp1252.decode(b.subarray(p, e));
+    const t = decodeCp1252(b, p, e);
     p = e + 1;
     return t;
+  };
+  // A string that is not kept (comments, other languages) is skipped without decoding.
+  const skip = (): void => {
+    const end = b.indexOf(0, p);
+    p = end < 0 ? b.length : end + 1;
   };
   const out: string[] = [];
   let lang = -1;
@@ -215,19 +234,19 @@ export function parseStringSet(b: Uint8Array, language = -1): string[] {
   for (let i = 0; i < n && p < b.length; i++) {
     if (format === 0) {
       const len = b[p]!;
-      out.push(cp1252.decode(b.subarray(p + 1, p + 1 + len)));
+      out.push(decodeCp1252(b, p + 1, Math.min(b.length, p + 1 + len)));
       p += 1 + len;
     } else if (format === -1) {
       out.push(cstr());
     } else if (format === -2) {
       out.push(cstr());
-      cstr();
+      skip();
     } else if (format === -3) {
       const code = b[p++]!;
-      const t = cstr();
-      cstr();
       if (lang === -1) lang = code;
-      if (code === lang) out.push(t);
+      if (code === lang) out.push(cstr());
+      else skip();
+      skip();
     } else {
       break;
     }

@@ -13,12 +13,18 @@
  *  - bars at (157, 6/24/42/60/79): kHouseSubBarsOff, then kHouseSubpanelBars
  *    clipped to 4 px per 10 points (cWinSubpanelHouse::TSPaint);
  *  - title in the 11 pt font at (5, 0) (cWinPeople::DrawSubpanelTitle).
+ *
+ * A double-byte UI (CPState::IsDoubleByteUI) copies its tables over these
+ * (Init): positions lbl_105BC568 in Traditional Chinese (0x12), lbl_105BC558
+ * in Japanese (0x0f), lbl_105BC554 in Thai (0x13), else lbl_105BC54C; sizes
+ * lbl_105BC550 in Thai, else lbl_105BC560; bars lbl_105BC548. The title is
+ * drawn at (0xd, 8) (TSPaint).
  */
 
 import type { HouseStats } from "../../cpstate.js";
 import type { GameContext } from "../../context.js";
 import type { FfnFont } from "../../res/ffn.js";
-import { LANG_FRENCH, UI_LANGUAGE } from "../../res/uires.js";
+import { DOUBLE_BYTE_UI, LANG_FRENCH, UI_LANGUAGE } from "../../res/uires.js";
 import { getOptionsMgr } from "../../optionsmgr.js";
 import { ASYNC_ON_ENTER, BTN_TOGGLE, CMD_ASYNC_EXIT } from "../../ui/btn.js";
 import { UI_FONT_COLOR } from "../../ui/syscolors.js";
@@ -32,19 +38,31 @@ const STR_LABELS = 0x85;
 const STR_POPUP = 0x87;
 const STR_LOT_SIZES = 0x8a;
 
-/** lbl_105BC55C / lbl_105BC564 / lbl_105BC578 (WinSubpanelHouse.cpp static init). */
-const BTN_SIZE = [
-  [61, 16], [61, 16], [61, 16], [61, 16], [61, 16],
-  [80, 16], [80, 16], [80, 16], [80, 16],
-] as const;
-const BTN_POS = [
-  [85, 7], [85, 25], [85, 43], [85, 61], [85, 79],
-  [0, 18], [0, 38], [0, 58], [0, 78],
-] as const;
-const BAR_POS = [
-  [157, 6], [157, 24], [157, 42], [157, 60], [157, 79],
-] as const;
-const TITLE_POS = { x: 5, y: 0 };
+type Pt = readonly [number, number];
+/** Five label points at x 85, then four line points at x `lineX`. */
+function table(labelYs: number[], lineX: number, lineYs: number[]): Pt[] {
+  return [...labelYs.map((y): Pt => [85, y]), ...lineYs.map((y): Pt => [lineX, y])];
+}
+const LANG_JAPANESE = 0x0f;
+const LANG_TRADITIONAL_CHINESE = 0x12;
+const LANG_THAI = 0x13;
+/** lbl_105BC55C / lbl_105BC564 / lbl_105BC578 (WinSubpanelHouse.cpp static init), double-byte tables above. */
+const BTN_SIZE: readonly Pt[] = !DOUBLE_BYTE_UI
+  ? [[61, 16], [61, 16], [61, 16], [61, 16], [61, 16], [80, 16], [80, 16], [80, 16], [80, 16]]
+  : UI_LANGUAGE === LANG_THAI
+    ? [[62, 20], [62, 20], [62, 20], [62, 20], [62, 20], [70, 20], [70, 20], [70, 20], [70, 20]]
+    : [[62, 20], [62, 20], [62, 20], [62, 20], [62, 20], [80, 20], [80, 20], [80, 20], [80, 20]];
+const BTN_POS: readonly Pt[] = !DOUBLE_BYTE_UI
+  ? table([7, 25, 43, 61, 79], 0, [18, 38, 58, 78])
+  : UI_LANGUAGE === LANG_TRADITIONAL_CHINESE
+    ? table([0x10, 0x29, 0x42, 0x5b, 0x74], 0x1c, [0x22, 0x3b, 0x54, 0x6d])
+    : UI_LANGUAGE === LANG_JAPANESE
+      ? table([0x12, 0x2b, 0x44, 0x5d, 0x76], 0xe, [0x24, 0x3d, 0x56, 0x6f])
+      : UI_LANGUAGE === LANG_THAI
+        ? table([0xb, 0x24, 0x3d, 0x56, 0x6f], 0, [0x22, 0x3b, 0x54, 0x6d])
+        : table([0x10, 0x29, 0x42, 0x5b, 0x74], 0xe, [0x22, 0x3b, 0x54, 0x6d]);
+const BAR_POS: readonly Pt[] = (DOUBLE_BYTE_UI ? [0x11, 0x2a, 0x43, 0x5c, 0x75] : [6, 24, 42, 60, 79]).map((y): Pt => [157, y]);
+const TITLE_POS = DOUBLE_BYTE_UI ? { x: 0xd, y: 8 } : { x: 5, y: 0 };
 
 /** HouseStats::GetSquareFeet is converted when the language is metric (float 0x3DBE5DF3). */
 const SQUARE_METERS_PER_FOOT = 0.09295263141393661;

@@ -14,7 +14,7 @@
  */
 
 import { fetchManifest, readAssetFile, readFarEntry } from "../../engine/assets.js";
-import { readLanguage } from "../../engine/language.js";
+import { isDoubleByteUI, readLanguage } from "../../engine/language.js";
 import { decodeImage, type RgbaImage } from "./bmp.js";
 
 const ROOT = "Sims/UIGraphics/";
@@ -25,6 +25,8 @@ export const LANG_DEFAULT = 0;
 export const LANG_FRENCH = 3;
 /** cSimsApp +100: the game's language, chosen on the landing page (engine/language.ts), read once at startup. */
 export const UI_LANGUAGE: number = readLanguage();
+/** CPState::IsDoubleByteUI for the game's language: the control panel's double-byte layouts. */
+export const DOUBLE_BYTE_UI: boolean = isDoubleByteUI(UI_LANGUAGE);
 
 interface RtEntry {
   kind: string;
@@ -101,20 +103,28 @@ export class UIRes {
 
   private readonly ids = new WeakMap<ImageBitmap, number>();
 
-  /** The decoded pixels of a resource id, unkeyed (a TGA's own alpha kept: the Compose2 masks). */
+  /**
+   * The decoded pixels of a resource id, unkeyed (a TGA's own alpha kept: the
+   * Compose2 masks) and a TGA's colours as stored (premultiplied: GIMEXFactory
+   * with its flag clear, as for the Magic Town fog; see gimexUnpremultiply).
+   */
   async rgba(id: number): Promise<RgbaImage> {
     const p = this.path(id);
     if (!p) throw new Error(`no UI bitmap for id ${id}`);
     return decodeImage(await this.readBytes(p), p);
   }
 
-  /** Bitmap by its RT-style path ("CPanel/Buttons/ScrollLeft.bmp"). */
+  /**
+   * Bitmap by its RT-style path ("CPanel/Buttons/ScrollLeft.bmp"). A TGA's
+   * colours are divided back by its alpha (GIMEXFactory's flag set, as for
+   * every UI TGA but the Magic Town fog).
+   */
   imageByPath(p: string): Promise<ImageBitmap> {
     let cached = this.cache.get(p.toLowerCase());
     if (!cached) {
       cached = (async () => {
         const bytes = await this.readBytes(p);
-        const img = decodeImage(bytes, p, { colorKey: true });
+        const img = decodeImage(bytes, p, { colorKey: true, unpremultiply: true });
         return createImageBitmap(new ImageData(img.data, img.width, img.height));
       })();
       this.cache.set(p.toLowerCase(), cached);

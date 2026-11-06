@@ -4,7 +4,10 @@
  * length (the pad byte may be garbage), booleans as one byte.
  */
 
-const cp1252 = new TextDecoder("windows-1252");
+import { encodeGameText, gameTextDecoder } from "../res/codepage.js";
+
+/** The game's code page (res/codepage.ts; Windows-1252 for the western languages). */
+const cp1252 = gameTextDecoder;
 
 export class ReconReader {
   private readonly view: DataView;
@@ -66,19 +69,9 @@ export class ReconReader {
   }
 }
 
-const cp1252Table = (() => {
-  const t = new Map<string, number>();
-  const dec = new TextDecoder("windows-1252");
-  for (let b = 0; b < 256; b++) t.set(dec.decode(new Uint8Array([b])), b);
-  return t;
-})();
-
-/** Encodes a string as Windows-1252 bytes (unmapped characters become "?"). */
+/** Encodes a string as the game's bytes (res/codepage.ts; unmapped characters become "?"). */
 export function encodeCp1252(s: string): Uint8Array {
-  const out = new Uint8Array(s.length);
-  let i = 0;
-  for (const ch of s) out[i++] = cp1252Table.get(ch) ?? 0x3f;
-  return out.subarray(0, i);
+  return encodeGameText(s);
 }
 
 /** Writer side of ReconBuffer (uncompressed mode), mirror of ReconReader. */

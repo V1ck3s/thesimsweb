@@ -19,6 +19,11 @@
  *    kJobSubpanelBars clipped to 4 px per level (the whole bitmap at 10 or
  *    when it is narrower); then cWinPeople::DrawSubpanelTitle at (0xd, 8)
  *    in font table entry 11;
+ *  - double-byte UI (CPState::IsDoubleByteUI): kHouseSubpanelBars /
+ *    kHouseSubBarsOff, labels at (0x67, 0x2d), (0x67, 0x41), (0x67, 0x55)
+ *    (the per-language tables lbl_105BCC4C..lbl_105BCC60 are all equal),
+ *    bars at lbl_105BCC48 = (0xcf, 0x33), (0xcf, 0x47), (0xcf, 0x5b); the
+ *    title is at (0xd, 8) either way;
  *  - TSOnCommand: a skill label (command 1, or 0x13, the quick tips
  *    timeout) toggles its popup like the job page; the popup's object panes
  *    (lbl_105BCC6C GUIDs) are all 0.
@@ -27,6 +32,7 @@
 import type { GameContext } from "../../context.js";
 import type { FfnFont } from "../../res/ffn.js";
 import { getOptionsMgr } from "../../optionsmgr.js";
+import { DOUBLE_BYTE_UI } from "../../res/uires.js";
 import { ASYNC_ON_ENTER, BTN_TOGGLE, CMD_ASYNC_EXIT } from "../../ui/btn.js";
 import { UI_FONT_COLOR } from "../../ui/syscolors.js";
 import { Gfx, TSWin } from "../../ui/tswin.js";
@@ -41,20 +47,16 @@ const STR_POPUP = 0xac;
 
 /** lbl_105BCC68: person data of each skill. */
 const SKILLS = [10, 12, 11];
-/** lbl_105BCC5C: the labels' positions. */
-const LABEL_POS = [
-  [0x67, 0x19],
-  [0x67, 0x28],
-  [0x67, 0x37],
-] as const;
+/** lbl_105BCC5C: the labels' positions (double-byte: the language's table, Init). */
+const LABEL_POS = DOUBLE_BYTE_UI
+  ? ([[0x67, 0x2d], [0x67, 0x41], [0x67, 0x55]] as const)
+  : ([[0x67, 0x19], [0x67, 0x28], [0x67, 0x37]] as const);
 const LABEL_W = 0x66;
 const LABEL_H = 0x10;
-/** lbl_105BCC64: the bars' positions. */
-const BAR_POS = [
-  [0xcf, 0x1b],
-  [0xcf, 0x2a],
-  [0xcf, 0x39],
-] as const;
+/** lbl_105BCC64: the bars' positions (lbl_105BCC48 double-byte). */
+const BAR_POS = DOUBLE_BYTE_UI
+  ? ([[0xcf, 0x33], [0xcf, 0x47], [0xcf, 0x5b]] as const)
+  : ([[0xcf, 0x1b], [0xcf, 0x2a], [0xcf, 0x39]] as const);
 /** DrawSubpanelTitle's offset and font table entry. */
 const TITLE_POS = { x: 0xd, y: 8 };
 const TITLE_FONT = 0xb;
@@ -88,8 +90,8 @@ class WinSubpanelPetSkills extends TSWin {
   override async init(): Promise<boolean> {
     const { ctx } = this;
     const [bars, barsOff, titleFont, labelFont] = await Promise.all([
-      ctx.res.image("kJobSubpanelBars"),
-      ctx.res.image("kJobSubBarsOff"),
+      ctx.res.image(DOUBLE_BYTE_UI ? "kHouseSubpanelBars" : "kJobSubpanelBars"),
+      ctx.res.image(DOUBLE_BYTE_UI ? "kHouseSubBarsOff" : "kJobSubBarsOff"),
       ctx.fonts.acquire(TITLE_FONT),
       ctx.fonts.acquire(LABEL_FONT),
     ]);

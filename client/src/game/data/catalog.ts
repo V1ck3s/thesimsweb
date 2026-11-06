@@ -40,6 +40,7 @@ import { engine } from "../../engine/wasm.js";
 import { decodeImage } from "../res/bmp.js";
 import { UI_LANGUAGE } from "../res/uires.js";
 import { ResFile } from "../world/iffres.js";
+import { gameTextDecoder } from "../res/codepage.js";
 
 /** OBJD field indices (in-memory offset in the comment). */
 export const OBJD = {
@@ -73,8 +74,8 @@ export const OBJD = {
 const OBJECT_TYPE_PERSON = 2;
 const CATALOG_ICON_W = 0x4a;
 const CATALOG_ICON_H = 0x25;
-/** Bumped when the cached record layout changes. */
-const CACHE_KEY = "catalog:v2";
+/** Bumped when the cached record layout changes; per language, the records hold its strings. */
+const CACHE_KEY = `catalog:v2:${UI_LANGUAGE}`;
 
 /** Where an object file lives: inside a FAR (far set) or loose under the game folder. */
 export interface ObjectFileRef {
@@ -260,7 +261,7 @@ interface RsmpEntry {
 }
 
 const HEAD_BYTES = 16384;
-const latin1 = new TextDecoder("windows-1252");
+const latin1 = gameTextDecoder;
 
 /** The rsmp chunk (resource map, version 0 or 1), with sizes from the chunk headers' order. */
 function parseRsmp(map: Uint8Array, fileSize: number): RsmpEntry[] {

@@ -185,7 +185,10 @@ export interface ImportInfo {
  * cTSLanguageUtility::GetCharacterSetFromLanguage: the Windows code page of a
  * language. DoesLanguageUseWesternCharacterSet (1..11, 14) gives 1252,
  * DoesLanguageUseEasternCharacterSet (13, 16) 1250, then the jump table
- * lbl_105BCEB8 for 12..20 (mac.bin 0x1062a308), else 1252.
+ * lbl_105BCEB8 for 12..20 (mac.bin 0x1062a308), else 1252. The Windows
+ * build (0x5fe3e1) is the same: its 13 -> 1251 case follows the Eastern test,
+ * which already answered 1250 for Russian, so it is never reached (the only
+ * vtable holding these methods, 0x6768e0, overrides neither test).
  */
 export function getCharacterSetFromLanguage(lang: number): number {
   if (lang - 1 >= 0 && lang - 1 <= 0xd && ((1 << (lang - 1)) & 0x27ff) !== 0) return 1252;

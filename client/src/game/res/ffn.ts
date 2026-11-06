@@ -15,7 +15,17 @@
  * average bearing added once (cTSFont::GetStringWidth).
  *
  * Pixels are 16 coverage levels; text is drawn as `color` with alpha level/15.
+ *
+ * Glyph codes are the bytes of the game's code page (res/codepage.ts): the
+ * Polish VariableSans (Fonts/Polish) holds the Windows-1250 letters at the
+ * places of the Windows-1252 ones.
+ *
+ * FfnFont is the font interface every window uses (cITSFont); FntfFont is
+ * cTSFont (these bitmap fonts), DbFont (res/dbfont.ts) cTSDBFontKorean, the
+ * double-byte fonts of the Japanese, Chinese and Korean games.
  */
+
+import { gameCharCode } from "./codepage.js";
 
 interface Glyph {
   x: number;
@@ -35,10 +45,69 @@ export const ALIGN_LEFT = 0;
 export const ALIGN_CENTER = 1;
 export const ALIGN_RIGHT = 2;
 
-export class FfnFont {
-  readonly height: number;
+export abstract class FfnFont {
+  /** Line height (cITSFont::GetFontHeight). */
+  abstract readonly height: number;
   /** Style flags (cTSFont+0xc); see withFlags(). */
   flags = 0;
+
+  /** Advance of one character code (TSCharNextCharOffset). */
+  abstract charWidth(code: number): number;
+  /** cITSFont::GetStringWidth. */
+  abstract stringWidth(text: string): number;
+  /** cITSFont::GetBaselineHeight. */
+  abstract baselineHeight(): number;
+  /** cITSFont::GetCharDims: a glyph's box, top/bottom relative to the line top. */
+  abstract charDims(code: number): { left: number; top: number; right: number; bottom: number };
+  /** cITSFont::TSTextArea: the width and height of one line of text. */
+  abstract textArea(text: string): { w: number; h: number };
+  /** cITSFont::CalculateWordsToFitInWidth: how many characters of text[start .. start + len) fit on a line. */
+  abstract calculateWordsToFitInWidth(text: string, start: number, len: number, width: number): number;
+  /** cITSFont::CalculateNumberOfLines. */
+  abstract calculateNumberOfLines(text: string, width: number): number;
+  /** Draw `text` with its top-left at (x, y) (cITSFont::TSDrawText). */
+  abstract drawText(ctx: CanvasRenderingContext2D, text: string, x: number, y: number, color: string): void;
+
+  /**
+   * The same font with other style flags (the font system caches one font
+   * per (size, flags); glyph data is shared here).
+   */
+  withFlags(flags: number): this {
+    if (flags === this.flags) return this;
+    const f = Object.create(this) as this;
+    f.flags = flags;
+    return f;
+  }
+
+  /**
+   * cITSFont::DrawTextPara: word-wrapped text inside an absolute rectangle,
+   * one line per font height, stopping at the rectangle's bottom (the same
+   * loop in cTSFont and cTSDBFontKorean).
+   */
+  drawTextPara(
+    ctx: CanvasRenderingContext2D,
+    rect: { left: number; top: number; right: number; bottom: number },
+    text: string,
+    align: number,
+    color: string,
+  ): void {
+    const width = rect.right - rect.left;
+    let y = rect.top;
+    for (let pos = 0; y < rect.bottom && pos < text.length; y += this.height) {
+      const n = this.calculateWordsToFitInWidth(text, pos, text.length - pos, width);
+      const line = text.slice(pos, pos + n);
+      let x = rect.left;
+      if (align === ALIGN_CENTER) x = rect.left + (width >>> 1) - Math.trunc(this.stringWidth(line) / 2);
+      else if (align === ALIGN_RIGHT) x = rect.right - this.stringWidth(line);
+      this.drawText(ctx, line, x, y, color);
+      pos += n;
+    }
+  }
+}
+
+/** cTSFont: the VariableSans bitmap fonts. */
+export class FntfFont extends FfnFont {
+  override readonly height: number;
   private readonly glyphs = new Map<number, Glyph>();
   private readonly extraWidth: number;
   private readonly atlasW: number;
@@ -47,6 +116,7 @@ export class FfnFont {
   private readonly tinted = new Map<string, HTMLCanvasElement>();
 
   constructor(bytes: Uint8Array) {
+    super();
     const v = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
     if (v.getUint32(0, false) !== 0x464e5446) throw new Error("not an FNTF font");
     const count = v.getUint16(10, true);
@@ -102,35 +172,24 @@ export class FfnFont {
     }
   }
 
-  charWidth(code: number): number {
+  override charWidth(code: number): number {
     return this.glyphs.get(code)?.advance ?? 0;
   }
 
-  stringWidth(text: string): number {
+  override stringWidth(text: string): number {
     let w = 0;
-    for (const ch of text) w += this.charWidth(toCp1252(ch));
+    for (const ch of text) w += this.charWidth(gameCharCode(ch));
     return w + this.extraWidth;
   }
 
-  /**
-   * The same font with other style flags (the font system caches one cTSFont
-   * per (size, flags); glyph data is shared here).
-   */
-  withFlags(flags: number): FfnFont {
-    if (flags === this.flags) return this;
-    const f = Object.create(this) as FfnFont;
-    f.flags = flags;
-    return f;
-  }
-
   /** cTSFont::GetBaselineHeight: bottom of the "A" glyph (top offset + height). */
-  baselineHeight(): number {
+  override baselineHeight(): number {
     const a = this.glyphs.get(0x41);
     return a ? a.top + a.h : this.height;
   }
 
   /** cTSFont::GetCharDims: a glyph's box, top/bottom relative to the line top. */
-  charDims(code: number): { left: number; top: number; right: number; bottom: number } {
+  override charDims(code: number): { left: number; top: number; right: number; bottom: number } {
     const g = this.glyphs.get(code);
     if (!g) return { left: 0, top: 0, right: 0, bottom: 0 };
     return { left: g.bearing, top: g.top, right: g.bearing + g.w, bottom: g.top + g.h };
@@ -142,9 +201,9 @@ export class FfnFont {
   }
 
   /** cTSFont::TSTextArea: sum of the advances, one line high (no extra width). */
-  textArea(text: string): { w: number; h: number } {
+  override textArea(text: string): { w: number; h: number } {
     let w = 0;
-    for (const ch of text) w += this.charWidth(toCp1252(ch));
+    for (const ch of text) w += this.charWidth(gameCharCode(ch));
     return { w, h: this.height };
   }
 
@@ -154,9 +213,9 @@ export class FfnFont {
    * spaces and hyphens, keeps a newline in the line, swallows trailing spaces;
    * a single word wider than the line is not split.
    */
-  calculateWordsToFitInWidth(text: string, start: number, len: number, width: number): number {
+  override calculateWordsToFitInWidth(text: string, start: number, len: number, width: number): number {
     if (len < 1) return 0;
-    const code = (i: number): number => (start + i < text.length ? toCp1252(text[start + i]!) : 0);
+    const code = (i: number): number => (start + i < text.length ? gameCharCode(text[start + i]!) : 0);
     let lastBreak = 0;
     let returnBreak = false;
     let fit = 0;
@@ -200,7 +259,7 @@ export class FfnFont {
   }
 
   /** cTSFont::CalculateNumberOfLines (width 0 means one line). */
-  calculateNumberOfLines(text: string, width: number): number {
+  override calculateNumberOfLines(text: string, width: number): number {
     if (width === 0) return 1;
     let lines = 0;
     for (let pos = 0; pos < text.length; lines++) {
@@ -209,32 +268,8 @@ export class FfnFont {
     return lines;
   }
 
-  /**
-   * cTSFont::DrawTextPara: word-wrapped text inside an absolute rectangle, one
-   * line per font height, stopping at the rectangle's bottom.
-   */
-  drawTextPara(
-    ctx: CanvasRenderingContext2D,
-    rect: { left: number; top: number; right: number; bottom: number },
-    text: string,
-    align: number,
-    color: string,
-  ): void {
-    const width = rect.right - rect.left;
-    let y = rect.top;
-    for (let pos = 0; y < rect.bottom && pos < text.length; y += this.height) {
-      const n = this.calculateWordsToFitInWidth(text, pos, text.length - pos, width);
-      const line = text.slice(pos, pos + n);
-      let x = rect.left;
-      if (align === ALIGN_CENTER) x = rect.left + (width >>> 1) - Math.trunc(this.stringWidth(line) / 2);
-      else if (align === ALIGN_RIGHT) x = rect.right - this.stringWidth(line);
-      this.drawText(ctx, line, x, y, color);
-      pos += n;
-    }
-  }
-
   /** Draw `text` with its top-left at (x, y). */
-  drawText(ctx: CanvasRenderingContext2D, text: string, x: number, y: number, color: string): void {
+  override drawText(ctx: CanvasRenderingContext2D, text: string, x: number, y: number, color: string): void {
     if (this.flags & FONT_SHADOW) this.drawGlyphs(ctx, text, x + 2, y + 2, "#000000");
     this.drawGlyphs(ctx, text, x, y, color);
   }
@@ -243,7 +278,7 @@ export class FfnFont {
     const atlas = this.atlasFor(color);
     let pen = x;
     for (const ch of text) {
-      const g = this.glyphs.get(toCp1252(ch));
+      const g = this.glyphs.get(gameCharCode(ch));
       if (!g) continue;
       if (g.w > 0 && g.h > 0) {
         ctx.drawImage(atlas, g.x, g.y, g.w, g.h, pen + g.bearing, y + g.top, g.w, g.h);
@@ -273,17 +308,4 @@ export class FfnFont {
     this.tinted.set(color, c);
     return c;
   }
-}
-
-const CP1252: Record<number, number> = {
-  0x20ac: 0x80, 0x201a: 0x82, 0x192: 0x83, 0x201e: 0x84, 0x2026: 0x85, 0x2020: 0x86, 0x2021: 0x87,
-  0x2c6: 0x88, 0x2030: 0x89, 0x160: 0x8a, 0x2039: 0x8b, 0x152: 0x8c, 0x17d: 0x8e, 0x2018: 0x91,
-  0x2019: 0x92, 0x201c: 0x93, 0x201d: 0x94, 0x2022: 0x95, 0x2013: 0x96, 0x2014: 0x97, 0x2dc: 0x98,
-  0x2122: 0x99, 0x161: 0x9a, 0x203a: 0x9b, 0x153: 0x9c, 0x17e: 0x9e, 0x178: 0x9f,
-};
-
-/** Game strings are Windows-1252; glyph codes are those bytes. */
-function toCp1252(ch: string): number {
-  const cp = ch.codePointAt(0)!;
-  return cp < 0x100 ? cp : (CP1252[cp] ?? 0x3f);
 }

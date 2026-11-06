@@ -18,6 +18,7 @@
 
 import type { GameContext } from "../../context.js";
 import type { PersonInfo } from "../../cpstate.js";
+import { DOUBLE_BYTE_UI } from "../../res/uires.js";
 import { BTN_TOGGLE, CMD_ASYNC_EXIT, TSWinBtn } from "../../ui/btn.js";
 import { TSWinText, WTF_MULTILINE } from "../../ui/text.js";
 import { type Gfx, TSWin } from "../../ui/tswin.js";
@@ -121,9 +122,9 @@ export class InterestsPanel extends TSWin {
   /** cWinPeople+0x260 / +0x264: top-left of the tile grid. */
   private gridLeft = 0;
   private gridTop = 0;
-  /** cWinPeople+0x31c: tile columns per page (3 at 1024 x 768, else 2); 3 rows. */
+  /** cWinPeople+0x31c: tile columns per page (3 at 1024 x 768, else 2); 3 rows (4 in a double-byte UI, BuildInterests). */
   private readonly columns: number;
-  private readonly rows = 3;
+  private readonly rows = DOUBLE_BYTE_UI ? 4 : 3;
   /** cWinPeople+0x320 / +0x324: current page and page count. */
   private page = 0;
   private pages = 0;
@@ -137,21 +138,24 @@ export class InterestsPanel extends TSWin {
   override async init(): Promise<boolean> {
     const { ctx } = this;
     const { res, strings } = ctx;
-    // The subpanel rect (0, 50, 280, 150), 224 px wider at 1024 x 768, moved to (300, 50).
-    this.setArea(0, 50, 280 + (ctx.width === 1024 ? 0xe0 : 0), 150);
-    this.moveTo(300, 50);
+    // The subpanel rect (0, 50, 280, 150), 224 px wider at 1024 x 768, moved to (300, 50);
+    // (0, 0, 280, 150) moved to (300, 0) in a double-byte UI (lbl_105BC4EC / lbl_105BC4E4).
+    const top = DOUBLE_BYTE_UI ? 0 : 50;
+    this.setArea(0, top, 280 + (ctx.width === 1024 ? 0xe0 : 0), 150);
+    this.moveTo(300, top);
 
-    // Caption (STR# 140 entry 0) in the small font at (5, 0) (lbl_105BC4D8).
+    // Caption (STR# 140 entry 0) in the small font at (5, 0) (lbl_105BC4D8; (10, 5), lbl_105BC4DC, double-byte).
     await strings.load("GameData/Live.iff");
     const text = new TSWinText();
     text.setFont(await ctx.fonts.acquire(6));
-    text.moveTo(5, 0);
+    const titlePos = DOUBLE_BYTE_UI ? { x: 10, y: 5 } : { x: 5, y: 0 };
+    text.moveTo(titlePos.x, titlePos.y);
     text.setBackgroundOpaque(false);
     text.setCaption(strings.get("Live", 0x8c, 0));
     this.childAdd(text);
     text.setWinTextFlag(WTF_MULTILINE, false);
     text.fitWindowToText();
-    this.gridTop = text.getH() + 5;
+    this.gridTop = titlePos.y + text.getH() + 5;
 
     const pageButton = async (name: string): Promise<TSWinBtn> => {
       const b = new TSWinBtn(0, await res.image(name), 4, 1);

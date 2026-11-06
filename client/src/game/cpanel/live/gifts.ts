@@ -32,6 +32,7 @@ import { ALIGN_CENTER, type FfnFont } from "../../res/ffn.js";
 import { decodeImage } from "../../res/bmp.js";
 import { setToNextToken, countTokensOfType } from "../../sim/inventory.js";
 import { BTN_TOGGLE, TSWinBtn } from "../../ui/btn.js";
+import { DOUBLE_BYTE_UI } from "../../res/uires.js";
 import { rgb } from "../../ui/syscolors.js";
 import { TSWinText, WTF_MULTILINE } from "../../ui/text.js";
 import { type Gfx, TSWin } from "../../ui/tswin.js";
@@ -184,22 +185,26 @@ export class GiftsPanel extends TSWin {
   override async init(): Promise<boolean> {
     const { ctx } = this;
     const { res, strings } = ctx;
-    // The subpanel rect (0, 50, 280, 150), 224 px wider at 1024 x 768, moved to (300, 50).
-    this.setArea(0, 50, 280 + (ctx.width === 1024 ? 0xe0 : 0), 150);
-    this.moveTo(300, 50);
+    // The subpanel rect (0, 50, 280, 150), 224 px wider at 1024 x 768, moved to (300, 50);
+    // (0, 0, 280, 150) moved to (300, 0) in a double-byte UI (lbl_105BC4EC / lbl_105BC4E4).
+    const top = DOUBLE_BYTE_UI ? 0 : 50;
+    this.setArea(0, top, 280 + (ctx.width === 1024 ? 0xe0 : 0), 150);
+    this.moveTo(300, top);
 
-    // Title: STR# 0x8d entry 0 in lbl_105BA2E8[6] at (5, 0) (lbl_105BC4D8), one line, fitted.
+    // Title: STR# 0x8d entry 0 in lbl_105BA2E8[6] at (5, 0) (lbl_105BC4D8; (10, 5), lbl_105BC4DC,
+    // double-byte), one line, fitted.
     await strings.load("GameData/Live.iff");
     const smallFont = await ctx.fonts.acquire(6);
     const title = new TSWinText();
     title.setFont(smallFont);
-    title.moveTo(5, 0);
+    const titlePos = DOUBLE_BYTE_UI ? { x: 10, y: 5 } : { x: 5, y: 0 };
+    title.moveTo(titlePos.x, titlePos.y);
     title.setBackgroundOpaque(false);
     title.setCaption(strings.get("Live", 0x8d, 0));
     this.childAdd(title);
     title.setWinTextFlag(WTF_MULTILINE, false);
     title.fitWindowToText();
-    this.gridTop = title.getH() + 5;
+    this.gridTop = titlePos.y + title.getH() + 5;
 
     const button = async (name: string): Promise<TSWinBtn> => {
       const b = new TSWinBtn(0, await res.image(name), 4, 1);
@@ -221,7 +226,7 @@ export class GiftsPanel extends TSWin {
     this.nextPage.tooltip = strings.get("UIText", 0x9a, 1);
 
     // InitInventorySorts: three toggles at x 2, magic, other then gifts from the top
-    // (font height + 0x14, one px apart); gifts starts down. Tooltips UIText STR# 0xf1.
+    // (font height + 0x14, one px apart; + 0x28 double-byte); gifts starts down. Tooltips UIText STR# 0xf1.
     this.giftSort = await button("kInventoryGiftSort");
     this.magicSort = await button("kInventoryMagicSort");
     this.otherSort = await button("kInventoryOtherSort");
@@ -231,9 +236,15 @@ export class GiftsPanel extends TSWin {
     this.magicSort.tooltip = strings.get("UIText", 0xf1, 1);
     this.otherSort.tooltip = strings.get("UIText", 0xf1, 2);
     const fh = smallFont.height;
-    this.magicSort.moveTo(2, fh + 0x14);
-    this.otherSort.moveTo(2, fh + this.giftSort.getH() + 0x15);
-    this.giftSort.moveTo(2, fh + this.magicSort.getH() * 2 + 0x16);
+    if (!DOUBLE_BYTE_UI) {
+      this.magicSort.moveTo(2, fh + 0x14);
+      this.otherSort.moveTo(2, fh + this.giftSort.getH() + 0x15);
+      this.giftSort.moveTo(2, fh + this.magicSort.getH() * 2 + 0x16);
+    } else {
+      this.magicSort.moveTo(2, fh + 0x28);
+      this.otherSort.moveTo(2, fh + this.giftSort.getH() + 0x29);
+      this.giftSort.moveTo(2, fh + this.otherSort.getH() + this.magicSort.getH() + 0x2a);
+    }
     this.page = 0;
     this.pages = 1;
     return true;

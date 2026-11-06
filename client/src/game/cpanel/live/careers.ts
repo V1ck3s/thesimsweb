@@ -17,6 +17,7 @@
 
 import { readStandaloneIff } from "../../../engine/assets.js";
 import type { Strings } from "../../res/strings.js";
+import { gameTextDecoder } from "../../res/codepage.js";
 
 const WORK_IFF = "ExpansionShared/work.iff";
 const STRINGS = "work";
@@ -99,7 +100,7 @@ class FieldReader {
     this.bit = 8;
     let end = this.pos;
     while (end < this.b.length && this.b[end] !== 0) end++;
-    const s = new TextDecoder("windows-1252").decode(this.b.subarray(this.pos, end));
+    const s = gameTextDecoder.decode(this.b.subarray(this.pos, end));
     this.pos = end + 1;
     if ((this.pos - this.start) & 1) this.pos++;
     return s;

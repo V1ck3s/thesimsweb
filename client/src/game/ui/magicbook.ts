@@ -69,6 +69,7 @@ import type { GameContext } from "../context.js";
 import { loadStringSet } from "../sim/behavior.js";
 import { ObjectFolder } from "../world/objectfolder.js";
 import type { FfnFont } from "../res/ffn.js";
+import { DOUBLE_BYTE_UI } from "../res/uires.js";
 import type { Simulator } from "../sim/simulator.js";
 import type { SimObject } from "../sim/xobject.js";
 import { BTN_TOGGLE, TSWinBtn } from "./btn.js";
@@ -198,7 +199,8 @@ export class CWinMagicBook extends TSWinDlg {
       ctx.res.image("kPickSpellItemBkg").catch(() => null),
       ctx.res.image("kMagicBookBkg").catch(() => null),
       ctx.fonts.acquire(12),
-      ctx.fonts.acquire(8),
+      // Font table entry 10 in a double-byte UI (CPState::IsDoubleByteUI).
+      ctx.fonts.acquire(DOUBLE_BYTE_UI ? 10 : 8),
       ctx.res.image("kCatalogTemplate").catch(() => null),
       ctx.res.image("kCatalogTemplate1Frame").catch(() => null),
       ...PICTURES.map((p) => ctx.res.image(p).catch(() => null)),

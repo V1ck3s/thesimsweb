@@ -30,6 +30,7 @@ import type { GameContext } from "../../context.js";
 import type { PersonInfo } from "../../cpstate.js";
 import { WinDeltaMeter } from "./deltameter.js";
 import { ALIGN_CENTER, type FfnFont } from "../../res/ffn.js";
+import { DOUBLE_BYTE_UI } from "../../res/uires.js";
 import { BTN_TOGGLE, CMD_ASYNC_EXIT, TSWinBtn } from "../../ui/btn.js";
 import { hiliteColor, rgb } from "../../ui/syscolors.js";
 import { TSWinText, WTF_MULTILINE } from "../../ui/text.js";
@@ -195,7 +196,8 @@ export class WinRelationship extends TSWinBtn {
 
   override async init(): Promise<boolean> {
     const { res } = this.ctx;
-    this.setArea(this.area.left, this.area.top, this.area.left + 0x2d, this.area.top + 0x5a);
+    // 0x2d x 0x5a; 0x6e high in a double-byte UI (cWinRelationship::Init).
+    this.setArea(this.area.left, this.area.top, this.area.left + 0x2d, this.area.top + (DOUBLE_BYTE_UI ? 0x6e : 0x5a));
     this.textFont = await this.ctx.fonts.acquire(7);
     relIcons ??= (async () => ({
       smiley: await res.image("kRelSmiley"),
@@ -357,9 +359,11 @@ export class RelationshipsPanel extends TSWin {
     const { ctx } = this;
     const { res, strings } = ctx;
     // cWinPeople::Init: the subpanel rect (0, 50, 280, 150), 224 px wider at
-    // 1024 x 768, moved to (300, 50).
-    this.setArea(0, 50, 280 + (ctx.width === 1024 ? 0xe0 : 0), 150);
-    this.moveTo(300, 50);
+    // 1024 x 768, moved to (300, 50); (0, 0, 280, 150) moved to (300, 0) in a
+    // double-byte UI (lbl_105BC4EC / lbl_105BC4E4).
+    const top = DOUBLE_BYTE_UI ? 0 : 50;
+    this.setArea(0, top, 280 + (ctx.width === 1024 ? 0xe0 : 0), 150);
+    this.moveTo(300, top);
     this.smallFont = await ctx.fonts.acquire(6);
 
     const pageButton = async (name: string): Promise<TSWinBtn> => {
@@ -377,10 +381,11 @@ export class RelationshipsPanel extends TSWin {
     this.nextPage.tooltip = strings.get("UIText", 0x9a, 1);
 
     await this.buildRelationships();
-    // cWinPeople::Init: the caption, small font, at (5, 0) (lbl_105BC4D8).
+    // cWinPeople::Init: the caption, small font, at (5, 0) (lbl_105BC4D8; (10, 5), lbl_105BC4DC, double-byte).
     const text = new TSWinText();
     text.setFont(this.smallFont);
-    text.moveTo(5, 0);
+    if (DOUBLE_BYTE_UI) text.moveTo(10, 5);
+    else text.moveTo(5, 0);
     text.setBackgroundOpaque(false);
     text.setCaption(this.caption);
     text.setWinTextFlag(WTF_MULTILINE, false);
@@ -493,9 +498,10 @@ export class RelationshipsPanel extends TSWin {
       break;
     }
 
-    // Tiles flow left to right after the family sort button and the page button.
+    // Tiles flow left to right after the family sort button and the page button,
+    // from y 0x12 (0x23 in a double-byte UI).
     const left = this.sortFamily.getW() + this.prevPage.getW() + 6;
-    const top = 0x12;
+    const top = DOUBLE_BYTE_UI ? 0x23 : 0x12;
     const limit = this.getW() - 2;
     let x = left;
     let y = top;
@@ -511,12 +517,13 @@ export class RelationshipsPanel extends TSWin {
       }
     }
 
-    // Sort buttons stacked under the caption line.
+    // Sort buttons stacked under the caption line (0x27 px lower in a double-byte UI).
     const fh = this.smallFont.height;
-    this.sortFamily.moveTo(3, fh + 1);
-    this.sortFriends.moveTo(2, fh + this.sortFamily.getH() + 2);
-    this.sortFamous.moveTo(2, fh + this.sortFamily.getH() + this.sortFriends.getH() + 3);
-    this.sortAll.moveTo(2, fh + this.sortFamily.getH() + this.sortFriends.getH() + this.sortFamous.getH() + 4);
+    const down = DOUBLE_BYTE_UI ? 0x27 : 0;
+    this.sortFamily.moveTo(3, fh + 1 + down);
+    this.sortFriends.moveTo(2, fh + this.sortFamily.getH() + 2 + down);
+    this.sortFamous.moveTo(2, fh + this.sortFamily.getH() + this.sortFriends.getH() + 3 + down);
+    this.sortAll.moveTo(2, fh + this.sortFamily.getH() + this.sortFriends.getH() + this.sortFamous.getH() + 4 + down);
 
     // Page buttons centered vertically below the caption line.
     const py = fh + ((this.getH() - fh - this.prevPage.getH()) >> 1);

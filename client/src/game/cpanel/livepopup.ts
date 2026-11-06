@@ -40,6 +40,7 @@ import { ObjectIcon } from "./buy/objecticon.js";
 import { soundPlayer, UI } from "../audio/index.js";
 import { getOptionsMgr } from "../optionsmgr.js";
 import { ALIGN_LEFT, type FfnFont } from "../res/ffn.js";
+import { DOUBLE_BYTE_UI } from "../res/uires.js";
 import { SYS_POPUP_TILES, TSWinCtrlMgr } from "../ui/ctrlmgr.js";
 import { bltEdge } from "../ui/dlg.js";
 import { ASYNC_ON_DOWN, ASYNC_ON_ENTER, ASYNC_ON_UP, CMD_ASYNC_EXIT, CMD_ASYNC_TIMEOUT, type TSWinBtn } from "../ui/btn.js";
@@ -244,7 +245,19 @@ export class WinLivePopup extends TSWin {
     if (this.enabled) return;
     this.enabled = true;
     // The popup lives in the lot view (cSimsApp+0x80): the target's top-level window.
-    if (!this.parent) hostOf(target)?.childAdd(this);
+    if (!this.parent) {
+      const host = hostOf(target);
+      host?.childAdd(this);
+      // cWinPeople::Init adds it while cWinCPanel is being added (child_add_absolute inits the
+      // child before listing it): it lies right behind the control panel, which hides its bottom
+      // (the 50 extra rows of a double-byte UI).
+      let panel: TSWin = target;
+      while (panel.parent && panel.parent !== host) panel = panel.parent;
+      if (host && panel.parent === host) {
+        host.children.splice(host.children.indexOf(this), 1);
+        host.children.splice(host.children.indexOf(panel) + 1, 0, this);
+      }
+    }
     this.showWindow();
     this.setClient(client);
     const now = performance.now();
@@ -291,7 +304,8 @@ export class WinLivePopup extends TSWin {
         title.height + body.calculateNumberOfLines(c.desc, textRight - textLeft) * body.height;
       if (textBottom + 0x18 < MIN_H) textBottom = 0x67;
     }
-    const h = textBottom + 0x18;
+    // A double-byte UI makes the buffer 50 px taller: its bottom stays behind the 150 px high page.
+    const h = textBottom + 0x18 + (DOUBLE_BYTE_UI ? 0x32 : 0);
     const buf = new OffscreenCanvas(POPUP_W, h);
     const g = new Gfx(buf.getContext("2d") as unknown as CanvasRenderingContext2D, 0, 0);
     if (this.tiles)
@@ -309,8 +323,10 @@ export class WinLivePopup extends TSWin {
       PANE_RECTS.forEach((r0, i) => {
         const r = { ...r0 };
         let target = h;
-        // The left pane is centered over the part above the 1024-wide panel's 50 px band.
-        if (i === 0 && this.ctx.width === 0x400) target -= 0x32;
+        // The right pane is centered over the part above that band in a double-byte UI,
+        // the left one over the part above the 1024-wide panel's 50 px band.
+        if (i === 1 && DOUBLE_BYTE_UI) target -= 0x32;
+        else if (i === 0 && this.ctx.width === 0x400) target -= 0x32;
         const ph = r.bottom - r.top;
         if (ph < target) {
           let d = Math.trunc((target - ph) / 2) - r.top;

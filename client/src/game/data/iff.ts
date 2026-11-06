@@ -20,6 +20,7 @@
  * (one byte more per string than they fill); that slack is kept, zeroed.
  */
 
+import { gameTextDecoder } from "../res/codepage.js";
 import { encodeCp1252 } from "./recon.js";
 
 export interface IffChunk {
@@ -33,7 +34,7 @@ export interface IffChunk {
 const SIGNATURE = "IFF FILE 2.5:TYPE FOLLOWED BY SIZE\0 JAMIE DOORNBOS & MAXIS 1";
 const HEADER = 64;
 const CHUNK_HEADER = 76;
-const cp1252 = new TextDecoder("windows-1252");
+const cp1252 = gameTextDecoder;
 
 function cstrAt(b: Uint8Array, start: number, end: number): string {
   let e = start;

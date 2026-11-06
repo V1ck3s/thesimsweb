@@ -8,6 +8,7 @@
 
 import { readStandaloneIff } from "../../engine/assets.js";
 import { engine } from "../../engine/wasm.js";
+import { textDecoderFor } from "./codepage.js";
 import { UI_LANGUAGE } from "./uires.js";
 
 interface StrEntry {
@@ -22,14 +23,17 @@ interface Str {
   comment: string;
 }
 
-const latin1 = new TextDecoder("windows-1252");
-
 export class Strings {
   private readonly tables = new Map<string, Map<number, Str[]>>();
   /** The US English entries of the format -3 chunks (StringSetBase::GetString(index, 0)). */
   private readonly usTables = new Map<string, Map<number, Str[]>>();
 
-  constructor(private readonly lang = UI_LANGUAGE) {}
+  /** The language's code page (res/codepage.ts): the strings are its bytes. */
+  private readonly decoder: TextDecoder;
+
+  constructor(private readonly lang = UI_LANGUAGE) {
+    this.decoder = textDecoderFor(lang);
+  }
 
   /** Load every STR# chunk of `Sims/<path>`; the table is named after the file. */
   async load(path: string): Promise<void> {
@@ -79,8 +83,8 @@ export class Strings {
 
   private pick(entries: StrEntry[], lang = this.lang): Str[] {
     const str = (e: StrEntry): Str => ({
-      text: latin1.decode(e.data),
-      comment: e.comment ? latin1.decode(e.comment) : "",
+      text: this.decoder.decode(e.data),
+      comment: e.comment ? this.decoder.decode(e.comment) : "",
     });
     if (!entries.some((e) => e.kind === "lang")) return entries.map(str);
     // Format -3 stores one entry per (string, language); keep ours, fall back to US English.

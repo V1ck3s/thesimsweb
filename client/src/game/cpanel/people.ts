@@ -58,7 +58,7 @@ import { WinSubpanelCatSkills, WinSubpanelDogSkills } from "./live/petskills.js"
 import { WinSubpanelReportCard } from "./live/reportcard.js";
 import { WinEditBio } from "./live/editbio.js";
 import { GiftsPanel } from "./live/gifts.js";
-import { UI_LANGUAGE } from "../res/uires.js";
+import { DOUBLE_BYTE_UI, UI_LANGUAGE } from "../res/uires.js";
 import { popupClick, WinLivePopup, WinLivePopupClient } from "./livepopup.js";
 import type { PlacedObject } from "../world/objects.js";
 import { getTrackedObject, setTrackedObject, setTrackingPanel, type TrackingPanel } from "../world/tracking.js";
@@ -104,12 +104,22 @@ const GAUGE_TIP_AREAS: Rect[] = [
   { left: 0xc, top: 0x48, right: 0x26, bottom: 0x60 },
 ];
 
-/** lbl_105BC4E8 / lbl_105BC4E0: page area, moved to (300, 50); pages are 224 px wider at 1024. */
-const PAGE_AREA: Rect = { left: 0, top: 0x32, right: 0x118, bottom: 0x96 };
-const PAGE_ORIGIN = { x: 300, y: 0x32 };
+/**
+ * lbl_105BC4E8 / lbl_105BC4E0: page area, moved to (300, 50); pages are 224
+ * px wider at 1024. A double-byte UI (CPState::IsDoubleByteUI) takes
+ * lbl_105BC4EC / lbl_105BC4E4 instead: the pages are 150 px high from the
+ * panel's top, their top 50 px over the lot view on kTallSubpanel (cpanel.ts).
+ */
+const PAGE_AREA: Rect = DOUBLE_BYTE_UI
+  ? { left: 0, top: 0, right: 0x118, bottom: 0x96 }
+  : { left: 0, top: 0x32, right: 0x118, bottom: 0x96 };
+const PAGE_ORIGIN = DOUBLE_BYTE_UI ? { x: 300, y: 0 } : { x: 300, y: 0x32 };
 const WIDE_SCREEN_EXTRA = 0xe0;
-/** lbl_105BC4D8: page title position. */
-const TITLE_ORIGIN = { x: 5, y: 0 };
+/** lbl_105BC4D8: page title position; lbl_105BC4DC in a double-byte UI. */
+const TITLE_ORIGIN = DOUBLE_BYTE_UI ? { x: 10, y: 5 } : { x: 5, y: 0 };
+/** cWinPeople::Init: the needs' flow layout starts at y 0x15 (0x28 double-byte, 0x1c in Thai). */
+const LANG_THAI = 0x13;
+const MOTIVES_TOP = !DOUBLE_BYTE_UI ? 0x15 : UI_LANGUAGE === LANG_THAI ? 0x1c : 0x28;
 
 /** lbl_105BC494: the motive each "Needs" bar shows (hunger, energy, comfort, fun, hygiene, social, bladder, room). */
 const MOTIVES = [7, 5, 6, 15, 8, 14, 9, 13];
@@ -260,6 +270,12 @@ export class WinPeople extends TSWin implements TrackingPanel {
   /** +0x378: the career icons (UpdateAtWorkStatus); +0x380: kFrogIconGeneric. */
   private readonly atWorkIcons: ImageBitmap[] = [];
   private frogIcon: ImageBitmap | null = null;
+  /**
+   * Double-byte UI: cWinCPanel's +0x104 alpha (the top 50 rows of
+   * kTallSubpanel, `pitch` bytes per row) that IsPointInWindowWindowCoordinates
+   * tests above the panel; set by WinCPanel.
+   */
+  tallTopAlpha: { alpha: Uint8Array; pitch: number } | null = null;
 
   private readonly motivesWin = new TSWin();
   private readonly petMotivesWin = new TSWin();
@@ -287,7 +303,11 @@ export class WinPeople extends TSWin implements TrackingPanel {
   private readonly signNames: string[] = [];
   private readonly signDescs: string[] = [];
 
-  constructor(readonly ctx: GameContext) {
+  constructor(
+    readonly ctx: GameContext,
+    /** cWinPeople(CPState, cTSBuffer): the panel background (cWinCPanel's +0x100 clone in a double-byte UI); null = kUniversalCPBkg. */
+    private readonly backgroundBuffer: ImageBitmap | null = null,
+  ) {
     super();
   }
 
@@ -297,7 +317,7 @@ export class WinPeople extends TSWin implements TrackingPanel {
     const str = (id: number, i: number): string => strings.get("Live", id, i);
     [this.gauge, this.background, this.greenBars, this.redBars, this.template] = await Promise.all([
       res.image("kLiveModeGauge"),
-      res.image("kUniversalCPBkg"),
+      this.backgroundBuffer ?? res.image("kUniversalCPBkg"),
       res.image("kGreenbars"),
       res.image("kRedBars"),
       res.image("kPeopleTemplate"),
@@ -379,7 +399,7 @@ export class WinPeople extends TSWin implements TrackingPanel {
         if (await m.init()) win.childAdd(m);
         set.push(m);
       }
-      flowLayout(set, 0, 0x15, set[0]!.getW(), set[0]!.getH() - 1, 200, set[0]!.getW());
+      flowLayout(set, 0, MOTIVES_TOP, set[0]!.getW(), set[0]!.getH() - 1, 200, set[0]!.getW());
     }
     // cWinPeople+0x248 holds the title: STR# 130's, then overwritten by STR# 180's before use.
     const needsTitle = str(STR_PET_MOTIVES, 0);
@@ -408,7 +428,9 @@ export class WinPeople extends TSWin implements TrackingPanel {
       w.setTextRect(widest);
       this.personalityWin.childAdd(w);
     }
-    flowLayout(this.personalities, 0xca - this.personalities[0]!.getW(), 8, 0, 0x12, 0, this.personalities[0]!.getW());
+    // Vertical flow from (0xca - w, 8), 0x12 px apart; (0xca - w, 0xf), 0x19 px apart in a double-byte UI.
+    const [traitsTop, traitsStep] = DOUBLE_BYTE_UI ? [0xf, 0x19] : [8, 0x12];
+    flowLayout(this.personalities, 0xca - this.personalities[0]!.getW(), traitsTop, 0, traitsStep, 0, this.personalities[0]!.getW());
 
     // Zodiac sign (cWinPeople+0x1bc): a captioned button without image, font lbl_105BA2E8[12].
     this.zodiacBtn.font = await fonts.acquire(12);
@@ -905,6 +927,7 @@ export class WinPeople extends TSWin implements TrackingPanel {
       }
       return;
     }
+    // A double-byte UI tests the page rect at lbl_105BC4E4 (the page's own origin).
     const right = PAGE_ORIGIN.x + PAGE_AREA.right + (this.ctx.width === 0x400 ? WIDE_SCREEN_EXTRA : 0);
     const inPage = lx >= PAGE_ORIGIN.x && ly >= PAGE_AREA.top && lx < right && ly < PAGE_AREA.bottom;
     if (!inside || !inPage) popup.disablePopup();
@@ -1047,9 +1070,18 @@ export class WinPeople extends TSWin implements TrackingPanel {
     }
   }
 
-  /** cWinPeople::IsPointInWindowWindowCoordinates: the top 50 px let clicks through. */
+  /**
+   * cWinPeople::IsPointInWindowWindowCoordinates: the top 50 px let clicks
+   * through, except in a double-byte UI right of x 0x154, where a pixel of
+   * kTallSubpanel's top part with alpha above 0x80 takes them. The original
+   * reads the alpha at byte x - 0x155 + y * pitch, 41 px left of where
+   * cWinCPanel draws the part.
+   */
   override isPointInWindowWindowCoordinates(x: number, y: number): boolean {
-    return y > 0x31 && x >= 0 && x < this.getW() && y < this.getH();
+    if (y > 0x31 && x >= 0 && x < this.getW() && y < this.getH()) return true;
+    const top = this.tallTopAlpha;
+    if (!DOUBLE_BYTE_UI || !top || x <= 0x154 || y < 0 || y >= 0x32) return false;
+    return (top.alpha[x - 0x155 + y * top.pitch] ?? 0) > 0x80;
   }
 
   // --- paint -----------------------------------------------------------------

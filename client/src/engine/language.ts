@@ -6,11 +6,14 @@
  * landing page (client/src/landing/main.ts). It is read once when the game
  * starts: a change applies at the next start.
  *
- * Offered: the languages whose strings are complete and that use the 1252
- * character set the game's bitmap fonts draw (GetCharacterSetFromLanguage,
- * nbhd/imports.ts). Hebrew and Russian have a third of the strings; Polish,
- * Japanese, the Chinese languages, Thai and Korean need the double-byte or
- * other code page fonts the port does not draw.
+ * Offered: the languages whose strings are complete and whose fonts the port
+ * draws: the Windows-1252 ones, Polish (Windows-1250, its own VariableSans;
+ * res/codepage.ts, res/fonts.ts), and Japanese, Simplified and Traditional
+ * Chinese and Korean (res/dbfont.ts, with the control panel's double-byte
+ * layouts, isDoubleByteUI below). Hebrew and Russian have a third of the
+ * strings (the rest falls back to US English), and this install's Russian
+ * VariableSans only holds ASCII. Thai (res/thaifont.ts) draws (see
+ * PREVIEW_LANGUAGES).
  */
 
 export interface UiLanguage {
@@ -34,7 +37,30 @@ export const LANGUAGES: readonly UiLanguage[] = [
   { code: 10, name: "Norsk", tags: ["no", "nb", "nn"] },
   { code: 11, name: "Suomi", tags: ["fi"] },
   { code: 14, name: "Português", tags: ["pt"] },
+  { code: 15, name: "日本語", tags: ["ja"] },
+  { code: 16, name: "Polski", tags: ["pl"] },
+  { code: 17, name: "简体中文", tags: ["zh-cn", "zh-sg", "zh-hans", "zh"] },
+  { code: 18, name: "繁體中文", tags: ["zh-tw", "zh-hk", "zh-mo", "zh-hant"] },
+  { code: 20, name: "한국어", tags: ["ko"] },
 ];
+
+/**
+ * Languages the port draws (res/thaifont.ts) but does not offer yet (Thai:
+ * its double-byte layouts are ported with the others but not verified).
+ * `?lang=<code>` still selects them.
+ */
+export const PREVIEW_LANGUAGES: readonly number[] = [19];
+
+/**
+ * CPState::IsDoubleByteUI: Japanese, the Chinese languages, Thai and Korean
+ * (15, 17..20). The control panel's layouts that test it read DOUBLE_BYTE_UI
+ * (res/uires.ts): cWinCPanel, cWinPeople and its pages, cWinMotive,
+ * cWinRelationship, cWinLivePopup, cWinPictureInPicture, CWinMagicBook.
+ */
+export function isDoubleByteUI(lang: number): boolean {
+  const i = lang - 15;
+  return i >= 0 && i <= 5 && ((1 << i) & 0x3d) !== 0;
+}
 
 const STORAGE_KEY = "thesimsweb.language";
 
@@ -57,7 +83,7 @@ export function readLanguage(): number {
   const valid = (n: number): boolean => LANGUAGES.some((l) => l.code === n);
   try {
     const q = typeof location === "undefined" ? null : new URLSearchParams(location.search).get("lang");
-    if (q !== null && valid(Number(q))) return Number(q);
+    if (q !== null && (valid(Number(q)) || PREVIEW_LANGUAGES.includes(Number(q)))) return Number(q);
   } catch {
     // (no URL: the default)
   }

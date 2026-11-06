@@ -15,12 +15,50 @@ export interface RgbaImage {
 export interface DecodeOptions {
   /** Treat (255, 0, 255) as fully transparent. */
   colorKey?: boolean;
+  /**
+   * A TGA's colours are premultiplied by its alpha: divide them back
+   * (GIMEXFactory with its flag lbl_105BA7EC set, see gimexUnpremultiply).
+   */
+  unpremultiply?: boolean;
 }
 
 export function decodeImage(bytes: Uint8Array, name: string, opts: DecodeOptions = {}): RgbaImage {
-  const img = name.toLowerCase().endsWith(".tga") ? decodeTga(bytes) : decodeBmp(bytes);
+  const tga = name.toLowerCase().endsWith(".tga");
+  const img = tga ? decodeTga(bytes) : decodeBmp(bytes);
+  if (tga && opts.unpremultiply) gimexUnpremultiply(img);
   if (opts.colorKey) applyColorKey(img);
   return img;
+}
+
+/**
+ * GIMEXFactory (nsSMResFac::LoadBuffer of a TGA with an 8-bit alpha): the
+ * shipped UI TGAs hold colours premultiplied by their alpha. With the flag
+ * lbl_105BA7EC set (its value at start, cleared only around
+ * cMagiclandSprites::LoadClouds' three Magic Town fog TGAs) a pixel of alpha
+ * 0 takes the transparent colour, alpha 0xff keeps its colour, and any other
+ * alpha gets its colour times 255 / alpha + 0.5, truncated (Windows build,
+ * 0x4decd4: x87, the 255 / alpha quotient kept in the FPU) and passed as a
+ * byte to the 16-bit conversion (FUN_005dfe3b), so a result above 255 wraps;
+ * the alpha goes to the buffer's alpha buffer unchanged. With the flag clear
+ * the colours are kept as they are.
+ *
+ * TallSubPanel.TGA and UniversalBack.tga are premultiplied (no colour above
+ * its alpha); HotSpotPopupTiler.tga is not (a constant 0, 0, 82 under a
+ * varying alpha), and the original's division wraps its low-alpha colours.
+ */
+export function gimexUnpremultiply(img: RgbaImage): void {
+  const d = img.data;
+  for (let i = 0; i < d.length; i += 4) {
+    const a = d[i + 3]!;
+    if (a === 0) {
+      d[i] = 0xff;
+      d[i + 1] = 0;
+      d[i + 2] = 0xff;
+    } else if (a !== 0xff) {
+      const k = 255 / a;
+      for (let c = i; c < i + 3; c++) d[c] = Math.trunc(d[c]! * k + 0.5) & 0xff;
+    }
+  }
 }
 
 export function applyColorKey(img: RgbaImage): void {

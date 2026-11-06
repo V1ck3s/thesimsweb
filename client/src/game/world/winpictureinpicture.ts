@@ -47,6 +47,7 @@ import type { GameContext } from "../context.js";
 import { TSWinCtrlMgr } from "../ui/ctrlmgr.js";
 import { TSWinBtn } from "../ui/btn.js";
 import { ALIGN_LEFT, type FfnFont } from "../res/ffn.js";
+import { DOUBLE_BYTE_UI } from "../res/uires.js";
 import { UI_FONT_COLOR } from "../ui/syscolors.js";
 import { Gfx, TSWin } from "../ui/tswin.js";
 import type { HouseViewer } from "./houseviewer.js";
@@ -158,8 +159,7 @@ export class WinPictureInPicture extends TSWin {
     if (box) box.moveTo(w - box.getW() - 4, 4);
     const parent = this.parent;
     if (parent) {
-      // (a double-byte UI raises it by 0x9b)
-      const up = this.host.cpMode() === 1 ? 5 : 0x69;
+      const up = this.host.cpMode() === 1 ? 5 : DOUBLE_BYTE_UI ? 0x9b : 0x69;
       this.moveTo(parent.getW() - w - 5, parent.getH() - h - up);
     }
     if (this.timerMs !== 0) this.timerEnd = performance.now() + this.timerMs;

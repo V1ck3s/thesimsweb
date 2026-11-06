@@ -21,6 +21,7 @@ import { decodeBmp } from "../res/bmp.js";
 import { ReconBuffer } from "../world/reconbuffer.js";
 import type { FamilyStat } from "./familyhistory.js";
 import { ReconReader } from "./recon.js";
+import { gameTextDecoder } from "../res/codepage.js";
 
 /** Person data indices (Behavior.iff STR# 200). */
 export const PD = {
@@ -247,7 +248,7 @@ async function strEntries(bytes: Uint8Array): Promise<Array<{ langCode?: number;
   return (wasm.parseStrTable(bytes) as { entries: Array<{ langCode?: number; data: Uint8Array }> }).entries;
 }
 
-const cp1252 = new TextDecoder("windows-1252");
+const cp1252 = gameTextDecoder;
 
 /** Strings of a format -3 STR#/CTSS for one language (US English fallback). */
 export async function localizedStrings(bytes: Uint8Array, lang: number): Promise<string[]> {

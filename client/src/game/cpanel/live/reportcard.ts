@@ -27,6 +27,7 @@ import type { FfnFont } from "../../res/ffn.js";
 import { getOptionsMgr } from "../../optionsmgr.js";
 import { getGrade, loadJobGrades } from "../../sim/careers.js";
 import { ASYNC_ON_ENTER, BTN_TOGGLE_ON_DOWN, CMD_ASYNC_EXIT } from "../../ui/btn.js";
+import { DOUBLE_BYTE_UI } from "../../res/uires.js";
 import { UI_FONT_COLOR } from "../../ui/syscolors.js";
 import { Gfx, TSWin } from "../../ui/tswin.js";
 import { popupClick, type WinLivePopup, WinLivePopupClient } from "../livepopup.js";
@@ -129,7 +130,7 @@ export class WinSubpanelReportCard extends TSWin {
 
   /** cWinSubpanelReportCard::TSPaint */
   override tsPaint(g: Gfx): void {
-    this.titleFont?.drawText(g.ctx, this.title, g.ox, g.oy, UI_FONT_COLOR);
+    this.titleFont?.drawText(g.ctx, this.title, g.ox, g.oy + (DOUBLE_BYTE_UI ? 5 : 0), UI_FONT_COLOR);
     const btn = this.btn;
     const p = this.ctx.state.personGetSelected();
     if (!btn || !p) return;
