@@ -100,7 +100,18 @@ Gaps:
   sets person data 29 (motives static) to 1, then loops SEMI 0x16B ? "do idle"
   (8301) : "do new adult idle" (8330), i.e. the random idle animations of a lot.
   Running it needs the instance in a simulator (the CAS room lot), which the
-  port's preview does not have; left as is.
+  port's preview does not have; left as is. Checked again 2026-11-06:
+  PersonFinder::CreateInstance makes the person with
+  ObjectModule::MakeNewOutOfWorldObject in the module of app +0x14 (the
+  loaded lot), cXObject::FindGoodLocation and the placement vtable call
+  (+0x90; killed when no location is found); BeginDesignAPerson then starts
+  the tree through the instance's vtable +0x3c (tree id from
+  Behavior::GetTreeID on the selector's behavior, else ObjectModule::SetSimFlag
+  (instance, 1, 0)) and sets cSimulator::SetSpeed. The port's Create a Sim
+  has no lot, module or simulator (the preview is a bare SAnimator rendered by
+  cWinVitaBtn), so porting this means running the CAS screens over a loaded
+  lot with the persons as simulated objects whose animators the vita buttons
+  draw: not done.
 
 ## Portraits
 

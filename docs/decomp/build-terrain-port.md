@@ -63,3 +63,36 @@ neighbor corner copies), `getTargetGrass` / `setGrass` / `setTargetGrass`,
 - cPoolTool / cPoolUndoable / cWaterTool / cWaterUndoable: not ported (they need
   cPoolLayer / cWaterLayer edge computation, pool rooms and people checks,
   TileWalls::GetWallBetween, and the client does not draw pool or water tiles yet).
+
+## map_edit: cTileTool and the map overlay (2026-11-06)
+
+`world/tools/tiletool.ts` (cGameTools tool 8, registered in `buildtools.ts`), `world/terrain_maptile.ts`,
+`cpstate.ts` (`setCheatTool`, `cheatToolActive`), `world/winlotview.ts`, `world/terrain.ts`, `ui/cheat.ts`.
+
+- "map_edit on|off" (AppCheatCallback case 8): when lbl_105BA68C changes and tool 8 exists, the flag
+  is set, GViewer::DirtyAll, and on: SetParameter(0) + CPState::SetCheatTool(tool); off:
+  SetCheatTool(0). CPState +0x50 (a cheat tool is current) makes UpdateWorldFromCPState leave the
+  tool alone in every mode, so the tile tool keeps the mouse in live, buy and build mode; turning it
+  off gives the mode's tool back. prepare_lot clears the flag and the cheat tool.
+- cTileTool: Float (Windows `Float__9cTileTool`: the interior tile under the mouse, state 1);
+  Click lifts the ground flags (LiftGrid: flags & 0x20 of the 64 x 64 tiles), paints the opposite of
+  the clicked tile's 0x20 flag, state 2 (3 with Shift: rectangle from the clicked tile, DropGrid
+  first on each drag); Drag paints each new interior tile; Release with Ctrl drops the lifted layer
+  back (undo). DropGrid writes the lifted byte (only 0x20) over every differing tile, clearing that
+  tile's other flag bits, as the original does. The grass mode (parameter low bits 1, edit_grass,
+  BumpGrass) is not ported.
+- HouseViewer::RenderStaticRow draws cTerrain::DrawMapOverlay on every ground tile while the flag is
+  set: cTerrain::Draw with cMapTileSwatch (+0x14) instead of the grass and no grid. cMapTileSwatch::
+  Draw (asm): columns every 4 pixels, each topped by 4 black pixels, then every 4th row a pink
+  (0xff8080) pixel and, 2 pixels right, white for a 0x20 tile or black. The column steps use the
+  altitudes unscaled (laid for zoom 1, as in the original). Deviation: drawn in the terrain pass
+  right after the grass (the terrain raster cache keys on the flag), so floors and objects always
+  cover it, where the original draws it in the static row pass; DrawClipped is the same pattern cut
+  per pixel to the clip rectangle (the original drops whole columns).
+- draw_floorable (lbl_105BA690, initially 1) now gates the upper level's build grid
+  (`houseviewer.ts` renderStaticRow), with GViewer::DirtyAll.
+- genable (graphics cheat 10): terrain / floors / walls / objects / people switch the matching passes
+  of `houseviewer.ts` (RenderTerrainRow, the floors, DrawWalls, the static row objects and
+  RenderDynamicObjects, UpdateStaticDynamic's 3D people); with floors off the upper level shows the
+  grid where floors were (RenderStaticRow). clear, full_draw, static_rows, static and old_clear are
+  kept for "genable status" only (static layer / damage refresh not in this renderer).

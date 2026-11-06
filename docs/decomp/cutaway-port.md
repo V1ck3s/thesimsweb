@@ -57,6 +57,11 @@ diagonal half-tile enables).
 - Room lighting (task 2: LightMapSet / Room::ComputeRoom / GetRoomAmbientLight,
   SetAmbientLightLevel for people) not started; lotpeople still uses PEOPLE_AMBIENT.
 
+- Wall::ComputeCutaway (102b4fb0) on diagonal segments: a 0x10 segment stays cut when the
+  tile + lbl_105BA078[3] (+x) or + [0] (-y) is in the mask, a 0x20 segment when both
+  tile + 2 x [0] and tile + 2 x [3] are (asm: `lbz 6(r30)` / `7(r30)`). The port used -x
+  (DIRS[2]) in both; fixed 2026-11-06.
+
 ## Status (verified in the browser)
 
 House01 (`?test=lot&house=UserData/Houses/House01.iff&center=34,27`): 8 rooms found;

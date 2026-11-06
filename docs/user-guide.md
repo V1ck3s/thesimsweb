@@ -158,6 +158,11 @@ Limites :
   serveur). En mode `client`, il sauvegarde normalement dans le navigateur.
 - Le serveur de développement (`pnpm dev`, port 5173) n'installe pas de service worker : le mode
   hors ligne ne concerne que les builds (`pnpm start`, Docker).
+- **Pages web des familles en mode `client`** (bouton Internet du quartier, option « exporter en
+  HTML ») : le jeu les écrit dans le navigateur, et seul le service worker les sert
+  (`/webpages/…`). Il faut donc un build ouvert en HTTPS ou sur localhost ; sans service worker
+  (adresse `http://` du réseau local, `pnpm dev`), le lien ouvre les pages d'origine du dossier du
+  jeu (ou une erreur 404), pas celles du joueur. En mode `server`, le serveur les sert toujours.
 - Après une mise à jour du jeu sur le serveur, le nouveau code est chargé au lancement suivant
   (en ligne) ; l'ancien reste utilisé hors ligne tant que la nouvelle version n'a pas été chargée.
 

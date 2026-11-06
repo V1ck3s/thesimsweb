@@ -71,9 +71,27 @@ points. AddNewNPCSim's last argument (random personality, fashion suits) is fals
 at every call site. Deviation: DoFirstTime*'s renumbering of a family already
 using the pool id writes one past the family vector in the original (its loop
 has no break); the port renumbers that family as DoFirstTimeTownies does.
-**Hook needed** (not in this agent's files): `cWinNeighborhoodUL` should call
-`refillNpcPools(ctx, store)` on its first TSOnTimerMsg tick (after the Unleashed
-import, not ported either). Test page: `game.html?test=townies&pools=1&dir=UserDataN`.
+`cWinNeighborhoodUL` calls `refillNpcPools(ctx, store)` on its first TSOnTimerMsg
+tick, after the Unleashed import (below). Test page: `game.html?test=townies&pools=1&dir=UserDataN`.
+
+### Unleashed import (Neighborhood::NeedsUnleashedImport / TryImportUnleashedFamilies)
+
+`nbhd/imports.ts` (`needsUnleashedImport`, `tryImportUnleashedFamilies`), called by
+cWinNeighborhoodUL::TSOnTimerMsg's first tick (not busy), before the NPC pools; when it ran,
+DoNbhdScreen(1) builds the screen again (`onSwitchNeighborhood(dir)`, after the refills here).
+- NeedsUnleashedImport: Unleashed installed (app +0x66 bit 5) and NGBH +0x1a6, which DoStream sets to 1
+  for files older than version 0x45 (the shipped UserData2..8 are 0x3f).
+- TryImportUnleashedFamilies (Unleashed installed): with +0x1a6, a family numbered 4000 moves to the
+  largest number + 1, ImportUnleashedFamilies, +0x1a6 = 0; then Neighborhood::Save in every case.
+- ImportUnleashedFamilies: cWinProgressPictureDialog (UIText STR# 270 entries 1 / 2, kNghPic 0x13ce,
+  total 7); every `<neighborhood>/Patch/*.FAM` once (GetStringConstant(0x59) = "Patch/"; the directory is
+  read again after each file, seen files kept in a set): read-only attribute cleared,
+  GetImportInfoForFile(path, info, 0), ImportFamily when accepted (no dialog, no zoning change), TickOnce.
+- Not ported: the string-set language calls before ImportFamily (a vtable chain on lbl_105BA104 given
+  app +100 and the info's language); CopyMissingUnleashedFilesIntoUserData (Neighborhood::Load: without
+  Houses/House50.iff, copies TemplateCommunity House50..80, NeighborhoodDesc, LotLocations, LotZoning,
+  StreetNames and TemplateUserData/Patch/*.FAM into the neighborhood): it is what fills Patch/ for a
+  neighborhood made before Unleashed; the shipped UserData folders already have House50.
 
 ### Premade townie personality
 
@@ -454,8 +472,21 @@ Files: `client/src/game/screens/frozen.ts` (new), `world/moveout.ts` (new), `mai
   [FamilyDescription] WebPages, the body string sections (2 skin, 3 head, 0x12 / 0x13 hands; texture / suit),
   [floors] / [walls] (FLRm / WALm usage maps of the saved house file), [objects] (selectors of source 2 / 3
   used by the lot, folder order, short file names, lowercase as the Windows build writes them). Checked against
-  the game's Fez_7.pub: same text but the two live scores and the [objects] order (our ObjectFolder index order
-  is not the Windows build's).
+  the game's Fez_7.pub: same text but the two live scores.
+  Folder order (2026-11-06): ObjectFolder::ScanForNewFiles walks GameData/UserObjects then Downloads with
+  FolderScanner::ScanFileManager, i.e. CTGFileManager::FindFirstFile / FindNextFile over each folder's
+  directory image: a hash_map<CTGString, sDirectoryEntry, CTGStringHash> keyed by the lowercase names
+  (nRZHash::OneAtATime, signed chars), whose iteration is bucket order. The Windows build's hash_map starts
+  with 100 -> 193 buckets (SGI prime list 53, 97, 193, 389...), a new node goes to the front of its bucket,
+  a rehash past the bucket count moves each chain from its head to the front of the new buckets; a FAR's
+  entries are added to its folder's image when ScanDirectory meets the FAR (AddFARToMapping). Of the
+  bucket counts 1..5000 only 193 orders both shipped .pub files (Charmant_13: sccontroller, walllite,
+  blacktrash, plants2, ccphoneplugin, unsnacker; Fez_7: sccontroller, hsupersculpture, flowerscoped x2,
+  sculpturesdeluxe2, ccphoneplugin, unsnacker), and the full simulation over the game's Downloads gives
+  both lists. `houseFiles` sorts by that rank (`folderScanRanks`), then by OBJD order within a file. Our
+  ObjectFolder (world/objectfolder.ts) still indexes in name order: the selector index (+0xa8), the
+  "later file overrides a GUID" rule and other folder walks follow name order, not this one. (The Mac
+  build's Metrowerks hash_table starts at 0 buckets and grows x4 to the next odd prime: other orders.)
 - Pictures (SaveGimex = the browser's JPEG encoder, `convertToBlob("image/jpeg", quality / 100)`: same size and
   quality setting, other bytes):
   - family<n>_face.jpg: PersonFinder::GetWebPictureBuffer (BMP_ 2007, or rendered), quality 100;

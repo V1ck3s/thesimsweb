@@ -47,7 +47,7 @@ or developer-only tools).
 | Class | What it is | Status | Where |
 |---|---|---|---|
 | cWinCPanel | Control panel container, panel switching | ported | `cpanel/cpanel.ts` |
-| cWinViewControl | Clock, speed, zoom, rotation, levels, funds, help button, friend count dialog (STR# 162), SetMode with BoboVision (panel fade) | ported (BoboVision Compose of the gadget's alpha mask not ported) | `cpanel/viewcontrol.ts` |
+| cWinViewControl | Clock, speed, zoom, rotation, levels, funds, help button, friend count dialog (STR# 162), SetMode with BoboVision (panel fade) | ported (BoboVision Compose of the gadget's alpha mask: the port blends with the TGA's own alpha, the original's AlphaBlend_565_P5 uses 32 levels, < 8 kept, > 0xf7 opaque; without BoboVision the original Blts the private buffer with its color key, not ported). The panel's fade-in end (message 0x1b) sets the viewport height in WinLotView.doAsyncShowHideMessage (cDDDSimsView::DoMessage) | `cpanel/viewcontrol.ts` |
 | cWinBudgetDlg, cWinBudgetRow | Budget window (funds click on a residential lot): 3-day / today income and expenses by type, funds, net worth, days | ported (object / architecture values recomputed at opening) | `cpanel/budgetdlg.ts` |
 | cWinHelp | Help window (view control "?" button): topic list and text | ported | `cpanel/help.ts` |
 | cWinPeople | Live panel: portraits (person popup, TrackPerson / StopTracking, UpdateAtWorkStatus), mood, page buttons | ported (its two pie menus are the lot's) | `cpanel/people.ts`, `world/tracking.ts` |
@@ -113,7 +113,7 @@ or developer-only tools).
 
 | Class | What it is | Status | Where |
 |---|---|---|---|
-| cTSCheatCodeManager, cCheatCommandLine, SimsAppCheat | Cheat console (Ctrl+Shift+C): parsing, ";" / "!", error boxes, the shipped 27-name restriction (`?devcheats` lifts it); rosebud, move_objects, autonomy, sim_speed, rotation, route_balloons, bubble_tweak, interests, xyzzy, prepare_lot, history (FamilyHistory.txt as a download), grid; neighborhood load / show_zones / show_filter / nessie | partial (map_edit, sim_log, tile_info, w, draw_routes / draw_floorable drawing, genable / damagelist / sweep, move_lots: not ported, see the header of `ui/cheat.ts` for what each does) | `ui/cheat.ts`, `cheatflags.ts`, `nbhd/winneighborhoodul.ts`, `nbhd/nessie.ts` |
+| cTSCheatCodeManager, cCheatCommandLine, SimsAppCheat | Cheat console (Ctrl+Shift+C): parsing, ";" / "!", error boxes, the shipped 27-name restriction (`?devcheats` lifts it); rosebud, move_objects, autonomy, sim_speed, rotation, route_balloons, bubble_tweak, interests, xyzzy, prepare_lot, history (FamilyHistory.txt as a download), grid, map_edit, sim_log, draw_floorable, draw_routes, genable; neighborhood load / show_zones / show_filter / nessie | partial: map_edit (cTileTool as the cheat tool, cMapTileSwatch overlay), sim_log (SimLog.txt as a download), draw_floorable, draw_routes (a flag nothing reads, as in the shipped build) and genable (terrain / floors / walls / objects / people switches, status box) ported; tile_info, w, damagelist, sweep, move_lots, edit_grass and ReportMissingTextures not ported (see the header of `ui/cheat.ts`) | `ui/cheat.ts`, `cheatflags.ts`, `world/tools/tiletool.ts`, `world/terrain_maptile.ts`, `sim/simlog.ts`, `nbhd/winneighborhoodul.ts`, `nbhd/nessie.ts` |
 | cDDDSimsView's frame rate text (+0x18c) | "FPS: %3.1lf" in red at the view's bottom right, toggled by 't' | ported | `ui/framerate.ts`, `cpanel/modekeys.ts` |
 | cStalkerCam | "w" cheat / F8: SimsWebCam.jpg written every 10 s | not ported (no web equivalent) | - |
 | cTSWinCheatHelp | Cheat list window ("help", only registered unrestricted) | ported | `ui/cheat.ts` |
@@ -122,3 +122,34 @@ or developer-only tools).
 | cWinSweepMeter | Frame-time sweep meter ("sweep on/off") | n/a (debug) | - |
 | cWinTileInfo | Tile inspector ("tile_info on/off"; the shipped build never sizes it nor gives it a tile: nothing shows) | n/a (debug) | - |
 | MTIcon | Empty helper (destructor only) | n/a | - |
+
+## Game language (cSimsApp +100)
+
+The language comes from the landing page or `?lang=` (`engine/language.ts`, `UI_LANGUAGE` in
+`res/uires.ts`). Every read of cSimsApp +100 in the Mac build was checked against the port:
+
+- Money and time: `res/langutil.ts` holds the only copy of cTSLanguageUtility::MakeMoneyString
+  and cTSLanguageManager::MakeTimeString (`cpanel/viewcontrol.ts` and `nbhd/nghinterface.ts`
+  re-export it). The game's utility has its currency flag (+0xc) at 0: "$" (drawn as the
+  simoleon) before the amount, no space, in every language. Thousands separator (jump table
+  lbl_105BCFD0, same in the Windows switch): "," for 1, 2, 12, 15, 17..20; "." for 3..9, 13,
+  14; none for 10 (Norwegian), 11 (Finnish), 16. Negative amounts (lbl_105BCFD4): "-$1,234",
+  but "$ -1.234" in Danish (8) and 12 and "$-1234" in Norwegian (10). The nbhd copy used to
+  group with "." only in French. Time: "AM 10:05" in 1, 2 and 0x13, 24 h otherwise.
+- The build / buy tools' price tips (dirt, floor, wallpaper, wall, pool, move) call the
+  language manager's MakeMoneyString (vtable +0x84), as the catalog does: they used `§` and
+  US English grouping.
+- Layout values per language, all matching the original for the offered languages: subpanel
+  titles size 10 in French, 11 otherwise (cWinSubpanelFame / Job; House always 11); House
+  buttons 12 px wider and moved 6 px left, and button 8 in the size 7 font, in French;
+  Create-a-Sim personality buttons size 12 in French / German, 14 otherwise; Options play
+  labels (BuildPlayButtons table: 8 in 3, 5, 9; 7 in 4, 14, 16; 9 otherwise); the other
+  per-language tables (Job, Pet skills, House positions, Help, Catalog popup, Options y
+  offsets) only differ for 0x0f..0x14, languages the port does not offer.
+- cWinPeople::Init: the personality page title takes font table entry 9 in German and 10 in
+  Dutch (11 otherwise); cWinScrapbook::Init: the page buttons take entry +0x30 (12) in Dutch
+  instead of +0x38 (14). Both ported.
+- Not ported: the EA intro movie per language (Windows FUN_004ef759, `Music/eag_<lang>.avi`);
+  cDDDSimsView::Init's centred overlay text (+0x178, size 48, 12 in Finnish), whose
+  window is not ported; BMPFactory's per-language BMP_ lookup (GetByIDAndLanguage) is read as
+  "the BMP_ of that id".

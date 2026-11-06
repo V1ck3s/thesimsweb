@@ -118,7 +118,7 @@ XViewer::MouseTrack skips a Drag only when the fixed-point position equals the l
   - A diagonal clears its half floors.
   - A construction wall (0xff) also writes its pattern on the other side (the adjacent tile's opposite segment).
 - **Removing a segment:** refund `trunc(-(0.8 × price - kill refund))`. A split diagonal floor (0xff) gets its floor back from the walls' half floor.
-- **Door and window walls** (styles 3, 5, 6, 0xf, 0x16, 0x17): `KillArchitecturalObject` deletes the portal on that segment. It is refunded `trunc(0.8 × value + 0.5)` and becomes an ObjectUndoable delete (a post-sub in delete mode, a pre-sub otherwise). In delete mode, the copy's style is set back to 1, so an undo restores a plain wall and the door (whose placement then re-applies its style).
+- **Door and window walls** (styles 3, 5, 6, 0xf, 0x16, 0x17): `KillArchitecturalObject` (1018d450) takes the portal on that segment out: an `ObjectUndoable(id, 3 = delete, 0, wall tool)` (a post-sub in delete mode, a pre-sub otherwise), then `cXObject::Pickup(true)` (vtable +0x58 of the object's +0x28 vtable), and one more explosion (+0xe050). It is refunded `trunc(0.8 × value + 0.5)`. The door is not killed: undoing puts the same object back (ObjectState::CreateObject finds it alive and only runs InvokeOntoObject: UserPickup, turns, UserPlace), so it keeps its state and no Init runs; it is killed when the undoable is released (ObjectState::RemoveEntry kills an object left out of the world). In delete mode, the copy's style is set back to 1, so an undo restores a plain wall and the door (whose placement then re-applies its style).
 
 **CleanupWallpaper** runs over the whole level, in world coordinates:
 

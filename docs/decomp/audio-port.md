@@ -201,6 +201,16 @@ reg 0x13 = a2, 0x14 = a3, and UpdateAmbienceLoop passes (0, 0, 0) — same as or
   cBoxX::Pause (FUN_00574972) leaves MainMusicLoop (0x203) playing, with the UI
   tracks; the Mac one pauses it, and so did the port: Options (mode 7, no music
   change) left the song paused (U28).
+- Pause / resume of a sample channel (checked 2026-11-06): cTrackPlayer::Pause calls
+  cSampleChannel::Pause (Mac 10304e60), which calls its sound's Pause (vtable +0x34).
+  For the streamed MP3s that is cTSSndDShow::Pause (CQuickTimePlayer::Pause(1); Unpause
+  resumes in place). For every other sound it is cTSSnd::Pause (Mac 104df0b0; Windows
+  005f8051, a 5-byte jump): cTSSnd::Stop, which stops each playing buffer alias and runs
+  the completion notification; Unpause__6cTSSndFv (104df100) only returns 1. So a sample
+  playing when the game pauses does **not** resume: the track's HIT script goes on from
+  the sample's end once the track unpauses (a looping script starts it again). The port
+  used to disconnect the channel's gain and let the buffer run silently, so it came back
+  further along; `SampleChannel.pause` now stops non-streamed samples (`samplepatch.ts`).
 - Back to Live (re-checked 2026-10-31 in Sims.exe, disassembly + vtables): the
   cut without fade is the **Windows** behaviour, and the Mac one too (same code).
   - `bkground_live` / `_buy1` / `_build` / `_camera` / `_option(s)` are plain

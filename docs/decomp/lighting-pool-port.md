@@ -222,3 +222,32 @@ rectangles cost 400 / 100 / 100 for the pool and 60 / 15 / 15 for water.
 ## 4. Roofs
 
 Ported: see [`roof-port.md`](./roof-port.md).
+
+## 5. Object floor shadows and the SPR2 decoders (options "shadows" / "anti-aliasing")
+
+- **Shadows** (lbl_105BA240[0x38], cOptionsMgr::SetShadows, key `s` in cDDDSimsView: both redraw the
+  view). The flag is read by cXObject::DirtyShadow / Place / Pickup (floor dirtying) and by
+  HouseViewer::RenderStaticRow (101c1450): after the tile's floor and pool tile, before its objects,
+  cXObject::GetTileShadow of the tile's first object (the first along the sibling chain not hidden
+  (+0x8e), without flag 4 (+0x5a), not of type 2 or 9, with a shadow id +0x184; id turned by its direction
+  / 2 through lbl_105BA23C, brightness ObjSelector::GetShadowBrightness), the id turned again by the
+  view rotation, FloorShadowMgr::GetShadow(id) of the scale, then DrawShadow(x, y, shadow, 0xff - (int)(255
+  * ambient + 0.5) + brightness, w, h, floor rows, GetTerrainZ + (level - 1) * level step - row) at the
+  tile center's RenderParam position minus half a tile (101bc600: a byte b with offset + b < 0xf8,
+  clamped at 0, darkens by the dark map row (offset + b) >> 3 where the floor depth is not behind the
+  z-buffer; no depth write). Port: `HouseViewer.drawTileShadow`, `ObjectModuleDrawer.getTileShadow`,
+  `Compositor.drawShadow` (a pass that copies the target under the tile and darkens it with the dark map
+  formula of the sprite shader). No other drawing reads the flag (the people's shadows are not
+  sprites).
+- **Anti-aliasing** (lbl_105BA240[0x39], cOptionsMgr::SetAA -> InitSpr2Decoder(1)): off, z-sprites go
+  through Spr2DecoderNoAlpha* (alpha pixels drawn opaque, depth written). cOptionsMgr::DoStream sets it
+  back on after reading it (Mac 10230250 and Windows 004e6646 alike), so in the game it is only off in
+  MakeThumbnail (and through the "alpha off" cheat). Port: `Compositor.spr2NoAlpha`, set by
+  `HouseViewer.render` from the option or the thumbnail mode.
+- **Windows alpha decoders** (Spr2Decoder565 004bbca9 and its 16-pixel helper 004bc271; the 555 ones
+  alike) differ from the Mac ones the port first followed: an alpha byte below 8 skips the pixel, above
+  0xf7 draws it opaque, otherwise it is blended through the table row (alpha & 0x1f), and the pixel's
+  depth is written in both cases (the Mac decoders blend every alpha pixel and never write its depth).
+  The table (0049a42a) is built like the Mac InitAlphaZSpriteBlit. Port: `alphaWeight` and the alpha pass
+  writing depth (compositor.ts). This changes how alpha pixels drawn later behind them are hidden
+  (window glass, tree foliage).

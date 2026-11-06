@@ -763,6 +763,24 @@ searches, 0 differences in points, goal, steps) and BuildRoomPartition old / new
 (0 differences); FindPath's share of the profile went from 3.1 % to 0.7 %, Path::run's worst
 case from 11.4 to 5.5 ms.
 
+## SimLog, "sim_log begin|end" (2026-11-06, `sim/simlog.ts`, `sim/person.ts`, `ui/cheat.ts`)
+
+SimLog (lbl_105BA390; SimLog.c, LogInteraction.c, LogInteractionSample.c, LogPersonState.c,
+LogPersonTracker.c) is ported. cXPerson::Simulate ends with SimLog::SimTickCompleted while logging:
+one tracker per person (GUID, object id) counts the ticks of its current interaction (object master
+GUID, object id, Interaction +0x10 = the TTAB string index, `Interaction.ttabIndex` here), the
+animation ticks (no route, current primitive 0x2c) and the routing ticks. When the interaction
+changes, the one that ended is filed under its LogInteraction ("Self" / "Idle" without an object,
+else the master selector's catalog name and the TTAB entry's name) as a sample: start tick
+(cSimulator +0x98), counts, result and the change of motives 3, 5..9, 13..15 (cXPerson +0x798,
++0x7a0..+0x7b0, +0x7c0..+0x7c8). The result is the last action's flag 0x20 (+0xa7c, set by
+SetCurrentAction from the tree result +0x1c): `PersonSim.lastActionResult`, new. "sim_log end"
+writes the tab-separated text (header "Object / Interaction / Start Time ... Person Running",
+floats as "%f", "failed" for a failed result) to SimLog.txt, here a download, then shows "Logging
+completed and written to SimLog.txt in the Sims directory." under "Sim Logging". Not kept: the
+tracker's copy of the person data (+0x50, never read); the selectors the original finds again by
+GUID when printing are kept with the GUIDs.
+
 ## Simulation checks (2026-11-05)
 
 Throwaway copy `?nbhd=UserData32` (House01), soaks of 2..3 sim days at speed 3 with per-tick motive
@@ -789,11 +807,45 @@ jump and per-object writer probes.
   trigger, faithful.
 - **Chase Tail**: DogGlobals 8320 ends after local 2 + local 3 (2..5 each) animation loops whatever
   the motives; only an animation that never ends could keep a pet in it. Dogs ran it on House01
-  without sticking; not reproduced.
-- **Undoing a wall deletion** (`world/tools/wallundo.ts`, not changed here): the original's
-  ObjectUndoable(3)::UndoSelf calls ObjectState::CreateObject (MakeNewOutOfWorldObject: a new
-  object whose Init runs); the port places the same XObject back and the lot view's onEnterWorld
-  re-adds a SimObject that restarts at Main without Init.
+  without sticking; not reproduced. Re-checked 2026-11-06 (UserData copy, House01, the visiting
+  dog "Toufou"): node by node, each Animate Sim of the tree lasts 3 to 9 game minutes and the
+  whole action 30 to 60 game minutes, then the dog moves on (Bladder Relief, idle). A pet that
+  shows "Chase Tail" for hours is choosing it again (TTAB entry 33 / 34, autonomy, fun ad 20),
+  not stuck in one run.
+- **Pizza delivery** (traced 2026-11-06, House01 of a UserData copy, phone "Services.../Pizza"
+  queued on Jada): Call for pizza (PhoneGlobals 8312) -> Common entry, dial, talk, hang up; the
+  NPC Pizza Dude comes about an hour later with the box (Food 0x543be3fe in his hand), rings,
+  knocks ("visitor do knock") and runs "begin visiting" (PersonGlobals 8286): he waits by the
+  door until his person data 27 reaches 1800 ticks, then leaves ("Leave world"). Nothing in the
+  data makes a family member go to him: his only TTAB entry, "Greet" (flags 4 = run
+  immediately, no motive ads), is user-only, so with nobody clicking him nobody pays (that is
+  the "nobody paid" of the playtest). Greeting him ("Salue", "do npc greeting" 4101) creates the
+  Social Interactions object and pushes its entries 0x3c "Livre la pizza" (Pizza - Delivery
+  Person 4254) on him and 0x3d "Reçoit la pizza" (Pizza - Receive 4255) on the greeter at the
+  greeter's priority (50 for a user greet). Seen: the dude routes through the front door to the
+  greeter, then the "Fred le livreur de pizza : Et voilà !..." dialog (STR# 301 of the dude,
+  node 14 of 4254); the payment (Transfer Funds, node 24, after the exchange animation) was
+  not reached in the runs (the dialog came at the end of the run). When the greeter is eating
+  (group meal, autonomous priority 2) the queued Receive waits: "eat standing up" / "do group
+  talk" have no Idle for Input, and "do the drop" sets person data 71; after the meal the main
+  loop (8283) runs one "do new adult idle" cycle (non-interruptible animations, flags 0x20)
+  before its "idle" (280) pops the queue; the dude tries to reach her ("go to Person B's room")
+  and gives up first. Same data in the original; not compared in the game.
+- **Global 15 "Current Language"** (Behavior.iff global labels): cSimulator::Init and
+  cSimulator::DoStream (versions >= 0x12) set it from cSimsApp +100, the game's language
+  (StringSetBase's language + 1); the port kept the value saved in the house file (0, 1 or 3 in
+  the shipped houses). The newspaper tests it against Global BCON 0x10b "Language Codes"
+  entry 4 (German): its init / load / main trees then use graphics 2 / 3 (fresh / old) instead of
+  0 / 1. Now set (`Simulator` constructor and `readSimi`). The "only Recycle" newspapers are
+  graphic 1 (old): the paper carrier's "make all papers bad" (People_PaperCarrierF1 4101) sets
+  graphic 1 (3 in German) on every newspaper on the lot but the one it holds when it drops the
+  new one; Read / Find Job test graphic 0 / 2. Faithful.
+- **Undoing a wall deletion** (`world/tools/wallundo.ts`): the earlier note here (the original makes a
+  new object through MakeNewOutOfWorldObject, whose Init runs) misread the decomp. KillArchitecturalObject
+  only calls cXObject::Pickup(true) on the door after creating its ObjectUndoable(3); the object stays in
+  the module, so ObjectState::CreateObject finds it alive and only re-places it (InvokeOntoObject).
+  MakeNewOutOfWorldObject only runs when the handle's object is gone. The port now does the same
+  (ObjectUndoable from `objectundo.ts` + Placement.pickup) instead of killing the door at once.
 - **Pie menu of a deleted object**: ObjectModule::OnKill / OnExitWorld call
   cDDDSimsView::CancelPieMenu (both people pies EndPopup(-1)) when the object is the pie's active
   stack object (cObjPickerTool::GetActiveStackObject) or, for a person, the popup head person. Not

@@ -82,7 +82,9 @@ Port of the house save path. Code: `client/src/game/world/{reconwriter,usagemap,
 - **Carried over from the loaded file (not modeled):**
   - SIMI: cursor, +0x9c, and the int blocks at +0x184 and +0xe4.
   - HOUS 1.
-  - HOUS 0: the +0x49 byte, roof pitch and roof pattern.
+  - HOUS 0: roof pitch and roof pattern. The +0x49 dynamic cutaway byte (low byte of the first int) is the
+    current `WallManager.dynamicCutaway` on an in-game save (`dynamicCutaway` of `HouseSaveInput`);
+    a save without a viewer (MoveOut) carries the whole chunk.
   - Per person: dressing, accessories, practices, and the tail (routes, interactions, queue, ObjectRecords).
   - The runtime does not reload the saved queue. A live queue is therefore not saved; the loaded one is written back.
 
@@ -160,6 +162,16 @@ Port of the house save path. Code: `client/src/game/world/{reconwriter,usagemap,
   tips of the lot (THMB x one more), whatever the view size or saved zoom, which the port's output does not
   depend on: an older build's rendering, not a port difference. Before the roof fix, THMB dy was 0 where the
   game's files have -1 / -2 (House81, 85, 90): it now matches on House81 / 85.
+- Pixel format (2026-11-06): the buffers are in the display format (App+0x34; 565 on the Windows display
+  the port assumes). ScaleBitmap reads / writes them with Cvt565toRGB / CvtRGBto565 (format 2) or the 555
+  pair (format 1), and SaveThumbnail's MakeMemoryBMP(..., true) turns 565 into 555 (pixel >> 1) only when
+  writing the BMP_. The port used to cut the render to 555 before ScaleBitmap, so the filter averaged
+  5-bit greens and truncated again: the green came out one 5-bit level low on about a quarter of the
+  pixels. The terrain colors themselves were right.
+- MakeThumbnail clears lbl_105BA240[0x39] (the anti-aliasing option) and calls InitSpr2Decoder(1) for the
+  render: z-sprites go through Spr2DecoderNoAlpha*, which draw alpha pixels opaque with a depth write
+  (Magic Town trees: opaque foliage in the game's thumbnails). The port sets `Compositor.spr2NoAlpha`
+  while `thumbnailClearColor` is set (`HouseViewer.render`).
 - Gaps: the half-size pair (BMP_ 1024 / 1025) can differ by one pixel in size (House01: 158 x 86 against
   159 x 85; THMB 1024 matches). House90: the roof generator leaves the upper terrace unroofed where the game
   roofs it (roofs.ts). Some objects differ from the game's thumbnails: Magic Town trees drawn pale, pumpkins

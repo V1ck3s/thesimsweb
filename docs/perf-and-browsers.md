@@ -280,3 +280,36 @@ by (type, constructor) with retainer paths for the new nodes.
   (`cas/portraits.ts`, `readPixels` once per head).
 - Lot load after the splash is ~2 s warm, mostly a chain of dependent fetches (neighborhood, family,
   characters, house); the splash itself has a minimum display time.
+
+## Caches and route searches (2026-11-06)
+
+- **Raw FAR entries** (`engine/assets.ts`, `readFarEntry`): reads in flight are still shared, but
+  resolved entries are kept in a least-recently-used map bounded to 16 MB (entries over 4 MB are not
+  kept); an entry dropped there is read again from IndexedDB. It used to keep every entry for the
+  page's life (15..16 MB per sim day in the soak above). A failed read is no longer remembered (the
+  next call tries again).
+- **Animation skills** (`sims/vbanimmgr.ts`): VBAnimMgr::TryUnloadSkills is ported. HouseViewer::
+  UpdateWorld calls it every frame (`world/winlotview.ts` pump); a skill whose keyframes are loaded,
+  that a practice used once and that no practice has used for lbl_105BA0E4 = 160 s (Globs, 128 MB of
+  RAM or more) is unloaded (Envelope<Skill>::Unload): dropped from the manager, its CMX file's parsed
+  form dropped, the next FindSkill reads it again; `sim/personanim.ts` forgets it too. The port's
+  practices are dropped without Skill::UnbindPractice, so Practice::Apply stamps the skill's last use
+  (`Skill.lastUse`) instead of the original's practice count + unbind time; a practice still holding
+  an unloaded skill keeps its own copy. Measured (dev server, Chrome SwiftShader, UserData copy, four
+  lots one after the other, 60 s at speed 3 each): 809 skills / 623 with keyframes after lot 1, 753 /
+  567 once lot 1's skills passed 160 s unused; heap after a forced GC 61 → 66 → 70 → 73 MB.
+- **Route searches**: the original's XRoute::FindPath runs its whole search in one call (budget goals x
+  area + 50 steps, at most 1000; no per-tick routing budget anywhere in the shipped code), so there is
+  nothing to spread over ticks faithfully. 900 searches recorded on House01 (240 s, speed 3) replay in
+  155 ms in all (worst 5 ms, median 0.04 ms, Node); the slow simulate calls of that run (up to 31 ms)
+  held 0..4 searches whose sum stayed under ~10 ms. A spatial grid for ExpandRect's overlap scans gave
+  identical results but was slower on these small searches (240 ms in all) and was not kept. A steady
+  sim-side cost seen in the profile: `SimModule.familyFriendCount` (`cpFamilyFriendCount`, called by
+  UpdateCPStateFromWorld every frame) is the top sim function (0.8 % of a 40 s profile).
+- **Cold lot load** (empty browser profile, game folder on a busy /mnt/c): lot view after 33.6 s, 923
+  requests, but the main thread was busy only ~4.5 s of it (idle 26.7 s): the load waits on the server.
+  Our biggest main-thread cost was IndexedDB: one transaction per get (`engine/idb.ts` `withStore`,
+  ~0.9 s). The gets issued in one task (FAR entries, IFF files, ranges, FAR manifests) now share one
+  readonly transaction (`queueGet`, like the puts' `queuePut`). Next in that profile: portrait renders
+  (`portraits.ts`, 0.4 s), WASM text decoding (0.3 s), floors' plugin scan (0.2 s). Warm load
+  (filled IndexedDB, same lot) after the change: 5.5..5.9 s to the lot view, no errors.

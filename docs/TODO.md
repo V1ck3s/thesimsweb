@@ -10,49 +10,50 @@ sous `client/src/game/`).
 
 ## 1. Bugs observés
 
-- **Animaux bloqués en « Action - Chase Tail »** plus de 8 heures de jeu : non reproduit (l'arbre
-  finit toujours après 4 à 10 boucles ; seule une animation qui ne finit jamais l'expliquerait).
-- **Erreur 62 dans « do new adult idle »** : Breakpoint des données, aussi dans l'original ; vu en
-  ville quand une personne commence à attendre en portant quelque chose (port interrompu ?).
-- **Famille du tutoriel** : le nom vient maintenant de FAMs ; les membres « user00177 » n'ont pas
-  été reproduits.
+- **Animaux bloqués en « Action - Chase Tail »** plus de 8 heures de jeu : non reproduit (une
+  action dure 30 à 60 min ; l'animal la choisit sans doute de nouveau, pub fun 20).
+- **Erreur 62 dans « do new adult idle »** : Breakpoint des données (nœud 29 de l'arbre 8330),
+  aussi dans l'original ; qui pousse « Wait » sur une personne qui porte quelque chose : non trouvé.
+- **Famille du tutoriel** : « user00177 » non reproduit (deux imports donnent « Jojo » et
+  « Paulette ») ; seule source possible : `loadCharacter` sans CTSS (sauvegarde interrompue ?).
 
 ## 2. Fonctionnalités manquantes (visibles en jeu)
 
 Live
 - **Popups des besoins des animaux** : portés, non vérifiés. Page célébrité : niveaux 0 et
   0x11..0x13 non vérifiés.
-- **PIP** : composition BoboVision du gadget par son masque alpha et message 0x1b de fin de fondu
-  (cTSWin::Plot / BlitPrivateBufferToParent, `ui/tswin.ts`).
-- **Annuler une suppression de mur** : l'objet revient, mais le port remet le même objet et le
-  relance à Main sans Init ; l'original recrée un objet neuf (Init). `world/tools/wallundo.ts`.
+- **PIP** : message 0x1b porté ; reste la composition BoboVision du gadget (AlphaBlend_565_P5,
+  32 niveaux) et le blit à clé de couleur sans BoboVision, dans `cpanel/viewcontrol.ts`.
+- **Annuler une suppression de mur** : porté (la porte est ramassée puis replacée, sans Init, comme
+  l'original) ; à vérifier en jeu.
+- **Pizza** : appel, arrivée, accueil et dialogue vus ; paiement et remise de la boîte non observés.
 
 Quartier / sauvegarde
-- **Pages web** : l'ordre de `[objects]` du .pub suit notre index. Lien vers les pages en mode
-  SAVES=client sans service worker (serveur de dev) : non servies. Album photo avec photos
-  (MakeCurThumb porté) non testé.
-- **Langue** (réglage de la page d'accueil, `engine/language.ts`) : à finir de vérifier. Le
-  quartier se charge en `?lang=1` ; à contrôler : textes de l'interface, catalogue, bulles,
-  formats d'argent / d'heure, décalages de police (fame / job / house / options ne connaissent que
-  le français), noms des quartiers et lots (STR# 2000 par langue), modèles web anglais en repli.
-  Les outils (dirttool, floortool, movetool, wallpapertool, pooltool, walltool) formatent les
-  prix avec `toLocaleString("en-US")` au lieu de makeMoneyString.
-- **Vignettes** : le vert du terrain est un cran 5 bits trop bas sur ~28 % des pixels (génération
-  des couleurs du terrain) ; la grande vignette de House01 fait 158x86 au lieu de 159x85.
-- **Ville magique** : feuillage des bouleaux translucide (vue et vignettes), opaque dans le jeu ;
-  piste : décodeurs Spr2 sans alpha quand l'option « AA » est coupée (InitSpr2Decoder).
-- **Créer un Sim** : l'arbre « design-a-person » est approché par l'attente de l'aperçu.
-- **Import Unleashed** (NeedsUnleashedImport / TryImportUnleashedFamilies) au premier tick du quartier.
+- **Pages web** : ordre de `[objects]` du .pub porté (ordre de l'image de répertoire, 193
+  seaux) mais non vérifié en jeu ; album avec photos non testé ; en SAVES=client les pages ne sont
+  servies que par le service worker (documenté dans le guide). `ObjectFolder` parcourt encore par
+  nom, pas dans l'ordre de hachage de l'original.
+- **Langue** : anglais et allemand vérifiés dans un lot (textes, heure, argent). Non portés : film
+  d'intro par langue, texte centré de cDDDSimsView::Init, BMP_ par langue.
+- **Vignettes** : la grande vignette de House01 fait 158x86 au lieu de 159x85.
+- **Ville magique** : décodeurs alpha de la version Windows portés (seuils 8 / 0xf7, profondeur
+  écrite) et vignettes sans alpha ; non comparé au jeu. Risque : la vitre d'une fenêtre écrit la
+  profondeur et peut cacher un Sim derrière (contraire à la note U44 de playtest.md) : à vérifier.
+  `objecticon.ts`, `buildcatalog.ts` et l'export web gardent l'ancienne règle.
+- **Créer un Sim** : l'arbre « design-a-person » demande un lot simulé derrière l'écran (gros
+  chantier, détails dans `docs/decomp/cas-port.md`).
+- **Import Unleashed** : porté (premier tick du quartier) mais non testé en jeu.
+  CopyMissingUnleashedFilesIntoUserData (Neighborhood::Load) non porté. Attention : il importe
+  6 familles dans les quartiers livrés en version 0x3f (dont UserData3) à leur prochaine ouverture.
 
 Construction
-- **Porte tenue et découpe des murs** : piste dans Wall::Draw (chemin outil de construction).
-- **HOUS 0** : la sauvegarde recopie l'octet de découpe dynamique (+0x49) du fichier chargé au lieu
-  de l'état courant. `world/housesave.ts`.
-- **Option « ombres »** : la touche s la bascule, mais le rendu ne l'a jamais appliquée.
+- **Porte tenue et découpe des murs** : le code suit l'original (aucun écart trouvé) ; à comparer
+  avec le jeu. Découpe des murs en diagonale corrigée (Wall::ComputeCutaway), à voir sur House02.
 
 Interface / triches
-- **Triches non portées** : map_edit, sim_log, triches graphiques autres que grid (genable,
-  damagelist, sweep, draw_routes, draw_floorable), move_lots / mode 5, ReportMissingTextures.
+- **Triches** : map_edit, sim_log, genable, draw_floorable portés (non testés en jeu) ; restent
+  move_lots / mode 5, ReportMissingTextures, damagelist, sweep, draw_routes (drapeau seul), mode
+  herbe de map_edit.
 - **Champs de texte** : polices double octet.
 
 ## 3. Son
@@ -68,19 +69,17 @@ Interface / triches
 - **Chargement à froid d'un lot** : 15 à 19 s jusqu'à la vue du lot (Chrome), puis le mode Live
   charge animations et sons à la demande (1 à 2 min de réseau actif, ce n'est pas une attente).
   Voir `docs/perf-and-browsers.md`.
-- **Mémoire** : la fuite des objets supprimés est corrigée ; reste la croissance des caches
-  (animations, `entryCache` d'`engine/assets.ts` qui garde les entrées FAR brutes déjà analysées).
-- **Pics de tick** : FindPath au pire 8,6 ms (était 35 à 39) ; reste un tick de 24 ms quand
-  trois routes tombent dans le même tick.
+- **Mémoire** : `entryCache` borné (16 Mo), compétences d'animation déchargées après 160 s
+  (TryUnloadSkills) ; TryUnloadSuits / TryUnloadAll non portés.
+- **Pics de tick** : les recherches de route ne les expliquent pas ; coût régulier :
+  `familyFriendCount` appelé à chaque image (`simulator.ts`).
+- **Serveur sur /mnt/c** : le premier inventaire du manifest prend ~4 min quand le disque est
+  chargé (plusieurs vite en polling) ; `?refresh` ne relit plus que les sauvegardes.
 
 ## 6. À vérifier (comparaison avec l'original à faire)
 
-- Journal : seulement « Recycler » l'après-midi (état fixé par l'init selon le global 15, non
-  identifié).
-- Livraison de pizza : le livreur arrive, mais personne n'a payé dans le test ; bulles et boîte non vues.
-- Suivi de caméra : arrêt par les boutons d'étage, changement d'étage du sim suivi, toit masqué.
-- Emménagement sur un lot déjà construit ou sans boîte aux lettres.
-- Pause / reprise des canaux non MP3 : reprise au même endroit ?
+- Suivi de caméra, emménagement sans boîte aux lettres, popups des besoins des animaux et page
+  célébrité : conformes au code décompilé, non vus en jeu.
 - U50 (objet invisible) : le cas exact de l'utilisateur n'a pas été reproduit.
 - Version tactile : testée en émulation Chrome seulement (pas d'appareil réel, pas de Firefox Android).
 
