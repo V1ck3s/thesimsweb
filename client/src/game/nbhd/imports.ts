@@ -25,6 +25,7 @@
  */
 
 import { assetFetch, fetchManifest, readFarEntry } from "../../engine/assets.js";
+import type { GameContext } from "../context.js";
 import { saveCharacter } from "../data/character.js";
 import { deleteGameFile, writeGameFile } from "../data/files.js";
 import { buildIff, decodeStrSet, parseIff, parseIffMapOrder, stringSetMultiSave, type IffChunk } from "../data/iff.js";
@@ -33,6 +34,7 @@ import { decodeImage } from "../res/bmp.js";
 import { UI_LANGUAGE } from "../res/uires.js";
 import { ObjectFolder } from "../world/objectfolder.js";
 import { readSimi } from "./nghinterface.js";
+import { WinProgressPictureDialog } from "./winprogresspicturedialog.js";
 
 /** cSimsApp::FindDataDirectory + GetStringConstant(0x58): the import folder of a neighborhood. */
 export function importDir(nbhdDir: string): string {
@@ -392,4 +394,100 @@ export function pickAndUploadImports(nbhdDir: string): Promise<string[]> {
     input.addEventListener("cancel", () => finish([]));
     input.click();
   });
+}
+
+// ---------------------------------------------------------------------------
+// Unleashed import (Neighborhood::NeedsUnleashedImport / TryImportUnleashedFamilies)
+
+/** cSimsApp +0x66 bit 5: Unleashed installed. */
+const PACK_UNLEASHED = 0x20;
+/** The family number the Unleashed strays take (Strays_4000.FAM). */
+const STRAYS_FAMILY = 4000;
+/** UIText STR# 270: the progress dialog's title and text. */
+const STR_UNLEASHED_IMPORT = 0x10e;
+/** cWinProgressPictureDialog::SetTotal in ImportUnleashedFamilies. */
+const UNLEASHED_IMPORT_TOTAL = 7;
+
+/**
+ * GetStringConstant(0x59) after ExtractDirectory of the neighborhood file:
+ * <neighborhood>/Patch/, which CopyMissingUnleashedFilesIntoUserData fills
+ * from TemplateUserData/Patch/.
+ */
+function patchDir(nbhdDir: string): string {
+  return `${nbhdDir}/Patch`;
+}
+
+/** Neighborhood::NeedsUnleashedImport: Unleashed is installed and NGBH +0x1a6 is set (DoStream sets it for files older than version 0x45). */
+export async function needsUnleashedImport(store: NeighborhoodStore): Promise<boolean> {
+  if (((await ObjectFolder.get(store.dir)).packs & PACK_UNLEASHED) === 0) return false;
+  return store.ngbh().b1a6;
+}
+
+/** The *.FAM files of <dir>/Patch/ (cTSDirectory with SetNewDirectoryEntryFilter("*.FAM")), in NTFS name order. */
+async function listPatchFamilies(nbhdDir: string): Promise<string[]> {
+  const prefix = `Sims/${patchDir(nbhdDir)}/`.toLowerCase();
+  const out = (await fetchManifest()).files
+    .map((f) => f.path)
+    .filter((p) => p.toLowerCase().startsWith(prefix) && !p.slice(prefix.length).includes("/") && p.toLowerCase().endsWith(".fam"))
+    .map((p) => p.slice("Sims/".length));
+  return out.sort((a, b) => (a.toUpperCase() < b.toUpperCase() ? -1 : a.toUpperCase() > b.toUpperCase() ? 1 : 0));
+}
+
+/**
+ * Neighborhood::ImportUnleashedFamilies: a cWinProgressPictureDialog (UIText
+ * STR# 270 entries 1 / 2, kNghPic, total 7), then every <dir>/Patch/*.FAM
+ * once (the directory is read again after each one, the files already seen
+ * kept in a set): its read-only attribute cleared, GetImportInfoForFile(path,
+ * info, 0) and, when it accepts the file, ImportFamily (no dialog, no zoning
+ * change); TickOnce after each file.
+ * Not ported: the string set language calls made before ImportFamily (a
+ * vtable chain on lbl_105BA104 given the game's language and the info's).
+ */
+async function importUnleashedFamilies(ctx: GameContext, nbhdDir: string): Promise<void> {
+  const str = (i: number): string => ctx.strings.get("UIText", STR_UNLEASHED_IMPORT, i - 1);
+  const dlg = new WinProgressPictureDialog(ctx);
+  await dlg.init();
+  await dlg.setTitle(str(1));
+  dlg.addText(str(2));
+  dlg.setImage(await ctx.res.image(0x13ce /* kNghPic */).catch(() => null));
+  dlg.setTotal(UNLEASHED_IMPORT_TOTAL);
+  await dlg.show();
+  try {
+    const seen = new Set<string>();
+    for (;;) {
+      const path = (await listPatchFamilies(nbhdDir)).find((p) => !seen.has(p));
+      if (path === undefined) break;
+      seen.add(path);
+      const info = await getImportInfoForFile(path);
+      if (info) await importFamily(nbhdDir, info).catch((e: unknown) => console.warn(`[import] ${path}`, e));
+      await dlg.tickOnce();
+    }
+  } finally {
+    dlg.close();
+  }
+}
+
+/**
+ * Neighborhood::TryImportUnleashedFamilies (Unleashed installed): when NGBH
+ * +0x1a6 is set, a family numbered 4000 moves to the largest number + 1,
+ * ImportUnleashedFamilies runs and +0x1a6 is cleared; then the neighborhood
+ * is saved. (The store is saved before the imports here: each ImportFamily
+ * reads and saves the neighborhood file, as Neighborhood::ImportFamily saves
+ * the in-memory one with the renumbering.)
+ */
+export async function tryImportUnleashedFamilies(ctx: GameContext, nbhdDir: string): Promise<void> {
+  let store = await NeighborhoodStore.open(nbhdDir);
+  if (((await ObjectFolder.get(nbhdDir)).packs & PACK_UNLEASHED) === 0) return;
+  if (store.ngbh().b1a6) {
+    const ids = store.familyIds();
+    if (ids.includes(STRAYS_FAMILY)) {
+      store.renumberFamily(STRAYS_FAMILY, Math.max(0, ...ids) + 1);
+      await store.save();
+    }
+    await importUnleashedFamilies(ctx, nbhdDir);
+    store = await NeighborhoodStore.open(nbhdDir);
+    store.ngbh().b1a6 = false;
+    store.touchNgbh();
+  }
+  await store.save();
 }

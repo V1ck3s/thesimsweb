@@ -51,7 +51,7 @@ import { deleteGameFile, writeGameFile } from "../data/files.js";
 import { buildIff, parseIff, stringSetMultiSave } from "../data/iff.js";
 import { makeMoneyString, Zone } from "./nghinterface.js";
 import { WinCredits } from "./wincredits.js";
-import { getImportInfoForFile, getLotImportInfo, hasImports, importFamily, importLotFile, isWrongCharacterSet, listImports, pickAndUploadImports, uploadImports, type ImportInfo, type LotImportInfo } from "./imports.js";
+import { getImportInfoForFile, getLotImportInfo, hasImports, importFamily, importLotFile, isWrongCharacterSet, listImports, needsUnleashedImport, pickAndUploadImports, tryImportUnleashedFamilies, uploadImports, type ImportInfo, type LotImportInfo } from "./imports.js";
 import { PD_AVOID_RECT, WinPictureDialog } from "../ui/picturedialog.js";
 import { getCheatCodeManager, type CheatCommandLine } from "../ui/cheat.js";
 import {
@@ -1525,6 +1525,19 @@ export class WinNeighborhoodUL extends TSWin implements LotBtnOwner {
     const next = dirs[(i + step + dirs.length) % dirs.length] ?? this.nb.dir;
     this.callbacks.onSwitchNeighborhood(next);
   }
+  /** The first tick's Unleashed import (nbhd/imports.ts) and the NPC pool refills. */
+  private async firstTickImportsAndPools(): Promise<void> {
+    let store = await NeighborhoodStore.open(this.nb.dir);
+    if (await needsUnleashedImport(store)) {
+      await tryImportUnleashedFamilies(this.ctx, this.nb.dir);
+      store = await NeighborhoodStore.open(this.nb.dir);
+      await refillNpcPools(this.ctx, store);
+      this.callbacks.onSwitchNeighborhood(this.nb.dir);
+      return;
+    }
+    await refillNpcPools(this.ctx, store);
+  }
+
   override pump(now: number): void {
     if (this.openedMs < 0) {
       this.openedMs = now;
@@ -1537,9 +1550,11 @@ export class WinNeighborhoodUL extends TSWin implements LotBtnOwner {
       if (this.firstTick) {
         this.firstTick = false;
         if (this.hoveredLot) void this.showPopup(this.hoveredLot);
-        // TSOnTimerMsg's first tick (not busy): DoFirstTimeCelebs, RefillCelebs(12),
-        // DoFirstTimeFans, RefillFans(18), DoFirstTimeMagicSims, RefillMagicSims(30).
-        if (!this.busy) void NeighborhoodStore.open(this.nb.dir).then((store) => refillNpcPools(this.ctx, store));
+        // TSOnTimerMsg's first tick (not busy): NeedsUnleashedImport ->
+        // TryImportUnleashedFamilies and DoNbhdScreen(1) (the screen is built
+        // again); then DoFirstTimeCelebs, RefillCelebs(12), DoFirstTimeFans,
+        // RefillFans(18), DoFirstTimeMagicSims, RefillMagicSims(30).
+        if (!this.busy) void this.firstTickImportsAndPools();
         // TSOnTimerMsg's first tick: every lot's tutorial arrow off, then, on the
         // regular screen (+0x111) while Neighborhood +0x12e (data[3]) is 0, on over
         // the tutorial lots (cWinLotBtn +0x1a0 == 1).
