@@ -464,7 +464,7 @@ export class ObjectFolder implements SelectorFolder {
     let p = this.opened.get(fi);
     if (!p) {
       p = (async () => {
-        const [key, flag] = this.index.files[fi]!;
+        const [key, flag] = this.index.files[fi] ?? this.addedFiles[fi - this.index.files.length]!;
         const bar = key.indexOf("|");
         const res = bar < 0 ? await ResFile.open(key) : await ResFile.openInFar(key.slice(0, bar), key.slice(bar + 1));
         const glob = res.list("GLOB")[0];
@@ -488,10 +488,36 @@ export class ObjectFolder implements SelectorFolder {
     return p;
   }
 
+  /** Files NewFileAdded brought in after the scan (file index = index.files.length + i; the cached scan is left as it is). */
+  private readonly addedFiles: Array<[string, number]> = [];
+  /** Definitions NewFileAdded appended (their AddSelector order follows the scanned ones). */
+  private addedCount = 0;
+
+  /**
+   * ObjectFolder::NewFileAdded (Neighborhood::AddNewCharacter, after
+   * StubObject::CreateNew wrote the file): the file's enabled definitions
+   * join the folder (AddAllSelectors -> AddSelector, a GUID already known
+   * is overwritten) and its selectors are built. `rel` is relative to the
+   * game folder ("UserData/Characters/User00001.iff"); `flag` the source
+   * flag (1 for a neighborhood's Characters folder).
+   */
+  async newFileAdded(rel: string, flag: number): Promise<ObjSelector[]> {
+    const fi = this.index.files.length + this.addedFiles.push([rel, flag]) - 1;
+    const res = await ResFile.open(rel);
+    for (const c of res.list("OBJD")) {
+      const objd = new ObjDefinition(res.payload(c));
+      if (objd.disabled !== 0) continue;
+      const prev = this.byGuid.get(objd.guid);
+      this.byGuid.set(objd.guid, [fi, c.id, prev ? prev[2] : this.index.objds.length + this.addedCount++]);
+      this.selectors.delete(objd.guid);
+    }
+    return this.openFile(fi);
+  }
+
   /** The source folder flag & 3 of a GUID's definition (ObjSelector +0xb4 bits 2-3), without opening its file; null when unknown. */
   sourceOfGUID(guid: number): number | null {
     const entry = this.byGuid.get(guid >>> 0);
-    const file = entry ? this.index.files[entry[0]] : undefined;
+    const file = entry ? (this.index.files[entry[0]] ?? this.addedFiles[entry[0] - this.index.files.length]) : undefined;
     return file ? file[1] & 3 : null;
   }
 

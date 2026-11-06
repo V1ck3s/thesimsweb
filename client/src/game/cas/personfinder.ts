@@ -7,7 +7,9 @@
  *    first free Characters/User%05d.iff and adds its neighbor
  *    (data/nbhdstore.ts); the new person starts from the template's body
  *    strings and an empty person data;
- *  - BeginDesignAPerson: an EditPerson on the person's body strings;
+ *  - BeginDesignAPerson: an EditPerson on the person's body strings; the
+ *    person's instance lives in house 0 (cas/caslot.ts), which the original
+ *    keeps loaded behind the neighborhood screens (loaded on first use here);
  *  - EndDesignAPerson(save): the body-string side (EditPerson.end), then
  *    SAnimator::ResetSuits' person data (age PD[58] = atoi(body string 14),
  *    gender PD[65], skin PD[60] = index of the skin in PersonGlobals STR#
@@ -26,6 +28,8 @@ import { PD } from "../data/neighborhood.js";
 import { decodeImage } from "../res/bmp.js";
 import type { UIRes } from "../res/uires.js";
 import { SAnimator } from "../sims/index.js";
+import { ObjectFolder } from "../world/objectfolder.js";
+import { CasLot } from "./caslot.js";
 import { EditPerson } from "./editperson.js";
 import { generatePortraits } from "./portraits.js";
 
@@ -47,11 +51,25 @@ export interface CasPerson {
 
 export class CasSession {
   readonly people: CasPerson[] = [];
+  private lotLoad: Promise<CasLot | null> | null = null;
 
   constructor(
     readonly store: NeighborhoodStore,
     private readonly res?: UIRes,
   ) {}
+
+  /**
+   * House 0 with its simulator (Neighborhood::UnloadHouse), loaded on first
+   * use (the sessions that make townies never show a person); null when it
+   * could not be loaded.
+   */
+  lot(): Promise<CasLot | null> {
+    this.lotLoad ??= CasLot.load(this.store.dir).catch((e: unknown) => {
+      console.warn("[cas] house 0 not loaded: the preview plays the idle loop", e);
+      return null;
+    });
+    return this.lotLoad;
+  }
 
   get dir(): string {
     return this.store.dir;
@@ -60,6 +78,8 @@ export class CasSession {
   /** MakeNewPerson */
   async makeNewPerson(): Promise<CasPerson> {
     const c = await this.store.addNewCharacter();
+    // Neighborhood::AddNewCharacter: ObjectFolder::NewFileAdded (the instance needs its selector).
+    await (await ObjectFolder.get(this.dir)).newFileAdded(`${this.dir}/Characters/${c.fileName}`, 1).catch((e: unknown) => console.warn("[cas] NewFileAdded", e));
     const chunks = await readCharacterFile(this.dir, c.fileName);
     const p: CasPerson = {
       guid: c.guid,
@@ -92,6 +112,8 @@ export class CasSession {
     p.edit = null;
     if (!edit) return;
     edit.end(save);
+    // EndDesignAPerson: ObjectModule::KillObject of the instance.
+    (await this.lotLoad)?.killInstance(p.guid);
     if (!save) return;
     p.bodyStrings = edit.bodyStrings();
     const pd = p.personData;

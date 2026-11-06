@@ -12,7 +12,7 @@
  *    kNghDefaultBtn, 200 px wide, centered on (200, 0x211) and (600, 0x211)
  *    (captions 11, 12); title (entry 15, size 16 font, centered, 6 px from
  *    the top), the trait buttons (BuildPersonalityBtns), the first-name
- *    edit (size 10 font, white, one line, 25 characters, flashing frame
+ *    edit (size 10 font, white, one line, 25 characters (16 in Japanese), flashing frame
  *    while empty, (0x113, 0x34) + (0, 0, 0xff, 0x19)) and its label (entry
  *    26, right-aligned 20 px before it), the biography edit (0x800
  *    characters, (0x16, 0x1a9) + (0, 0, 0x2f9, 0x60)) and its label
@@ -48,6 +48,7 @@ import { TE_CHANGED, TE_ESCAPE, TE_TAB, TSWinTextEdit2 } from "../ui/textedit.js
 import { Gfx, TSWin } from "../ui/tswin.js";
 import { winMgr } from "../ui/winmgr.js";
 import type { EditPerson, PersonColor } from "./editperson.js";
+import type { CasLot } from "./caslot.js";
 import type { CasPerson, CasSession } from "./personfinder.js";
 import { WinPersonalityWidget, type PersonalityOwner } from "./winpersonalitywidget.js";
 import { WinVitaBtn } from "./winvitabtn.js";
@@ -172,11 +173,16 @@ export class WinDesignCharacter extends TSWinGenDlg implements PersonalityOwner 
   private readonly memory = new Array<number>(8).fill(0);
   /** +0x1b4: SanifySuits pending. */
   private sanify = true;
-  private animatorSerial = 0;
-  /** The person's instance as the preview shows it (the cXPerson's animator). */
+  /** The person's instance as the preview shows it (the cXPerson's SAnimator). */
   private instance: SAnimator | null = null;
-  /** The instance being (re)created, until it shows. */
-  private creating: Promise<void> | null = null;
+  /** House 0 once the first instance was made there (null: not loaded, the preview idles on its own). */
+  private lot: CasLot | null = null;
+  /** The instance work in order (creations are asynchronous here). */
+  private instanceQueue: Promise<void> = Promise.resolve();
+  /** Instance work queued and not done: the simulator waits (the original creates and starts the tree in one go). */
+  private instanceBusy = 0;
+  /** BeginDesignAPerson's SetSpeed is done once, with the first instance. */
+  private designBegun = false;
   /** Instance work left for the end of the current command (a re-creation covers a suit reset). */
   private instanceWork: "create" | "reset" | null = null;
   private pointsTitle = "";
@@ -310,7 +316,8 @@ export class WinDesignCharacter extends TSWinGenDlg implements PersonalityOwner 
     name.setArea(NAME_EDIT.x + ox, NAME_EDIT.y + oy, NAME_EDIT.x + NAME_EDIT.w + ox, NAME_EDIT.y + NAME_EDIT.h + oy);
     name.target = this;
     name.setLinesAllowed(1);
-    name.setCapacity(0x19);
+    // 16 in Japanese (0x0f), else 25 (the original counts bytes, the port characters).
+    name.setCapacity(UI_LANGUAGE === 0x0f ? 0x10 : 0x19);
     name.setFlashFrameOnEmpty(true);
     name.setDrawFrameOnFocus(false);
     // +0x18c: "UI_NHood_error" (lbl_105BC718 + 0x6c) for a refused insertion.
@@ -423,10 +430,14 @@ export class WinDesignCharacter extends TSWinGenDlg implements PersonalityOwner 
   }
 
   /**
-   * The instance cWinVitaBtn renders: ResetInstanceSuits re-dresses it from
-   * the body strings (SAnimator::ResetSuits, the animation goes on);
-   * PersonFinder::SetAge kills it and creates a new one (new skeleton) that
-   * starts over. Both run once the command's suit changes are done.
+   * The instance cWinVitaBtn renders, a person of house 0 run by its
+   * simulator (cas/caslot.ts): ResetInstanceSuits re-dresses it from the
+   * body strings (SAnimator::ResetSuits, the animation goes on);
+   * PersonFinder::BeginDesignAPerson creates it (CreateInstance) and
+   * PersonFinder::SetAge kills it and creates a new one (new skeleton), and
+   * both start its "design-a-person" tree. The preview's VitaBoy is the
+   * instance's: the simulator's animator poses its skeleton. Both run once
+   * the command's suit changes are done.
    */
   private scheduleInstance(work: "create" | "reset"): void {
     const first = this.instanceWork === null;
@@ -439,23 +450,58 @@ export class WinDesignCharacter extends TSWinGenDlg implements PersonalityOwner 
     this.instanceWork = null;
     const p = this.person;
     const edit = this.edit;
-    if (!p || !edit) return;
-    if (work === "reset") {
-      if (this.creating) void this.creating.then(() => this.instance?.setBodyStrings(edit.bodyStrings()));
-      else void this.instance?.setBodyStrings(edit.bodyStrings());
+    if (!p || !edit || !work) return;
+    this.instanceBusy++;
+    const run = work === "reset" ? () => this.resetInstance(p, edit) : () => this.createInstance(p, edit);
+    this.instanceQueue = this.instanceQueue
+      .then(run)
+      .catch((e: unknown) => console.warn("[cas] instance", e))
+      .finally(() => {
+        this.instanceBusy--;
+        // No catching up on the time the creation took.
+        this.lot?.sim.resetTiming();
+      });
+  }
+
+  private async resetInstance(p: CasPerson, edit: EditPerson): Promise<void> {
+    const strings = edit.bodyStrings();
+    this.lot?.resetInstanceSuits(p.guid, strings);
+    await this.instance?.setBodyStrings(strings);
+  }
+
+  private async createInstance(p: CasPerson, edit: EditPerson): Promise<void> {
+    const lot = await this.session.lot();
+    if (this.ended) return;
+    // SetAge: ObjectModule::KillObject of the old instance (BeginDesignAPerson finds none).
+    lot?.killInstance(p.guid);
+    const ps = lot ? await lot.createInstance(p.guid, edit.bodyStrings()) : null;
+    const a = await this.session.animator(p);
+    if (this.ended) {
+      // The design ended meanwhile: EndDesignAPerson has killed the instance already.
+      lot?.killInstance(p.guid);
       return;
     }
-    const serial = ++this.animatorSerial;
-    const creating = this.session.animator(p).then(async (a: SAnimator | null) => {
-      if (serial !== this.animatorSerial || !a) return;
+    if (ps && lot) {
+      if (a) {
+        // SAnimator::Initialize: the instance's VitaBoy; the simulator poses its skeleton.
+        a.vitaboy.practices.length = 0;
+        ps.animator.attach(a.vitaboy.skeleton);
+      }
+      lot.startDesignTree(ps);
+      if (!this.designBegun) lot.setDesignSpeed();
+      this.lot = lot;
+    } else if (a) {
       await a.startIdle();
-      this.instance = a;
-      this.vita?.setPerson(a);
-    });
-    this.creating = creating;
-    void creating.finally(() => {
-      if (this.creating === creating) this.creating = null;
-    });
+    }
+    this.designBegun = true;
+    this.instance = a;
+    this.vita?.setPerson(a);
+  }
+
+  /** cSimsApp::Simulate: house 0's simulator runs under the dialog. */
+  override pump(nowMs: number): void {
+    if (this.lot && this.instanceBusy === 0 && !this.ended) this.lot.simulate(nowMs);
+    super.pump(nowMs);
   }
 
   /** cWinDesignCharacter::PrepareButtons */
