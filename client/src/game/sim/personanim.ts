@@ -137,7 +137,14 @@ export function requestSkill(name: string): Skill | null | undefined {
     pending.set(
       k,
       (async () => {
-        mgrPromise ??= VBAnimMgr.get();
+        mgrPromise ??= VBAnimMgr.get().then((m) => {
+          // An unloaded skill is read again on its next request.
+          m.skillUnloaded.add((name) => {
+            skills.delete(name);
+            pending.delete(name);
+          });
+          return m;
+        });
         mgr ??= await mgrPromise;
         const s = await mgr.findSkill(k).catch(() => null);
         skills.set(k, s);
@@ -145,6 +152,11 @@ export function requestSkill(name: string): Skill | null | undefined {
     );
   }
   return undefined;
+}
+
+/** VBAnimMgr::TryUnloadSkills (HouseViewer::UpdateWorld); nothing before the first skill request. */
+export function tryUnloadSkills(nowMs: number): void {
+  mgr?.tryUnloadSkills(nowMs);
 }
 
 /** Wait for every requested skill (tests). */

@@ -56,6 +56,9 @@ export class Motion {
   }
 }
 
+/** The millisecond clock (lbl_105BA230) as of the last VBAnimMgr.tryUnloadSkills. */
+export const skillClock = { now: 0 };
+
 export class Skill {
   name = "";
   animationName = "";
@@ -68,6 +71,14 @@ export class Skill {
   /** Filled by load(): xyz per translation, xyzw per rotation. */
   translations: Float32Array | null = null;
   rotations: Float32Array | null = null;
+  /**
+   * +0x68: when a practice last used the skill (skillClock; 0: never).
+   * The original sets it to 0 while practices are bound and to the clock
+   * when the last one unbinds (Skill::UnbindPractice); the port's practices
+   * are dropped without unbinding, so each Practice::Apply stamps it.
+   * Skill::CanUnload / VBAnimMgr.tryUnloadSkills read it.
+   */
+  lastUse = 0;
 
   static read(f: CTGFile): Skill {
     const s = new Skill();

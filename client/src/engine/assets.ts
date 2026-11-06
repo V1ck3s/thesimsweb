@@ -3,7 +3,7 @@
  *
  * Talks to the dev server (`/api/manifest`, `/assets/*` with `Range`) and uses the WASM
  * parsers to pull individual entries out of FAR archives without downloading the whole
- * archive. Decoded payloads are cached in memory by `(farPath, entryName)`.
+ * archive. Recently read entries are kept in memory by `(farPath, entryName)` (bounded, see entryCache).
  *
  * Game-folder data read here (FAR tables and entries, whole files, byte
  * ranges) is also kept in IndexedDB (engine/idb.ts), so a reload does not
@@ -57,7 +57,29 @@ const FAR_HEADER_SIZE = 16;
 const ASSETS_BASE = "/assets/";
 
 const farManifestCache = new Map<string, Promise<FarEntryInfo[]>>();
-const entryCache = new Map<string, Promise<Uint8Array>>();
+/** FAR entry reads in flight (concurrent readers share one read). */
+const entryReads = new Map<string, Promise<Uint8Array>>();
+/**
+ * FAR entries already read, least recently used first, kept up to
+ * ENTRY_CACHE_BYTES. Most consumers keep their own parsed form (animations,
+ * meshes, textures, sounds, fonts, object files), so keeping every raw entry
+ * for the page's life only grew the heap (15..16 MB per sim day); an entry
+ * dropped here is read again from IndexedDB.
+ */
+const entryCache = new Map<string, Uint8Array>();
+let entryCacheBytes = 0;
+const ENTRY_CACHE_BYTES = 16 * 1024 * 1024;
+
+function keepEntry(key: string, bytes: Uint8Array): void {
+  if (bytes.byteLength > ENTRY_CACHE_BYTES / 4) return;
+  entryCache.set(key, bytes);
+  entryCacheBytes += bytes.byteLength;
+  for (const [k, b] of entryCache) {
+    if (entryCacheBytes <= ENTRY_CACHE_BYTES) break;
+    entryCache.delete(k);
+    entryCacheBytes -= b.byteLength;
+  }
+}
 
 let manifest: Promise<Manifest> | null = null;
 
@@ -425,11 +447,18 @@ export async function readFarManifest(farPath: string): Promise<FarEntryInfo[]> 
  * Read one entry from a FAR archive: the entry's bytes only, batched with the
  * other reads of the same task (RangeBatcher), kept in IndexedDB.
  */
-export async function readFarEntry(farPath: string, entryName: string): Promise<Uint8Array> {
+export function readFarEntry(farPath: string, entryName: string): Promise<Uint8Array> {
   const cacheKey = `${farPath}|${entryName.toLowerCase()}`;
-  let cached = entryCache.get(cacheKey);
-  if (!cached) {
-    cached = (async () => {
+  const kept = entryCache.get(cacheKey);
+  if (kept) {
+    // Most recently used: to the end of the map.
+    entryCache.delete(cacheKey);
+    entryCache.set(cacheKey, kept);
+    return Promise.resolve(kept);
+  }
+  let pending = entryReads.get(cacheKey);
+  if (!pending) {
+    pending = (async () => {
       const local = await isGameFilesLocal();
       const persisted = local ? null : await idbGetFarEntry(farPath, entryName);
       if (persisted) return persisted;
@@ -449,9 +478,17 @@ export async function readFarEntry(farPath: string, entryName: string): Promise<
       if (!local) void idbPutFarEntry(farPath, entryName, bytes.slice());
       return bytes;
     })();
-    entryCache.set(cacheKey, cached);
+    entryReads.set(cacheKey, pending);
+    const p = pending;
+    p.then(
+      (bytes) => {
+        entryReads.delete(cacheKey);
+        keepEntry(cacheKey, bytes);
+      },
+      () => entryReads.delete(cacheKey),
+    );
   }
-  return cached;
+  return pending;
 }
 
 /**

@@ -113,8 +113,65 @@ function queuePut(store: string, key: string, value: Uint8Array): Promise<void> 
   return queuedPutsDone;
 }
 
+let queuedGets: Array<[store: string, key: string, resolve: (v: unknown) => void]> = [];
+let getsScheduled = false;
+
+/**
+ * Reads come in the same bursts as the puts (a lot load looks up ~2000 FAR
+ * entries): the gets issued in one task share one readonly transaction
+ * instead of one each (a transaction per get was the biggest main-thread
+ * cost of a cold lot load). Each get still answers on its own; a failed one
+ * answers null.
+ */
+function queueGet(store: string, key: string): Promise<unknown> {
+  return new Promise((resolve) => {
+    queuedGets.push([store, key, resolve]);
+    if (getsScheduled) return;
+    getsScheduled = true;
+    queueMicrotask(() => {
+      const gets = queuedGets;
+      queuedGets = [];
+      getsScheduled = false;
+      void openDb().then((db) => {
+        if (!db) {
+          for (const g of gets) g[2](null);
+          return;
+        }
+        let tx: IDBTransaction;
+        try {
+          tx = db.transaction([...new Set(gets.map((g) => g[0]))], "readonly");
+        } catch {
+          for (const g of gets) g[2](null);
+          return;
+        }
+        const pending = new Set(gets);
+        tx.onabort = () => {
+          for (const g of pending) g[2](null);
+        };
+        for (const g of gets) {
+          try {
+            const req = tx.objectStore(g[0]).get(g[1]);
+            req.onsuccess = () => {
+              pending.delete(g);
+              g[2](req.result);
+            };
+            req.onerror = (e) => {
+              e.preventDefault();
+              pending.delete(g);
+              g[2](null);
+            };
+          } catch {
+            pending.delete(g);
+            g[2](null);
+          }
+        }
+      });
+    });
+  });
+}
+
 export async function idbGetFarManifest(farPath: string): Promise<unknown | null> {
-  return withStore(STORE_FAR_MANIFEST, "readonly", (s) => s.get(farPath));
+  return (await queueGet(STORE_FAR_MANIFEST, farPath)) ?? null;
 }
 
 export async function idbPutFarManifest(farPath: string, value: unknown): Promise<void> {
@@ -126,7 +183,7 @@ export async function idbGetFarEntry(
   entryName: string,
 ): Promise<Uint8Array | null> {
   const key = `${farPath}|${entryName.toLowerCase()}`;
-  const result = await withStore<unknown>(STORE_FAR_ENTRY, "readonly", (s) => s.get(key));
+  const result = await queueGet(STORE_FAR_ENTRY, key);
   return result instanceof Uint8Array ? result : null;
 }
 
@@ -139,7 +196,7 @@ export async function idbPutFarEntry(
 }
 
 export async function idbGetIffFile(path: string): Promise<Uint8Array | null> {
-  const result = await withStore<unknown>(STORE_IFF_FILE, "readonly", (s) => s.get(path));
+  const result = await queueGet(STORE_IFF_FILE, path);
   return result instanceof Uint8Array ? result : null;
 }
 
@@ -148,7 +205,7 @@ export async function idbPutIffFile(path: string, bytes: Uint8Array): Promise<vo
 }
 
 export async function idbGetRange(path: string, start: number, end: number): Promise<Uint8Array | null> {
-  const result = await withStore<unknown>(STORE_RANGE, "readonly", (s) => s.get(`${path}|${start}|${end}`));
+  const result = await queueGet(STORE_RANGE, `${path}|${start}|${end}`);
   return result instanceof Uint8Array ? result : null;
 }
 

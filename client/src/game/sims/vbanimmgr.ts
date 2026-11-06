@@ -21,7 +21,7 @@ import { decodeBmp, type RgbaImage } from "../res/bmp.js";
 import { loadAnimationFromFile, loadAnimationFromStream, loadIndexFromFile, type AnimFile } from "./animfile.js";
 import { DeformableMesh } from "./deformablemesh.js";
 import type { Skeleton } from "./skeleton.js";
-import type { Skill } from "./skill.js";
+import { type Skill, skillClock } from "./skill.js";
 import type { Suit } from "./suit.js";
 
 /** Archives searched, in priority order (the base game first). */
@@ -71,6 +71,13 @@ function ext(name: string): string {
 
 let instance: Promise<VBAnimMgr> | null = null;
 
+/**
+ * lbl_105BA0E4: how long (ms) a skill no practice uses stays loaded before
+ * Skill::CanUnload lets it go. Globs::Globs sets 160000 when the machine has
+ * 128 MB of memory or more (80000 below; any machine today).
+ */
+const SKILL_UNLOAD_MS = 160000;
+
 export class VBAnimMgr {
   /** lowercased file name -> where it is. */
   private readonly files = new Map<string, Source>();
@@ -85,6 +92,12 @@ export class VBAnimMgr {
   private readonly meshCache = new Map<string, Promise<DeformableMesh | null>>();
   private readonly textureCache = new Map<string, Promise<RgbaImage | null>>();
   private readonly skillData = new Map<Skill, Promise<boolean>>();
+  /** The CMX file (cmxCache key) each skill was read from. */
+  private readonly skillFile = new Map<Skill, string>();
+  /** lbl_105BADF0: the clock of the last TryUnloadSkills pass. */
+  private lastUnloadPass = 0;
+  /** Called with the (lowercased) name of each skill tryUnloadSkills unloads, for the caches holding skills by name. */
+  readonly skillUnloaded = new Set<(name: string) => void>();
 
   /** The shared manager (VitaBoy::InitializeAll builds one at startup). */
   static get(): Promise<VBAnimMgr> {
@@ -156,7 +169,11 @@ export class VBAnimMgr {
         if (!a) return null;
         for (const s of a.skeletons) if (!this.skeletons.has(s.name.toLowerCase())) this.skeletons.set(s.name.toLowerCase(), s);
         for (const s of a.suits) if (!this.suits.has(s.name)) this.suits.set(s.name, s);
-        for (const s of a.skills) if (!this.skills.has(s.name.toLowerCase())) this.skills.set(s.name.toLowerCase(), s);
+        for (const s of a.skills) {
+          if (this.skills.has(s.name.toLowerCase())) continue;
+          this.skills.set(s.name.toLowerCase(), s);
+          this.skillFile.set(s, key);
+        }
         return a;
       })();
       this.cmxCache.set(key, p);
@@ -204,6 +221,30 @@ export class VBAnimMgr {
     const s = this.skills.get(k);
     if (!s) return null;
     return (await this.loadSkillData(s)) ? s : null;
+  }
+
+  /**
+   * VBAnimMgr::TryUnloadSkills(now) (HouseViewer::UpdateWorld, every frame):
+   * at most once per clock value (lbl_105BADEC, the interval, is never set),
+   * every loaded skill that Skill::CanUnload allows (used by a practice once,
+   * none since SKILL_UNLOAD_MS) is unloaded (Envelope<Skill>::Unload): the
+   * next findSkill reads it again. Practices still holding it keep their copy.
+   * Its CMX file's parsed form is dropped too (the skeletons and suits it
+   * held stay in their tables).
+   */
+  tryUnloadSkills(now: number): void {
+    skillClock.now = now;
+    if (!(this.lastUnloadPass < now)) return;
+    this.lastUnloadPass = now;
+    for (const [k, s] of this.skills) {
+      if (!this.skillData.has(s) || s.lastUse === 0 || !(s.lastUse + SKILL_UNLOAD_MS < now)) continue;
+      this.skills.delete(k);
+      this.skillData.delete(s);
+      const file = this.skillFile.get(s);
+      if (file !== undefined) this.cmxCache.delete(file);
+      this.skillFile.delete(s);
+      for (const cb of this.skillUnloaded) cb(k);
+    }
   }
 
   private loadSkillData(s: Skill): Promise<boolean> {

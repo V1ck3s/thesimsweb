@@ -12,7 +12,7 @@
 
 import { blendQuats1, type Quat } from "./math3d.js";
 import type { Bone, Skeleton } from "./skeleton.js";
-import type { Motion, Skill } from "./skill.js";
+import { type Motion, type Skill, skillClock } from "./skill.js";
 
 export const LoopMode = {
   /** Play once and hold the last frame. */
@@ -58,6 +58,7 @@ export class Practice {
     this.lastTime = now;
     const n = this.frameCount;
     const skill = this.skill;
+    skill.lastUse = skillClock.now;
     if (n === 0 || !skill.translations || !skill.rotations) return;
     const duration = skill.duration;
     if (Math.abs(this.speed) > 1e-6 && duration > 0) this.position += (this.speed < 0 ? -dt : dt) / duration;
