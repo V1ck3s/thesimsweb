@@ -1453,6 +1453,7 @@ export class SimObject extends TreeSim {
       if (!from || !to) simThrow(XERR.noStackObject);
       ({ arr, grow } = m.neighborRelation(from, to.id));
       if (flags & 4) m.record(this, "relationshipDirty", `${from.id}->${to.id}:${index}`);
+      if (flags & 4) m.setRelationshipDirty(from.id, to.id);
     } else {
       let from: SimObject | null = null;
       let to: SimObject | null = null;
@@ -1475,6 +1476,7 @@ export class SimObject extends TreeSim {
         if (!a) simThrow(XERR.noStackObject);
         ({ arr, grow } = m.neighborRelation(a, to.person.personData[0x1f]!));
         if (flags & 4) m.record(this, "relationshipDirty", `${a.id}->${to.person.personData[0x1f]}:${index}`);
+        if (flags & 4) m.setRelationshipDirty(a.id, to.person.personData[0x1f]!);
       } else {
         const rel = from.obj.relations;
         const key = to.id;
@@ -1546,6 +1548,7 @@ export class SimObject extends TreeSim {
       ({ arr, grow } = m.neighborRelation(from, to.id));
       // ObjectModule::SetRelationshipDirty
       if (set) m.record(this, "relationshipDirty", `${from.id}->${to.id}:${index}`);
+      if (set) m.setRelationshipDirty(from.id, to.id);
     } else {
       let from: SimObject | null = null;
       let to: SimObject | null = null;
@@ -1569,6 +1572,7 @@ export class SimObject extends TreeSim {
         if (!a) simThrow(XERR.noStackObject);
         ({ arr, grow } = m.neighborRelation(a, b));
         if (set) m.record(this, "relationshipDirty", `${a.id}->${b}:${index}`);
+        if (set) m.setRelationshipDirty(a.id, b);
       } else {
         const rel = from.obj.relations;
         const key = to.id;

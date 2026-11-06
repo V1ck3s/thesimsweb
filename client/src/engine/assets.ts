@@ -115,9 +115,14 @@ export function fetchManifest(): Promise<Manifest> {
       return m;
     })();
     manifest = p;
-    p.catch(() => {
-      if (manifest === p) manifest = null;
-    });
+    p.then(
+      (m) => {
+        if (manifest === p) resolvedManifest = m;
+      },
+      () => {
+        if (manifest === p) manifest = null;
+      },
+    );
   }
   return manifest;
 }
@@ -130,7 +135,11 @@ function kindOf(path: string): ManifestFile["kind"] {
 /** The next fetchManifest asks the server again (the game files changed). */
 export function invalidateManifest(): void {
   manifest = null;
+  resolvedManifest = null;
 }
+
+/** The manifest fetchManifest last returned, once it arrived (null before, or after invalidateManifest). */
+let resolvedManifest: Manifest | null = null;
 
 /** Whether `path` (relative to /assets/) is a file the game can write (Sims/UserData*), never stored across loads. */
 export function isWritableAssetPath(path: string): boolean {
@@ -291,6 +300,8 @@ export function assetObjectUrl(path: string): Promise<string | null> {
 const fileReads = new Map<string, Promise<Uint8Array>>();
 /** Bigger loose files (music tracks) are left to the HTTP cache. */
 const PERSIST_MAX_BYTES = 8 * 1024 * 1024;
+/** Whole files up to this size are read through the range batcher (readAssetFile). */
+const BATCHED_FILE_MAX_BYTES = 1024 * 1024;
 
 /**
  * The whole file `path` (relative to /assets/, e.g. "Sims/UIGraphics/Res_CPanel.RT").
@@ -318,6 +329,17 @@ export function readAssetFile(path: string): Promise<Uint8Array> {
     }
     const persisted = await idbGetIffFile(path);
     if (persisted) return persisted;
+    // A small file the manifest (when already here) lists goes through the
+    // shared batcher: the files asked for in one task (the cursors, the
+    // loose wall / floor plugins) share one request.
+    const size = resolvedManifest ? sizeIn(resolvedManifest, path) : null;
+    if (size !== null && size <= BATCHED_FILE_MAX_BYTES) {
+      const data = await readAssetRangeBatched(path, 0, size).catch(() => null);
+      if (data?.length === size) {
+        void idbPutIffFile(path, data.slice());
+        return data;
+      }
+    }
     const res = await fetch(assetUrl(path));
     if (!res.ok) throw new Error(`${path}: ${res.status}`);
     const data = new Uint8Array(await res.arrayBuffer());
@@ -393,6 +415,25 @@ export function readAssetRangeCached(path: string, start: number, end: number): 
   return p;
 }
 
+/** Sizes of the asset manifest's files by lower-case path, made once per manifest. */
+const manifestSizes = new WeakMap<Manifest, Map<string, number>>();
+
+function sizeIn(m: Manifest, path: string): number | null {
+  let sizes = manifestSizes.get(m);
+  if (!sizes) {
+    sizes = new Map(m.files.map((f) => [f.path.toLowerCase(), f.size]));
+    manifestSizes.set(m, sizes);
+  }
+  const size = sizes.get(path.toLowerCase());
+  return typeof size === "number" && size > 0 ? size : null;
+}
+
+/** The size the asset manifest lists for `path`, null when it is not listed (or there is no manifest). */
+async function manifestFileSize(path: string): Promise<number | null> {
+  const m = await fetchManifest().catch(() => null);
+  return m ? sizeIn(m, path) : null;
+}
+
 /**
  * Read the FAR header (first 16 B) + the manifest tail and parse the entry table via WASM.
  * Pulls only `header_size + tail_size` bytes from the network — typically a few hundred B.
@@ -405,24 +446,31 @@ export async function readFarManifest(farPath: string): Promise<FarEntryInfo[]> 
       const persisted = local ? null : ((await idbGetFarManifest(farPath)) as FarEntryInfo[] | null);
       if (Array.isArray(persisted)) return persisted;
       const wasm = await engine();
-      const head = await fetchRange(farPath, 0, FAR_HEADER_SIZE - 1);
+      // Header and manifest through the shared batcher: the archives scanned in
+      // one task (the plugin folders, ~70 Downloads archives) share one request
+      // per step instead of three requests each (range, HEAD, range).
+      const head = await readAssetRangeBatched(farPath, 0, FAR_HEADER_SIZE);
       if (!wasm.checkFarMagic(head)) {
         throw new Error(`${farPath}: not a FAR archive`);
       }
       const view = new DataView(head.buffer, head.byteOffset, head.byteLength);
       const manifestOffset = view.getUint32(12, true);
-      // Manifest is from manifestOffset to EOF. We need the size — get it via HEAD.
+      // Manifest is from manifestOffset to EOF: the size from the asset manifest, else a HEAD.
       let totalSize: number;
       if (local) totalSize = (await localGameSize(farPath)) ?? 0;
       else {
-        const headRes = await fetch(`${ASSETS_BASE}${farPath}`, { method: "HEAD" });
-        if (!headRes.ok) throw new Error(`HEAD ${farPath}: ${headRes.status}`);
-        totalSize = Number(headRes.headers.get("content-length") ?? "0");
+        const known = await manifestFileSize(farPath);
+        if (known !== null) totalSize = known;
+        else {
+          const headRes = await fetch(`${ASSETS_BASE}${farPath}`, { method: "HEAD" });
+          if (!headRes.ok) throw new Error(`HEAD ${farPath}: ${headRes.status}`);
+          totalSize = Number(headRes.headers.get("content-length") ?? "0");
+        }
       }
       if (!Number.isFinite(totalSize) || totalSize === 0) {
         throw new Error(`${farPath}: no content-length`);
       }
-      const tail = await fetchRange(farPath, manifestOffset, totalSize - 1);
+      const tail = await readAssetRangeBatched(farPath, manifestOffset, totalSize);
       // Reassemble a minimal "FAR view" for the WASM parser: header pointing at offset 16
       // for the manifest, then the manifest bytes. We rebuild the header so the parser
       // sees a coherent buffer without downloading the payload region.

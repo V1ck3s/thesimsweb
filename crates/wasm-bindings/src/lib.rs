@@ -1,8 +1,43 @@
 //! Thin wasm-bindgen layer that re-exports the parser crates to TypeScript.
 //! Built with `wasm-pack build --target web crates/wasm-bindings`.
 
+use core::cell::RefCell;
 use js_sys::{Array, Object, Reflect, Uint8Array};
 use wasm_bindgen::prelude::*;
+
+thread_local! {
+    /// JS strings made once per literal (property names, enum-like values).
+    static KEYS: RefCell<Vec<(&'static str, JsValue)>> = const { RefCell::new(Vec::new()) };
+    /// JS strings of the 4-byte chunk kinds seen so far.
+    static KINDS: RefCell<Vec<([u8; 4], JsValue)>> = const { RefCell::new(Vec::new()) };
+}
+
+/// `JsValue::from_str(name)`, cached: each new JS string costs a `TextDecoder`
+/// call on the JS side, which parsing thousands of entries paid per property.
+fn key(name: &'static str) -> JsValue {
+    KEYS.with(|k| {
+        let mut k = k.borrow_mut();
+        if let Some((_, v)) = k.iter().find(|(n, _)| core::ptr::eq(*n, name) || *n == name) {
+            return v.clone();
+        }
+        let v = JsValue::from_str(name);
+        k.push((name, v.clone()));
+        v
+    })
+}
+
+/// The chunk kind as a JS string, cached by its bytes.
+fn kind_value(kind: [u8; 4]) -> JsValue {
+    KINDS.with(|k| {
+        let mut k = k.borrow_mut();
+        if let Some((_, v)) = k.iter().find(|(b, _)| *b == kind) {
+            return v.clone();
+        }
+        let v = JsValue::from_str(core::str::from_utf8(&kind).unwrap_or("????"));
+        k.push((kind, v.clone()));
+        v
+    })
+}
 
 #[wasm_bindgen]
 #[must_use]
@@ -31,13 +66,13 @@ pub fn parse_far_manifest(data: &[u8]) -> Result<Array, JsError> {
         let entry = entry.map_err(|e| JsError::new(&e.to_string()))?;
         let obj = Object::new();
         let filename = String::from_utf8_lossy(entry.filename);
-        Reflect::set(&obj, &JsValue::from_str("filename"), &JsValue::from_str(&filename))
+        Reflect::set(&obj, &key("filename"), &JsValue::from_str(&filename))
             .map_err(|_| JsError::new("set filename"))?;
-        Reflect::set(&obj, &JsValue::from_str("sizeDecompressed"), &JsValue::from_f64(f64::from(entry.size_decompressed)))
+        Reflect::set(&obj, &key("sizeDecompressed"), &JsValue::from_f64(f64::from(entry.size_decompressed)))
             .map_err(|_| JsError::new("set sizeDecompressed"))?;
-        Reflect::set(&obj, &JsValue::from_str("sizeCompressed"), &JsValue::from_f64(f64::from(entry.size_compressed)))
+        Reflect::set(&obj, &key("sizeCompressed"), &JsValue::from_f64(f64::from(entry.size_compressed)))
             .map_err(|_| JsError::new("set sizeCompressed"))?;
-        Reflect::set(&obj, &JsValue::from_str("offset"), &JsValue::from_f64(f64::from(entry.offset)))
+        Reflect::set(&obj, &key("offset"), &JsValue::from_f64(f64::from(entry.offset)))
             .map_err(|_| JsError::new("set offset"))?;
         #[allow(clippy::cast_possible_truncation)]
         array.set(i as u32, obj.into());
@@ -96,20 +131,20 @@ pub fn parse_iff_chunks(data: &[u8]) -> Result<Array, JsError> {
     for chunk in iff_file.chunks() {
         let chunk = chunk.map_err(|e| JsError::new(&e.to_string()))?;
         let obj = Object::new();
-        let kind = core::str::from_utf8(&chunk.kind).unwrap_or("????");
         let label_end = chunk.label.iter().position(|&b| b == 0).unwrap_or(chunk.label.len());
         let label = String::from_utf8_lossy(&chunk.label[..label_end]);
         let data_start = chunk.offset + iff::CHUNK_HEADER_LEN;
         let data_len = chunk.data.len();
-        Reflect::set(&obj, &JsValue::from_str("kind"), &JsValue::from_str(kind))
+        Reflect::set(&obj, &key("kind"), &kind_value(chunk.kind))
             .map_err(|_| JsError::new("set kind"))?;
-        Reflect::set(&obj, &JsValue::from_str("size"), &JsValue::from_f64(f64::from(chunk.size)))
+        Reflect::set(&obj, &key("size"), &JsValue::from_f64(f64::from(chunk.size)))
             .map_err(|_| JsError::new("set size"))?;
-        Reflect::set(&obj, &JsValue::from_str("id"), &JsValue::from_f64(f64::from(chunk.id)))
+        Reflect::set(&obj, &key("id"), &JsValue::from_f64(f64::from(chunk.id)))
             .map_err(|_| JsError::new("set id"))?;
-        Reflect::set(&obj, &JsValue::from_str("flags"), &JsValue::from_f64(f64::from(chunk.flags)))
+        Reflect::set(&obj, &key("flags"), &JsValue::from_f64(f64::from(chunk.flags)))
             .map_err(|_| JsError::new("set flags"))?;
-        Reflect::set(&obj, &JsValue::from_str("label"), &JsValue::from_str(&label))
+        let label = if label.is_empty() { key("") } else { JsValue::from_str(&label) };
+        Reflect::set(&obj, &key("label"), &label)
             .map_err(|_| JsError::new("set label"))?;
         #[allow(clippy::cast_precision_loss)]
         let offset_f = chunk.offset as f64;
@@ -117,11 +152,11 @@ pub fn parse_iff_chunks(data: &[u8]) -> Result<Array, JsError> {
         let data_start_f = data_start as f64;
         #[allow(clippy::cast_precision_loss)]
         let data_len_f = data_len as f64;
-        Reflect::set(&obj, &JsValue::from_str("offset"), &JsValue::from_f64(offset_f))
+        Reflect::set(&obj, &key("offset"), &JsValue::from_f64(offset_f))
             .map_err(|_| JsError::new("set offset"))?;
-        Reflect::set(&obj, &JsValue::from_str("dataStart"), &JsValue::from_f64(data_start_f))
+        Reflect::set(&obj, &key("dataStart"), &JsValue::from_f64(data_start_f))
             .map_err(|_| JsError::new("set dataStart"))?;
-        Reflect::set(&obj, &JsValue::from_str("dataLen"), &JsValue::from_f64(data_len_f))
+        Reflect::set(&obj, &key("dataLen"), &JsValue::from_f64(data_len_f))
             .map_err(|_| JsError::new("set dataLen"))?;
         array.push(&obj);
     }
@@ -152,11 +187,11 @@ pub fn decode_spr2_frame(
         .decode_frame(frame_index, &palt)
         .map_err(|e| JsError::new(&e.to_string()))?;
     let obj = Object::new();
-    Reflect::set(&obj, &JsValue::from_str("width"), &JsValue::from_f64(f64::from(frame.width)))
+    Reflect::set(&obj, &key("width"), &JsValue::from_f64(f64::from(frame.width)))
         .map_err(|_| JsError::new("set width"))?;
-    Reflect::set(&obj, &JsValue::from_str("height"), &JsValue::from_f64(f64::from(frame.height)))
+    Reflect::set(&obj, &key("height"), &JsValue::from_f64(f64::from(frame.height)))
         .map_err(|_| JsError::new("set height"))?;
-    Reflect::set(&obj, &JsValue::from_str("rgba"), &Uint8Array::from(frame.rgba.as_slice()).into())
+    Reflect::set(&obj, &key("rgba"), &Uint8Array::from(frame.rgba.as_slice()).into())
         .map_err(|_| JsError::new("set rgba"))?;
     Ok(obj)
 }
@@ -187,11 +222,11 @@ pub fn parse_bhav(data: &[u8]) -> Result<Object, JsError> {
         set_f64(&i, "opcode", f64::from(instr.opcode))?;
         set_f64(&i, "tDest", f64::from(instr.t_dest))?;
         set_f64(&i, "fDest", f64::from(instr.f_dest))?;
-        Reflect::set(&i, &JsValue::from_str("operand"), &Uint8Array::from(&instr.operand[..]).into())
+        Reflect::set(&i, &key("operand"), &Uint8Array::from(&instr.operand[..]).into())
             .map_err(|_| JsError::new("set operand"))?;
         instructions.push(&i);
     }
-    Reflect::set(&obj, &JsValue::from_str("instructions"), &instructions.into())
+    Reflect::set(&obj, &key("instructions"), &instructions.into())
         .map_err(|_| JsError::new("set instructions"))?;
     Ok(obj)
 }
@@ -209,7 +244,7 @@ pub fn parse_bcon(data: &[u8]) -> Result<Object, JsError> {
     for c in &bcon.constants {
         constants.push(&JsValue::from_f64(f64::from(*c)));
     }
-    Reflect::set(&obj, &JsValue::from_str("constants"), &constants.into())
+    Reflect::set(&obj, &key("constants"), &constants.into())
         .map_err(|_| JsError::new("set constants"))?;
     Ok(obj)
 }
@@ -232,27 +267,27 @@ pub fn parse_str_table(data: &[u8]) -> Result<Object, JsError> {
         let entry_obj = Object::new();
         match e {
             simantics::StrEntry::Single { data } => {
-                Reflect::set(&entry_obj, &JsValue::from_str("kind"), &JsValue::from_str("single"))
+                Reflect::set(&entry_obj, &key("kind"), &key("single"))
                     .map_err(|_| JsError::new("set kind"))?;
                 Reflect::set(
                     &entry_obj,
-                    &JsValue::from_str("data"),
+                    &key("data"),
                     &Uint8Array::from(&data[..]).into(),
                 )
                 .map_err(|_| JsError::new("set data"))?;
             }
             simantics::StrEntry::Pair { data, comment } => {
-                Reflect::set(&entry_obj, &JsValue::from_str("kind"), &JsValue::from_str("pair"))
+                Reflect::set(&entry_obj, &key("kind"), &key("pair"))
                     .map_err(|_| JsError::new("set kind"))?;
                 Reflect::set(
                     &entry_obj,
-                    &JsValue::from_str("data"),
+                    &key("data"),
                     &Uint8Array::from(&data[..]).into(),
                 )
                 .map_err(|_| JsError::new("set data"))?;
                 Reflect::set(
                     &entry_obj,
-                    &JsValue::from_str("comment"),
+                    &key("comment"),
                     &Uint8Array::from(&comment[..]).into(),
                 )
                 .map_err(|_| JsError::new("set comment"))?;
@@ -262,18 +297,18 @@ pub fn parse_str_table(data: &[u8]) -> Result<Object, JsError> {
                 data,
                 comment,
             } => {
-                Reflect::set(&entry_obj, &JsValue::from_str("kind"), &JsValue::from_str("lang"))
+                Reflect::set(&entry_obj, &key("kind"), &key("lang"))
                     .map_err(|_| JsError::new("set kind"))?;
                 set_f64(&entry_obj, "langCode", f64::from(*lang_code))?;
                 Reflect::set(
                     &entry_obj,
-                    &JsValue::from_str("data"),
+                    &key("data"),
                     &Uint8Array::from(&data[..]).into(),
                 )
                 .map_err(|_| JsError::new("set data"))?;
                 Reflect::set(
                     &entry_obj,
-                    &JsValue::from_str("comment"),
+                    &key("comment"),
                     &Uint8Array::from(&comment[..]).into(),
                 )
                 .map_err(|_| JsError::new("set comment"))?;
@@ -281,7 +316,7 @@ pub fn parse_str_table(data: &[u8]) -> Result<Object, JsError> {
         }
         entries.push(&entry_obj);
     }
-    Reflect::set(&obj, &JsValue::from_str("entries"), &entries.into())
+    Reflect::set(&obj, &key("entries"), &entries.into())
         .map_err(|_| JsError::new("set entries"))?;
     Ok(obj)
 }
@@ -303,13 +338,13 @@ pub fn parse_trcn(data: &[u8]) -> Result<Object, JsError> {
         set_f64(&entry_obj, "default", f64::from(e.default))?;
         Reflect::set(
             &entry_obj,
-            &JsValue::from_str("name"),
+            &key("name"),
             &Uint8Array::from(&e.name[..]).into(),
         )
         .map_err(|_| JsError::new("set name"))?;
         Reflect::set(
             &entry_obj,
-            &JsValue::from_str("comment"),
+            &key("comment"),
             &Uint8Array::from(&e.comment[..]).into(),
         )
         .map_err(|_| JsError::new("set comment"))?;
@@ -318,12 +353,12 @@ pub fn parse_trcn(data: &[u8]) -> Result<Object, JsError> {
             set_f64(&range_obj, "enforced", f64::from(enforced))?;
             set_f64(&range_obj, "min", f64::from(min))?;
             set_f64(&range_obj, "max", f64::from(max))?;
-            Reflect::set(&entry_obj, &JsValue::from_str("range"), &range_obj.into())
+            Reflect::set(&entry_obj, &key("range"), &range_obj.into())
                 .map_err(|_| JsError::new("set range"))?;
         }
         entries.push(&entry_obj);
     }
-    Reflect::set(&obj, &JsValue::from_str("entries"), &entries.into())
+    Reflect::set(&obj, &key("entries"), &entries.into())
         .map_err(|_| JsError::new("set entries"))?;
     Ok(obj)
 }
@@ -345,7 +380,7 @@ pub fn parse_objd(data: &[u8]) -> Result<Object, JsError> {
     for f in &objd.fields {
         fields.push(&JsValue::from_f64(f64::from(*f)));
     }
-    Reflect::set(&obj, &JsValue::from_str("fields"), &fields.into())
+    Reflect::set(&obj, &key("fields"), &fields.into())
         .map_err(|_| JsError::new("set fields"))?;
     Ok(obj)
 }
@@ -370,7 +405,7 @@ pub fn parse_objf(data: &[u8]) -> Result<Object, JsError> {
         set_f64(&row, "action", f64::from(e.action))?;
         entries.push(&row);
     }
-    Reflect::set(&obj, &JsValue::from_str("entries"), &entries.into())
+    Reflect::set(&obj, &key("entries"), &entries.into())
         .map_err(|_| JsError::new("set entries"))?;
     Ok(obj)
 }
@@ -409,11 +444,11 @@ pub fn parse_dgrp(data: &[u8]) -> Result<Object, JsError> {
             set_f64(&s, "objectYOffset", f64::from(sp.object_y_offset))?;
             sprites.push(&s);
         }
-        Reflect::set(&row, &JsValue::from_str("sprites"), &sprites.into())
+        Reflect::set(&row, &key("sprites"), &sprites.into())
             .map_err(|_| JsError::new("set sprites"))?;
         images.push(&row);
     }
-    Reflect::set(&obj, &JsValue::from_str("images"), &images.into())
+    Reflect::set(&obj, &key("images"), &images.into())
         .map_err(|_| JsError::new("set images"))?;
     Ok(obj)
 }
@@ -431,7 +466,7 @@ pub fn parse_glob(data: &[u8]) -> Result<Object, JsError> {
     let obj = Object::new();
     Reflect::set(
         &obj,
-        &JsValue::from_str("semiGlobalName"),
+        &key("semiGlobalName"),
         &JsValue::from_str(&glob.semi_global_name),
     )
     .map_err(|_| JsError::new("set semiGlobalName"))?;
@@ -449,7 +484,7 @@ pub fn parse_hous(data: &[u8]) -> Result<Object, JsError> {
     let h = simantics::Hous::parse(data).map_err(|e| JsError::new(&e.to_string()))?;
     let obj = Object::new();
     set_f64(&obj, "version", f64::from(h.version))?;
-    Reflect::set(&obj, &JsValue::from_str("name"), &JsValue::from_str(&h.name))
+    Reflect::set(&obj, &key("name"), &JsValue::from_str(&h.name))
         .map_err(|_| JsError::new("set name"))?;
     set_f64(&obj, "trailingLen", h.trailing.len() as f64)?;
     Ok(obj)
@@ -465,13 +500,13 @@ pub fn parse_hous(data: &[u8]) -> Result<Object, JsError> {
 pub fn parse_slot(data: &[u8]) -> Result<Object, JsError> {
     let slot = simantics::Slot::parse(data).map_err(|e| JsError::new(&e.to_string()))?;
     let obj = Object::new();
-    Reflect::set(&obj, &JsValue::from_str("version"), &JsValue::from(slot.version))
+    Reflect::set(&obj, &key("version"), &JsValue::from(slot.version))
         .map_err(|_| JsError::new("set version"))?;
-    Reflect::set(&obj, &JsValue::from_str("count"), &JsValue::from(slot.count))
+    Reflect::set(&obj, &key("count"), &JsValue::from(slot.count))
         .map_err(|_| JsError::new("set count"))?;
     Reflect::set(
         &obj,
-        &JsValue::from_str("rawRecordsLen"),
+        &key("rawRecordsLen"),
         &JsValue::from(slot.raw_records.len() as u32),
     )
     .map_err(|_| JsError::new("set rawRecordsLen"))?;
@@ -500,9 +535,9 @@ pub fn objd_footprint(iff_data: &[u8], master_id: u32) -> Result<js_sys::Array, 
     let arr = js_sys::Array::new();
     for (x, y) in tiles {
         let cell = Object::new();
-        Reflect::set(&cell, &JsValue::from_str("x"), &JsValue::from(i32::from(x)))
+        Reflect::set(&cell, &key("x"), &JsValue::from(i32::from(x)))
             .map_err(|_| JsError::new("set x"))?;
-        Reflect::set(&cell, &JsValue::from_str("y"), &JsValue::from(i32::from(y)))
+        Reflect::set(&cell, &key("y"), &JsValue::from(i32::from(y)))
             .map_err(|_| JsError::new("set y"))?;
         arr.push(&cell);
     }
@@ -527,14 +562,14 @@ pub fn parse_flrm(data: &[u8], chunk_id: u32) -> Result<Object, JsError> {
     let arr = js_sys::Array::new();
     for e in &f.entries {
         let cell = Object::new();
-        Reflect::set(&cell, &JsValue::from_str("filename"), &JsValue::from_str(&e.filename))
+        Reflect::set(&cell, &key("filename"), &JsValue::from_str(&e.filename))
             .map_err(|_| JsError::new("set filename"))?;
         set_f64(&cell, "unknown1", f64::from(e.unknown1))?;
         set_f64(&cell, "id", f64::from(e.id))?;
         set_f64(&cell, "trailingLen", e.trailing.len() as f64)?;
         arr.push(&cell);
     }
-    Reflect::set(&obj, &JsValue::from_str("entries"), &arr)
+    Reflect::set(&obj, &key("entries"), &arr)
         .map_err(|_| JsError::new("set entries"))?;
     Ok(obj)
 }
@@ -556,12 +591,12 @@ pub fn parse_arry(data: &[u8]) -> Result<Object, JsError> {
     set_f64(&obj, "height", f64::from(a.height))?;
     set_f64(&obj, "kind", a.kind.0 as f64)?;
     let label = a.kind.well_known_label().unwrap_or("unknown");
-    Reflect::set(&obj, &JsValue::from_str("kindLabel"), &JsValue::from_str(label))
+    Reflect::set(&obj, &key("kindLabel"), &JsValue::from_str(label))
         .map_err(|_| JsError::new("set kindLabel"))?;
     set_f64(&obj, "unknown", f64::from(a.unknown))?;
     let bytes = js_sys::Uint8Array::new_with_length(a.data.len() as u32);
     bytes.copy_from(&a.data);
-    Reflect::set(&obj, &JsValue::from_str("data"), &bytes)
+    Reflect::set(&obj, &key("data"), &bytes)
         .map_err(|_| JsError::new("set data"))?;
     Ok(obj)
 }
@@ -577,7 +612,7 @@ pub fn parse_fwav(data: &[u8]) -> Result<Object, JsError> {
     let obj = Object::new();
     Reflect::set(
         &obj,
-        &JsValue::from_str("eventName"),
+        &key("eventName"),
         &JsValue::from_str(&f.event_name),
     )
     .map_err(|_| JsError::new("set eventName"))?;
@@ -603,11 +638,11 @@ pub fn extract_fwav_map(data: &[u8]) -> Result<Array, JsError> {
             continue;
         };
         let obj = Object::new();
-        Reflect::set(&obj, &JsValue::from_str("id"), &JsValue::from_f64(f64::from(chunk.id)))
+        Reflect::set(&obj, &key("id"), &JsValue::from_f64(f64::from(chunk.id)))
             .map_err(|_| JsError::new("set id"))?;
         Reflect::set(
             &obj,
-            &JsValue::from_str("eventName"),
+            &key("eventName"),
             &JsValue::from_str(&parsed.event_name),
         )
         .map_err(|_| JsError::new("set eventName"))?;
@@ -697,11 +732,11 @@ pub fn parse_ttab(data: &[u8]) -> Result<Object, JsError> {
             set_f64(&mo, "personalityModifier", f64::from(m.personality_modifier))?;
             motives.push(&mo);
         }
-        Reflect::set(&inter, &JsValue::from_str("motives"), &motives.into())
+        Reflect::set(&inter, &key("motives"), &motives.into())
             .map_err(|_| JsError::new("set motives"))?;
         interactions.push(&inter);
     }
-    Reflect::set(&obj, &JsValue::from_str("interactions"), &interactions.into())
+    Reflect::set(&obj, &key("interactions"), &interactions.into())
         .map_err(|_| JsError::new("set interactions"))?;
     Ok(obj)
 }
@@ -747,7 +782,7 @@ pub fn parse_hit(data: &[u8]) -> Result<Object, JsError> {
         set_f64(&row, "address", f64::from(ex.address))?;
         exports.push(&row);
     }
-    Reflect::set(&obj, &JsValue::from_str("exports"), &exports.into())
+    Reflect::set(&obj, &key("exports"), &exports.into())
         .map_err(|_| JsError::new("set exports"))?;
     Ok(obj)
 }
@@ -766,9 +801,9 @@ pub fn disasm_hit(data: &[u8]) -> Result<Array, JsError> {
         let obj = Object::new();
         set_f64(&obj, "address", f64::from(instr.address))?;
         set_f64(&obj, "opcode", f64::from(instr.opcode))?;
-        Reflect::set(&obj, &JsValue::from_str("mnemonic"), &JsValue::from_str(instr.mnemonic))
+        Reflect::set(&obj, &key("mnemonic"), &JsValue::from_str(instr.mnemonic))
             .map_err(|_| JsError::new("set mnemonic"))?;
-        Reflect::set(&obj, &JsValue::from_str("args"), &JsValue::from_str(&instr.args))
+        Reflect::set(&obj, &key("args"), &JsValue::from_str(&instr.args))
             .map_err(|_| JsError::new("set args"))?;
         #[allow(clippy::cast_precision_loss)]
         let byte_len_f = instr.byte_len as f64;
@@ -778,8 +813,8 @@ pub fn disasm_hit(data: &[u8]) -> Result<Array, JsError> {
     Ok(array)
 }
 
-fn set_f64(obj: &Object, key: &str, value: f64) -> Result<(), JsError> {
-    Reflect::set(obj, &JsValue::from_str(key), &JsValue::from_f64(value))
+fn set_f64(obj: &Object, name: &'static str, value: f64) -> Result<(), JsError> {
+    Reflect::set(obj, &key(name), &JsValue::from_f64(value))
         .map_err(|_| JsError::new("set"))?;
     Ok(())
 }
@@ -929,10 +964,10 @@ fn run_pending_and_serialize(
             ("ran", p.action_function, s)
         }
     };
-    Reflect::set(&result, &JsValue::from_str("outcome"), &JsValue::from_str(outcome_str))
+    Reflect::set(&result, &key("outcome"), &JsValue::from_str(outcome_str))
         .map_err(|_| JsError::new("set outcome"))?;
     set_f64(&result, "actionId", f64::from(action_id))?;
-    Reflect::set(&result, &JsValue::from_str("exec"), &JsValue::from_str(&exec_str))
+    Reflect::set(&result, &key("exec"), &JsValue::from_str(&exec_str))
         .map_err(|_| JsError::new("set exec"))?;
     set_f64(&result, "ticksRan", f64::from(ticks_ran))?;
 
@@ -969,24 +1004,24 @@ fn run_pending_and_serialize(
             simantics::vm::TraceBranch::Returned(false) => "ret_false".to_string(),
             simantics::vm::TraceBranch::Error => "ret_error".to_string(),
         };
-        Reflect::set(&e, &JsValue::from_str("branch"), &JsValue::from_str(&branch))
+        Reflect::set(&e, &key("branch"), &JsValue::from_str(&branch))
             .map_err(|_| JsError::new("set branch"))?;
         if let Some(operand) = lookup_operand(entry.bhav_id, entry.ip) {
             if let Some(decoded) = simantics::vm::format_primitive_operand(entry.opcode, operand) {
-                Reflect::set(&e, &JsValue::from_str("operand"), &JsValue::from_str(&decoded))
+                Reflect::set(&e, &key("operand"), &JsValue::from_str(&decoded))
                     .map_err(|_| JsError::new("set operand"))?;
             }
         }
         trace.push(&e);
     }
-    Reflect::set(&result, &JsValue::from_str("trace"), &trace)
+    Reflect::set(&result, &key("trace"), &trace)
         .map_err(|_| JsError::new("set trace"))?;
 
     let effects = Array::new();
     for ef in &vm.effects {
         effects.push(&effect_to_object(ef)?);
     }
-    Reflect::set(&result, &JsValue::from_str("effects"), &effects)
+    Reflect::set(&result, &key("effects"), &effects)
         .map_err(|_| JsError::new("set effects"))?;
 
     Ok(result)
@@ -999,7 +1034,7 @@ fn effect_to_object(ef: &simantics::vm::VmEffect) -> Result<JsValue, JsError> {
     use simantics::vm::{DialogFlavour, VmEffect};
     let obj = Object::new();
     let set_kind = |k: &str| -> Result<(), JsError> {
-        Reflect::set(&obj, &JsValue::from_str("kind"), &JsValue::from_str(k))
+        Reflect::set(&obj, &key("kind"), &JsValue::from_str(k))
             .map_err(|_| JsError::new("set kind"))?;
         Ok(())
     };
@@ -1013,7 +1048,7 @@ fn effect_to_object(ef: &simantics::vm::VmEffect) -> Result<JsValue, JsError> {
             set_f64(&obj, "ticks", f64::from(*ticks))?;
             Reflect::set(
                 &obj,
-                &JsValue::from_str("interruptable"),
+                &key("interruptable"),
                 &JsValue::from_bool(*interruptable),
             )
             .map_err(|_| JsError::new("set interruptable"))?;
@@ -1060,7 +1095,7 @@ fn effect_to_object(ef: &simantics::vm::VmEffect) -> Result<JsValue, JsError> {
                 DialogFlavour::Global => "global",
                 DialogFlavour::SemiGlobal => "semiGlobal",
             };
-            Reflect::set(&obj, &JsValue::from_str("flavour"), &JsValue::from_str(flav))
+            Reflect::set(&obj, &key("flavour"), &JsValue::from_str(flav))
                 .map_err(|_| JsError::new("set flavour"))?;
             set_f64(&obj, "stringIndex", f64::from(*string_index))?;
         }
@@ -1110,7 +1145,7 @@ fn effect_to_object(ef: &simantics::vm::VmEffect) -> Result<JsValue, JsError> {
             set_kind("EngineHook")?;
             set_f64(&obj, "primitive", f64::from(*primitive))?;
             let name = simantics::primitive_name(u16::from(*primitive)).unwrap_or("?");
-            Reflect::set(&obj, &JsValue::from_str("name"), &JsValue::from_str(name))
+            Reflect::set(&obj, &key("name"), &JsValue::from_str(name))
                 .map_err(|_| JsError::new("set name"))?;
         }
     }
@@ -1140,13 +1175,13 @@ pub fn parse_hot(text: &str) -> Result<Object, JsError> {
         set_f64(&row, "address", f64::from(*v))?;
         track_data.push(&row);
     }
-    Reflect::set(&obj, &JsValue::from_str("trackData"), &track_data.into())
+    Reflect::set(&obj, &key("trackData"), &track_data.into())
         .map_err(|_| JsError::new("set trackData"))?;
 
     let event_mapping = Array::new();
     for (name, m) in &hot.event_mapping {
         let row = Object::new();
-        Reflect::set(&row, &JsValue::from_str("name"), &JsValue::from_str(name))
+        Reflect::set(&row, &key("name"), &JsValue::from_str(name))
             .map_err(|_| JsError::new("set name"))?;
         set_f64(&row, "eventKind", f64::from(m.event_kind))?;
         set_f64(&row, "trackId", f64::from(m.track_id))?;
@@ -1154,63 +1189,63 @@ pub fn parse_hot(text: &str) -> Result<Object, JsError> {
         for v in &m.extra_args {
             extra.push(&JsValue::from_f64(f64::from(*v)));
         }
-        Reflect::set(&row, &JsValue::from_str("extraArgs"), &extra.into())
+        Reflect::set(&row, &key("extraArgs"), &extra.into())
             .map_err(|_| JsError::new("set extraArgs"))?;
         event_mapping.push(&row);
     }
-    Reflect::set(&obj, &JsValue::from_str("eventMapping"), &event_mapping.into())
+    Reflect::set(&obj, &key("eventMapping"), &event_mapping.into())
         .map_err(|_| JsError::new("set eventMapping"))?;
 
     let patches = Array::new();
     for (id, p) in &hot.patches {
         let row = Object::new();
         set_f64(&row, "id", f64::from(*id))?;
-        Reflect::set(&row, &JsValue::from_str("name"), &JsValue::from_str(&p.name))
+        Reflect::set(&row, &key("name"), &JsValue::from_str(&p.name))
             .map_err(|_| JsError::new("set name"))?;
-        Reflect::set(&row, &JsValue::from_str("soundPath"), &JsValue::from_str(&p.sound_path))
+        Reflect::set(&row, &key("soundPath"), &JsValue::from_str(&p.sound_path))
             .map_err(|_| JsError::new("set soundPath"))?;
-        Reflect::set(&row, &JsValue::from_str("looped"), &JsValue::from_bool(p.looped))
+        Reflect::set(&row, &key("looped"), &JsValue::from_bool(p.looped))
             .map_err(|_| JsError::new("set looped"))?;
-        Reflect::set(&row, &JsValue::from_str("piano"), &JsValue::from_bool(p.piano))
+        Reflect::set(&row, &key("piano"), &JsValue::from_bool(p.piano))
             .map_err(|_| JsError::new("set piano"))?;
         patches.push(&row);
     }
-    Reflect::set(&obj, &JsValue::from_str("patches"), &patches.into())
+    Reflect::set(&obj, &key("patches"), &patches.into())
         .map_err(|_| JsError::new("set patches"))?;
 
     let tracks = Array::new();
     for (id, t) in &hot.tracks {
         let row = Object::new();
         set_f64(&row, "id", f64::from(*id))?;
-        Reflect::set(&row, &JsValue::from_str("subroutineName"), &JsValue::from_str(&t.subroutine_name))
+        Reflect::set(&row, &key("subroutineName"), &JsValue::from_str(&t.subroutine_name))
             .map_err(|_| JsError::new("set subroutineName"))?;
         set_f64(&row, "volume", f64::from(t.volume))?;
-        Reflect::set(&row, &JsValue::from_str("argsKind"), &JsValue::from_str(&t.args_kind))
+        Reflect::set(&row, &key("argsKind"), &JsValue::from_str(&t.args_kind))
             .map_err(|_| JsError::new("set argsKind"))?;
-        Reflect::set(&row, &JsValue::from_str("duckingPriority"), &JsValue::from_str(&t.ducking_priority))
+        Reflect::set(&row, &key("duckingPriority"), &JsValue::from_str(&t.ducking_priority))
             .map_err(|_| JsError::new("set duckingPriority"))?;
-        Reflect::set(&row, &JsValue::from_str("controlGroup"), &JsValue::from_str(&t.control_group))
+        Reflect::set(&row, &key("controlGroup"), &JsValue::from_str(&t.control_group))
             .map_err(|_| JsError::new("set controlGroup"))?;
-        Reflect::set(&row, &JsValue::from_str("spl"), &JsValue::from_str(&t.spl))
+        Reflect::set(&row, &key("spl"), &JsValue::from_str(&t.spl))
             .map_err(|_| JsError::new("set spl"))?;
-        Reflect::set(&row, &JsValue::from_str("hitlistId"), &JsValue::from_str(&t.hitlist_id))
+        Reflect::set(&row, &key("hitlistId"), &JsValue::from_str(&t.hitlist_id))
             .map_err(|_| JsError::new("set hitlistId"))?;
-        Reflect::set(&row, &JsValue::from_str("patchId"), &JsValue::from_str(&t.patch_id))
+        Reflect::set(&row, &key("patchId"), &JsValue::from_str(&t.patch_id))
             .map_err(|_| JsError::new("set patchId"))?;
         tracks.push(&row);
     }
-    Reflect::set(&obj, &JsValue::from_str("tracks"), &tracks.into())
+    Reflect::set(&obj, &key("tracks"), &tracks.into())
         .map_err(|_| JsError::new("set tracks"))?;
 
     let equates = Array::new();
     for (name, value) in &hot.event_equate {
         let row = Object::new();
-        Reflect::set(&row, &JsValue::from_str("name"), &JsValue::from_str(name))
+        Reflect::set(&row, &key("name"), &JsValue::from_str(name))
             .map_err(|_| JsError::new("set name"))?;
         set_f64(&row, "value", f64::from(*value))?;
         equates.push(&row);
     }
-    Reflect::set(&obj, &JsValue::from_str("equates"), &equates.into())
+    Reflect::set(&obj, &key("equates"), &equates.into())
         .map_err(|_| JsError::new("set equates"))?;
 
     Ok(obj)
@@ -1253,12 +1288,12 @@ pub fn run_hit_track(
         RunOutcome::Yielded(_) => (false, false, None),
         RunOutcome::Error(e) => (false, false, Some(format!("{e:?}"))),
     };
-    Reflect::set(&obj, &JsValue::from_str("halted"), &JsValue::from_bool(halted))
+    Reflect::set(&obj, &key("halted"), &JsValue::from_bool(halted))
         .map_err(|_| JsError::new("set halted"))?;
-    Reflect::set(&obj, &JsValue::from_str("exhausted"), &JsValue::from_bool(exhausted))
+    Reflect::set(&obj, &key("exhausted"), &JsValue::from_bool(exhausted))
         .map_err(|_| JsError::new("set exhausted"))?;
     if let Some(err) = error_str {
-        Reflect::set(&obj, &JsValue::from_str("error"), &JsValue::from_str(&err))
+        Reflect::set(&obj, &key("error"), &JsValue::from_str(&err))
             .map_err(|_| JsError::new("set error"))?;
     }
 
@@ -1266,7 +1301,7 @@ pub fn run_hit_track(
     for ef in &effects {
         effects_arr.push(&hit_effect_to_object(ef)?);
     }
-    Reflect::set(&obj, &JsValue::from_str("effects"), &effects_arr.into())
+    Reflect::set(&obj, &key("effects"), &effects_arr.into())
         .map_err(|_| JsError::new("set effects"))?;
 
     // Final register snapshot — most values are 0 but useful for tests/debug.
@@ -1280,7 +1315,7 @@ pub fn run_hit_track(
     for (name, idx) in names {
         set_f64(&regs, name, f64::from(vm.regs[idx]))?;
     }
-    Reflect::set(&obj, &JsValue::from_str("finalRegs"), &regs.into())
+    Reflect::set(&obj, &key("finalRegs"), &regs.into())
         .map_err(|_| JsError::new("set finalRegs"))?;
 
     Ok(obj)
@@ -1290,7 +1325,7 @@ fn hit_effect_to_object(ef: &simantics::hit_vm::HitEffect) -> Result<JsValue, Js
     use simantics::hit_vm::HitEffect;
     let obj = Object::new();
     let set_kind = |k: &str| -> Result<(), JsError> {
-        Reflect::set(&obj, &JsValue::from_str("kind"), &JsValue::from_str(k))
+        Reflect::set(&obj, &key("kind"), &JsValue::from_str(k))
             .map_err(|_| JsError::new("set kind"))?;
         Ok(())
     };
@@ -1324,7 +1359,7 @@ fn hit_effect_to_object(ef: &simantics::hit_vm::HitEffect) -> Result<JsValue, Js
                 simantics::hit_vm::WaitKind::Ge => "ge",
                 simantics::hit_vm::WaitKind::Le => "le",
             };
-            Reflect::set(&obj, &JsValue::from_str("waitKind"), &JsValue::from_str(kind_s))
+            Reflect::set(&obj, &key("waitKind"), &JsValue::from_str(kind_s))
                 .map_err(|_| JsError::new("set waitKind"))?;
             set_f64(&obj, "var1", f64::from(*var1))?;
             set_f64(&obj, "var2", f64::from(*var2))?;
@@ -1363,7 +1398,7 @@ pub fn decode_xa(data: &[u8]) -> Result<Object, JsError> {
     let n_samples = pcm.samples.len() as f64;
     set_f64(&obj, "samples", n_samples)?;
     let wav = pcm.to_wav();
-    Reflect::set(&obj, &JsValue::from_str("wav"), &Uint8Array::from(wav.as_slice()).into())
+    Reflect::set(&obj, &key("wav"), &Uint8Array::from(wav.as_slice()).into())
         .map_err(|_| JsError::new("set wav"))?;
     Ok(obj)
 }
@@ -1408,18 +1443,18 @@ pub fn resolve_sound_event(
 
     let obj = Object::new();
     set_f64(&obj, "eventId", f64::from(event_id))?;
-    Reflect::set(&obj, &JsValue::from_str("eventName"), &JsValue::from_str(&event_name))
+    Reflect::set(&obj, &key("eventName"), &JsValue::from_str(&event_name))
         .map_err(|_| JsError::new("set eventName"))?;
     if let Some(r) = resolved {
         set_f64(&obj, "eventKind", f64::from(r.event_kind))?;
         set_f64(&obj, "trackId", f64::from(r.track_id))?;
         set_f64(&obj, "entryAddress", f64::from(r.entry_address))?;
         if let Some(name) = r.patch_name {
-            Reflect::set(&obj, &JsValue::from_str("patchName"), &JsValue::from_str(&name))
+            Reflect::set(&obj, &key("patchName"), &JsValue::from_str(&name))
                 .map_err(|_| JsError::new("set patchName"))?;
         }
         if let Some(path) = r.patch_path {
-            Reflect::set(&obj, &JsValue::from_str("patchPath"), &JsValue::from_str(&path))
+            Reflect::set(&obj, &key("patchPath"), &JsValue::from_str(&path))
                 .map_err(|_| JsError::new("set patchPath"))?;
         }
     }
@@ -1437,7 +1472,7 @@ pub fn parse_xa_header(data: &[u8]) -> Result<Object, JsError> {
     let h = audio::Xa::parse_header(data).map_err(|e| JsError::new(&e.to_string()))?;
     let obj = Object::new();
     let magic = core::str::from_utf8(&h.magic).unwrap_or("?");
-    Reflect::set(&obj, &JsValue::from_str("magic"), &JsValue::from_str(magic))
+    Reflect::set(&obj, &key("magic"), &JsValue::from_str(magic))
         .map_err(|_| JsError::new("set magic"))?;
     set_f64(&obj, "channels", f64::from(h.channels))?;
     set_f64(&obj, "sampleRate", f64::from(h.sample_rate))?;

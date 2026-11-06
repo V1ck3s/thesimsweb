@@ -431,7 +431,7 @@ export class SimModule {
         if (r.values.length > 1 && r.values[1] !== 0) s[inFamily ? 25 : 26]!++;
       }
     }
-    s[29] = this.familyFriendCount(fam.memberGuids) << 16 >> 16;
+    s[29] = this.familyFriendsCount(fam) << 16 >> 16;
     for (const k of [1, 2, 3, 4, 5, 6, 25, 26, 27, 28]) s[k] = s[k]! << 16 >> 16;
     addNewStat(getFamilyHistory(fam), s);
   }
@@ -1176,6 +1176,8 @@ export class SimModule {
     if (inst) inst.pd[0x3d] = 0;
     nb.personData![0x3d] = 0;
     fam.memberGuids.splice(i, 1);
+    this.familyFriendCounts.delete(fam);
+    this.memberIndex = null;
     this.sim.state?.removeFamilyMember(nb.guid);
     this.updateInstanceVisitorTypes();
     fam.flags &= ~8;
@@ -1195,6 +1197,8 @@ export class SimModule {
   addToFamily(nb: Neighbor, fam: Family): boolean {
     if (fam.memberGuids.some((g) => (g | 0) === (nb.guid | 0))) return false;
     fam.memberGuids.push(nb.guid >>> 0);
+    this.familyFriendCounts.delete(fam);
+    this.memberIndex = null;
     this.updateInstanceVisitorTypes();
     const inst = this.persons.find((p) => (p.obj.selector.guid | 0) === (nb.guid | 0));
     if (inst) {
@@ -1299,13 +1303,13 @@ export class SimModule {
         return data === 7 ? fam.flags & 1 : (fam.flags >> 1) & 1;
       }
       case 6:
-        return this.nbhd?.families.find((f) => f.memberGuids.some((g) => (g | 0) === (nb.guid | 0)))?.houseNumber ?? 0;
+        return this.familyOfMember(nb.guid)?.houseNumber ?? 0;
       case 5: // Neighborhood::GetFriendCount(neighbor)
         return this.neighborFriendCount(nb);
       case 9: { // Family::GetFriendCount -> Neighborhood::GetFamilyFriendsCount of the neighbor's family
         const fn = nb.personData?.[0x3d] ?? 0;
         const fam = fn === 0 ? undefined : this.nbhd?.families.find((f) => f.chunkId === fn);
-        return fam ? this.familyFriendCount(fam.memberGuids) : 0;
+        return fam ? this.familyFriendsCount(fam) : 0;
       }
       default:
         return this.unportedValue(`scope 24 neighbor data ${data}`, 0);
@@ -1329,14 +1333,18 @@ export class SimModule {
    * Neighborhood::GetFriendCount(Neighbor *): the other characters belonging
    * to a family (Neighbor +0xee, person data 0x3d) sharing a daily
    * relationship of at least 25 both ways. The original caches it at
-   * Neighbor +0x20 and recomputes when +0x24 is set; it is recomputed here.
+   * Neighbor +0x20 and recomputes when +0x24 is set (RelationshipsChanged;
+   * a neighbor without an entry here counts as set).
    */
   private neighborFriendCount(nb: Neighbor): number {
+    const kept = this.neighborFriendCounts.get(nb);
+    if (kept !== undefined) return kept;
     let n = 0;
     for (const o of this.nbhd?.neighbors ?? []) {
       if (o === nb || !o.personData || o.personData[0x3d] === 0) continue;
       if (SimModule.areFriends(nb, o)) n++;
     }
+    this.neighborFriendCounts.set(nb, n);
     return n;
   }
 
@@ -1371,7 +1379,74 @@ export class SimModule {
     if (this.getZoningType(g[10]!) === 1) fn = g[9]!;
     else if (selectedGuid !== undefined) fn = this.persons.find((p) => (p.obj.selector.guid | 0) === (selectedGuid | 0))?.pd[0x3d] ?? 0;
     const fam = fn === 0 ? undefined : this.nbhd?.families.find((f) => f.chunkId === fn);
-    return fam ? this.familyFriendCount(fam.memberGuids) : 0;
+    return fam ? this.familyFriendsCount(fam) : 0;
+  }
+
+  /**
+   * Family +0x120 / +0x124: the friend count Neighborhood::GetFamilyFriendsCount
+   * returns and its dirty flag. Families without an entry are dirty (a new
+   * lot recounts once); AddToFamily, RemoveFromFamily and
+   * RelationshipsChanged (ObjectModule::SetRelationshipDirty) drop the entry.
+   */
+  private readonly familyFriendCounts = new Map<Family, number>();
+  /**
+   * The first family listing each member GUID (what families.find(f =>
+   * f.memberGuids has guid) answers), rebuilt when the families or their
+   * member counts change (BHAVs ask it for every neighbor in loops).
+   */
+  private memberIndex: { stamp: number; byGuid: Map<number, Family> } | null = null;
+
+  private familyOfMember(guid: number): Family | undefined {
+    const families = this.nbhd?.families;
+    if (!families) return undefined;
+    // (AddToFamily / RemoveFromFamily also drop it; this catches changes made elsewhere.)
+    let stamp = families.length;
+    for (let i = 0; i < families.length; i++) stamp = (stamp * 31 + families[i]!.memberGuids.length) | 0;
+    if (this.memberIndex?.stamp !== stamp) {
+      const byGuid = new Map<number, Family>();
+      for (const f of families) for (const g of f.memberGuids) if (!byGuid.has(g | 0)) byGuid.set(g | 0, f);
+      this.memberIndex = { stamp, byGuid };
+    }
+    return this.memberIndex.byGuid.get(guid | 0);
+  }
+
+  /** Neighbor +0x20 / +0x24: Neighborhood::GetFriendCount's kept count (dirty when absent). */
+  private readonly neighborFriendCounts = new Map<Neighbor, number>();
+
+  /**
+   * Neighborhood::GetFamilyFriendsCount(family) (Family::GetFriendCount):
+   * Neighborhood::UpdateFamilyFriendsCount when the family is marked
+   * changed, else the count kept from the last update.
+   */
+  private familyFriendsCount(fam: Family): number {
+    let n = this.familyFriendCounts.get(fam);
+    if (n === undefined) {
+      n = this.familyFriendCount(fam.memberGuids);
+      this.familyFriendCounts.set(fam, n);
+    }
+    return n;
+  }
+
+  /**
+   * Neighborhood::RelationshipsChanged(neighbor): marks the neighbor's
+   * friend count changed (+0x24), and the friend count of the family its
+   * family number (+0xee, person data 0x3d) names (+0x124).
+   */
+  relationshipsChanged(nb: Neighbor | undefined): void {
+    if (!nb) return;
+    this.neighborFriendCounts.delete(nb);
+    const fn = nb.personData?.[0x3d] ?? 0;
+    const fam = this.nbhd?.families.find((f) => f.chunkId === fn);
+    if (fam) this.familyFriendCounts.delete(fam);
+  }
+
+  /**
+   * ObjectModule::SetRelationshipDirty(a, b): RelationshipsChanged for both
+   * neighbors (by neighbor id; the original also sets ObjectModule +0x12).
+   */
+  setRelationshipDirty(a: number, b: number): void {
+    this.relationshipsChanged(this.findNeighborByID(a) ?? undefined);
+    this.relationshipsChanged(this.findNeighborByID(b) ?? undefined);
   }
 
   /** Neighborhood::UpdateFamilyFriendsCount for one family (see NghInterface.getFamilyFriendsCount). */

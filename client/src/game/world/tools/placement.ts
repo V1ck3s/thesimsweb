@@ -263,7 +263,10 @@ export class Placement {
   /** IsPartOfMe (cXObject: itself; cXMTObject: any part of the chain). */
   isPartOfMe(obj: XObject, other: XObject): boolean {
     if (other === obj) return true;
-    return this.isMultiTile(obj) && this.chain(obj).includes(other);
+    if (!this.isMultiTile(obj)) return false;
+    // chain(obj).includes(other) without building the chain (it scans every object).
+    const head = obj.mtLeadId !== 0 ? (this.get(obj.mtLeadId) ?? obj) : obj;
+    return other === head || (other.mtLeadId === head.objectId && this.module.objects.get(other.objectId) === other);
   }
 
   // --- hierarchy ------------------------------------------------------------------

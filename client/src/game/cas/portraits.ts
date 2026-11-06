@@ -40,7 +40,8 @@
  */
 
 import { encodeBmp } from "../data/bmpwrite.js";
-import { UIRes } from "../res/uires.js";
+import { idbGetPortraits, idbPutPortraits } from "../../engine/idb.js";
+import { UI_LANGUAGE, UIRes } from "../res/uires.js";
 import { BodyStrings, BS } from "../sims/bodystrings.js";
 import { VERTEX_FLOATS, type SkeletonBinding } from "../sims/deformablemesh.js";
 import { mat4Mul, rotationTf, translationTf, type Mat4, type Vec3 } from "../sims/math3d.js";
@@ -381,10 +382,29 @@ function headCamera(): Promise<HeadCamera> {
 }
 
 /**
+ * Bumped when the rendering below changes: the pictures kept in IndexedDB
+ * under an older tag are not used.
+ */
+const PORTRAIT_CACHE_VERSION = 1;
+
+/**
  * PersonFinder::GenerateBitmaps(all, save): BMP_ id -> 24-bit BMP bytes.
- * `res` supplies the template bitmaps (loaded when omitted).
+ * `res` supplies the template bitmaps (loaded when omitted). The pictures
+ * depend only on the body strings (and the game's files): a set rendered
+ * once is kept in IndexedDB and read back on the next page load instead of
+ * rendering again (a lot load renders every family member and NPC whose
+ * stored pictures are missing or blank).
  */
 export async function generatePortraits(bodyStrings: readonly string[], res?: UIRes): Promise<Map<number, Uint8Array>> {
+  const key = `v${PORTRAIT_CACHE_VERSION}|${UI_LANGUAGE}|${bodyStrings.join("\n")}`;
+  const kept = await idbGetPortraits(key).catch(() => null);
+  if (kept?.length) return new Map(kept);
+  const out = await renderPortraits(bodyStrings, res);
+  if (out.size) void idbPutPortraits(key, [...out]).catch(() => undefined);
+  return out;
+}
+
+async function renderPortraits(bodyStrings: readonly string[], res?: UIRes): Promise<Map<number, Uint8Array>> {
   const out = new Map<number, Uint8Array>();
   const vb = await headPerson(bodyStrings);
   if (!vb) return out;

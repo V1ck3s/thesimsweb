@@ -127,6 +127,7 @@ export interface PluginFile {
  */
 export async function scanPluginFiles(ext: string, local: string): Promise<PluginFile[]> {
   const m = await fetchManifest();
+  const paths = lowerPaths(m.files);
   const want = ext.toLowerCase();
   const dirs = ["ExpansionPack", "ExpansionPack2", "ExpansionPack3", "ExpansionPack4", "Deluxe", "ExpansionPack5", "ExpansionPack6", "ExpansionPack7", "ExpansionShared"];
   const out: PluginFile[] = [];
@@ -138,17 +139,23 @@ export async function scanPluginFiles(ext: string, local: string): Promise<Plugi
     out.push(f);
   };
   const loose = (prefix: string): void => {
-    const files = m.files
-      .map((f) => f.path)
-      .filter((p) => p.toLowerCase().startsWith(`sims/${prefix.toLowerCase()}`) && p.toLowerCase().endsWith(want) && !p.slice(5 + prefix.length).includes("/"))
-      .sort((a, b) => (a.toLowerCase() < b.toLowerCase() ? -1 : a.toLowerCase() > b.toLowerCase() ? 1 : 0));
-    for (const p of files) add({ name: p.slice(p.lastIndexOf("/") + 1), far: null, path: p.slice(5) });
+    const start = `sims/${prefix.toLowerCase()}`;
+    const files = paths
+      .filter(([, lower]) => lower.startsWith(start) && lower.endsWith(want) && !lower.slice(5 + prefix.length).includes("/"))
+      .sort((a, b) => (a[1] < b[1] ? -1 : a[1] > b[1] ? 1 : 0));
+    for (const [p] of files) add({ name: p.slice(p.lastIndexOf("/") + 1), far: null, path: p.slice(5) });
   };
-  for (const d of dirs) {
+  // Every archive's manifest is asked for at once (the reads share batched requests), then used in order.
+  const farsOf = dirs.map((d) => {
+    const dir = `sims/${d.toLowerCase()}/`;
+    return paths
+      .filter(([, lower]) => lower.startsWith(dir) && lower.endsWith(".far"))
+      .map(([p]) => ({ far: p, entries: readFarManifest(p).catch(() => null) }));
+  });
+  for (const [i, d] of dirs.entries()) {
     loose(`${d}/WallsAndFloors/`);
-    const fars = m.files.map((f) => f.path).filter((p) => p.toLowerCase().startsWith(`sims/${d.toLowerCase()}/`) && p.toLowerCase().endsWith(".far"));
-    for (const far of fars) {
-      const entries = await readFarManifest(far).catch(() => null);
+    for (const { far, entries: read } of farsOf[i]!) {
+      const entries = await read;
       if (!entries) continue;
       for (const e of entries) {
         const n = e.filename.replace(/\//g, "\\");
@@ -160,6 +167,17 @@ export async function scanPluginFiles(ext: string, local: string): Promise<Plugi
   }
   loose(`GameData/${local}/`);
   return out;
+}
+
+/** The manifest's paths with their lower-case form, made once per manifest (both scans walk it ten times). */
+const lowerPathCache = new WeakMap<object, Array<[path: string, lower: string]>>();
+function lowerPaths(files: ReadonlyArray<{ path: string }>): Array<[path: string, lower: string]> {
+  let r = lowerPathCache.get(files);
+  if (!r) {
+    r = files.map((f) => [f.path, f.path.toLowerCase()]);
+    lowerPathCache.set(files, r);
+  }
+  return r;
 }
 
 /**
