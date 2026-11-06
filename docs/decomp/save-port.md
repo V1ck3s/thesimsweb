@@ -172,8 +172,15 @@ Port of the house save path. Code: `client/src/game/world/{reconwriter,usagemap,
   render: z-sprites go through Spr2DecoderNoAlpha*, which draw alpha pixels opaque with a depth write
   (Magic Town trees: opaque foliage in the game's thumbnails). The port sets `Compositor.spr2NoAlpha`
   while `thumbnailClearColor` is set (`HouseViewer.render`).
-- Gaps: the half-size pair (BMP_ 1024 / 1025) can differ by one pixel in size (House01: 158 x 86 against
-  159 x 85; THMB 1024 matches). House90: the roof generator leaves the upper terrace unroofed where the game
+- Rotation (2026-11-06): SaveThumbnail / SaveUnleashedThumbnail take the offsets from GetOffsetsMinMax at
+  the view's current rotation (the lot view's, or the one HouseViewer::DoStream read from HOUS 0 +0x1c);
+  MakeThumbnail renders at rotation 0 but clamps those offsets for its buffer. At 1/4 the clamp range is a
+  single row, at 1/8 it is four (House01: 144..148), so the 1/8 render moved by up to half a thumbnail pixel.
+  `withHouseThumbnails` now sets HOUS 0's rotation (version > 8) like DoStream: House01 (saved at
+  rotation 1) gives BMP_ 1024 / 1025 159 x 85 as the game's file (it was 158 x 86), silhouette identical,
+  mean color difference 0.6 / 255; House01, 04, 69, 81, 85, 90, 92, 95, 99 now give the game's THMB and
+  BMP_ sizes for both pairs.
+- Gaps: House90: the roof generator leaves the upper terrace unroofed where the game
   roofs it (roofs.ts). Some objects differ from the game's thumbnails: Magic Town trees drawn pale, pumpkins
   darker (object rendering, also in the lot view).
 

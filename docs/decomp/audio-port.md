@@ -272,7 +272,17 @@ reg 0x13 = a2, 0x14 = a3, and UpdateAmbienceLoop passes (0, 0, 0) — same as or
   cTrackPlayer::SetPosition (registers X, Y, Z 0x1e..0x20). On a cSamplePatch they
   forward to its sound (+0xc8), not modelled. No .hot file maps an event to them
   and no game code issues them (cSoundPlayer sends 0x14..0x2a, cSimsApp 0x15, 0x18,
-  0x19): unreachable in the shipped game.
+  0x19): unreachable in the shipped game. Checked again (2026-11-06): the event
+  kinds come only from cBoxX::MappedEvent (the .hot `[EventMapping]` entry's kind;
+  GetEventObjectSound only picks a variant name) and from the 27 direct
+  `bl Event__5cBoxXFlllll` in the Mac asm (Boxx.s 1: MappedEvent; GameSound.s 20:
+  cSoundPlayer, constants 0x14..0x2a; CSimsApp.s 4 / SimsApp.s 2: 0x15 / 0x16,
+  0x18, 0x19). The 26 .hot files of the Complete Collection (SoundData, ExpansionPack,
+  ExpansionShared\Sound, ExpansionPack5..7\Sound, Downloads\*) map 4494 events
+  to kSndobPlay (4316), kSequenceTrackHitList, kTurnOnTv, kSetMusicMode,
+  kSetAmbienceMode, kSndobCancelNote (19), kKillAll (20), kPlayPiano (43) and the
+  numbers 18, 23, 30, 44..51, 101..105, 1907: none to 4..10. Only a third-party
+  .hot could reach them, so they stay unported.
 - CheckPriority's voice limits per SPL and the debug events are not implemented.
 - Expansion flags (+0x66) are assumed all set; neighborhood music uses
   `Music\Modes\Nhood` (French build) unless `initialize(options, true)`.

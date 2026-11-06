@@ -313,3 +313,74 @@ by (type, constructor) with retainer paths for the new nodes.
   readonly transaction (`queueGet`, like the puts' `queuePut`). Next in that profile: portrait renders
   (`portraits.ts`, 0.4 s), WASM text decoding (0.3 s), floors' plugin scan (0.2 s). Warm load
   (filled IndexedDB, same lot) after the change: 5.5..5.9 s to the lot view, no errors.
+
+## Lot load and tick costs (2026-11-06, second pass)
+
+Method: Chrome (SwiftShader) through the Vite dev server, a copy of UserData, House01. Cold = an
+empty browser profile; warm = the same profile loaded again. "Busy" is the main thread's non-idle
+time in a CDP CPU profile from navigation to the lot view (`window.game.lotView.sim`). Five sessions
+shared the machine and the server, so wall-clock times vary a lot between runs (the first cold run
+waited 111 s on the server, later ones 12..52 s); the busy time and request counts are the
+comparable figures.
+
+| | before | after |
+|---|---|---|
+| cold: requests (assets / api / dev modules) | 918 (434 / 217 / 267) | 608..616 (46 / 290..298 / 272) |
+| cold: main thread busy | 7.1 s | 3.2..3.3 s |
+| warm: lot view, main thread busy | 8.0 s, 4.4 s | 4.9..6.1 s, 1.6..2.6 s |
+
+What changed (behaviour unchanged):
+
+- **IndexedDB puts off the main thread** (`engine/idb.ts`, new `engine/idbworker.ts`): IndexedDB
+  structured-clones every stored value on the calling thread; the put batches (`queuePut`) now go to
+  a module worker that writes them, the FAR entry / file / range bytes being transferred (they are
+  fresh copies) instead of copied. ~1 s of the cold load (the ~2500 entries and ranges of House01).
+  Without workers the batches are written on the main thread as before. Gets still deserialize on
+  the main thread (`req.onsuccess`, 0.25..0.4 s of a warm load: the next item).
+- **Portraits kept in IndexedDB** (`cas/portraits.ts` `generatePortraits`, new store "portraits",
+  DB version 4): the pictures rendered from body strings (family members and NPCs whose stored
+  pictures are missing or blank) are kept under `v<version>|<language>|<body strings>`; a warm load
+  renders none (0.5..0.7 s before). Bump `PORTRAIT_CACHE_VERSION` when the rendering changes.
+- **WASM strings** (`crates/wasm-bindings/src/lib.rs`): every `JsValue::from_str("literal")` made a
+  new JS string through `TextDecoder` (property names of every STR# entry and IFF chunk); the
+  literals and the chunk kinds are now made once and reused (`key`, `kind_value`). `decodeText`
+  0.25..0.31 s → 0.02..0.06 s.
+- **Plugin scan** (`world/floors.ts` `scanPluginFiles`, floors and walls): the manifest's ~10 000
+  paths are lower-cased once per manifest instead of ~20 times per scan, and the expansion archives'
+  FAR manifests are all asked for at once (then used in order). 0.26 s → 0.09 s.
+- **Requests** (`engine/assets.ts`): `readFarManifest` read a FAR header (Range), its size (HEAD)
+  and its manifest (Range) one archive at a time: the header and the manifest now go through the
+  range batcher and the size comes from the asset manifest (HEAD only for a file it does not list),
+  so the ~70 Downloads archives and the expansion images cost a few `/api/ranges` posts instead of
+  ~240 requests. `readAssetFile`, for a file of at most 1 MB the already-loaded manifest lists, also
+  goes through the batcher (the 46 cursors, the loose .flr / .wll plugins). The remaining asset
+  requests are the save files (Sims/UserData*, never cached) and the large IFFs.
+
+Steady sim and tick spikes (House01, speed 3, CPU profiles of 40..90 s):
+
+- `CPState::GetFamilyFriendCount` (control panel, every frame through `pushPeople`) counted the
+  family's friends over the whole neighborhood each time (0.2 % of a 40 s profile, the top sim
+  function). The original keeps the count in the Family (+0x120) with a dirty flag (+0x124) set by
+  AddToFamily, RemoveFromFamily and Neighborhood::RelationshipsChanged, which
+  ObjectModule::SetRelationshipDirty calls for both neighbors whenever a relationship primitive
+  writes one; Neighborhood::GetFriendCount (neighbor data 5) does the same with Neighbor +0x20 /
+  +0x24. Both are ported (`sim/simmodule.ts` `familyFriendsCount`, `neighborFriendCount`,
+  `setRelationshipDirty`, called from the two relationship primitives in `sim/xobject.ts`); a lot
+  load starts with every count dirty. Not in the profile any more.
+- Slow simulate calls (over 12 ms; 10 in 90 s, worst 21..31 ms) were mostly BHAV execution,
+  routing and placement tests (faithful work). Ours in them, now cut: STR# parsing on first use
+  (`sim/behavior.ts` `parseStringSet`: format -3 sets decoded every language's string and comment
+  to keep one; strings of other languages and comments are now skipped, short ASCII strings are
+  decoded without `TextDecoder`), ~13 % of the spike samples; `Placement.isPartOfMe` built the
+  multi-tile chain (a scan of every object) for each object it tested (`world/tools/placement.ts`),
+  ~8 %; neighbor data 6 (`familyOfMember`: a GUID → family index instead of a search of every
+  family's members), ~8 %.
+- After these, the slow calls (still 10..12 per 90 s over 12 ms, worst 22..28 ms on the shared
+  machine) are route searches: `spacepartition.ts` `intersectingPartitionRect` / `overlaps` (~17 %
+  of the spike samples), `routing.ts` `constructGoals` (~6 %), then BHAV interpretation. See the
+  route search notes above (no faithful way to spread a search over ticks).
+
+Left: IndexedDB gets deserialize on the main thread (warm load 0.25..0.4 s; reading through the
+worker would move it, at the price of a copy back or a transfer per entry); the cold load still makes
+~290 `/api/ranges` posts (each task's reads are one post; a short delay before flushing would merge
+more of them, at a latency cost); portraits are still rendered on the first load of a person.

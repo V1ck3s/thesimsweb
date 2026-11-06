@@ -91,27 +91,82 @@ Gaps:
   Pets go through UpdateSuits' pet branch, which ends with ResetInstanceSuits.
 - the instance side: `EditPerson.onResetInstanceSuits` is called where the game
   calls ResetInstanceSuits (empty lists, end of ForceUpdateSuits, end of the
-  pet UpdateSuits); Create a Sim re-applies the body strings to its preview
-  animator. The age button re-creates the preview like PersonFinder::SetAge
-  (kill + CreateInstance); the "design-a-person" tree it then runs is
-  approximated by the idle the preview already plays. That tree (PersonGlobals
-  BHAV 8308, run on the instance by BeginDesignAPerson and SetAge through
-  Behavior::GetTreeID(lbl_105BC1FC + 0x57); without it the sim flag is cleared)
-  sets person data 29 (motives static) to 1, then loops SEMI 0x16B ? "do idle"
-  (8301) : "do new adult idle" (8330), i.e. the random idle animations of a lot.
-  Running it needs the instance in a simulator (the CAS room lot), which the
-  port's preview does not have; left as is. Checked again 2026-11-06:
-  PersonFinder::CreateInstance makes the person with
-  ObjectModule::MakeNewOutOfWorldObject in the module of app +0x14 (the
-  loaded lot), cXObject::FindGoodLocation and the placement vtable call
-  (+0x90; killed when no location is found); BeginDesignAPerson then starts
-  the tree through the instance's vtable +0x3c (tree id from
-  Behavior::GetTreeID on the selector's behavior, else ObjectModule::SetSimFlag
-  (instance, 1, 0)) and sets cSimulator::SetSpeed. The port's Create a Sim
-  has no lot, module or simulator (the preview is a bare SAnimator rendered by
-  cWinVitaBtn), so porting this means running the CAS screens over a loaded
-  lot with the persons as simulated objects whose animators the vita buttons
-  draw: not done.
+  pet UpdateSuits). See "Design-a-person instance" below for the instance itself.
+
+## Design-a-person instance
+
+`client/src/game/cas/caslot.ts` (`CasLot`), used by `CasSession.lot()` and
+cWinDesignCharacter's preview (2026-11-06).
+
+Which lot: cSimsApp::ShowNbhdDialog starts with Neighborhood::UnloadHouse,
+which is `LoadHouse(0)` (then house number 0, WallGraphicsMgr / FloorGraphicsMgr
+UnloadAll). LoadHouse(0) loads `<neighborhood>/Houses/House00.iff` (every
+shipped neighborhood has one), takes the family with number 0 as the house
+family, sets globals 9 (family) and 10 (house) to 0 and the funds to 0, and for
+house 0 runs ObjectModule::KillAllObjects before ObjectModule::PostLoad. So the
+lot behind the neighborhood and family screens is House00 emptied of its
+objects; it is never shown, its simulator keeps running (cSimsApp::Simulate).
+app +0x14 (the module PersonFinder uses) is that lot's ObjectModule.
+
+The person on it:
+
+- PersonFinder::CreateInstance: ObjectModule::MakeNewOutOfWorldObject of the
+  person's selector (ObjectFolder::GetSelectorByGUID), cXObject::FindGoodLocation
+  with no start (local_28[0] = 0: GViewer::GetCentermostTile, the lot's center
+  when that tile is off the interior), level 1, empty tile, same room,
+  direction -1, then cXPerson::Place there (vtable +0x90, level 1); killed when
+  no location is found.
+- BeginDesignAPerson (when the person has no instance yet) and SetAge (after
+  ObjectModule::KillObject of the old one) create it, then run the
+  "design-a-person" tree (lbl_105BC1FC + 0x57; Behavior::GetTreeID on the
+  selector's behavior: PersonGlobals BHAV 8308) with cXPerson::GosubObjectTree
+  (instance, no params, tree) (vtable +0x3c), or ObjectModule::SetSimFlag
+  (instance, 1, 0) without it. BeginDesignAPerson then sets cSimulator::SetSpeed
+  (0.5 + lbl_105BC1F8[3] * [4] = 0.5 + 1000 * 0.7602339 = 760).
+- EndDesignAPerson kills the instance (its third argument, cWinDesignCharacter
+  +0x119, which the constructor sets to 0 and SetPerson's flag sets; the port
+  always kills).
+- cWinVitaBtn::TSPaint draws the instance's SAnimator (cXPerson vtable +0x94)
+  with VitaBoy::Render: the preview is what the simulator plays.
+- Neighborhood::AddNewCharacter calls ObjectFolder::NewFileAdded on the new
+  character file: ported as `ObjectFolder.newFileAdded` (world/objectfolder.ts),
+  called by `CasSession.makeNewPerson`, so the new character has a selector
+  this session (before, a file made this session was only indexed after a
+  reload).
+
+Port: `CasLot.load` = House::LoadFile (loadLotModule) + KillAllObjects +
+`Simulator.create(..., deferPostLoad)` + PostLoad, with a Placement whose hooks
+add new objects to the simulator (Init tree), and the simulator's world hooks
+(like the headless ones of world/moveout.ts). The edited body strings reach the
+simulator as the selector's (`SimModule.bodyStringEdits`: the original edits the
+selector's own); a reset of suits runs `PersonAnimator.resetSuits` (person data
+58 / 60 / 65 follow) and redresses the preview's VitaBoy. The preview's
+SAnimator (dressed from the body strings) gives its skeleton to the instance's
+animator (`attach`, as the lot view's bindSim), so the trees pose it. The
+dialog's `pump` runs `cSimulator::Simulate` on the lot; it waits while an
+instance is being made (the original creates the instance and starts its tree in
+one call).
+
+Checked (UserData30 copy, `?test=cas&screen=char` and the game's Create a
+Family -> Create a Sim): one person in the module, person data 29 = 1, the stack
+in "8334 do new adult left stand hips" / "8331 do new adult left stand" playing
+`a2o-idle-neutral-lhips-*` and `a2o-idle-neutral-lstand-*`; child (person data
+58 = 9, child skeleton), female (65 = 1), dark (60 = 2) follow; Cancel and Done
+kill the instance (the module ends empty).
+
+Gaps:
+- House 0 is loaded on the first Create a Sim of a CasSession, not with the
+  neighborhood screen, and dropped with the session; the port's neighborhood
+  has no simulator running.
+- No view: FindGoodLocation starts at the lot's center (the original's view
+  centermost tile is whatever the house viewer was left at).
+- The simulator's neighborhood is read from disk; a character made this
+  session has its neighbor only in the NeighborhoodStore until the family is
+  saved, so the instance's LoadPersistentData finds none (neighbor id 0).
+- LoadHouse's Tutorial object (tutorial lots) is not made; not relevant to
+  house 0 of the shipped neighborhoods.
+- The preview VitaBoy is not redressed from the instance's outfit / hands
+  person data (cWinVitaBtn calls VitaBoy::Render, not SAnimator::Render).
 
 ## Portraits
 
@@ -208,4 +263,6 @@ Gaps:
   the member, NBRS 1 and FINV 2. As the port lists every `Export/*.FAM` as importable, the new family is also
   offered for import.
 - `TSWinTextEdit2`: double-click (TSOnMouseDoubleL) and the double-byte font paths are not ported.
+- cWinDesignCharacter::Init: the first-name edit holds 16 in Japanese (0x0f), 25 otherwise; the
+  original counts bytes (8 double-byte characters), the port characters.
 - If the page reloads in the middle of a design, the copied template stays behind as an orphan `User%05d.iff` with its neighbor. The game leaves the same orphans when it crashes.

@@ -79,8 +79,19 @@ neighbor corner copies), `getTargetGrass` / `setGrass` / `setTargetGrass`,
   the clicked tile's 0x20 flag, state 2 (3 with Shift: rectangle from the clicked tile, DropGrid
   first on each drag); Drag paints each new interior tile; Release with Ctrl drops the lifted layer
   back (undo). DropGrid writes the lifted byte (only 0x20) over every differing tile, clearing that
-  tile's other flag bits, as the original does. The grass mode (parameter low bits 1, edit_grass,
-  BumpGrass) is not ported.
+  tile's other flag bits, as the original does.
+- Grass mode (2026-11-06): "edit_grass n" (AppCheatCallback case 9, not in the shipped cheat list:
+  `?devcheats` only) takes tool 8 (nothing without it); n = 0 is SetCheatTool(0), else
+  SetParameter((short)(n * 16 + 1)) and SetCheatTool(tool); lbl_105BA68C is not touched (no map
+  overlay). With parameter & 0xf = 1, Click (after Float) and Drag call the global BumpGrass(tile,
+  parameter >> 4): target grass + n clamped to -128..127 becomes the tile's target grass and grass,
+  cTool::DirtyTile; no interior check (cGrassTool's BumpGrass has one); Release does nothing.
+  Deviation: tiles outside the 64 x 64 arrays are skipped. Tested: "edit_grass -120" turns the lawn
+  clicked to dirt.
+- Tested in a lot (UserData32 House56, 2026-11-06): map_edit on draws the overlay and a click paints a
+  tile white (0x20); map_edit off restores the grass; genable walls off hides the walls, genable status
+  lists the switches; draw_floorable off removes the upper level's grid over the floorable tiles;
+  sim_log begin / end hands SimLog.txt over and shows "Logging completed...".
 - HouseViewer::RenderStaticRow draws cTerrain::DrawMapOverlay on every ground tile while the flag is
   set: cTerrain::Draw with cMapTileSwatch (+0x14) instead of the grass and no grid. cMapTileSwatch::
   Draw (asm): columns every 4 pixels, each topped by 4 black pixels, then every 4th row a pink

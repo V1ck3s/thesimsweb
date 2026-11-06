@@ -22,8 +22,8 @@ sous `client/src/game/`).
 Live
 - **Popups des besoins des animaux** : portés, non vérifiés. Page célébrité : niveaux 0 et
   0x11..0x13 non vérifiés.
-- **PIP** : message 0x1b porté ; reste la composition BoboVision du gadget (AlphaBlend_565_P5,
-  32 niveaux) et le blit à clé de couleur sans BoboVision, dans `cpanel/viewcontrol.ts`.
+- **PIP** : composition BoboVision portée avec le poids moyen de chaque niveau de la table
+  AlphaBlend_565_P5 (pas la table par pixel, trop coûteuse à lire chaque image).
 - **Annuler une suppression de mur** : porté (la porte est ramassée puis replacée, sans Init, comme
   l'original) ; à vérifier en jeu.
 - **Pizza** : appel, arrivée, accueil et dialogue vus ; paiement et remise de la boîte non observés.
@@ -33,32 +33,35 @@ Quartier / sauvegarde
   seaux) mais non vérifié en jeu ; album avec photos non testé ; en SAVES=client les pages ne sont
   servies que par le service worker (documenté dans le guide). `ObjectFolder` parcourt encore par
   nom, pas dans l'ordre de hachage de l'original.
-- **Langue** : anglais et allemand vérifiés dans un lot (textes, heure, argent). Non portés : film
-  d'intro par langue, texte centré de cDDDSimsView::Init, BMP_ par langue.
-- **Vignettes** : la grande vignette de House01 fait 158x86 au lieu de 159x85.
+- **Langue** : anglais, allemand et japonais vérifiés dans un lot ; polonais, CJK et thaï dessinés
+  avec les polices du jeu. Restent : thaï en aperçu seulement (`?lang=19` ; branches propres au thaï
+  des panneaux non portées), russe et hébreu (un tiers des textes, police russe ASCII, pas de
+  droite à gauche), un caractère manquant en chinois traditionnel (popup faim), IME absent et
+  capacité des champs comptée en caractères (l'original compte les octets), texte centré de
+  cDDDSimsView::Init / SetMiniUI, mise en page 800x600 non vérifiée en double octet.
 - **Ville magique** : décodeurs alpha de la version Windows portés (seuils 8 / 0xf7, profondeur
   écrite) et vignettes sans alpha ; non comparé au jeu. Risque : la vitre d'une fenêtre écrit la
   profondeur et peut cacher un Sim derrière (contraire à la note U44 de playtest.md) : à vérifier.
   `objecticon.ts`, `buildcatalog.ts` et l'export web gardent l'ancienne règle.
-- **Créer un Sim** : l'arbre « design-a-person » demande un lot simulé derrière l'écran (gros
-  chantier, détails dans `docs/decomp/cas-port.md`).
-- **Import Unleashed** : porté (premier tick du quartier) mais non testé en jeu.
-  CopyMissingUnleashedFilesIntoUserData (Neighborhood::Load) non porté. Attention : il importe
-  6 familles dans les quartiers livrés en version 0x3f (dont UserData3) à leur prochaine ouverture.
+- **Créer un Sim** : la personne tourne sur House00 avec le simulateur (porté). Écarts : House00
+  chargé au premier Créer un Sim au lieu de rester derrière le quartier, case libre cherchée depuis
+  le centre du lot, personne pas encore sauvegardée avant « Terminé ».
+- **Import Unleashed** : porté et testé (copie des fichiers manquants, import une seule fois).
+  Il importe 6 familles dans les quartiers livrés en version 0x3f (dont UserData3) à leur
+  prochaine ouverture, comme l'original.
 
 Construction
 - **Porte tenue et découpe des murs** : le code suit l'original (aucun écart trouvé) ; à comparer
   avec le jeu. Découpe des murs en diagonale corrigée (Wall::ComputeCutaway), à voir sur House02.
 
 Interface / triches
-- **Triches** : map_edit, sim_log, genable, draw_floorable portés (non testés en jeu) ; restent
-  move_lots / mode 5, ReportMissingTextures, damagelist, sweep, draw_routes (drapeau seul), mode
-  herbe de map_edit.
-- **Champs de texte** : polices double octet.
+- **Triches** : toutes portées et testées sauf celles sans équivalent : ReportMissingTextures
+  (boîte jamais montrée par l'original ; EditPerson::ValidateTextures non porté), damagelist et
+  sweep (pas de rectangles de dommages ni de profileur ici), draw_routes (aucun code de dessin).
 
 ## 3. Son
 
-- Événements kSndob* sur un cSamplePatch (objet son non modélisé ; inatteignables dans le jeu livré).
+- Événements kSndob* 4..10 : vérifié, aucun fichier .hot livré ne les utilise (rien à porter).
 
 ## 4. Animation
 
@@ -66,13 +69,13 @@ Interface / triches
 
 ## 5. Performance
 
-- **Chargement à froid d'un lot** : 15 à 19 s jusqu'à la vue du lot (Chrome), puis le mode Live
-  charge animations et sons à la demande (1 à 2 min de réseau actif, ce n'est pas une attente).
-  Voir `docs/perf-and-browsers.md`.
+- **Chargement d'un lot** : à froid 3,3 s de thread principal (était 7,1), 610 requêtes (918) ;
+  à chaud 4,9 à 6,1 s (8,0). Restent : lectures IndexedDB décodées sur le thread principal,
+  ~290 POST /api/ranges à froid, portraits rendus au premier chargement de chaque personne.
 - **Mémoire** : `entryCache` borné (16 Mo), compétences d'animation déchargées après 160 s
   (TryUnloadSkills) ; TryUnloadSuits / TryUnloadAll non portés.
-- **Pics de tick** : les recherches de route ne les expliquent pas ; coût régulier :
-  `familyFriendCount` appelé à chaque image (`simulator.ts`).
+- **Pics de tick** : restent les recherches de route et l'interprétation des BHAV (travail de
+  l'original) ; familyFriendCount mis en cache comme l'original.
 - **Serveur sur /mnt/c** : le premier inventaire du manifest prend ~4 min quand le disque est
   chargé (plusieurs vite en polling) ; `?refresh` ne relit plus que les sauvegardes.
 

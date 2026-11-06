@@ -88,10 +88,21 @@ DoNbhdScreen(1) builds the screen again (`onSwitchNeighborhood(dir)`, after the 
   read again after each file, seen files kept in a set): read-only attribute cleared,
   GetImportInfoForFile(path, info, 0), ImportFamily when accepted (no dialog, no zoning change), TickOnce.
 - Not ported: the string-set language calls before ImportFamily (a vtable chain on lbl_105BA104 given
-  app +100 and the info's language); CopyMissingUnleashedFilesIntoUserData (Neighborhood::Load: without
-  Houses/House50.iff, copies TemplateCommunity House50..80, NeighborhoodDesc, LotLocations, LotZoning,
-  StreetNames and TemplateUserData/Patch/*.FAM into the neighborhood): it is what fills Patch/ for a
-  neighborhood made before Unleashed; the shipped UserData folders already have House50.
+  app +100 and the info's language).
+- CopyMissingUnleashedFilesIntoUserData (2026-11-06, `data/nbhdstore.ts`, called first by
+  `Neighborhood.load` in `nbhd/nghinterface.ts` as Neighborhood::Load does; no expansion check): without
+  `<dir>/Houses/House50.iff` (lbl_105BB990 + 0x22a), TemplateCommunity House50..House80 go to Houses/,
+  TemplateCommunity NeighborhoodDesc.iff to Houses/, LotLocations / LotZoning / StreetNames.iff to the
+  neighborhood, then (`_mkdir` Patch) TemplateUserData/Patch's Burb_11, Charming_13, Goth Sr_12, Hick_10,
+  Kat_6 and Strays_4000.FAM to Patch/. Every copy is cTSFile::Copy(src, dst, true) = CopyFileA with
+  bFailIfExists: files the neighborhood has are kept, failures ignored. The CQuickTimePlayer::UpdateAll
+  calls (intro movie) are dropped. Writes go through the overlay / browser saves (`writeGameFile`).
+- Tested on a copy of UserData5 without House50..80 and Patch/ (UserData32): the 31 houses and 6 families
+  are copied, the "The Sims Unleashed" progress dialog shows once, the six families are imported (the
+  imported .FAM files are deleted, as ImportFamily does) onto lots 56, 63, 69, 76, 77 and the strays
+  (family 4000), NGBH is saved in 0x49 with +0x1a6 cleared; reopening imports nothing and copies nothing.
+  Note for tests: the server's manifest lists overlay files written outside the API only after
+  `/api/manifest?refresh`.
 
 ### Premade townie personality
 
@@ -309,15 +320,36 @@ Files: `client/src/game/nbhd/winneighborhoodul.ts`, `nbhd/winlotbtn.ts`, `nbhd/n
 
 ### Gaps
 - Tourist families (DoFirstTimeTouristFamilies /
-  RefillTouristFamilies(10)) are not called; the dev Move mode (5, the "move_lots" cheat: a lot
-  clicked in that mode (MoveModeLotHandler) is nudged a pixel per arrow key (MoveModeProcess,
-  cWinLotBtn::CenterOn), the other lots disabled; Escape (SetMode(0)) runs SaveLotPositions, which
-  rewrites the neighborhood's LotLocations.iff STR# 4 entries "%d, %d, %d" and says "Lot Positions
-  have been saved" or "...not writeable...") is not ported; the internet update busy flag (+0x1b4)
-  is never set.
+  RefillTouristFamilies(10)) are not called; the internet update busy flag (+0x1b4) is never set.
+- Move mode (2026-11-06, the "move_lots" cheat, in the shipped cheat list): CheatCallback SetMode(5)
+  unless +0x110 is set. SetMode(5): +0x110 = 1, lot handler MoveModeLotHandler, the button handler left
+  as it was (`btnMode`), cursor 0x28; HighlightLotsForMode then outlines every lot but +0x10c red
+  (HiliteForDisabled) and skips the show_zones outlines. MoveModeLotHandler: the lot clicked becomes
+  +0x10c. The arrows (TSOnKeyDown, VK 0x25..0x28, only with +0x110) run MoveModeProcess (main screen
+  only): the lot's HouseInfo +0x6c / +0x70 (lotX / lotY) move by one, then CenterOn(location + negative
+  THMB offsets + the map's offset +0x130 / +0x134). Init's CenterOn does not add the map offset, so at
+  1024x768 (map at 112, 84) the lot jumps by that much on the first key, as the original would; the
+  saved location is right. Escape (and any SetMode out of 5) clears +0x110 / +0x10c and runs
+  SaveLotPositions (`saveLotPositions` in nghinterface.ts): `<dir>/LotLocations.iff`
+  (GetStringConstant(10) = "LotLocations"), STR# 4 loaded with StringSetBase::Load(false, true) (the
+  current language's entries, else US English's), for each lot in house order whose HouseInfo +0x00 is
+  null (no BMP_ 512 loaded: the lots shown with the Unleashed BMP_ 1024, or without a thumbnail) the first
+  entry whose atoi is the house becomes "%d, %d, %d"; StringSetBase::Save writes the set back in that one
+  language; then MessageDialog "Lot Positions have been saved" / "Lot Positions" (lbl_105BCD5C + 0x9e /
+  0x85). A failed write gives "Lot Positions are not writeable. Check out the file, enter Lot Move Mode
+  again, and exit again to save." (the original checks the open file's writability); without the file
+  nothing is saved (the original opens GameData's copy and does nothing). Tested on UserData32 (lot 59:
+  "59, 133, 296" -> "59, 134, 297").
 - Keys (TSOnKeyDown, jump table lbl_105BCD44): '1'..'7' (VK 0x31..0x37) are SetFilterMode(1 << (n - 1))
   in the picker (+0x111 cleared) and swallowed on the main screen; the arrows go to MoveModeProcess
-  in move mode only; Escape leaves move in, evict, rezone and move mode.
+  in move mode only (swallowed otherwise); Escape leaves move in, evict, rezone and move mode.
+- cSimsApp::ReportMissingTextures (after CheckForNewImports' import, LoadGame...): for the names
+  ObjectFolder +0x127c gained since app +0xf4, one cWinPictureDialog per 5 (title / text UIText STR#
+  0x99 entries 0x17 / 0x18, the names one per line, OK = GetButtonLabel(3)), but both builds pass it
+  straight to cTSWinMgrW95::DestroyWindow without DoSimsModalDialog (Mac 0x10243300, PC 0x4fc1e5): it is
+  never shown. The list is filled only by EditPerson::ValidateTextures / BodyStrings::SetOriginals
+  (ObjSelector::GetBodyStrings(true), from cXPerson::Initialize and Neighborhood::ImportFamily), which
+  are not ported (EditPerson's ChooseProxy, `cas/editperson.ts`). Not ported: nothing would appear.
 - **Nessie** (`nbhd/nessie.ts`, 2026-11-05): the "nessie" cheat ("Sorry only one Nessie at a time."
   while one is up) or one chance in 1000 per TSOnTimerMsg second starts it at (0x76, 0x207);
   DoNessie (PostChildDraw, before the filters) steps on each change of the wave clock (+0x1dc):
@@ -412,7 +444,9 @@ Files: `client/src/game/screens/frozen.ts` (new), `world/moveout.ts` (new), `mai
   ImportInfo +0x188 (ExpFamilyInfo byte 0: the language streamed after the 9 shorts from version 0x3f on, else
   the game's language). GetCharacterSetFromLanguage: DoesLanguageUseWesternCharacterSet (languages 1..11, 14)
   1252, DoesLanguageUseEasternCharacterSet (13, 16) 1250, else the jump table lbl_105BCEB8 (mac.bin 0x1062a308)
-  for 12..20: 12 1255, 15 932, 17 950, 18 936, 19 874, 20 949; otherwise 1252.
+  for 12..20: 12 1255, 15 932, 17 950, 18 936, 19 874, 20 949; otherwise 1252. The Windows build
+  (0x5fe3e1) is the same: it has a 13 -> 1251 case, but after the Eastern test, which already gave Russian
+  1250 (the only vtable holding these methods, 0x6768e0, overrides neither test), so Russian is 1250 there too.
 - When they differ and the file is not the tutorial lot (ImportInfo +0x110: GetHouseInfo found a SIMI, and
   HouseInfo +0x14: its global 26, Neighborhood::GetHouseFileInfo reads cSimulator +0x44): a cWinPictureDialog
   with STR# 154 entries 20 and 21 (1-based), OK (cTSWinMsgBox::GetButtonLabel(1), id 1) and Delete (STR# 144
