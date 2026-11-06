@@ -6,6 +6,7 @@ import fastifyCors from "@fastify/cors";
 import fastifyStatic from "@fastify/static";
 import { registerClientRoute } from "./routes/client.js";
 import { registerManifestRoute } from "./routes/manifest.js";
+import { registerMoviesRoute } from "./routes/movies.js";
 import { registerRangesRoute } from "./routes/ranges.js";
 import { overlayDirOf, overlayRewrite, registerUserDataRoute } from "./routes/userdata.js";
 import { registerWebPagesRoute } from "./routes/webpages.js";
@@ -108,6 +109,8 @@ if (!serverGameFiles) {
   await registerManifestRoute(app, { assetsDir, cacheFile: manifestCache });
   await registerRangesRoute(app, { assetsDir });
 }
+// The intro movie transcoded for the browsers when ffmpeg is installed (routes/movies.ts).
+if (serverGameFiles) await registerMoviesRoute(app, { assetsDir, cacheDir: resolve(repoRoot, "server", "data", "movies") });
 // The game's web pages with their compatibility script (in the browsers' saves when SAVES=client: the service worker).
 if (serverGameFiles) await registerWebPagesRoute(app, serverSaves ? { assetsDir, overlayDir } : { assetsDir });
 app.log.info(`game files: ${serverGameFiles ? `served from ${assetsDir}` : "imported by each browser (none served)"}`);

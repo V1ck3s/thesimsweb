@@ -33,6 +33,13 @@ RUN pnpm --filter @thesimsweb/client --filter @thesimsweb/server run build \
 
 # --- 3. Runtime ----------------------------------------------------------------
 FROM node:22-bookworm-slim
+# ffmpeg converts the game's intro movie (Music/eag_*.avi, MS-MPEG4) once for
+# the browser (server/src/routes/movies.ts); --build-arg WITH_FFMPEG=0 leaves it
+# out (a smaller image; the intro is then skipped).
+ARG WITH_FFMPEG=1
+RUN if [ "$WITH_FFMPEG" = "1" ]; then \
+      apt-get update && apt-get install -y --no-install-recommends ffmpeg && rm -rf /var/lib/apt/lists/*; \
+    fi
 ENV NODE_ENV=production HOST=0.0.0.0 PORT=3000
 WORKDIR /app
 COPY --from=build /out/server server

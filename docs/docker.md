@@ -52,6 +52,14 @@ Plus simple : **Export saves** / **Import saves…** sur la page d'accueil (`GET
 fichiers de l'overlay, l'import passe par `DELETE` / `PUT /api/files`). Hors Docker, la variable
 `OVERLAY_DIR` du serveur change le dossier de l'overlay (défaut `server/data/overlay`).
 
+## Film d'intro
+
+Au démarrage, le jeu montre le film d'intro EA de sa langue (`Music/eag_<langue>.avi`, en
+MS-MPEG4, que les navigateurs ne lisent pas). Le serveur le convertit une fois en WebM avec
+`ffmpeg` (`server/src/routes/movies.ts`, copie gardée dans `server/data/movies/`). L'image
+l'installe par défaut ; `docker compose build --build-arg WITH_FFMPEG=0` l'omet (image plus
+petite, le film est alors sauté). En mode `GAME_FILES=client`, il est toujours sauté.
+
 ## Fichiers du jeu : sur le serveur ou chez chaque joueur (`THESIMSWEB_GAME_FILES`, variable `GAME_FILES` du serveur)
 
 - **`server`** (par défaut) : le jeu tourne sur le dossier `SIMS_DIR` du serveur, servi sous

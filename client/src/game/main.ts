@@ -33,6 +33,7 @@ import { UIRes } from "./res/uires.js";
 import { whileFrozen } from "./screens/frozen.js";
 import { G } from "./sim/simulator.js";
 import { TSWinSplashScreen } from "./screens/splash.js";
+import { playIntroMovie } from "./screens/intro.js";
 import { loadCursors } from "./ui/cursor.js";
 import { DefaultTTWindow } from "./ui/ttwindow.js";
 import { WinMgr } from "./ui/winmgr.js";
@@ -372,13 +373,16 @@ async function boot(): Promise<void> {
     await (await load()).mount(ctx, mgr);
     return;
   }
-  // cSimsApp::Init: the sound player, then the load loop under the splash
-  // (audio starts with the first click or key: browser autoplay rules).
+  // cSimsApp::Init: the sound player, the splash, the EA intro movie over it
+  // (screens/intro.ts); IntroMovieEnded starts the load music and the load
+  // loop under the splash (audio starts with the first click or key: browser
+  // autoplay rules).
   await soundPlayer.initialize(getOptionsMgr());
-  void soundPlayer.startLoadMusic(getOptionsMgr());
   const splash = new TSWinSplashScreen(ctx);
   await splash.init();
   mgr.main.childAdd(splash);
+  await playIntroMovie(mgr.canvas);
+  void soundPlayer.startLoadMusic(getOptionsMgr());
   for (const stage of ["stap", "regr", "ctrl", "grph", "main", "cpnl", "char"] as const) {
     splash.setSplashMessage(stage);
   }
