@@ -264,8 +264,6 @@ export class WinOptions extends TSWin {
   private popup: WinLivePopup | null = null;
   private client: WinLivePopupClient | null = null;
   private mouseInside = false;
-  /** The subpanel fading out, until its fade ends (cTSWin's message 0x1b to this panel). */
-  private fadingOut: TSWin | null = null;
 
   constructor(readonly ctx: GameContext) {
     super();
@@ -592,10 +590,8 @@ export class WinOptions extends TSWin {
         queueMicrotask(() => this.doMessageAsyncHidden());
       } else {
         const old = this.panelFor(this.mode);
-        if (old && bobo) {
-          old.asyncShowHideWin(false, false);
-          this.fadingOut = old;
-        } else old?.hideWindow();
+        if (old && bobo) old.asyncShowHideWin(false, false);
+        else old?.hideWindow();
         this.buttonFor(this.mode)?.setState(0);
       }
       if (this.popup?.isEnabled()) this.popup.disablePopup();
@@ -667,6 +663,12 @@ export class WinOptions extends TSWin {
    */
   private doMessageAsyncHidden(): void {
     if (this.mode !== Mode.None) this.panelFor(this.mode)?.asyncShowHideWin(true, false);
+  }
+
+  /** cWinOptions::DoMessage: message 0x1b (a child's fade ended), handled whatever its source. */
+  override doAsyncShowHideMessage(_src: TSWin, dir: number): boolean {
+    if (dir === -1) this.doMessageAsyncHidden();
+    return true;
   }
 
   private panelFor(mode: Mode): TSWin | null {
@@ -908,11 +910,6 @@ export class WinOptions extends TSWin {
    */
   override pump(nowMs: number): void {
     super.pump(nowMs);
-    const fading = this.fadingOut;
-    if (fading && fading.fadeDir === 0) {
-      this.fadingOut = null;
-      if (!fading.isVisible()) this.doMessageAsyncHidden();
-    }
     const inside = this.isVisibleAndAllParentsVisible() && this.containsCursor();
     if (this.mouseInside && !inside && this.popup?.isEnabled()) this.popup.disablePopup();
     this.mouseInside = inside;

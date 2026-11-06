@@ -25,8 +25,8 @@ import { OD, type XObject } from "../objects.js";
 import { OBJ_TYPE_PERSON, OBJ_TYPE_PORTAL } from "../objselector.js";
 import { getAdjacentTile, getOppositeSegment, getWall, SEG_HORIZ, SEG_ROTATION, SEG_VERT, segIndex, type TileWalls } from "../tilewalls.js";
 import { ARRAY_SIZE, DIRS, type TilePt } from "../world.js";
-import { killObject } from "./objectfactory.js";
-import { ODX, type Placement, type PlacementSpec } from "./placement.js";
+import { ObjectAction, ObjectUndoable } from "./objectundo.js";
+import { ODX } from "./placement.js";
 import type { Tool, ToolHost } from "./tool.js";
 import { Undoable, UndoState } from "./undo.js";
 import {
@@ -176,40 +176,6 @@ export function snapToLine(from: TilePt, to: TilePt, dir: number): TilePt {
 
 /** DoRectangle's turn after each side (jump tables lbl_105BBE78 / 74 / 70). */
 const TURN = [2, 3, 1, 0, 7, 6, 4, 5];
-
-/** ObjectUndoable(object, 3 = delete): an architectural object killed by a wall deletion. */
-class DeleteObjectUndoable extends Undoable {
-  private parts: XObject[] = [];
-  private spec: PlacementSpec | null = null;
-
-  constructor(
-    private readonly p: Placement,
-    private readonly obj: XObject,
-  ) {
-    super();
-  }
-
-  protected commitSelf(): number {
-    this.parts = this.p.chain(this.obj);
-    const head = this.parts[0]!;
-    this.spec = this.p.getPlacementSpec(head);
-    killObject(this.p, head);
-    return 0;
-  }
-
-  protected undoSelf(): number {
-    const s = this.spec;
-    if (!s) return 1;
-    for (const part of this.parts) this.p.module.objects.set(part.objectId, part);
-    this.p.place(this.parts[0]!, { fx: s.fx, fy: s.fy }, s.level, null, 0, true);
-    return 0;
-  }
-
-  protected override redoSelf(): number {
-    killObject(this.p, this.parts[0]!);
-    return 0;
-  }
-}
 
 export class WallUndoable extends Undoable {
   /** +0 .. +0xe000: the level's wall records (world coordinates). */
@@ -734,18 +700,25 @@ export class WallUndoable extends Undoable {
   }
 
   /**
-   * WallUndoable::KillArchitecturalObject: the door / window on the segment
-   * is deleted (a sub-undoable) and refunded 0.5 + 0.8 x its value. Returns
-   * the refund, or null when there is none.
+   * WallUndoable::KillArchitecturalObject (1018d450): the door / window on
+   * the segment gets an ObjectUndoable(id, 3 = delete, 0, tool +0xe044) as a
+   * sub-undoable (post in delete mode, pre otherwise), then Pickup(true): it
+   * only leaves the world. Its undo puts the same object back
+   * (ObjectState::CreateObject finds it alive, InvokeOntoObject); it is
+   * killed when the undoable goes (ObjectState::RemoveEntry). The refund is
+   * 0.5 + 0.8 x its value; null when there is no such object.
    */
   private killArchitecturalObject(t: TilePt, seg: number): number | null {
     const p = this.host.placement;
     const found = this.objectsAt(t).find((o) => o.selector.objd.objectType === OBJ_TYPE_PORTAL && this.hangsOn(o, seg));
     if (!found) return null;
     const refund = Math.trunc(Math.fround(0.8) * p.getCurrentValue(found) + 0.5);
-    const u = new DeleteObjectUndoable(p, found);
+    const u = new ObjectUndoable(p, this.host.lot.folder, found.objectId, ObjectAction.Delete, 0, this.link.tool);
     if (this.mode === WallMode.Delete) this.addPostSubUndoable(u);
     else this.addPreSubUndoable(u);
+    p.pickup(found, true);
+    // +0xe050; ChangeTile's draw branch counts the explosion once more.
+    this.explosions++;
     return refund;
   }
 

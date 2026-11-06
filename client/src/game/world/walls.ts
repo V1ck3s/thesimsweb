@@ -775,12 +775,14 @@ export class Wall {
       s.flags = 0;
       if (mask.has(p.x, p.y) && !isUncuttable(s.style)) {
         s.flags |= 1;
+        // Diagonals (102b4fb0): the tile + lbl_105BA078[3] or + [0] for 0x10,
+        // + 2 x [0] and + 2 x [3] for 0x20.
         if (seg === SEG_HORIZ) {
           const t = vertexToTile(p, this.dir);
-          if (!mask.has(t.x + DIRS[2]![0], t.y + DIRS[2]![1]) && !mask.has(t.x + DIRS[0]![0], t.y + DIRS[0]![1])) s.flags &= ~1;
+          if (!mask.has(t.x + DIRS[3]![0], t.y + DIRS[3]![1]) && !mask.has(t.x + DIRS[0]![0], t.y + DIRS[0]![1])) s.flags &= ~1;
         } else if (seg === SEG_VERT) {
           const t = vertexToTile(p, this.dir);
-          const keep = mask.has(t.x, t.y - 2) && mask.has(t.x - 2, t.y);
+          const keep = mask.has(t.x + 2 * DIRS[0]![0], t.y + 2 * DIRS[0]![1]) && mask.has(t.x + 2 * DIRS[3]![0], t.y + 2 * DIRS[3]![1]);
           if (!keep) s.flags &= ~1;
         } else {
           const [ax, ay] = getAdjacentTile(seg, p.x, p.y);

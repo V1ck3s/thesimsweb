@@ -266,6 +266,7 @@ export async function saveGame(ctx: GameContext, lv: WinLotView | null, nbhdDir:
       folder: lot.folder,
       sim,
       viewer,
+      dynamicCutaway: walls.dynamicCutaway,
       rotation: viewer.world.rotation,
       selectedPersonId: sel ? sel.id : lot.module.selectedPersonId,
       stats: { objectValue: st.simA0, archValue: st.simA4, global16: st.lotHasHouse, global25: st.transitFilterFlags },

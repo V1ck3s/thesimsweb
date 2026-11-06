@@ -17,7 +17,7 @@
  * game writes. Chunks of the loaded file this save does not produce are kept.
  *
  * Values the port does not model are carried over from the loaded file:
- * SIMI's cursor and +0x9c, HOUS 1, HouseViewer's second cutaway byte, roof pitch and pattern,
+ * SIMI's cursor and +0x9c, HOUS 1, roof pitch and pattern,
  * and in each person record the animator's practices and dressing and the
  * tail (saved routes, interactions, object records); see docs/decomp/save-port.md.
  */
@@ -259,11 +259,16 @@ export function readHouseName(bytes: Uint8Array): string {
 
 // --- HOUS 0 (HouseViewer) -----------------------------------------------------------
 
-/** HouseViewer::DoStream (write; plain stream). */
-export function saveHouseViewer(viewer: HouseViewer, rotation: number, loaded: Uint8Array | null): Uint8Array {
-  // Carried: the +0x49 cutaway byte. The roof pitch and pattern are cRoofLayer's (roofs.ts).
+/**
+ * HouseViewer::DoStream (write; plain stream). The first int is the short at
+ * +0x48: the walls-down byte (+0x48) high, the dynamic cutaway byte (+0x49)
+ * low. `dynamicCutaway` is WallManager.dynamicCutaway (HouseViewer+0x49);
+ * null carries the loaded file's byte.
+ */
+export function saveHouseViewer(viewer: HouseViewer, rotation: number, loaded: Uint8Array | null, dynamicCutaway: boolean | null = null): Uint8Array {
   let low = 0;
-  if (loaded && loaded.length >= 16) {
+  if (dynamicCutaway !== null) low = dynamicCutaway ? 1 : 0;
+  else if (loaded && loaded.length >= 16) {
     try {
       low = ReconBuffer.fromChunk(loaded).buf.recon32() & 0xff;
     } catch {
@@ -271,6 +276,7 @@ export function saveHouseViewer(viewer: HouseViewer, rotation: number, loaded: U
     }
   }
   return compactRecon(SAVE_VERSION, "HOUS", (w) => {
+    // The roof pitch and pattern are cRoofLayer's (roofs.ts).
     w.recon32((viewer.cutaway ? 0x100 : 0) | (viewer.cutaway ? 0 : low));
     w.recon32(viewer.scale);
     w.recon32(viewer.originX);
@@ -713,6 +719,8 @@ export interface HouseSaveInput {
   folder: ObjectFolder;
   sim: Simulator | null;
   viewer: HouseViewer | null;
+  /** HouseViewer+0x49 (WallManager.dynamicCutaway) for HOUS 0; omitted: the loaded file's byte. */
+  dynamicCutaway?: boolean;
   rotation: number;
   selectedPersonId: number;
   /** Stats House::SaveFile computes before streaming the simulator (null: carried). */
@@ -789,7 +797,7 @@ export async function buildHouseFile(input: HouseSaveInput): Promise<Uint8Array>
   add({ type: "ObjM", id: 1, flags: FLAGS, label: "", data: objm });
   // GlobalDispatch(0x92): the house viewer's chunk, then the thumbnails.
   const hous0 = house.get("HOUS", 0);
-  if (input.viewer) add({ type: "HOUS", id: 0, flags: FLAGS, label: "", data: saveHouseViewer(input.viewer, input.rotation, hous0) });
+  if (input.viewer) add({ type: "HOUS", id: 0, flags: FLAGS, label: "", data: saveHouseViewer(input.viewer, input.rotation, hous0, input.dynamicCutaway ?? null) });
   else if (hous0) add({ type: "HOUS", id: 0, flags: FLAGS, label: "", data: hous0.slice() });
   if (input.thumbnails) for (const c of input.thumbnails()) add(c);
   // Chunks of the loaded file not produced above (thumbnails, older chunks) keep their place after them.

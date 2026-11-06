@@ -302,8 +302,9 @@ export class TSWin {
    * fade the other way already running turns around from where it is, over
    * the part of `ms` left to cover; one the same way, or a window already
    * shown / hidden, is left alone. Starting a fade finishes the children's.
-   * The end of the fade (cTSWin::Plot or FinishAsync) hides a hidden window
-   * and tells the parent (message 0x1b, not ported).
+   * The end of the fade (BlitPrivateBufferToParent from cTSWin::Plot, the
+   * next AsyncShowHideWin or FinishAsync) hides a hidden window and posts
+   * message 0x1b to the parent (doAsyncShowHideMessage).
    */
   asyncShowHideWin(show: boolean, live: boolean, ms = 0): void {
     const now = performance.now();
@@ -354,10 +355,25 @@ export class TSWin {
     return r.from + ((r.to - r.from) * (now - r.start)) / (r.end - r.start);
   }
 
+  /**
+   * The end of a fade: a hiding window hides, then PostMessageToTarget(parent,
+   * 0x1b, this, direction). The message is posted: the parent handles it
+   * after the current call (a microtask here).
+   */
   private endFade(): void {
     const d = this.fadeDir;
     this.fadeDir = 0;
     if (d < 0) this.hideWindow();
+    const parent = this.parent;
+    if (parent) queueMicrotask(() => parent.doAsyncShowHideMessage(this, d));
+  }
+
+  /**
+   * cTSWin::DoMessage for message 0x1b: the child `src` finished a fade, `dir`
+   * 1 shown, -1 hidden. cTSWin's handles messages below 0x1b only (false).
+   */
+  doAsyncShowHideMessage(_src: TSWin, _dir: number): boolean {
+    return false;
   }
 
   /** Called once per frame before plotting (timers, animation). */
