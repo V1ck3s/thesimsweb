@@ -70,8 +70,11 @@ export async function registerManifestRoute(
   // (a walk over /mnt/c costs seconds once the saves pile up).
   let overlay: Promise<ManifestEntry[]> | null = null;
   app.get("/api/manifest", async (req) => {
-    if ((req.query as { refresh?: string }).refresh !== undefined) {
-      files = walk(assetsDir);
+    // ?refresh: the saves are listed again (a save folder made or removed by hand);
+    // ?refresh=all also walks the read-only game folder again (minutes over /mnt/c).
+    const refresh = (req.query as { refresh?: string }).refresh;
+    if (refresh !== undefined) {
+      if (refresh === "all") files = walk(assetsDir);
       overlay = null;
     }
     // A failed walk is not kept: the next request walks again.
