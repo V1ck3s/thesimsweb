@@ -69,7 +69,8 @@ export default defineConfig({
     port: 5173,
     strictPort: true,
     // File events do not cross the WSL2 /mnt/c boundary reliably.
-    watch: { usePolling: true, interval: 300 },
+    // VITE_POLL_INTERVAL (ms) slows the polling when several dev servers share the disk.
+    watch: { usePolling: true, interval: Number(process.env["VITE_POLL_INTERVAL"] ?? 300) },
     proxy: {
       "/api": "http://127.0.0.1:3000",
       "/assets": "http://127.0.0.1:3000",

@@ -16,6 +16,8 @@ const repoRoot = resolve(__dirname, "..", "..");
 const assetsDir = resolve(repoRoot, "server", "assets");
 // OVERLAY_DIR: where the saves are written in SAVES=server mode (default server/data/overlay).
 const overlayDir = process.env["OVERLAY_DIR"] ? resolve(process.env["OVERLAY_DIR"]) : overlayDirOf(repoRoot);
+// The game folder's listing kept between runs (routes/manifest.ts).
+const manifestCache = resolve(repoRoot, "server", "data", "manifest-cache.json");
 const clientDir = resolve(process.env["CLIENT_DIST"] ?? resolve(repoRoot, "client", "dist"));
 
 const HOST = process.env["HOST"] ?? "127.0.0.1";
@@ -91,10 +93,10 @@ if (!serverGameFiles) {
   app.put("/api/files/*", refuse);
   app.delete("/api/files/*", refuse);
 } else if (serverSaves) {
-  // The manifest caches its overlay listing; saves invalidate it.
-  let invalidateOverlay = (): void => {};
-  await registerUserDataRoute(app, { overlayDir, onChange: () => invalidateOverlay() });
-  ({ invalidateOverlay } = await registerManifestRoute(app, { assetsDir, overlayDir }));
+  // The manifest caches its overlay listing; saves update it.
+  let overlayChanged = (_path: string, _size: number | null): void => {};
+  await registerUserDataRoute(app, { overlayDir, onChange: (path, size) => overlayChanged(path, size) });
+  ({ overlayChanged } = await registerManifestRoute(app, { assetsDir, overlayDir, cacheFile: manifestCache }));
   await registerRangesRoute(app, { assetsDir, overlayDir });
 } else {
   const refuse = async (_req: unknown, reply: FastifyReply) =>
@@ -103,7 +105,7 @@ if (!serverGameFiles) {
   app.addContentTypeParser("*", { parseAs: "buffer", bodyLimit: 128 * 1024 * 1024 }, (_req, _body, done) => done(null));
   app.put("/api/files/*", refuse);
   app.delete("/api/files/*", refuse);
-  await registerManifestRoute(app, { assetsDir });
+  await registerManifestRoute(app, { assetsDir, cacheFile: manifestCache });
   await registerRangesRoute(app, { assetsDir });
 }
 // The game's web pages with their compatibility script (in the browsers' saves when SAVES=client: the service worker).
