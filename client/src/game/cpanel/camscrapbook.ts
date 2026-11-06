@@ -40,6 +40,7 @@ import { rgb, UI_FONT_COLOR } from "../ui/syscolors.js";
 import { TSWinTextEdit2 } from "../ui/textedit.js";
 import { Gfx, type TSWin, WF_NO_FOCUS } from "../ui/tswin.js";
 import { winMgr } from "../ui/winmgr.js";
+import { UI_LANGUAGE } from "../res/uires.js";
 
 /** lbl_105BB85C: the album folder under the neighborhood. */
 const ALBUM_DIR = "PhotoAlbum/";
@@ -379,7 +380,7 @@ const enum Btn {
 /** lbl_105BA928 (InitSimsColors): white. */
 const WHITE = rgb(0xff, 0xff, 0xff);
 /** cTSWinBtn::SetFont: lbl_105BA2E8 + 0x30 (size 12) for language 7, else + 0x38 (size 14). */
-const BUTTON_FONT_SIZE = 14;
+const BUTTON_FONT_SIZE = UI_LANGUAGE === 7 ? 12 : 14;
 /** lbl_105BA2E8 + 0x28 / + 0x48: the description and the empty album text. */
 const EDIT_FONT_SIZE = 10;
 const EMPTY_FONT_SIZE = 18;

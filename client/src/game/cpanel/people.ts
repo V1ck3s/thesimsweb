@@ -58,6 +58,7 @@ import { WinSubpanelCatSkills, WinSubpanelDogSkills } from "./live/petskills.js"
 import { WinSubpanelReportCard } from "./live/reportcard.js";
 import { WinEditBio } from "./live/editbio.js";
 import { GiftsPanel } from "./live/gifts.js";
+import { UI_LANGUAGE } from "../res/uires.js";
 import { popupClick, WinLivePopup, WinLivePopupClient } from "./livepopup.js";
 import type { PlacedObject } from "../world/objects.js";
 import { getTrackedObject, setTrackedObject, setTrackingPanel, type TrackingPanel } from "../world/tracking.js";
@@ -429,14 +430,16 @@ export class WinPeople extends TSWin implements TrackingPanel {
 
     // Page titles: cTSWinText, font lbl_105BA2E8[11], at (5, 0), transparent, one line, fitted
     // to the text (vtable 0x1ec(0) = SetBackgroundOpaque, 0x1e4(2, 0) = SetWinTextFlag, 0x1d8).
+    // The personality title takes [9] in German (4) and [10] in Dutch (7).
     const titleFont = await fonts.acquire(11);
+    const personalityFont = UI_LANGUAGE === 4 ? await fonts.acquire(9) : UI_LANGUAGE === 7 ? await fonts.acquire(10) : titleFont;
     for (const [win, caption, toBack] of [
       [this.motivesWin, needsTitle, false],
       [this.petMotivesWin, needsTitle, false],
       [this.personalityWin, personalityTitle, true],
     ] as const) {
       const t = new TSWinText();
-      t.setFont(titleFont);
+      t.setFont(toBack ? personalityFont : titleFont);
       t.moveTo(TITLE_ORIGIN.x, TITLE_ORIGIN.y);
       t.setBackgroundOpaque(false);
       t.setCaption(caption);

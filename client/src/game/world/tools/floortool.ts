@@ -50,6 +50,8 @@ import {
 } from "./worldedit.js";
 import { Placement } from "./placement.js";
 import { OD } from "../objects.js";
+import { makeMoneyString } from "../../res/langutil.js";
+import { UI_LANGUAGE } from "../../res/uires.js";
 
 /** lbl_105BBDE8: the drag tool sounds. */
 const SOUND_MOUSEUP = "UI_bld_dragtool_mouseup";
@@ -377,7 +379,7 @@ export class NewFloorTool extends Tool implements FloorUndoTool {
     }
     const p = this.host.viewer.tileToPoint(this.anchor.fx >> 4, this.anchor.fy >> 4, this.currentLevel());
     // The control panel's money formatter (lbl_105BA104 vtable +0x84).
-    this.host.setTip(p.h, p.v, `§${total.toLocaleString("en-US")}`);
+    this.host.setTip(p.h, p.v, makeMoneyString(total, UI_LANGUAGE));
   }
 
   /** GetQuadrant(FTilePt, level): 0 top-left, 1 top-right, 2 bottom-left, 3 bottom-right of the tile. */

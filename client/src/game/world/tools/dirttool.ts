@@ -32,6 +32,8 @@ import { DIRS, RotatableWorld, type TilePt } from "../world.js";
 import { PF, Placement, tileOf } from "./placement.js";
 import { TerrainUndoable } from "./terrainundo.js";
 import { Tool, type ToolEvent, type ToolHost } from "./tool.js";
+import { makeMoneyString } from "../../res/langutil.js";
+import { UI_LANGUAGE } from "../../res/uires.js";
 
 /** GUID of the "Terrain cursor" object (Cursors.iff). */
 export const GUID_TERRAIN_CURSOR = 0x2f39b7a6;
@@ -333,7 +335,7 @@ export abstract class DirtTool extends Tool {
     let showCursor = false;
     if (!this.released && this.err === DirtError.none) {
       if (this.cost === 0) this.setToolTip(null);
-      else this.setToolTip(`§${this.cost.toLocaleString("en-US")}`);
+      else this.setToolTip(makeMoneyString(this.cost, UI_LANGUAGE));
       this.errShown = this.err;
     } else if (this.errShown === this.err) {
       showCursor = !this.released;

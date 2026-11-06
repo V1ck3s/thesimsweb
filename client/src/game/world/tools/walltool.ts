@@ -31,6 +31,8 @@ import { CursorDrawable, getFrontDirection } from "./cursorobject.js";
 import { Tool, type ToolEvent, type ToolHost } from "./tool.js";
 import { fencePattern, WallMode, WallUndoable, type WallToolLink } from "./wallundo.js";
 import { mayEditTile } from "./wallworld.js";
+import { makeMoneyString } from "../../res/langutil.js";
+import { UI_LANGUAGE } from "../../res/uires.js";
 
 /** ObjectFolder::GetSelectorByName("Wall Cursor") (lbl_105BBDFC). */
 export const GUID_WALL_CURSOR = 0x439;
@@ -202,7 +204,7 @@ export class NewWallTool extends Tool {
       this.setToolTip(null);
       return;
     }
-    const text = code === TIP_COST ? `§${this.runningTotal.toLocaleString("en-US")}` : this.host.getString("UIText", 137, code - 1) || "Can't place here!";
+    const text = code === TIP_COST ? makeMoneyString(this.runningTotal, UI_LANGUAGE) : this.host.getString("UIText", 137, code - 1) || "Can't place here!";
     this.setToolTip(text);
   }
 

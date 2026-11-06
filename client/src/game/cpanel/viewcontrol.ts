@@ -28,6 +28,7 @@ import { Mode, WallState } from "../cpstate.js";
 import { soundPlayer, speedTransitionSound, UI } from "../audio/index.js";
 import type { GameContext } from "../context.js";
 import type { FfnFont } from "../res/ffn.js";
+import { makeMoneyString, makeTimeString } from "../res/langutil.js";
 import { UI_LANGUAGE } from "../res/uires.js";
 import { BTN_PUSH, BTN_TOGGLE, TSWinBtn } from "../ui/btn.js";
 import { WinPictureDialog } from "../ui/picturedialog.js";
@@ -135,34 +136,8 @@ const enum VCMode {
   PanelCollapsed = 1,
 }
 
-/** cTSLanguageUtility::GetThousandSeparator jump table, by language id 1..20. */
-const THOUSAND_SEPARATOR = ["", ",", ",", ".", ".", ".", ".", ".", ".", ".", "", "", ",", ".", ".", ",", "", ",", ",", ",", ","];
-/** cTSLanguageManager::MakeTimeString uses AM/PM for these language ids. */
-const AMPM_LANGUAGES = [1, 2, 0x13];
-
-/** cTSLanguageUtility::MakeMoneyString for the default utility: "$" before the amount, no space. */
-export function makeMoneyString(amount: number, lang: number): string {
-  const digits = String(Math.abs(amount));
-  const sep = THOUSAND_SEPARATOR[lang] ?? ",";
-  let out = "";
-  let rest = digits.length;
-  while (rest > 3) {
-    const n = rest % 3 || 3;
-    out += digits.slice(digits.length - rest, digits.length - rest + n) + sep;
-    rest -= n;
-  }
-  out += digits.slice(digits.length - rest);
-  return (amount < 0 ? "-" : "") + "$" + out;
-}
-
-/** cTSLanguageManager::MakeTimeString(hour, minute, upperCase = true, prefix = true). */
-function makeTimeString(hour: number, minute: number, lang: number): string {
-  const mm = String(minute).padStart(2, "0");
-  if (!AMPM_LANGUAGES.includes(lang)) return `${String(hour).padStart(2, " ")}:${mm}`;
-  const ampm = hour < 12 ? "AM" : "PM";
-  const h = hour === 0 ? 12 : hour > 12 ? hour - 12 : hour;
-  return `${ampm} ${String(h).padStart(2, " ")}:${mm}`;
-}
+/** cTSLanguageUtility::MakeMoneyString (res/langutil.ts), kept here for its importers. */
+export { makeMoneyString };
 
 /** Modifier keys for the Live button (GetKeyState(VK_SHIFT / VK_CONTROL)). */
 const keys = { shift: false, ctrl: false };

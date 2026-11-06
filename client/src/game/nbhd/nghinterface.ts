@@ -413,17 +413,8 @@ export async function getHouseInfo(nb: Neighborhood, house: number): Promise<Hou
   };
 }
 
-/**
- * cTSLanguageUtility::MakeMoneyString: currency symbol first, no space,
- * thousands grouped with the language's separator ("." in French, "," otherwise).
- * The game fonts draw "$" as the simoleon sign.
- */
-export function makeMoneyString(amount: number, lang: number): string {
-  const digits = String(Math.abs(Math.trunc(amount)));
-  const sep = lang === 3 ? "." : ",";
-  const grouped = digits.replace(/\B(?=(\d{3})+(?!\d))/g, sep);
-  return `${amount < 0 ? "-" : ""}$${grouped}`;
-}
+/** cTSLanguageUtility::MakeMoneyString (res/langutil.ts). */
+export { makeMoneyString } from "../res/langutil.js";
 
 /** localStorage key standing for the registry values SIMS_CURRENT_NEIGHBORHOOD_NUM / _PATH. */
 const CURRENT_NBHD_KEY = "thesimsweb.currentNeighborhood";

@@ -30,6 +30,8 @@ import { getOppositeSegment, getWall } from "../tilewalls.js";
 import { ARRAY_SIZE, DIRS, type FixedWorld } from "../world.js";
 import { Tool, type ToolEvent, type ToolHost } from "./tool.js";
 import { Undoable } from "./undo.js";
+import { makeMoneyString } from "../../res/langutil.js";
+import { UI_LANGUAGE } from "../../res/uires.js";
 
 /** lbl_105BBE20: the drag sounds. */
 const SOUND_MOUSE_UP = "UI_bld_dragtool_mouseup";
@@ -708,7 +710,7 @@ export class PoolTool extends Tool {
       return;
     }
     let text = TIP_DEFAULT;
-    if (code === TIP_TOTAL) text = `§${amount.toLocaleString("en-US")}`;
+    if (code === TIP_TOTAL) text = makeMoneyString(amount, UI_LANGUAGE);
     else text = this.host.getString("UIText", STR_PLACEMENT_ERRS, code - 1) || text;
     const m = this.host.mouse();
     this.host.setTip(m.x + 0x11, m.y - 5, text);

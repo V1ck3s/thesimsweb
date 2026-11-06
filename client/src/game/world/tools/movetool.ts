@@ -55,6 +55,8 @@ import { adjustCutawayForTool, type CutawayTool } from "../cutaway.js";
 import type { CutawayMask } from "../walls.js";
 import type { DisposeItem } from "../../cpstate.js";
 import { EP, ObjFnTable } from "../../sim/objfntable.js";
+import { makeMoneyString } from "../../res/langutil.js";
+import { UI_LANGUAGE } from "../../res/uires.js";
 
 /** cMoveTool+0x34. */
 export const MoveMode = {
@@ -538,7 +540,7 @@ export class MoveTool implements FloorUndoTool, CutawayTool {
     let text = "Can't place here!";
     if (code === PlacementErr.purchaseTotal) {
       // The control panel's money formatter (lbl_105BA104 vtable +0x84).
-      text = `§${amount.toLocaleString("en-US")}`;
+      text = makeMoneyString(amount, UI_LANGUAGE);
     } else {
       text = this.host.placementErrorText(code) || text;
     }

@@ -40,6 +40,8 @@ import { pointToFTile } from "./gametools.js";
 import { Tool, type ToolEvent, type ToolHost } from "./tool.js";
 import { WallpaperMode, WallpaperUndoable, type WallpaperUndoTool } from "./wallpaperundo.js";
 import { DIAG_SIDE_ROTATION, getViewWall, mayEditTile, resolveDiagonal, viewSide } from "./worldedit.js";
+import { makeMoneyString } from "../../res/langutil.js";
+import { UI_LANGUAGE } from "../../res/uires.js";
 
 /** GUID of the "Wall Cursor" definition (ObjectFolder::GetSelectorByName(lbl_105BBDF4 "Wall Cursor")). */
 export const GUID_WALL_CURSOR = 0x439;
@@ -440,7 +442,7 @@ export class NewWallpaperTool extends Tool implements WallpaperUndoTool {
     let text = TIP_DEFAULT;
     if (code === TIP_TOTAL) {
       // The control panel's money formatter (lbl_105BA104 vtable +0x84).
-      text = `§${amount.toLocaleString("en-US")}`;
+      text = makeMoneyString(amount, UI_LANGUAGE);
     } else {
       text = this.host.getString("UIText", STR_PLACEMENT_ERRS, code - 1) || text;
     }
