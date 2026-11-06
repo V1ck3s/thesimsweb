@@ -256,17 +256,26 @@ export class SampleChannel {
     }
   }
 
-  /** cTSSnd::Pause: streamed music pauses in place; samples go silent. */
+  /**
+   * cSampleChannel::Pause -> the sound's Pause. cTSSndDShow (the streamed
+   * MP3s) pauses in place; cTSSnd::Pause (Mac 104df0b0, Windows 005f8051) is
+   * cTSSnd::Stop: the playing buffers stop, the completion notification runs,
+   * and cTSSnd::Unpause does nothing (returns 1). A paused sample is over: the
+   * track's script goes on from its end once the track unpauses.
+   */
   pause(): void {
+    if (!this.patch.isStreamedFile()) {
+      this.stop();
+      return;
+    }
     this.paused = true;
     if (this.element) this.element.pause();
-    this.gain.disconnect();
   }
 
+  /** cSampleChannel::Unpause: cTSSndDShow::Unpause resumes the stream; nothing for a sample. */
   unpause(): void {
     if (!this.paused) return;
     this.paused = false;
-    this.gain.connect(this.panner.input);
     if (this.element && this.playing) void this.element.play();
   }
 

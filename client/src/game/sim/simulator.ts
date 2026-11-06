@@ -31,6 +31,7 @@ import { getNextRandomNumber, getSRandSeed, setSRandSeed } from "../world/random
 import { addLayoutTick, layoutHistoryDayChanged, type HousePageStats, type HouseStatsSummary, type LayoutHistory } from "../world/housestats.js";
 import { ReconBuffer } from "../world/reconbuffer.js";
 import { EP } from "./objfntable.js";
+import { UI_LANGUAGE } from "../res/uires.js";
 import { SimModule, SimResources } from "./simmodule.js";
 import type { SimObject } from "./xobject.js";
 import type { PersonSim } from "./person.js";
@@ -58,6 +59,8 @@ export const G = {
   stop: 11,
   fundsLow: 13,
   fundsHigh: 14,
+  /** "Current Language": cSimsApp +100 (the newspaper's init / load / main trees test it). */
+  language: 15,
   speed: 16,
   paused: 17,
   suspendedSpeed: 18,
@@ -169,6 +172,7 @@ export class Simulator {
     g[G.year] = 0x7cd;
     g[G.timeOfDay] = 2;
     g[G.suspendedSpeed] = -1;
+    g[G.language] = UI_LANGUAGE;
     this.seed = getSRandSeed();
     this.setSpeed(Math.trunc(0.5 + SPEED_SCALE * SPEED_BUTTONS[0]));
   }
@@ -241,8 +245,12 @@ export class Simulator {
     const keep25 = this.globals[25]!;
     const n = v < 0x12 ? 0x10 : v < 0x41 ? 0x20 : 0x40;
     for (let i = 0; i < n; i++) this.globals[i] = buf.recon16();
+    // Versions >= 0x12 keep global 25 and take the language from the app, not the file.
     if (v < 0x12) this.globals[G.speed] = buf.recon32();
-    else this.globals[25] = keep25;
+    else {
+      this.globals[25] = keep25;
+      this.globals[G.language] = UI_LANGUAGE;
+    }
     this.tickCount = buf.recon32();
     this.cursor = buf.recon16();
     if (v > 1) this.funds = buf.recon32();
