@@ -16,6 +16,7 @@
  */
 
 import type { Compositor, SpriteTex } from "./compositor.js";
+import { FloorShadowMgr, rotateShadowID } from "./floorshadow.js";
 import { drawFloor, type FloorGraphicsMgr } from "./floors.js";
 import { RenderParam } from "./renderparam.js";
 import { getOverlappingSprite, poolCornerSpriteId, poolSpriteId, rotateTileBits, type ByteLayer } from "./pools.js";
@@ -27,6 +28,8 @@ import { getViewWall } from "./tools/wallworld.js";
 import { DIRS, RotatableWorld } from "./world.js";
 import { LEVEL_PX, makeZSpriteLookup, ZBufferLookup } from "./zbuffer.js";
 import { AnimDeviceCamera, unproject } from "../sims/camera.js";
+import { getOptionsMgr } from "../optionsmgr.js";
+import { cheatFlags } from "../cheatflags.js";
 import { rotationTf, transformDir, type Vec3 } from "../sims/math3d.js";
 
 /** HouseViewer+0x150: a level's height in 3D world units (the y of ZBufferLookup+0x94). */
@@ -75,7 +78,7 @@ class TerrainCache {
     const t = v.terrain?.cacheKey?.() ?? null;
     if (t === null || v.thumbnailClearColor !== null) return null;
     const w = v.world;
-    return `${t}|${v.viewW}x${v.viewH}|${v.originX},${v.originY},${v.scale},${w.rotation},${w.size},${w.minX},${w.maxX},${w.minY},${w.maxY}`;
+    return `${t}|${v.viewW}x${v.viewH}|${v.originX},${v.originY},${v.scale},${w.rotation},${w.size},${w.minX},${w.maxX},${w.minY},${w.maxY}|${+cheatFlags.genable.terrain}`;
   }
 
   /** Whether the target still holds the terrain pass for the viewer's current state. */
@@ -129,6 +132,8 @@ export interface WallDrawer {
 export interface ObjectDrawer {
   drawTileObjects(viewer: HouseViewer, comp: Compositor, x: number, y: number, level: number, rp: RenderParam): void;
   drawDynamicObjects?(viewer: HouseViewer, comp: Compositor, rp: RenderParam): void;
+  /** cXObject::GetTileShadow of the tile's first object: the turned shadow id and brightness, or null. */
+  getTileShadow?(viewer: HouseViewer, x: number, y: number, level: number): { id: number; brightness: number } | null;
 }
 
 const NO_ENTRY: readonly number[] = [NO_LIGHT, NO_LIGHT, NO_LIGHT, NO_LIGHT];
@@ -732,13 +737,17 @@ export class HouseViewer {
   /** HouseViewer::UpdateStaticLayer for the whole view. */
   render(): void {
     const comp = this.comp;
+    // lbl_105BA240[0x39] (the anti-aliasing option) picks the Spr2 decoders;
+    // MakeThumbnail clears it while it renders (thumbnail mode, +0x17c).
+    comp.spr2NoAlpha = this.thumbnailClearColor !== null || !getOptionsMgr().getAA();
     const c = this.thumbnailClearColor ?? CLEAR_COLOR;
     comp.clear((c >> 16) & 0xff, (c >> 8) & 0xff, c & 0xff);
     const rp = new RenderParam(this, this.zLookupIndex);
     // Terrain + ground floors (RenderStatic(level 1, terrain pass)).
     this.renderStatic(1, true, rp);
     for (let l = 1; l <= this.level; l++) {
-      this.walls?.drawWalls(this, comp, l, rp);
+      // (lbl_105BA66C: "genable walls")
+      if (cheatFlags.genable.walls) this.walls?.drawWalls(this, comp, l, rp);
       this.renderStatic(l, false, rp);
     }
     // UpdateStaticLayer: with the roof shown (+0x51), RenderRoofPolys of the roof layers below the level.
@@ -746,8 +755,9 @@ export class HouseViewer {
     // UpdateStaticDynamic (101cba20): the 3D objects (people) are rendered
     // between the static layer and RenderDynamicObjects, so a dynamic
     // object's alpha pixels (a window's glass) blend over a person behind it.
-    this.people?.draw(this);
-    this.objects?.drawDynamicObjects?.(this, comp, rp);
+    // (lbl_105BA660 / lbl_105BA664: "genable people" / "genable objects")
+    if (cheatFlags.genable.people) this.people?.draw(this);
+    if (cheatFlags.genable.objects) this.objects?.drawDynamicObjects?.(this, comp, rp);
     this.spriteSlots?.draw(this, comp);
     comp.ambient = 1;
     // UpdateWorld: RenderCursorObject, then RenderCensoredBlocks.
@@ -895,7 +905,8 @@ export class HouseViewer {
       if (this.isThumbnailHidden(...w2(w, x, y))) continue;
       const alt = w.getPackedAlt(x, y);
       rp.setGridCoords(...this.fixedCenter(x, y), 1);
-      terrain.draw(this.target, w, x, y, p.h, p.v, alt, this.scale);
+      // (lbl_105BA674: "genable terrain")
+      if (cheatFlags.genable.terrain) terrain.draw(this.target, w, x, y, p.h, p.v, alt, this.scale);
     }
   }
 
@@ -946,7 +957,8 @@ export class HouseViewer {
         }
       }
       const floor = w.getFloor(x, y, 1);
-      if (floor !== 0) this.drawTerrainFloor(x, y, floor, fx, fy);
+      // (lbl_105BA670: "genable floors")
+      if (floor !== 0 && cheatFlags.genable.floors) this.drawTerrainFloor(x, y, floor, fx, fy);
       this.drawWaterTile(x, y, alt[1]);
     }
   }
@@ -1174,13 +1186,13 @@ export class HouseViewer {
   /**
    * RenderStaticRow: upper-level floors and the objects standing on each
    * tile. A tile without a floor on the current level (not level 1) gets the
-   * build-mode grid when it is floorable (flags bit 0, ComputeRooms) and the
-   * mode is build (lbl_105BA690, a render debug flag, is 1).
+   * build-mode grid when it is floorable (flags bit 0, ComputeRooms), the
+   * mode is build and lbl_105BA690 is set (initially 1; "draw_floorable off" clears it).
    */
   private renderStaticRow(x0: number, y0: number, count: number, step: readonly [number, number], level: number, rp: RenderParam): void {
     const w = this.world;
     const s = this.scale;
-    const buildGrid = level !== 1 && level === this.level && this.isBuildMode();
+    const buildGrid = cheatFlags.drawFloorable && level !== 1 && level === this.level && this.isBuildMode();
     for (let k = 0; k < count; k++) {
       const x = x0 + step[0] * k;
       const y = y0 + step[1] * k;
@@ -1193,12 +1205,54 @@ export class HouseViewer {
         const floor = w.getFloor(x, y, level);
         const fx = base.h - (8 << s);
         const fy = base.v - (alt[1] << (s + 1));
-        if (floor !== 0) this.drawTileFloor(x, y, level, floor, fx, fy);
+        // (lbl_105BA670, "genable floors": off, upper floors are not drawn and get the grid instead)
+        if (floor !== 0 && cheatFlags.genable.floors) this.drawTileFloor(x, y, level, floor, fx, fy);
         else if (buildGrid && w.getFlags(x, y, level) & 1) this.drawGrid(x, y, level, fx, fy);
       }
       if (level === 1) this.drawPoolTile(x, y, rp);
-      if (this.objects && w.getTileObjectID(x, y, level) !== 0) this.objects.drawTileObjects(this, this.comp, x, y, level, rp);
+      if (this.objects && w.getTileObjectID(x, y, level) !== 0) {
+        this.drawTileShadow(x, y, level, rp);
+        // (lbl_105BA664: "genable objects")
+        if (cheatFlags.genable.objects) this.objects.drawTileObjects(this, this.comp, x, y, level, rp);
+      }
     }
+  }
+
+  /** FloorGraphicsMgr::GetFloorShadowMgr(scale) (made by cRenderer::SetupShadowMgrs). */
+  private readonly shadowMgrs = new Map<number, FloorShadowMgr>();
+
+  /**
+   * RenderStaticRow's tile shadow, before the tile's objects, when the
+   * shadows option (lbl_105BA240[0x38]) is on: cXObject::GetTileShadow of
+   * the tile's first object, its id turned by the view rotation
+   * (lbl_105BA23C), FloorShadowMgr::GetShadow(id) of the scale, then
+   * DrawShadow at the tile center's RenderParam position minus half a tile
+   * (the pool tile's spot) with the offset 0xff - (int)(255 * ambient + 0.5)
+   * + brightness and the floor depth GetTerrainZ + (level - 1) * level step
+   * plus the floor table rows (DrawFloor's depth without its +0x41).
+   */
+  private drawTileShadow(x: number, y: number, level: number, rp: RenderParam): void {
+    if (!getOptionsMgr().getShadows()) return;
+    const sh = this.objects?.getTileShadow?.(this, x, y, level);
+    if (!sh) return;
+    const w = this.world;
+    const s = this.scale;
+    const id = w.rotation > 0 ? rotateShadowID(sh.id, w.rotation) : sh.id;
+    let mgr = this.shadowMgrs.get(s);
+    if (!mgr) {
+      mgr = new FloorShadowMgr(this.floors.global, s);
+      this.shadowMgrs.set(s, mgr);
+    }
+    const surf = mgr.getShadow(id);
+    if (!surf) return;
+    const [wx, wy] = w.toWorld(x, y);
+    rp.setGridCoords((wx << 4) | 8, (wy << 4) | 8, level);
+    const sx = rp.sx - (8 << s);
+    const sy = rp.sy - (4 << s);
+    const zb = this.zbuf;
+    const base = this.getTerrainZ(x, y) + (level - 1) * zb.levelZ.get(s)! - zb.floorAt(s, sy, this.originY);
+    const offset = 0xff - Math.trunc(255 * rp.ambient + 0.5) + sh.brightness;
+    this.comp.drawShadow(surf, mgr.width, mgr.height, sx, sy, offset, base, this.floorRowIndex(sy));
   }
 }
 

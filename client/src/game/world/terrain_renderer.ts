@@ -99,6 +99,11 @@ export function setDisplayFormat(format: number, replicate = false): void {
   }
 }
 
+/** App+0x34: the display pixel format (see displayFormat). */
+export function getDisplayFormat(): number {
+  return displayFormat;
+}
+
 /** GetColor16FromRGB(0x00RRGGBB). */
 export function getColor16FromRGB(c: number): number {
   switch (displayFormat) {

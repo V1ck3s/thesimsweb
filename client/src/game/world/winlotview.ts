@@ -47,6 +47,7 @@ import { getTrackedObject, setTrackedObject, setTrackingDispatch, stopTracking, 
 import type { ObjSelector } from "./objselector.js";
 import { G, Simulator } from "../sim/simulator.js";
 import { animSoundEnv } from "../sim/animsound.js";
+import { tryUnloadSkills } from "../sim/personanim.js";
 import type { WorldHooks } from "../sim/simmodule.js";
 import { SimObject } from "../sim/xobject.js";
 import { EP, ObjFnTable } from "../sim/objfntable.js";
@@ -484,7 +485,7 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
     const tools = this.initGameTools(v, lot, p, tool);
     // CPState::UpdateWorldFromCPState: the build panel's sub-tool picked inside CPState::Update.
     st.worldUpdateHook = (bits) => {
-      if (st.getMode() === Mode.Build && bits & (DIRTY_ARCH_TOOL | DIRTY_ARCH_SUBTOOL)) {
+      if (!st.cheatToolActive && st.getMode() === Mode.Build && bits & (DIRTY_ARCH_TOOL | DIRTY_ARCH_SUBTOOL)) {
         tools.archSetCurrentTool(st.archGetCurrentTool(), st.archGetCurrentSubtool());
       }
     };
@@ -500,28 +501,38 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
     let guid: number | null = null;
     let mode: Mode | null = null;
     let pending = 0;
+    // CPState::SetMode -> SetCurrentToolByID: buy mode's hand, build mode's arch tool, no tool elsewhere
+    // (leaving puts a held object back: the tool's Cancel).
+    const selectModeTool = (): void => {
+      if (mode === Mode.Buy) {
+        tools.setCurrentToolByID(ToolId.Move, -1);
+        tool.setParameter(null);
+      } else if (mode === Mode.Build) {
+        tools.archSetCurrentTool(st.archGetCurrentTool(), st.archGetCurrentSubtool());
+      } else {
+        tools.current?.cancel();
+        tools.issueToolSelection(null);
+      }
+    };
+    // CPState::SetCheatTool: the cheat tool replaces the current one; once it is
+    // gone, UpdateWorldFromCPState gives the mode's tool back.
+    st.setCheatToolHook = (id) => {
+      if (id === null) selectModeTool();
+      else tools.issueToolSelection(tools.getToolByID(id));
+    };
     this.listen(() => {
       if (st.getMode() !== mode) {
         const prev = mode;
         mode = st.getMode();
         guid = null;
-        // CPState::SetMode -> SetCurrentToolByID: buy mode's hand, build mode's arch tool, no tool elsewhere
-        // (leaving puts a held object back: the tool's Cancel).
-        if (mode === Mode.Buy) {
-          tools.setCurrentToolByID(ToolId.Move, -1);
-          tool.setParameter(null);
-        } else if (mode === Mode.Build) {
-          tools.archSetCurrentTool(st.archGetCurrentTool(), st.archGetCurrentSubtool());
-        } else {
-          tools.current?.cancel();
-          tools.issueToolSelection(null);
-        }
+        // UpdateWorldFromCPState leaves a cheat tool in place.
+        if (!st.cheatToolActive) selectModeTool();
         // CPState::SetMode: leaving any mode but live flushes the undo lists (UndoManager::FlushCommandQueues).
         if (prev !== null && prev !== Mode.Live) tools.undo.flushCommandQueues();
-      } else if (mode === Mode.Build && st.dirty & (DIRTY_ARCH_TOOL | DIRTY_ARCH_SUBTOOL)) {
+      } else if (!st.cheatToolActive && mode === Mode.Build && st.dirty & (DIRTY_ARCH_TOOL | DIRTY_ARCH_SUBTOOL)) {
         tools.archSetCurrentTool(st.archGetCurrentTool(), st.archGetCurrentSubtool());
       }
-      if (mode !== Mode.Buy) return;
+      if (mode !== Mode.Buy || st.cheatToolActive) return;
       const product = st.shopGetCatalogItem();
       const g = product?.guid ?? null;
       // A click on the catalog sets the shop item again (DIRTY_SHOP_ITEM), even the same product.
@@ -1539,7 +1550,8 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
   /** XViewer routes the mouse to cGameTools' current tool in buy and build modes. */
   private activeTools(): GameTools | null {
     const m = this.ctx.state.getMode();
-    return m === Mode.Buy || m === Mode.Build ? this.gameTools : null;
+    // (a cheat tool, CPState::SetCheatTool, takes the mouse in every mode)
+    return m === Mode.Buy || m === Mode.Build || this.ctx.state.cheatToolActive ? this.gameTools : null;
   }
 
   override postChildDraw(g: Gfx): void {
@@ -1808,7 +1820,11 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
   }
 
   /** cOptionsMgr::SetFreeWill -> cXObject::SetFreeWill. */
-  private readonly onOptions = (o: OptionsMgr): void => this.sim?.setFreeWill(o.getFreeWill());
+  private readonly onOptions = (o: OptionsMgr): void => {
+    this.sim?.setFreeWill(o.getFreeWill());
+    // cOptionsMgr::SetAA / SetShadows: InitSpr2Decoder and a redraw of the view (vtable +0x50).
+    if (this.viewer) this.viewer.dirty = true;
+  };
 
   override shutdown(): void {
     for (const fn of this.listeners) this.ctx.state.offChange(fn);
@@ -2027,6 +2043,16 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
     this.frame = null;
   }
 
+  /**
+   * cDDDSimsView::DoMessage(0x1b): when the control panel (cSimsApp+0x84)
+   * has faded in (BoboVision, cWinViewControl::SetMode), the viewport takes
+   * the view's height less the panel's opaque part (its height - 0x32).
+   */
+  override doAsyncShowHideMessage(src: TSWin, dir: number): boolean {
+    if ("viewControl" in src && dir > 0) this.setViewportHeight(this.getH() - (src.getH() - 0x32));
+    return true;
+  }
+
   setWallState(state: WallState): void {
     if (this.cutaway) this.cutaway.setWallState(state);
     else this.wallManager?.setWallState(state);
@@ -2107,6 +2133,8 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
       this.people.update(nowMs);
       this.viewer.dirty = true;
     }
+    // HouseViewer::UpdateWorld: VBAnimMgr::TryUnloadSkills.
+    if (this.viewer) tryUnloadSkills(nowMs);
     super.pump(nowMs);
   }
 

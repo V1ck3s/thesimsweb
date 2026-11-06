@@ -16,6 +16,7 @@
 
 import { Mode } from "../cpstate.js";
 import type { Compositor } from "./compositor.js";
+import { rotateShadowID } from "./floorshadow.js";
 import type { HouseViewer, ObjectDrawer } from "./houseviewer.js";
 import type { Renderer } from "./renderer.js";
 import type { RenderParam } from "./renderparam.js";
@@ -88,6 +89,12 @@ export interface DrawableObject {
   items(graphic: number, dirIndex: number, scale: number): readonly DrawGroupItem[] | null;
   /** GetNextObjectSibling. */
   next: DrawableObject | null;
+  /** +0x184: ObjSelector::GetShadowID (-1 / absent = no floor shadow). */
+  readonly shadowId?: number;
+  /** ObjSelector::GetShadowBrightness (OBJD +0x9e). */
+  readonly shadowBrightness?: number;
+  /** OBJD +0x12: the object type (2 = person). */
+  readonly objectType?: number;
   /**
    * The objects in the object slots 1.. (cXObject +0x130) with each slot's
    * offset, for DrawIso's DrawObjectSlot pass; absent or empty for a person
@@ -246,6 +253,23 @@ export class ObjectModuleDrawer implements ObjectDrawer {
       o.cutawayHidden = cut;
       drawIso(o, viewer, comp, rp, cut ? 1 : o.hidden);
     }
+  }
+
+  /**
+   * cXObject::GetTileShadow from the tile's first object (GetTileObjectID):
+   * the first object along the sibling chain that is not hidden (+0x8e), has
+   * no flag 4 (+0x5a), is neither of type 2 (a person) nor 9 and has a
+   * shadow id; its id turned by its direction / 2 (lbl_105BA23C) and its
+   * ObjSelector::GetShadowBrightness. Null when there is none (id -1).
+   */
+  getTileShadow(viewer: HouseViewer, x: number, y: number, level: number): { id: number; brightness: number } | null {
+    for (let o = this.byId(viewer.world.getTileObjectID(x, y, level)); o; o = o.next) {
+      const id = o.shadowId ?? -1;
+      if (o.hidden !== 0 || ((o.flags ?? 0) & 4) !== 0 || o.objectType === 2 || o.objectType === 9 || id === -1) continue;
+      const turns = Math.trunc(o.dir / 2);
+      return { id: turns > 0 ? rotateShadowID(id & 0xff, turns) : id & 0xff, brightness: o.shadowBrightness ?? 0 };
+    }
+    return null;
   }
 
   /** HouseViewer::RenderDynamicObjects. */

@@ -16,6 +16,7 @@
 import type { Neighbor } from "../data/neighborhood.js";
 import type { XObject } from "../world/objects.js";
 import type { BehaviorTree } from "./behavior.js";
+import { simLog } from "./simlog.js";
 import { applyMotiveIncs, calcHappy, MOTIVE, motivesSim, type MotiveCurve, type MotiveInc } from "./motives.js";
 import type { SimModule } from "./simmodule.js";
 import { PRIM_FALSE, PRIM_TRUE, PRIM_WAIT, simThrow, SimError } from "./treesim.js";
@@ -198,6 +199,8 @@ export class PersonSim extends SimObject {
   readonly queue: Interaction[] = [];
   currentAction: Interaction | null = null;
   lastAction: Interaction | null = null;
+  /** +0xa7c bit 0x20 (SetCurrentAction): the tree of the last action returned true (SimLog's result). */
+  lastActionResult = false;
   /** cXPerson +0xa8c */
   readonly animator: PersonAnimator;
   /** Continuous facing for the renderer (45 degree units), null: object data direction. */
@@ -347,6 +350,8 @@ export class PersonSim extends SimObject {
       if (tick % 10 === 0 && this.pd[PDX.personType] === 0 && this.obj.hidden === 0 && m[MOTIVE.sleepState]! >= 0) {
         this.module.sim.addLayoutTick(this.routes.length > 0);
       }
+      // SimLog::SimTickCompleted ("sim_log begin").
+      simLog.simTickCompleted(this);
     }
     return r;
   }
@@ -2134,7 +2139,11 @@ export class PersonSim extends SimObject {
    * increments are cleared, and so are person data 71..73.
    */
   setCurrentAction(i: Interaction | null): void {
-    if (this.currentAction) this.lastAction = this.currentAction;
+    if (this.currentAction) {
+      this.lastAction = this.currentAction;
+      // +0xa7c bit 0x20: the last action's tree returned true (the tree result, +0x1c).
+      this.lastActionResult = this.lastResult;
+    }
     this.currentAction = i;
     // A new action with a target starts with its routing flags (person data 38 / 39) cleared.
     if (i && i.target !== 0) {

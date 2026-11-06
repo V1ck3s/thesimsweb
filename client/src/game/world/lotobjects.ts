@@ -81,6 +81,16 @@ class DrawableLotObject implements DrawableObject {
     return this.obj.selector.objd.dynamicSpritesBaseId;
   }
 
+  get shadowId(): number {
+    return this.obj.shadowId;
+  }
+  get shadowBrightness(): number {
+    return this.obj.selector.getShadowBrightness();
+  }
+  get objectType(): number {
+    return this.obj.selector.objd.objectType;
+  }
+
   items(graphic: number, dirIndex: number, scale: number) {
     return this.obj.selector.getDrawGroup(graphic)?.getItemList(dirIndex, scale)?.items ?? null;
   }

@@ -9,6 +9,7 @@ import { GrassTool } from "./grasstool.js";
 import { LevelDirtTool } from "./leveldirttool.js";
 import { PoolTool, WaterTool } from "./pooltool.js";
 import { SimpleAltTool } from "./simplealttool.js";
+import { TileTool } from "./tiletool.js";
 import { NewWallTool } from "./walltool.js";
 import { NewWallpaperTool } from "./wallpapertool.js";
 
@@ -22,4 +23,5 @@ export const BUILD_TOOLS: Array<[number, ToolFactory]> = [
   [ToolId.Wallpaper, (h) => new NewWallpaperTool(h)],
   [ToolId.Pool, (h) => new PoolTool(h)],
   [ToolId.Water, (h) => new WaterTool(h)],
+  [ToolId.Tile, (h) => new TileTool(h)],
 ];

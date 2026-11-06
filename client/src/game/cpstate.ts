@@ -852,6 +852,21 @@ export class CPState {
     this.worldUpdateHook?.(bits);
   }
 
+  /**
+   * CPState+0x50: a cheat tool is the current tool (CPState::SetCheatTool,
+   * the "map_edit" cheat); UpdateWorldFromCPState then leaves the tool alone
+   * whatever the mode. The lot view installs setCheatToolHook.
+   */
+  cheatToolActive = false;
+  setCheatToolHook: ((toolId: number | null) => void) | null = null;
+
+  /** CPState::SetCheatTool(cGameTools tool `toolId`, or none): XViewer::IssueToolSelection, then the tool bits dirty. */
+  setCheatTool(toolId: number | null): void {
+    this.cheatToolActive = toolId !== null;
+    this.setCheatToolHook?.(toolId);
+    this.setDirty(DIRTY_ARCH_TOOL);
+  }
+
   // --- options and camera panels ---------------------------------------------
 
   /** Neighborhood house number of the current lot (cSimsApp+0x1c, +0x24); the lot fills it. */

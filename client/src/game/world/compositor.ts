@@ -51,8 +51,9 @@ uniform sampler2D uColor;
 uniform sampler2D uZMode;
 uniform sampler2D uTable;   // R32F lookup, 4096 wide
 uniform int uMode;          // 0 z-sprite, 1 floor rows, 2 raw depth, 3 wall
-uniform int uPass;          // 0 opaque (depth write), 1 alpha blend
+uniform int uPass;          // 0 opaque, 1 alpha blend (both write depth)
 uniform bool uAllowColorOnly;
+uniform bool uNoAlpha;      // z-sprite: Spr2DecoderNoAlpha (alpha pixels drawn opaque, depth written)
 uniform float uBase;        // base depth
 uniform int uZLutOffset;    // z-sprite: table index of z = 0
 uniform int uRowOffset;     // floor: table index of this sprite's first row
@@ -92,8 +93,9 @@ void main() {
   } else {
     if (mode == 0) discard;
     if (mode == ${PX_COLOR} && !uAllowColorOnly) discard;
-    bool alphaPx = mode == ${PX_ALPHA};
+    bool alphaPx = mode == ${PX_ALPHA} && !uNoAlpha;
     if ((uPass == 0) == alphaPx) discard;
+    if (alphaPx && c.a == 0.0) discard;
     if (uMode == 0) {
       int z = int(zm.r * 255.0 + 0.5);
       depth = uBase + tableAt(uZLutOffset + z);
@@ -140,6 +142,44 @@ void main() {
   outColor = vec4(c.rgb, 1.0);
 }`;
 
+/**
+ * DrawShadow(x, y, shadow, offset, w, h, rows, base): a shadow byte b with
+ * offset + b < 0xf8 (clamped at 0) darkens the target pixel by the dark
+ * map row (offset + b) >> 3 where base + rows[row] <= the z-buffer; the
+ * z-buffer is not written. uDst holds the target under the rectangle.
+ */
+const SHADOW_FS = `#version 300 es
+precision highp float;
+precision highp int;
+in vec2 vUV;
+uniform sampler2D uShadow;  // R8: the Surface8 bytes
+uniform sampler2D uDst;     // the target's color under the rectangle
+uniform sampler2D uTable;
+uniform vec4 uRect;
+uniform ivec2 uAt;          // GL origin of the uDst copy
+uniform float uViewH;
+uniform float uOffset;
+uniform float uBase;
+uniform int uRowOffset;
+out vec4 outColor;
+float tableAt(int i) {
+  return texelFetch(uTable, ivec2(i % 4096, i / 4096), 0).r;
+}
+void main() {
+  ivec2 t = ivec2(floor(vUV * uRect.zw));
+  float lvl = uOffset + floor(texelFetch(uShadow, t, 0).r * 255.0 + 0.5);
+  if (lvl >= 248.0) discard;
+  float level = floor(max(lvl, 0.0) / 8.0);
+  int r = int(floor(uViewH - gl_FragCoord.y)) - int(uRect.y);
+  float depth = uBase + tableAt(uRowOffset + r);
+  vec4 c = texelFetch(uDst, ivec2(gl_FragCoord.xy) - uAt, 0);
+  vec3 c5 = floor(c.rgb * 255.0 / 8.0 + 0.001);
+  vec3 b = vec3(0.0, 0.0, 1.0);
+  vec3 o = floor(0.5 + b + c5 * (max(b, vec3(level)) - b) / 31.0);
+  gl_FragDepth = clamp((depth - ${DEPTH_MIN.toFixed(1)}) / ${DEPTH_RANGE.toFixed(1)}, 0.0, 1.0);
+  outColor = vec4(o * 8.0 / 255.0, 1.0);
+}`;
+
 const UNIFORMS = [
   "uRect",
   "uView",
@@ -150,6 +190,7 @@ const UNIFORMS = [
   "uMode",
   "uPass",
   "uAllowColorOnly",
+  "uNoAlpha",
   "uBase",
   "uZLutOffset",
   "uRowOffset",
@@ -196,6 +237,20 @@ void main() {
   outColor = vec4(hi, mid, lo, 255.0) / 255.0;
 }`;
 
+/**
+ * The blend weight of an SPR2 alpha pixel as the Windows Spr2Decoder565 /
+ * 555 (004bbca9, 004bdbcc, and their long-run helper 004bc271) use the
+ * alpha byte: below 8 the pixel is skipped (0: discarded), above 0xf7 it is
+ * drawn opaque, otherwise it is blended through the alpha table row
+ * (alpha & 0x1f), which averages a * 8 .. a * 8 + 7 (InitAlphaZSpriteBlit,
+ * 0049a42a). (The Mac decoders blend every alpha pixel by its 5-bit alpha.)
+ */
+function alphaWeight(a: number): number {
+  if (a < 8) return 0;
+  if (a > 0xf7) return 255;
+  return Math.round((a & 0x1f) * 8 + 3.5);
+}
+
 export class Compositor {
   readonly canvas: HTMLCanvasElement;
   readonly gl: WebGL2RenderingContext;
@@ -236,6 +291,16 @@ export class Compositor {
   private depthOutRb: WebGLRenderbuffer | null = null;
   private depthOutSize = [1, 1];
   private patchProg: WebGLProgram | null = null;
+  private shadowProg: WebGLProgram | null = null;
+  private shadowDst: WebGLTexture | null = null;
+  private shadowDstSize = [0, 0];
+  private readonly shadowTex = new WeakMap<object, WebGLTexture>();
+  /**
+   * lbl_105BA240[0x39] clear (InitSpr2Decoder(1)): z-sprites go through the
+   * Spr2DecoderNoAlpha* decoders, which draw an alpha pixel (SPR2 cmd 2) like
+   * an opaque one (depth tested and written, alpha ignored).
+   */
+  spr2NoAlpha = false;
   private patchTex: WebGLTexture | null = null;
 
   constructor(
@@ -436,6 +501,8 @@ export class Compositor {
     const p = gl.createProgram();
     gl.attachShader(p, sh(gl.VERTEX_SHADER, vs));
     gl.attachShader(p, sh(gl.FRAGMENT_SHADER, fs));
+    // The quad's vertex array feeds attribute 0 in every program.
+    gl.bindAttribLocation(p, 0, "aPos");
     gl.linkProgram(p);
     if (!gl.getProgramParameter(p, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(p) ?? "link");
     return p;
@@ -496,8 +563,7 @@ export class Compositor {
       rgba[i * 4] = palette[idx * 3]!;
       rgba[i * 4 + 1] = palette[idx * 3 + 1]!;
       rgba[i * 4 + 2] = palette[idx * 3 + 2]!;
-      // 5-bit alpha blend weight (the alpha table averages a*8 .. a*8+7).
-      rgba[i * 4 + 3] = mode === PX_ALPHA ? Math.min(255, Math.round(f.alpha[i]! * 8 + 3.5)) : mode === 0 ? 0 : 255;
+      rgba[i * 4 + 3] = mode === PX_ALPHA ? alphaWeight(f.alpha[i]!) : mode === 0 ? 0 : 255;
       zm[i * 2] = f.z[i]!;
       zm[i * 2 + 1] = mode * 64;
     }
@@ -541,7 +607,7 @@ export class Compositor {
     gl.scissor(r.left, this.height - r.bottom, Math.max(0, r.right - r.left), Math.max(0, r.bottom - r.top));
   }
 
-  private draw(tex: SpriteTex, x: number, y: number, flip: boolean, setup: () => void): void {
+  private draw(tex: SpriteTex, x: number, y: number, flip: boolean, setup: () => void, noAlpha = false): void {
     const gl = this.gl;
     if (x >= this.width || y >= this.height || x + tex.width <= 0 || y + tex.height <= 0) return;
     gl.useProgram(this.prog);
@@ -572,20 +638,21 @@ export class Compositor {
         gl.uniform2f(this.u.uLit1Org!, m1.x, m1.y);
       }
     }
+    gl.uniform1i(this.u.uNoAlpha!, noAlpha ? 1 : 0);
     setup();
-    // Pass 0: opaque pixels with depth write; pass 1: alpha pixels blended.
-    if (tex.hasOpaque) {
+    // Pass 0: opaque pixels with depth write; pass 1: alpha pixels blended
+    // (with noAlpha, the alpha pixels are drawn in pass 0).
+    if (tex.hasOpaque || (noAlpha && tex.hasAlpha)) {
       gl.uniform1i(this.u.uPass!, 0);
       gl.depthMask(true);
       gl.disable(gl.BLEND);
       gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
     }
-    if (tex.hasAlpha) {
+    if (tex.hasAlpha && !noAlpha) {
+      // The Windows decoders write the depth of a blended pixel too.
       gl.uniform1i(this.u.uPass!, 1);
-      gl.depthMask(false);
       gl.enable(gl.BLEND);
       gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
-      gl.depthMask(true);
       gl.disable(gl.BLEND);
     }
   }
@@ -601,7 +668,67 @@ export class Compositor {
       gl.uniform1i(this.u.uAllowColorOnly!, 0);
       gl.uniform1f(this.u.uBase!, base);
       gl.uniform1i(this.u.uZLutOffset!, zlut);
-    });
+    }, this.spr2NoAlpha);
+  }
+
+  /**
+   * DrawShadow(x, y, shadow, offset, w, h, rows, base) (101bc600): darkens
+   * the target under a floor shadow (an 8-bit surface, see floorshadow.ts)
+   * where the floor depth base + rowTable[row] is not behind the z-buffer.
+   * `rows` is the table1D index of the entry for the shadow's first row.
+   */
+  drawShadow(shadow: { data: Uint8Array; pitch: number }, w: number, h: number, x: number, y: number, offset: number, base: number, rows: number): void {
+    const gl = this.gl;
+    if (w <= 0 || h <= 0 || x >= this.width || y >= this.height || x + w <= 0 || y + h <= 0) return;
+    this.uploadTable();
+    this.shadowProg ??= this.link(VS, SHADOW_FS);
+    const p = this.shadowProg;
+    let tex = this.shadowTex.get(shadow);
+    if (!tex) {
+      tex = this.texture();
+      const bytes = new Uint8Array(w * h);
+      for (let r = 0; r < h; r++) bytes.set(shadow.data.subarray(r * shadow.pitch, r * shadow.pitch + w), r * w);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.R8, w, h, 0, gl.RED, gl.UNSIGNED_BYTE, bytes);
+      this.shadowTex.set(shadow, tex);
+    }
+    // The target under the rectangle, read by the fragment shader.
+    this.shadowDst ??= this.texture();
+    gl.activeTexture(gl.TEXTURE1);
+    gl.bindTexture(gl.TEXTURE_2D, this.shadowDst);
+    if (this.shadowDstSize[0] !== w || this.shadowDstSize[1] !== h) {
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, w, h, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+      this.shadowDstSize = [w, h];
+    }
+    const by = this.height - y - h;
+    gl.bindFramebuffer(gl.FRAMEBUFFER, this.target);
+    const sx = Math.max(0, x);
+    const sy = Math.max(0, by);
+    const cw = Math.min(this.width, x + w) - sx;
+    const ch = Math.min(this.height, by + h) - sy;
+    if (cw <= 0 || ch <= 0) return;
+    gl.copyTexSubImage2D(gl.TEXTURE_2D, 0, sx - x, sy - by, sx, sy, cw, ch);
+    gl.useProgram(p);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, tex);
+    gl.activeTexture(gl.TEXTURE2);
+    gl.bindTexture(gl.TEXTURE_2D, this.tableTex);
+    const loc = (n: string): WebGLUniformLocation | null => gl.getUniformLocation(p, n);
+    gl.uniform1i(loc("uShadow"), 0);
+    gl.uniform1i(loc("uDst"), 1);
+    gl.uniform1i(loc("uTable"), 2);
+    gl.uniform2f(loc("uView"), this.width, this.height);
+    gl.uniform1i(loc("uFlip"), 0);
+    gl.uniform4f(loc("uRect"), x, y, w, h);
+    gl.uniform2i(loc("uAt"), x, by);
+    gl.uniform1f(loc("uViewH"), this.height);
+    gl.uniform1f(loc("uOffset"), offset);
+    gl.uniform1f(loc("uBase"), base);
+    gl.uniform1i(loc("uRowOffset"), rows);
+    gl.bindVertexArray(this.quad);
+    gl.disable(gl.BLEND);
+    gl.depthMask(false);
+    gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+    gl.depthMask(true);
   }
 
   /**

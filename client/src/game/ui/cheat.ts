@@ -37,19 +37,16 @@
  *
  * The shipped list's cheats: autonomy, bubble_tweak, draw_all_frames,
  * interests, log_mask, move_objects, rosebud, rotation, route_balloons,
- * sim_speed, xyzzy, prepare_lot, history (the file becomes a download) and
- * grid are ported here; the neighborhood screen's show_zones, show_filter and
- * nessie in nbhd/winneighborhoodul.ts.
+ * sim_speed, xyzzy, prepare_lot, history (the file becomes a download), grid,
+ * draw_floorable (lbl_105BA690, initially on: the upper level's build grid),
+ * draw_routes (lbl_105BA914: only written, nothing in the shipped build reads
+ * it), map_edit (lbl_105BA68C: cTileTool, world/tools/tiletool.ts, becomes the
+ * cheat tool in every mode, CPState::SetCheatTool, and the ground shows
+ * cMapTileSwatch's overlay, world/terrain_maptile.ts), sim_log (sim/simlog.ts;
+ * SimLog.txt becomes a download) and genable (the HouseViewer module switches,
+ * cheatflags.ts) are ported here; the neighborhood screen's show_zones,
+ * show_filter and nessie in nbhd/winneighborhoodul.ts.
  * Not ported, with what they do in the original:
- *  - draw_routes / draw_floorable (lbl_105BA914 / lbl_105BA690, the latter
- *    with GViewer::DirtyAll): debug drawings of the routes and the floorable
- *    tiles in the renderer; the flags are kept (cheatflags.ts), nothing draws them.
- *  - map_edit on|off: CPState::SetCheatTool(cGameTools tool 8, cTileTool),
- *    which paints the tiles' 0x20 "not editable" flag (rectangles with
- *    Shift); needs XViewer's cheat tool routing.
- *  - sim_log begin|end: SimLog records each person's interactions and motive
- *    changes every tick (SimTickCompleted) and writes them to a text file at
- *    "end"; needs a per-tick hook in the simulator.
  *  - tile_info on|off: cDDDSimsView::ShowTileInfo shows or hides cWinTileInfo,
  *    which the shipped build never sizes nor points at a tile (SetTile is only
  *    called from its own keys): nothing appears.
@@ -58,8 +55,13 @@
  *    lot with the text and the logo and saves it as SimsWebCam.jpg (F8 forces
  *    a shot, Shift+F8 clears the text): a file written every 10 s has no web
  *    equivalent.
- *  - genable, damagelist, sweep: renderer passes, damage rectangles and the
- *    cWinSweepMeter profiler, which this renderer does not have.
+ *  - genable's clear, full_draw, static_rows, static and old_clear switches
+ *    (kept and reported by "genable status"): the original's static layer
+ *    and damage refresh, which this renderer does not have.
+ *  - damagelist, sweep: the damage rectangles (DDDDamageList) and the
+ *    cWinSweepMeter profiler (cTimePartition samples), neither of which this
+ *    renderer has.
+ *  - edit_grass n: the tile tool's grass mode (cTileTool BumpGrass).
  *  - move_lots: see nbhd/winneighborhoodul.ts.
  * Not in the shipped list (only with `?devcheats`): every other APP_CHEATS /
  * GRAPHICS_CHEATS name logs "not ported"; also cTSWinMgrW95's own cheat, the
@@ -71,6 +73,7 @@ import { readStandaloneIff } from "../../engine/assets.js";
 import type { GameContext } from "../context.js";
 import { cheatFlags } from "../cheatflags.js";
 import { WallState } from "../cpstate.js";
+import { SIM_LOG_STRINGS, simLog } from "../sim/simlog.js";
 import { type FamilyStat, getFamilyHistory } from "../data/familyhistory.js";
 import { ObjectFolder } from "../world/objectfolder.js";
 import { Terrain } from "../world/terrain.js";
@@ -587,13 +590,14 @@ const ON_OFF_ONLY = '"on" and "off" are the only acceptable parameters.';
  * GraphicsCheats.cpp's Callback: case 4 ("grid on|off", in the shipped list)
  * checks for exactly one "on" / "off" word, shows or hides the terrain's
  * grid overlay (cTerrain::ShowOverlay, when the world has a terrain) and
- * redraws the world (XViewer::IssueWorldDirty). The other cases switch
- * renderer debug features (sprite decoder flags, genable's HouseViewer
- * passes, damagelist, the sweep meter, people quality...) that this port's
- * renderer does not have: they only log.
+ * redraws the world (XViewer::IssueWorldDirty); case 10 is genable
+ * (genableCheat). The other cases switch renderer debug features (sprite
+ * decoder flags, damagelist, the sweep meter, people quality...) that this
+ * port's renderer does not have: they only log.
  */
-function graphicsCheatCallback(host: CheatAppHost, cmd: CheatCommandLine, id: number): boolean {
+function graphicsCheatCallback(ctx: GameContext, host: CheatAppHost, cmd: CheatCommandLine, id: number): boolean {
   const name = GRAPHICS_CHEATS[id]?.[0] ?? "";
+  if (name === "genable") return genableCheat(ctx, host, cmd);
   if (name !== "grid") {
     console.log(`not ported: graphics cheat "${name}"`);
     return true;
@@ -606,6 +610,66 @@ function graphicsCheatCallback(host: CheatAppHost, cmd: CheatCommandLine, id: nu
   const viewer = host.lotView()?.viewer ?? null;
   const terrain = viewer?.terrain;
   if (terrain instanceof Terrain) terrain.showOverlay(arg === A.on);
+  if (viewer) viewer.dirty = true;
+  return true;
+}
+
+/** lbl_105BBF2C + 0x640 .. 0x790: genable's words and status lines, in the status order. */
+const GENABLE = {
+  default: "default",
+  status: "status",
+  title: "Genable Status - Enabled HouseViewer Modules",
+  yes: "true",
+  no: "false",
+  all: "all",
+  modules: [
+    ["terrain", "terrain", "Draw Terrain = %s\n"],
+    ["floors", "floors", "Draw Floors = %s\n"],
+    ["walls", "walls", "Draw Walls = %s\n"],
+    ["clear", "clear", "Clear Refresh = %s\n"],
+    ["objects", "objects", "Draw Objects = %s\n"],
+    ["people", "people", "Draw People = %s\n"],
+    ["fullDraw", "full_draw", "Full Draw = %s\n"],
+    ["staticRows", "static_rows", "Draw Static Rows = %s\n"],
+    ["static", "static", "Draw Static = %s\n"],
+    ["oldClear", "old_clear", "Old Clear = %s\n"],
+  ] as ReadonlyArray<readonly [keyof typeof cheatFlags.genable, string, string]>,
+} as const;
+
+/** "genable default" (the flags' initial values). */
+const GENABLE_DEFAULT: typeof cheatFlags.genable = { ...cheatFlags.genable };
+
+/**
+ * The graphics Callback's case 10, "genable": "default" restores the
+ * HouseViewer module switches, "status" lists them in a message box,
+ * "<module> on|off" sets one ("all": every one but full_draw and old_clear);
+ * then GViewer::DirtyAll. Anything else fails with the usage.
+ */
+function genableCheat(ctx: GameContext, host: CheatAppHost, cmd: CheatCommandLine): boolean {
+  const g = cheatFlags.genable;
+  const viewer = host.lotView()?.viewer ?? null;
+  if (cmd.args.length === 2) {
+    const w = cmd.args[1];
+    if (w === GENABLE.default) {
+      Object.assign(g, GENABLE_DEFAULT);
+      if (viewer) viewer.dirty = true;
+      return true;
+    }
+    if (w !== GENABLE.status) return false;
+    const text = GENABLE.modules.map(([k, , line]) => line.replace("%s", g[k] ? GENABLE.yes : GENABLE.no)).join("");
+    void TSWinMsgBox.show(ctx, text, GENABLE.title);
+    return true;
+  }
+  if (cmd.args.length !== 3) return false;
+  const v = cmd.args[2];
+  if (v !== A.on && v !== A.off) return false;
+  const on = v === A.on;
+  const word = cmd.args[1];
+  const m = GENABLE.modules.find(([, w]) => w === word);
+  if (m) g[m[0]] = on;
+  else if (word === GENABLE.all) {
+    for (const [k] of GENABLE.modules) if (k !== "fullDraw" && k !== "oldClear") g[k] = on;
+  } else return false;
   if (viewer) viewer.dirty = true;
   return true;
 }
@@ -670,8 +734,8 @@ const MED_SPEED_BUTTON = 1;
  * the lot while the folder has it is reported), CPState rotation 0, unpaused,
  * the medium speed, zoom 2, walls cut away; every person's autonomy (person
  * data 0x24) 50 and person data 0x1d 0; ObjectModule::CleanupPeople(0); the
- * report, if any, in a "Prepare Lot" box. (The map_edit cheat tool it also
- * clears is not ported.)
+ * report, if any, in a "Prepare Lot" box. A map_edit tile tool is put away
+ * (lbl_105BA68C cleared, CPState::SetCheatTool(0)).
  */
 async function prepareLot(ctx: GameContext, host: CheatAppHost): Promise<boolean> {
   const sim = host.lotView()?.sim ?? null;
@@ -694,6 +758,11 @@ async function prepareLot(ctx: GameContext, host: CheatAppHost): Promise<boolean
   s.setSpeed(MED_SPEED_BUTTON);
   s.setZoom(2);
   s.setWallState(WallState.Cutaway);
+  // lbl_105BA68C: a map_edit tile tool is put away (CPState::SetCheatTool(0)).
+  if (cheatFlags.mapEdit) {
+    cheatFlags.mapEdit = false;
+    s.setCheatTool(null);
+  }
   if (sim) {
     for (const p of sim.module.persons) {
       p.pd[0x24] = 50;
@@ -702,6 +771,44 @@ async function prepareLot(ctx: GameContext, host: CheatAppHost): Promise<boolean
     for (const p of [...sim.module.people]) p.cleanup();
   }
   if (report) await TSWinMsgBox.show(ctx, report, A.prepareLot);
+  return true;
+}
+
+/** lbl_105BC2E0 + 0x611 .. 0x641: sim_log's words and errors. */
+const SIM_LOG = {
+  begin: "begin",
+  end: "end",
+  already: "Simulation logging is already begun.\n",
+  notYet: "Simulation logging has not yet begun.\n",
+} as const;
+
+/**
+ * AppCheatCallback case 6 ("sim_log begin|end"): another word fails with the
+ * usage ("Format is ..."), "begin" while logging and "end" while not fail
+ * with their message; else SimLog::BeginLogging / EndLogging (SimLog.txt,
+ * written to the game folder by the original, is handed over as a download).
+ */
+async function simLogCheat(ctx: GameContext, cmd: CheatCommandLine, format: string): Promise<boolean> {
+  const arg = cmd.args[1] ?? "";
+  const begin = arg === SIM_LOG.begin;
+  if (!begin && arg !== SIM_LOG.end) {
+    cmd.errMsg = format;
+    return false;
+  }
+  if (begin && simLog.logging) {
+    cmd.errMsg = SIM_LOG.already + format;
+    return false;
+  }
+  if (!begin && !simLog.logging) {
+    cmd.errMsg = SIM_LOG.notYet + format;
+    return false;
+  }
+  if (begin) {
+    simLog.beginLogging();
+    return true;
+  }
+  downloadText(SIM_LOG_STRINGS.file, simLog.endLogging());
+  await TSWinMsgBox.show(ctx, SIM_LOG_STRINGS.done, SIM_LOG_STRINGS.title);
   return true;
 }
 
@@ -769,13 +876,28 @@ async function appCheatCallback(ctx: GameContext, host: CheatAppHost, cmd: Cheat
       return true;
     }
     case 1:
+      // lbl_105BA914: nothing in the shipped build reads it.
       cheatFlags.drawRoutes = on;
-      console.log("not ported: draw_routes overlay");
       return true;
     case 3:
+      // lbl_105BA690 (the upper level's build grid), then GViewer::DirtyAll.
       cheatFlags.drawFloorable = on;
-      console.log("not ported: draw_floorable overlay");
+      if (view?.viewer) view.viewer.dirty = true;
       return true;
+    case 6:
+      return simLogCheat(ctx, cmd, format);
+    case 8: {
+      // lbl_105BA68C changes only through a working tool 8 (cGameTools::GetToolByID).
+      if (cheatFlags.mapEdit === on) return true;
+      const tool = view?.gameTools?.getToolByID(8) ?? null;
+      if (!tool || !view) return true;
+      cheatFlags.mapEdit = on;
+      // GViewer::DirtyAll: the map overlay (HouseViewer::RenderStaticRow) appears or goes.
+      if (view.viewer) view.viewer.dirty = true;
+      if (on) tool.setParameter(0);
+      ctx.state.setCheatTool(on ? 8 : null);
+      return true;
+    }
     case 10:
       cheatFlags.moveObjects = on;
       return true;
@@ -854,7 +976,7 @@ export async function installCheatConsole(ctx: GameContext, host: CheatAppHost, 
   const mgr = new TSCheatCodeManager(ctx, restricted);
   manager = mgr;
   GRAPHICS_CHEATS.forEach(([name, usage], i) => {
-    mgr.registerCheat(name, (cmd, data) => graphicsCheatCallback(host, cmd, data), i, usage);
+    mgr.registerCheat(name, (cmd, data) => graphicsCheatCallback(ctx, host, cmd, data), i, usage);
   });
   for (const [id, , name] of APP_CHEATS) {
     // GetUsageStr: name + " " + arguments + " - " + description.

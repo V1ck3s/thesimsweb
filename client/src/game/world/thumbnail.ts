@@ -41,8 +41,13 @@
  *
  * Port: the buffer is rendered by the lot's HouseViewer in pieces of its
  * own size (its WebGL target), the origin moved for each piece, and read
- * back. Pixels are 16-bit 555 as in the original's buffers (the colors of
- * the shipped BMP_s are multiples of 8). Pass 1 renders the view again with
+ * back. Pixels are 16-bit in the display format (App+0x34) as in the
+ * original's buffers: ScaleBitmap reads and writes them with Cvt565toRGB /
+ * CvtRGBto565 (format 2, the Windows 16-bit display the port assumes) or
+ * Cvt555toRGB / CvtRGBto555 (format 1), and MakeMemoryBMP(..., true) turns
+ * 565 into 555 (pixel >> 1, the green's low bit dropped) only when writing
+ * the BMP_ (the shipped BMP_s' colors are multiples of 8): the green keeps
+ * its 6 bits through the filtering. Pass 1 renders the view again with
  * +0x51 (HouseViewer.drawRoof / the walls' drawRoof) set; the roof texture
  * is loaded beforehand (prepareHouseThumbnails), the render being
  * synchronous.
@@ -72,12 +77,11 @@ import { customWallStyleOf, loadLotObjectDrawer } from "./lotobjects.js";
 import { loadRoofSettings, roofLayersOf } from "./roofs.js";
 import { computeRooms, RoomManager } from "./rooms.js";
 import { houseNumberOfPath, Terrain } from "./terrain.js";
+import { getDisplayFormat } from "./terrain_renderer.js";
 import { WallManager } from "./walls.js";
 import { readLotSize } from "./winlotview.js";
 import { FixedWorld, RotatableWorld } from "./world.js";
 
-/** lbl_105BA258: the transparent color (magenta) of the 555 buffers. */
-const TRANSPARENT = 0x7c1f;
 /** lbl_105BBF58 [1] / [2]: SaveThumbnail's and SaveUnleashedThumbnail's scales. */
 const SCALE_THUMBNAIL = 0.25;
 const SCALE_UNLEASHED = 0.125;
@@ -101,7 +105,7 @@ export interface ThumbnailScene {
   houseNumber: number;
 }
 
-/** A 16-bit 555 image. */
+/** A 16-bit image in the display format (565 or 555). */
 interface Image16 {
   w: number;
   h: number;
@@ -115,13 +119,24 @@ interface ThumbnailInfo {
   z: number;
 }
 
-function to555(r: number, g: number, b: number): number {
-  return ((r & 0xf8) << 7) | ((g & 0xf8) << 2) | (b >> 3);
+/** ScaleBitmap's choice by App+0x34: the 565 converters for format 2, the 555 ones otherwise. */
+function is565(): boolean {
+  return getDisplayFormat() === 2;
 }
 
-/** 555 -> 8-bit channels (<< 3, as the shipped BMP_s show). */
-function rgbOf(p: number): [number, number, number] {
-  return [((p >> 10) & 0x1f) << 3, ((p >> 5) & 0x1f) << 3, (p & 0x1f) << 3];
+/** CvtRGBto565 / CvtRGBto555. */
+function cvtRGBto16(r: number, g: number, b: number): number {
+  return is565() ? ((r & 0xf8) << 8) | ((g & 0xfc) << 3) | (b >> 3) : ((r & 0xf8) << 7) | ((g & 0xf8) << 2) | (b >> 3);
+}
+
+/** Cvt565toRGB / Cvt555toRGB: 8-bit channels with zero low bits. */
+function cvt16toRGB(p: number): [number, number, number] {
+  return is565() ? [((p >> 11) & 0x1f) << 3, ((p >> 5) & 0x3f) << 2, (p & 0x1f) << 3] : [((p >> 10) & 0x1f) << 3, ((p >> 5) & 0x1f) << 3, (p & 0x1f) << 3];
+}
+
+/** lbl_105BA258: the transparent color (magenta) in the buffers' format. */
+function transparent16(): number {
+  return cvtRGBto16(0xf8, 0, 0xf8);
 }
 
 /**
@@ -223,7 +238,7 @@ function renderLot(scene: ThumbnailScene, f: number, bufW: number, bufH: number,
           const dst = (ty + y) * bufW + tx;
           for (let x = 0; x < cw; x++) {
             const s = src + x * 4;
-            img.px[dst + x] = to555(rgba[s]!, rgba[s + 1]!, rgba[s + 2]!);
+            img.px[dst + x] = cvtRGBto16(rgba[s]!, rgba[s + 1]!, rgba[s + 2]!);
           }
         }
       }
@@ -294,6 +309,7 @@ function contributors(srcLen: number, dstLen: number): Array<Array<[index: numbe
 /** One ScaleBitmap pass along x (`horizontal`) or y; transparent pixels carry no weight. */
 function scalePass(src: Image16, dw: number, dh: number, horizontal: boolean): Image16 {
   const dst: Image16 = { w: dw, h: dh, px: new Uint16Array(dw * dh) };
+  const transparent = transparent16();
   const cs = horizontal ? contributors(src.w, dw) : contributors(src.h, dh);
   for (let y = 0; y < dh; y++) {
     for (let x = 0; x < dw; x++) {
@@ -304,8 +320,8 @@ function scalePass(src: Image16, dw: number, dh: number, horizontal: boolean): I
       let b = 0;
       for (const [s, wgt] of list) {
         const p = horizontal ? src.px[y * src.w + s]! : src.px[s * src.w + x]!;
-        if (p === TRANSPARENT) continue;
-        const [pr, pg, pb] = rgbOf(p);
+        if (p === transparent) continue;
+        const [pr, pg, pb] = cvt16toRGB(p);
         wsum += wgt;
         r += pr * wgt;
         g += pg * wgt;
@@ -313,9 +329,9 @@ function scalePass(src: Image16, dw: number, dh: number, horizontal: boolean): I
       }
       if (wsum >= MIN_OPAQUE_WEIGHT) {
         const k = 1 / wsum;
-        dst.px[y * dw + x] = to555(Math.trunc(0.5 + r * k), Math.trunc(0.5 + g * k), Math.trunc(0.5 + b * k));
+        dst.px[y * dw + x] = cvtRGBto16(Math.trunc(0.5 + r * k), Math.trunc(0.5 + g * k), Math.trunc(0.5 + b * k));
       } else {
-        dst.px[y * dw + x] = TRANSPARENT;
+        dst.px[y * dw + x] = transparent;
       }
     }
   }
@@ -332,8 +348,9 @@ function scaleBitmap(src: Image16, f: number): Image16 {
 /** ShrinkWrap: the transparent margins { left, top, right, bottom }. */
 function shrinkWrap(img: Image16): { left: number; top: number; right: number; bottom: number } {
   const { w, h, px } = img;
+  const clear = transparent16();
   const rowEmpty = (y: number): boolean => {
-    for (let x = 0; x < w; x++) if (px[y * w + x] !== TRANSPARENT) return false;
+    for (let x = 0; x < w; x++) if (px[y * w + x] !== clear) return false;
     return true;
   };
   let top = 0;
@@ -341,7 +358,7 @@ function shrinkWrap(img: Image16): { left: number; top: number; right: number; b
   let bottom = 0;
   while (bottom < h - top && rowEmpty(h - 1 - bottom)) bottom++;
   const colEmpty = (x: number): boolean => {
-    for (let y = top; y < h - bottom; y++) if (px[y * w + x] !== TRANSPARENT) return false;
+    for (let y = top; y < h - bottom; y++) if (px[y * w + x] !== clear) return false;
     return true;
   };
   let left = 0;
@@ -351,12 +368,21 @@ function shrinkWrap(img: Image16): { left: number; top: number; right: number; b
   return { left, top, right, bottom };
 }
 
-/** MakeMemoryBMP(bits + crop origin, stride, w, h, 24-bit): the cropped 555 image as a BMP. */
+/**
+ * MakeMemoryBMP(bits + crop origin, stride, w, h, 24-bit, true): the cropped
+ * image as a BMP, a 565 pixel read as 555 after >> 1 (blue from the unshifted
+ * pixel).
+ */
 function makeMemoryBmp(img: Image16, x0: number, y0: number, w: number, h: number): Uint8Array {
   const rgba = new Uint8ClampedArray(Math.max(0, w * h * 4));
+  const from565 = is565();
   for (let y = 0; y < h; y++) {
     for (let x = 0; x < w; x++) {
-      const [r, g, b] = rgbOf(img.px[(y0 + y) * img.w + x0 + x]!);
+      const p = img.px[(y0 + y) * img.w + x0 + x]!;
+      const q = from565 ? p >> 1 : p;
+      const r = ((q >> 10) & 0x1f) << 3;
+      const g = ((q >> 5) & 0x1f) << 3;
+      const b = (p & 0x1f) << 3;
       const d = (y * w + x) * 4;
       rgba[d] = r;
       rgba[d + 1] = g;

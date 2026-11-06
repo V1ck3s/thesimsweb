@@ -3,10 +3,12 @@
  * walks the screen rows top to bottom and calls draw for every tile). It owns
  * the grass renderer (cColorSwatch, +0x18), the grid overlay
  * (cOverlayRenderer, +0x10, only on tiles without a floor) and the map
- * overlay renderer (cMapTileSwatch, +0x14, not ported).
+ * overlay renderer (cMapTileSwatch, +0x14, terrain_maptile.ts).
  */
 
 import { ColorSwatch } from "./terrain_swatch.js";
+import { MapTileSwatch } from "./terrain_maptile.js";
+import { cheatFlags } from "../cheatflags.js";
 import { TerrainRenderer, idiv, rgbaFrom16, type PackedAlt, type RenderParam, type TerrainTarget, type TileRect } from "./terrain_renderer.js";
 import type { RotatableWorld } from "./world.js";
 
@@ -130,6 +132,8 @@ export class Terrain {
   readonly swatch = new ColorSwatch();
   /** +0x10: the grid overlay. */
   private readonly overlay = new OverlayRenderer();
+  /** +0x14: the map overlay ("map_edit on"). */
+  private readonly mapTile = new MapTileSwatch();
   /** +0x1c: grid overlay shown (CPState hides it in live mode, see ShowOverlay). */
   overlayVisible = true;
   /** +0x1d: skip the lot's border row of tiles. */
@@ -222,7 +226,7 @@ export class Terrain {
       this.keyedZ = this.terrainZ;
       this.generation++;
     }
-    return `${this.generation}|${+this.overlayVisible}|${+this.interiorOnly}|${+this.flatOnly}|${this.getQuality()}`;
+    return `${this.generation}|${+this.overlayVisible}|${+this.interiorOnly}|${+this.flatOnly}|${this.getQuality()}|${+cheatFlags.mapEdit}`;
   }
 
   /**
@@ -267,6 +271,15 @@ export class Terrain {
     } else {
       this.swatch.draw(t, px, py, alt, scale);
       if (withOverlay) this.overlay.draw(t, px, py, alt, scale);
+    }
+    if (cheatFlags.mapEdit) {
+      // lbl_105BA68C ("map_edit on"): HouseViewer::RenderStaticRow's cTerrain::DrawMapOverlay
+      // on every ground tile (Draw with the map swatch, without the grid overlay). Drawn here
+      // in the terrain pass, right after the tile's grass, so floors and objects cover it.
+      this.mapTile.init();
+      this.mapTile.predraw(rp, world, x, y, alt);
+      if (clipped) this.mapTile.drawClipped(t, px, py, alt, scale);
+      else this.mapTile.draw(t, px, py, alt, scale);
     }
   }
 }
