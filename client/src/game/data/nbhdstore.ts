@@ -1287,6 +1287,52 @@ export class NeighborhoodStore {
   }
 }
 
+/** The files CopyMissingUnleashedFilesIntoUserData copies after the 31 houses (lbl_105BB990 + 0x26f..0x474): source in the game folder, destination in the neighborhood. */
+const UNLEASHED_TEMPLATE_FILES: ReadonlyArray<readonly [string, string]> = [
+  ["TemplateCommunity/NeighborhoodDesc.iff", "Houses/NeighborhoodDesc.iff"],
+  ["TemplateCommunity/LotLocations.iff", "LotLocations.iff"],
+  ["TemplateCommunity/LotZoning.iff", "LotZoning.iff"],
+  ["TemplateCommunity/StreetNames.iff", "StreetNames.iff"],
+  ["TemplateUserData/Patch/Burb_11.FAM", "Patch/Burb_11.FAM"],
+  ["TemplateUserData/Patch/Charming_13.FAM", "Patch/Charming_13.FAM"],
+  ["TemplateUserData/Patch/Goth Sr_12.FAM", "Patch/Goth Sr_12.FAM"],
+  ["TemplateUserData/Patch/Hick_10.FAM", "Patch/Hick_10.FAM"],
+  ["TemplateUserData/Patch/Kat_6.FAM", "Patch/Kat_6.FAM"],
+  ["TemplateUserData/Patch/Strays_4000.FAM", "Patch/Strays_4000.FAM"],
+];
+
+/**
+ * CopyMissingUnleashedFilesIntoUserData(Neighborhood *), the first thing
+ * Neighborhood::Load does (no expansion check): a neighborhood without
+ * Houses/House50.iff (made before Unleashed) gets TemplateCommunity's
+ * House50..House80, NeighborhoodDesc (into Houses/), LotLocations, LotZoning
+ * and StreetNames, a Patch directory and TemplateUserData/Patch's six
+ * families (which the neighborhood screen's TryImportUnleashedFamilies then
+ * imports). Every copy is cTSFile::Copy(src, dst, true): CopyFileA with
+ * bFailIfExists, so a file the neighborhood already has is kept; failures are
+ * ignored. The CQuickTimePlayer::UpdateAll calls between copies keep the
+ * intro movie going (nothing to do here). Returns whether it copied.
+ */
+export async function copyMissingUnleashedFilesIntoUserData(dir: string): Promise<boolean> {
+  const present = new Set((await fetchManifest()).files.map((f) => f.path.toLowerCase()));
+  const exists = (path: string): boolean => present.has(`sims/${path}`.toLowerCase());
+  if (exists(`${dir}/Houses/House50.iff`)) return false;
+  const copy = async (src: string, dst: string): Promise<void> => {
+    if (exists(`${dir}/${dst}`)) return;
+    try {
+      const res = await assetFetch(`Sims/${src}`, { cache: "no-store" });
+      if (!res.ok) return;
+      await writeGameFile(`${dir}/${dst}`, new Uint8Array(await res.arrayBuffer()));
+    } catch (e) {
+      console.warn(`[nbhd] copy ${src} -> ${dir}/${dst}`, e);
+    }
+  };
+  for (let house = 50; house < 81; house++) await copy(`TemplateCommunity/House${house}.iff`, `Houses/House${house}.iff`);
+  // The _mkdir of <dir>/Patch is implicit: the overlay creates the directories of a written file.
+  for (const [src, dst] of UNLEASHED_TEMPLATE_FILES) await copy(src, dst);
+  return true;
+}
+
 /** One member made by importFamily (its character file still needs the strings and portraits). */
 export interface ImportedMember {
   guid: number;

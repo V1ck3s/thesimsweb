@@ -15,8 +15,11 @@
  * flags differ from it, so the tile's other flag bits are cleared on those
  * tiles; that is what the original does.
  *
- * Parameter (+0x2c): low 4 bits the mode (0 flags; 1 grass, the "edit_grass"
- * cheat's BumpGrass, not ported), the rest the grass amount. Fields: +0x30 the
+ * Parameter (+0x2c): low 4 bits the mode (0 flags; 1 grass, set by the
+ * "edit_grass n" cheat as n * 16 + 1), the rest (>> 4) the grass amount. In
+ * grass mode Click and Drag call the global BumpGrass at the mouse's tile
+ * (no interior check, unlike cGrassTool's): its target grass and grass become
+ * target + amount, clamped to -128..127; Release does nothing. Fields: +0x30 the
  * tile under the mouse (Float) and the click's anchor, +0x33 the tile dragged
  * over, +0x38 the state (0 none, 1 a tile is under the mouse, 2 painting, 3
  * painting a rectangle), +0x3c the lifted layer, +0x40 the value painted.
@@ -78,7 +81,7 @@ export class TileTool extends Tool {
   override click(e: ToolEvent): void {
     this.float(e);
     if ((this.param & 0xf) === 1) {
-      // BumpGrass (the edit_grass cheat): not ported.
+      this.bumpGrass(e, this.param >> 4);
       return;
     }
     if (this.state === 0) {
@@ -94,7 +97,10 @@ export class TileTool extends Tool {
 
   /** cTileTool::Drag */
   override drag(e: ToolEvent): void {
-    if ((this.param & 0xf) === 1) return;
+    if ((this.param & 0xf) === 1) {
+      this.bumpGrass(e, this.param >> 4);
+      return;
+    }
     if (this.state !== 2 && this.state !== 3) return;
     const x = e.fx >> 4;
     const y = e.fy >> 4;
@@ -118,6 +124,24 @@ export class TileTool extends Tool {
     if ((this.param & 0xf) === 1) return;
     if ((this.state === 2 || this.state === 3) && e.ctrl) this.dropGrid();
     this.state = 0;
+  }
+
+  /**
+   * BumpGrass(FTilePt &, int): the ground tile under the mouse gets target
+   * grass + amount (clamped to a signed char) as both its target grass and
+   * its grass, then cTool::DirtyTile. Deviation: tiles outside the world's
+   * arrays are skipped (the original writes without a check).
+   */
+  private bumpGrass(e: ToolEvent, amount: number): void {
+    const w = this.host.world;
+    const x = e.fx >> 4;
+    const y = e.fy >> 4;
+    const size = this.host.fixed.size;
+    if (x < 0 || y < 0 || x >= size || y >= size) return;
+    const v = Math.max(-0x80, Math.min(0x7f, w.getTargetGrass(x, y) + amount));
+    w.setTargetGrass(x, y, v);
+    w.setGrass(x, y, v);
+    this.host.dirty.terrain();
   }
 
   /** cTileTool::LiftGrid: a copy of every ground tile's flag 0x20. */

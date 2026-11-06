@@ -49,7 +49,7 @@ import { getCursor, getStandardCursor } from "../ui/cursor.js";
 import { WinRadioDialogBox } from "../ui/radiodialog.js";
 import { deleteGameFile, writeGameFile } from "../data/files.js";
 import { buildIff, parseIff, stringSetMultiSave } from "../data/iff.js";
-import { makeMoneyString, Zone } from "./nghinterface.js";
+import { LOT_POSITIONS, makeMoneyString, saveLotPositions, Zone } from "./nghinterface.js";
 import { WinCredits } from "./wincredits.js";
 import { getImportInfoForFile, getLotImportInfo, hasImports, importFamily, importLotFile, isWrongCharacterSet, listImports, needsUnleashedImport, pickAndUploadImports, tryImportUnleashedFamilies, uploadImports, type ImportInfo, type LotImportInfo } from "./imports.js";
 import { PD_AVOID_RECT, WinPictureDialog } from "../ui/picturedialog.js";
@@ -313,8 +313,14 @@ export class WinNeighborhoodUL extends TSWin implements LotBtnOwner {
   /** +0x188: the current filter bit (0: none), +0x184 its icon. */
   private filterMode = 0;
   private filterIcon: ImageBitmap | null = null;
-  /** +0x108: the show_zones cheat (HighlightLotsForMode outlines the zones in every mode). */
+  /** +0x108: the show_zones cheat (HighlightLotsForMode outlines the zones in every mode but move). */
   private showZones = false;
+  /** +0x110: lot move mode (the move_lots cheat, SetMode(5)). */
+  private moveLots = false;
+  /** +0x10c: the lot move mode moves (MoveModeLotHandler), 0 for none. */
+  private moveLot = 0;
+  /** The mode whose button handler +0x1a4 holds (SetMode(5) leaves it as it was). */
+  private btnMode = NbhdMode.Regular;
   /** +0xd0: the picker's title. */
   private title = "";
 
@@ -535,9 +541,9 @@ export class WinNeighborhoodUL extends TSWin implements LotBtnOwner {
    * cWinNeighborhoodUL::CheatCallback. load n (0..18): cSimsApp::LoadGame and
    * the screen ends with the house; show_zones on/off: +0x108 then
    * HighlightLotsForMode; show_filter n (0..7): the filter shown over the
-   * community lots; nessie: the Nessie sprite (nessie.ts). move_lots (SetMode(5),
-   * lots nudged with the arrows, LotLocations.iff rewritten on leaving),
-   * stream_fps and reload_neighborhood (not in the shipped cheat list) are not ported.
+   * community lots; nessie: the Nessie sprite (nessie.ts); move_lots: SetMode(5)
+   * unless already in move mode (+0x110). stream_fps and reload_neighborhood
+   * (not in the shipped cheat list) are not ported.
    */
   private cheatCallback(cmd: CheatCommandLine): boolean {
     const [name, arg] = cmd.args;
@@ -556,6 +562,9 @@ export class WinNeighborhoodUL extends TSWin implements LotBtnOwner {
         this.callbacks.onEnterLot(house);
         return true;
       }
+      case "move_lots":
+        if (!this.moveLots) this.setMode(NbhdMode.MoveLots);
+        return true;
       case "show_zones":
         if (cmd.args.length < 2) break;
         this.showZones = arg === "on";
@@ -624,8 +633,10 @@ export class WinNeighborhoodUL extends TSWin implements LotBtnOwner {
    *  - visit (the town screens only): cursor 0x29, lots in mode 2.
    * The per-mode handlers (+0x198 lot, +0x1a4 button member pointers):
    * regular = RegularModeLot/BtnHandler, move in = MoveInModeLotHandler +
-   * RegularModeBtnHandler, evict / rezone = their own pair. Then the lots'
-   * cursor and HighlightLotsForMode.
+   * RegularModeBtnHandler, evict / rezone = their own pair. Move (5, the
+   * move_lots cheat): +0x110 set, MoveModeLotHandler, the button handler
+   * left as it was, cursor 0x28; leaving it clears +0x110 / +0x10c and runs
+   * SaveLotPositions. Then the lots' cursor and HighlightLotsForMode.
    */
   setMode(mode: NbhdMode): void {
     const old = this.mode;
@@ -635,8 +646,13 @@ export class WinNeighborhoodUL extends TSWin implements LotBtnOwner {
       soundPlayer.playBySource(SND_BDOZE_CANCEL, -4);
     } else if (old === NbhdMode.MoveIn) {
       this.buttons[BTN_MOVE_IN]!.setState(0);
+    } else if (old === NbhdMode.MoveLots) {
+      this.moveLots = false;
+      this.moveLot = 0;
+      void this.saveLotPositions();
     }
     this.mode = mode;
+    if (mode !== NbhdMode.MoveLots) this.btnMode = mode;
     let cursor: string | null = null;
     switch (mode) {
       case NbhdMode.Regular:
@@ -676,6 +692,10 @@ export class WinNeighborhoodUL extends TSWin implements LotBtnOwner {
         cursor = getCursor(0x29);
         for (const lot of this.lots.values()) lot.setMode(2);
         break;
+      case NbhdMode.MoveLots:
+        this.moveLots = true;
+        cursor = getCursor(0x28);
+        break;
       default:
         break;
     }
@@ -685,20 +705,69 @@ export class WinNeighborhoodUL extends TSWin implements LotBtnOwner {
 
   /**
    * cWinNeighborhoodUL::HighlightLotsForMode (main screen): every import
-   * hilite off; in rezone mode (or with the "show_zones" cheat) community
-   * lots are outlined blue, empty residential lots green and occupied ones red.
+   * hilite off; in rezone mode (or with the "show_zones" cheat, but not in
+   * move mode) community lots are outlined blue, empty residential lots green
+   * and occupied ones red; in move mode every lot but the one moved (+0x10c) red.
    */
   private highlightLotsForMode(): void {
     for (const lot of this.lots.values()) {
       lot.hiliteForImport(false);
-      if (this.mode !== NbhdMode.Rezone && !this.showZones) continue;
-      const zone = this.nb.getZoningType(lot.houseNumber);
-      if (zone === Zone.Community) lot.hiliteForCommunity(true);
-      else if (zone === Zone.Residential) {
-        if ((lot.info?.familyNumber ?? -1) === -1) lot.hiliteForResidential(true);
-        else lot.hiliteForDisabled(true);
+      if (this.mode === NbhdMode.Rezone || (this.showZones && this.mode !== NbhdMode.MoveLots)) {
+        const zone = this.nb.getZoningType(lot.houseNumber);
+        if (zone === Zone.Community) lot.hiliteForCommunity(true);
+        else if (zone === Zone.Residential) {
+          if ((lot.info?.familyNumber ?? -1) === -1) lot.hiliteForResidential(true);
+          else lot.hiliteForDisabled(true);
+        }
       }
+      if (this.mode === NbhdMode.MoveLots && lot.houseNumber !== this.moveLot) lot.hiliteForDisabled(true);
     }
+  }
+
+  /** cWinNeighborhoodUL::MoveModeLotHandler: in move mode the lot clicked is the one the arrows move. */
+  private moveModeLotHandler(house: number): Promise<void> {
+    if (this.mode === NbhdMode.MoveLots) {
+      this.moveLot = house;
+      this.highlightLotsForMode();
+    }
+    return Promise.resolve();
+  }
+
+  /**
+   * cWinNeighborhoodUL::MoveModeProcess (main screen only): the arrow keys
+   * move the lot's location (+0x1f8 / +0x1fc, HouseInfo +0x6c / +0x70) by one
+   * pixel, then the lot is centered on it, adjusted by the negative roof
+   * offsets as Init does, plus the map's offset in the window (+0x130 /
+   * +0x134; Init does not add it, so the lot jumps by that much on the first
+   * key when the map is smaller than the screen, as in the original).
+   */
+  private moveModeProcess(key: string): void {
+    if (this.picker) return;
+    const lot = this.lots.get(this.moveLot);
+    const info = lot?.info;
+    if (!lot || !info) return;
+    if (key === "ArrowLeft") info.lotX--;
+    if (key === "ArrowRight") info.lotX++;
+    if (key === "ArrowUp") info.lotY--;
+    if (key === "ArrowDown") info.lotY++;
+    const p = lot.lotPoint();
+    lot.centerOn(this.offX + p.x, this.offY + p.y);
+  }
+
+  /**
+   * cWinNeighborhoodUL::SaveLotPositions (leaving move mode): every lot's
+   * location goes to LotLocations.iff STR# 4 (nghinterface.ts
+   * saveLotPositions; only the lots without the large thumbnail, HouseInfo
+   * +0x00, as in the original), then "Lot Positions have been saved"; a file
+   * that cannot be written says so.
+   */
+  private async saveLotPositions(): Promise<void> {
+    const lots = [...this.lots.values()]
+      .filter((l) => l.info?.noLargeThumb)
+      .map((l) => ({ house: l.houseNumber, x: l.info!.lotX, y: l.info!.lotY }));
+    const r = await saveLotPositions(this.nb.dir, lots, UI_LANGUAGE);
+    if (r === "missing") return;
+    await TSWinMsgBox.show(this.ctx, r === "saved" ? LOT_POSITIONS.saved : LOT_POSITIONS.notWriteable, LOT_POSITIONS.title, MB_OK);
   }
 
   /**
@@ -1023,6 +1092,8 @@ export class WinNeighborhoodUL extends TSWin implements LotBtnOwner {
         return this.rezoneModeLotHandler(house);
       case NbhdMode.Visit:
         return this.visitModeLotHandler(house);
+      case NbhdMode.MoveLots:
+        return this.moveModeLotHandler(house);
       default:
         return Promise.resolve();
     }
@@ -1044,7 +1115,7 @@ export class WinNeighborhoodUL extends TSWin implements LotBtnOwner {
 
   /** The +0x1a4 member pointer: the button handler of the current mode. */
   private btnHandler(index: number): Promise<void> {
-    switch (this.mode) {
+    switch (this.btnMode) {
       case NbhdMode.Regular:
       case NbhdMode.MoveIn:
         return this.regularModeBtnHandler(index);
@@ -1485,9 +1556,10 @@ export class WinNeighborhoodUL extends TSWin implements LotBtnOwner {
 
   /**
    * cWinNeighborhoodUL::TSOnKeyDown: Escape leaves move in (back to the
-   * picker), evict and rezone; '1'..'7' (VK 0x31..0x37) set the filter
-   * (SetFilterMode(1 << (n - 1))) in the picker (+0x111 cleared) and are
-   * swallowed on the main screen.
+   * picker), evict, rezone and move (SaveLotPositions); '1'..'7' (VK
+   * 0x31..0x37) set the filter (SetFilterMode(1 << (n - 1))) in the picker
+   * (+0x111 cleared) and are swallowed on the main screen; the arrows (VK
+   * 0x25..0x28) go to MoveModeProcess in move mode (+0x110).
    */
   override tsOnKeyDown(key: string): boolean {
     if (this.busy) return false;
@@ -1495,11 +1567,15 @@ export class WinNeighborhoodUL extends TSWin implements LotBtnOwner {
       if (this.picker) void this.setFilterMode(1 << (key.charCodeAt(0) - 0x31));
       return true;
     }
+    if (key === "ArrowLeft" || key === "ArrowRight" || key === "ArrowUp" || key === "ArrowDown") {
+      if (this.moveLots) this.moveModeProcess(key);
+      return true;
+    }
     if (key === "Escape") {
       if (this.mode === NbhdMode.MoveIn) {
         this.setMode(NbhdMode.Regular);
         void this.regularModeBtnHandler(BTN_MOVE_IN);
-      } else if (this.mode === NbhdMode.Evict || this.mode === NbhdMode.Rezone) {
+      } else if (this.mode === NbhdMode.Evict || this.mode === NbhdMode.Rezone || this.mode === NbhdMode.MoveLots) {
         this.setMode(NbhdMode.Regular);
       } else if (this.picker) {
         // Deviation: the original picker has no way out but a community lot; Escape ends it with 0.

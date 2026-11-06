@@ -8,7 +8,10 @@ export const cheatFlags = {
   moveObjects: false,
   /** lbl_105BA388 ("bubble_tweak n"): cXPerson::DrawIso's RenderParam::DepthTweak around DrawSpriteSlot. */
   bubbleTweak: -65,
-  /** lbl_105BA914 ("draw_routes on/off"): written only; nothing in the shipped Mac build reads it. */
+  /**
+   * lbl_105BA914 ("draw_routes on/off", PC 0x6e523c): written only; neither shipped build
+   * reads it or has route drawing code (XRoute has no Draw), so there is nothing to draw.
+   */
   drawRoutes: false,
   /**
    * lbl_105BA690 ("draw_floorable on/off", initially 1): HouseViewer::RenderStaticRow

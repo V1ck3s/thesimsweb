@@ -26,6 +26,7 @@ import {
   type NeighborhoodData,
 } from "../data/neighborhood.js";
 import { writeGameFile } from "../data/files.js";
+import { copyMissingUnleashedFilesIntoUserData } from "../data/nbhdstore.js";
 import { buildIff, decodeStrSet, encodeStrSet, parseIff } from "../data/iff.js";
 import { ReconReader } from "../data/recon.js";
 import { decodeImage } from "../res/bmp.js";
@@ -84,6 +85,12 @@ export interface HouseInfo {
   /** +0x6c / +0x70: lot center on the neighborhood map. */
   lotX: number;
   lotY: number;
+  /**
+   * +0x00 holds no bitmap: GetHouseInfo loads BMP_ 512 only when the half-size
+   * BMP_ 1024 is not used (or the file has neither). SaveLotPositions writes
+   * only the lots for which this is set.
+   */
+  noLargeThumb: boolean;
 }
 
 /** Neighborhood directories present in the install, in neighborhood-number order. */
@@ -136,6 +143,54 @@ function splitInts(s: string): number[] {
   return s.split(",").map((p) => Number.parseInt(p.trim(), 10) || 0);
 }
 
+/** lbl_105BCD5C strings of cWinNeighborhoodUL::SaveLotPositions. */
+export const LOT_POSITIONS = {
+  title: "Lot Positions",
+  notWriteable: "Lot Positions are not writeable. Check out the file, enter Lot Move Mode again, and exit again to save.",
+  saved: "Lot Positions have been saved",
+  format: (house: number, x: number, y: number): string => `${house}, ${x}, ${y}`,
+} as const;
+
+/**
+ * The file part of cWinNeighborhoodUL::SaveLotPositions: the neighborhood's
+ * LotLocations.iff (GetStringConstant(10), ConstructRuntimePath) STR# 4,
+ * StringSetBase::Load(false, true) (the current language's entries, else the
+ * US English ones), then for each lot in house order the first entry whose
+ * atoi is the house number becomes "%d, %d, %d" (house, x, y), and
+ * StringSetBase::Save writes the set back in the current language. Without
+ * the file the original opens GameData's copy and saves nothing ("missing");
+ * a file that cannot be written gives "readonly" (the original checks the
+ * open file's writability first).
+ */
+export async function saveLotPositions(
+  dir: string,
+  lots: ReadonlyArray<{ house: number; x: number; y: number }>,
+  lang: number,
+): Promise<"saved" | "readonly" | "missing"> {
+  const path = `${dir}/LotLocations.iff`;
+  const res = await assetFetch(`Sims/${path}`, { cache: "no-store" });
+  if (!res.ok) return "missing";
+  const chunks = parseIff(new Uint8Array(await res.arrayBuffer()));
+  const all = chunks.find((c) => c.type === "STR#" && c.id === 4);
+  const entries = all ? decodeStrSet(all.data) : [];
+  const pick = entries.some((e) => e.lang === lang) ? entries.filter((e) => e.lang === lang) : entries.filter((e) => e.lang === LANG_US_ENGLISH);
+  const set = pick.map((e) => ({ ...e, lang }));
+  for (const { house, x, y } of lots) {
+    const e = set.find((e) => (Number.parseInt(e.value, 10) || 0) === house);
+    if (e) e.value = LOT_POSITIONS.format(house, x, y);
+  }
+  const data = encodeStrSet(set);
+  if (all) all.data = data;
+  else chunks.push({ type: "STR#", id: 4, flags: 0x10, label: "", data });
+  try {
+    await writeGameFile(path, buildIff(chunks));
+  } catch (e) {
+    console.warn(`[nbhd] ${path}`, e);
+    return "readonly";
+  }
+  return "saved";
+}
+
 export class Neighborhood {
   private constructor(
     readonly dir: string,
@@ -177,6 +232,7 @@ export class Neighborhood {
 
   /** Neighborhood::Load (the parts the neighborhood screen needs). */
   static async load(dir: string): Promise<Neighborhood> {
+    await copyMissingUnleashedFilesIntoUserData(dir);
     const data = await loadNeighborhood(dir);
     const zoning: Array<{ house: number; zone: Zone }> = [];
     for (const line of (await loadStrSet(`${dir}/LotZoning.iff`, 1, LANG_US_ENGLISH)) ?? []) {
@@ -410,6 +466,7 @@ export async function getHouseInfo(nb: Neighborhood, house: number): Promise<Hou
     friends: family ? nb.getFamilyFriendsCount(family) : 0,
     lotX,
     lotY,
+    noLargeThumb: hasSmall || !thumb,
   };
 }
 

@@ -39,13 +39,15 @@
  * interests, log_mask, move_objects, rosebud, rotation, route_balloons,
  * sim_speed, xyzzy, prepare_lot, history (the file becomes a download), grid,
  * draw_floorable (lbl_105BA690, initially on: the upper level's build grid),
- * draw_routes (lbl_105BA914: only written, nothing in the shipped build reads
- * it), map_edit (lbl_105BA68C: cTileTool, world/tools/tiletool.ts, becomes the
+ * draw_routes (lbl_105BA914: only written; neither the Mac nor the Windows
+ * build reads it, nor has any route drawing code), map_edit (lbl_105BA68C: cTileTool, world/tools/tiletool.ts, becomes the
  * cheat tool in every mode, CPState::SetCheatTool, and the ground shows
  * cMapTileSwatch's overlay, world/terrain_maptile.ts), sim_log (sim/simlog.ts;
- * SimLog.txt becomes a download) and genable (the HouseViewer module switches,
- * cheatflags.ts) are ported here; the neighborhood screen's show_zones,
- * show_filter and nessie in nbhd/winneighborhoodul.ts.
+ * SimLog.txt becomes a download), genable (the HouseViewer module switches,
+ * cheatflags.ts) and edit_grass n (the tile tool in grass mode: BumpGrass adds
+ * n to the grass of each tile clicked or dragged over) are ported here; the
+ * neighborhood screen's show_zones, show_filter, nessie and move_lots in
+ * nbhd/winneighborhoodul.ts.
  * Not ported, with what they do in the original:
  *  - tile_info on|off: cDDDSimsView::ShowTileInfo shows or hides cWinTileInfo,
  *    which the shipped build never sizes nor points at a tile (SetTile is only
@@ -58,11 +60,16 @@
  *  - genable's clear, full_draw, static_rows, static and old_clear switches
  *    (kept and reported by "genable status"): the original's static layer
  *    and damage refresh, which this renderer does not have.
- *  - damagelist, sweep: the damage rectangles (DDDDamageList) and the
- *    cWinSweepMeter profiler (cTimePartition samples), neither of which this
- *    renderer has.
- *  - edit_grass n: the tile tool's grass mode (cTileTool BumpGrass).
- *  - move_lots: see nbhd/winneighborhoodul.ts.
+ *  - damagelist refresh|current|previous|all on|off (status, default): HouseViewer
+ *    +0x17d / +0x17f / +0x17e outline the refresh damage list (green, in
+ *    UpdateStaticDynamic), the viewport's current damage (blue, UpdateWorld)
+ *    and the composition refresh rectangles (red, UpdateCompositionFromRefresh)
+ *    with FrameRect: this renderer redraws whole frames and keeps no damage
+ *    rectangles, so there is nothing to outline.
+ *  - sweep on|off: cWinCPanel::ShowSweepMeter puts cWinSweepMeter (a graph of
+ *    the cTimePartition samples and intervals each subsystem took per frame,
+ *    with its legend) in place of the control panel's subpanel ("Sweep meter
+ *    is NULL!" without one): this port has no cTimePartition profiler.
  * Not in the shipped list (only with `?devcheats`): every other APP_CHEATS /
  * GRAPHICS_CHEATS name logs "not ported"; also cTSWinMgrW95's own cheat, the
  * ExecCheatFile and object dialog cheats, memview (cWinMemView) and the
@@ -896,6 +903,19 @@ async function appCheatCallback(ctx: GameContext, host: CheatAppHost, cmd: Cheat
       if (view.viewer) view.viewer.dirty = true;
       if (on) tool.setParameter(0);
       ctx.state.setCheatTool(on ? 8 : null);
+      return true;
+    }
+    case 9: {
+      // edit_grass n: the tile tool in grass mode (parameter n * 16 + 1, as a short) becomes the
+      // cheat tool; 0 puts the cheat tool away. lbl_105BA68C (the map overlay) is left as it is.
+      const tool = view?.gameTools?.getToolByID(8) ?? null;
+      if (!tool) return true;
+      if (n === 0) {
+        ctx.state.setCheatTool(null);
+        return true;
+      }
+      tool.setParameter((n * 16 + 1) << 16 >> 16);
+      ctx.state.setCheatTool(8);
       return true;
     }
     case 10:
