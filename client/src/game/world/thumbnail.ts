@@ -498,10 +498,15 @@ export async function withHouseThumbnails(name: string, bytes: Uint8Array, viewW
     const lighting = new RoomLighting(rooms, world, () => lot.objects);
     lighting.compute(0);
     v.lighting = lighting;
-    // HouseViewer::DoStream: the saved zoom (HOUS 0 +0x10).
+    // HouseViewer::DoStream: the saved zoom (HOUS 0 +0x10) and, from version 9,
+    // the rotation (+0x1c, cRotatableWorld::SetRotation). SaveThumbnail's
+    // GetOffsetsMinMax runs at that rotation: it sets the offsets the 1/8
+    // render is clamped from (House01, saved at rotation 1: 159 x 85).
     const hous = house.get("HOUS", 0);
-    const zoom = hous && hous.length >= 20 ? new DataView(hous.buffer, hous.byteOffset, hous.byteLength).getInt32(16, true) : 3;
+    const hv = hous && hous.length >= 20 ? new DataView(hous.buffer, hous.byteOffset, hous.byteLength) : null;
+    const zoom = hv ? hv.getInt32(16, true) : 3;
     v.scale = zoom >= 1 && zoom <= 3 ? zoom : 3;
+    if (hv && hv.byteLength >= 30 && hv.getInt32(4, true) > 8) v.setRotation(hv.getInt16(28, true) & 3);
     await prepareHouseThumbnails(v);
     const thumbs = saveHouseThumbnails({ viewer: v, walls, lighting, terrain, houseNumber: houseNumberOfPath(name) });
     const chunks = parseIff(bytes).filter((c) => !THUMB_KEYS.has(`${c.type}:${c.id}`));
