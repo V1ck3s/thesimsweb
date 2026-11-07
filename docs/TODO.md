@@ -82,8 +82,11 @@ Interface / triches
   l'original) ; familyFriendCount mis en cache comme l'original.
 - **Grandes résolutions** : le jeu tourne à ~768 de haut puis est agrandi, une grande résolution
   coûte donc à peu près un 1024x768 (17,8 i/s en 5120x1440 contre 19,6 en 1024x768 sur l'hôte WSL
-  chargé ; le rendu du lot, ~25 ms par image ici, est la limite). Piste restante : afficher le canvas
-  WebGL du lot comme calque sous un canvas UI transparent (supprime la copie WebGL → 2D).
+  chargé ; le rendu du lot, ~25 ms par image ici, est la limite). Le défilement ne redessine plus
+  tout le terrain (bandes découvertes et bords seulement, voir perf-and-browsers.md) ; le
+  défilement en diagonale reste ~2x moins cher seulement (bandes des bords). Pistes restantes :
+  afficher le canvas WebGL du lot comme calque sous un canvas UI transparent (supprime la copie
+  WebGL → 2D) ; mesurer sur un navigateur Windows natif (ici le GPU passe par WSLg).
 - **Serveur sur /mnt/c** : inventaire du jeu gardé sur disque (`server/data/manifest-cache.json`) ;
   dossiers parcourus en parallèle : `/api/saves` ~10 s au premier appel après un démarrage
   (~2 min avant, 5 000 fichiers), `?refresh` 0,2 s.
