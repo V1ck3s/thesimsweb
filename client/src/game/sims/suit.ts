@@ -19,11 +19,41 @@ export interface Skin {
   props: Props | null;
 }
 
+/**
+ * lbl_105BA0DC: how long (ms) a suit no dressing wears stays loaded before
+ * Suit::CanUnload lets it go. Globs::Globs sets 640000 when the machine has
+ * 128 MB of memory or more (800000 below).
+ */
+const SUIT_UNLOAD_MS = 640000;
+
 export class Suit {
   name = "";
   type = 0;
   props: Props | null = null;
   skins: Skin[] = [];
+  /** +0x20's size: the dressings bound to the suit (Suit::NewDressing / UnbindDressing). */
+  activeDressings = 0;
+  /** +0x2c: the clock (lbl_105BA230) when the last dressing unbound (0: never). */
+  lastUnbind = 0;
+
+  /** Suit::NewDressing's bookkeeping: one more dressing holds the suit. */
+  bindDressing(): void {
+    this.activeDressings++;
+  }
+
+  /** Suit::UnbindDressing: when the last dressing goes, the clock is stamped. */
+  unbindDressing(now: number): void {
+    if (this.activeDressings <= 0) return;
+    if (--this.activeDressings === 0) this.lastUnbind = now;
+  }
+
+  /**
+   * Suit::CanUnload(now): only the manager holds it (reference count 1: no
+   * dressing), a dressing has unbound, and SUIT_UNLOAD_MS have passed since.
+   */
+  canUnload(now: number): boolean {
+    return this.activeDressings === 0 && this.lastUnbind !== 0 && this.lastUnbind + SUIT_UNLOAD_MS < now;
+  }
 
   static read(f: CTGFile): Suit {
     const s = new Suit();

@@ -22,7 +22,7 @@
  * The gadget paints into its private buffer (UniversalBack.tga, its children,
  * the clock), which BlitPrivateBufferToParent puts on the lot view: with
  * BoboVision through the TGA's 8-bit alpha (Compose, AlphaBlend_565_P5),
- * without it as a color-keyed Blt (see composePrivateBuffer).
+ * without it as a color-keyed Blt (see blitPrivateBufferToParent).
  */
 
 import { Mode, WallState } from "../cpstate.js";
@@ -160,10 +160,12 @@ export class WinViewControl extends TSWin {
   private backKeyed: ImageBitmap | null = null;
   /** The same pixels all opaque: what the private buffer holds under the BoboVision mask. */
   private backOpaque: ImageBitmap | null = null;
-  /** +0x124's alpha buffer (+0x60) as AlphaBlend_565_P5 weighs it (alphaBlendMask). */
-  private backMask: ImageBitmap | null = null;
+  /** +0x124's alpha buffer (+0x60): the TGA's 8-bit alpha, one byte per pixel. */
+  private backAlpha: Uint8Array | null = null;
   /** +0x58: the private buffer (PrivateBuffer(1, 0), color-keyed with the transparent color). */
   private privateBuffer: OffscreenCanvas | null = null;
+  /** Compose's work buffer: the parent's pixels under the gadget, read back and blended. */
+  private composeBuffer: OffscreenCanvasRenderingContext2D | null = null;
   private bgAlpha: Uint8ClampedArray | null = null;
   private clockFont: FfnFont | null = null;
   private patches = new Map<Mode, ImageBitmap>();
@@ -225,11 +227,8 @@ export class WinViewControl extends TSWin {
     const { res, fonts, strings } = this.ctx;
     this.background = await res.image("kUniversalBkgTGA");
     const back = gimexDecode(await res.rgba(res.id("kUniversalBkgTGA")));
-    [this.backKeyed, this.backOpaque, this.backMask] = await Promise.all([
-      createImageBitmap(back.keyed),
-      createImageBitmap(back.opaque),
-      createImageBitmap(back.mask),
-    ]);
+    [this.backKeyed, this.backOpaque] = await Promise.all([createImageBitmap(back.keyed), createImageBitmap(back.opaque)]);
+    this.backAlpha = back.alpha;
     // SetFlag(0x200): hit testing uses the background's alpha (IsPointInWindowWindowCoordinates).
     this.setArea(this.area.left, this.area.top, this.area.left + this.background.width, this.area.top + this.background.height);
 
@@ -774,7 +773,8 @@ export class WinViewControl extends TSWin {
     if (w <= 0 || h <= 0) return;
     let buf = this.privateBuffer;
     if (buf?.width !== w || buf.height !== h) buf = this.privateBuffer = new OffscreenCanvas(w, h);
-    const bx = buf.getContext("2d")!;
+    // Read back by Compose every frame with BoboVision: kept in CPU memory.
+    const bx = buf.getContext("2d", { willReadFrequently: true })!;
     bx.clearRect(0, 0, w, h);
     super.plot(bx as unknown as CanvasRenderingContext2D, -this.area.left, -this.area.top);
     this.blitPrivateBufferToParent(ctx, ox + this.area.left, oy + this.area.top);
@@ -785,7 +785,7 @@ export class WinViewControl extends TSWin {
    * +0x124's alpha buffer, (0, 0), 0): AlphaBlend_565_P5 keeps the parent
    * where the alpha is below 8, copies the private buffer above 0xf7 and in
    * between blends the two through its table, by the alpha's top 5 bits
-   * (alphaBlendMask). Without it, a Blt of +0x58 with its color key: the
+   * (compose565). Without it, a Blt of +0x58 with its color key: the
    * parent shows where the private buffer holds the transparent color, which
    * is where UniversalBack.tga's alpha is 0 and no child drew. Then the
    * patch of the current mode, while the control panel is shown, at the
@@ -794,13 +794,8 @@ export class WinViewControl extends TSWin {
   private blitPrivateBufferToParent(ctx: CanvasRenderingContext2D, x: number, y: number): void {
     const buf = this.privateBuffer;
     if (buf) {
-      if (getOptionsMgr().getBoboVision() && this.backMask) {
-        const bx = buf.getContext("2d")!;
-        bx.globalCompositeOperation = "destination-in";
-        bx.drawImage(this.backMask, 0, 0);
-        bx.globalCompositeOperation = "source-over";
-      }
-      ctx.drawImage(buf, x, y);
+      if (getOptionsMgr().getBoboVision() && this.backAlpha) this.compose(ctx, buf, x, y);
+      else ctx.drawImage(buf, x, y);
     }
     const cpanel = this.controlPanel();
     if (!cpanel?.isVisible()) return;
@@ -820,6 +815,36 @@ export class WinViewControl extends TSWin {
     }
   }
 
+  /**
+   * Compose(parent, rect, +0x58, +0x124's alpha buffer, (0, 0), 0) on the
+   * gadget's rectangle only: the parent's pixels there are read back (through
+   * a CPU-side canvas, as renderRoundShadow does), blended by compose565 and
+   * put back.
+   */
+  private compose(ctx: CanvasRenderingContext2D, buf: OffscreenCanvas, x: number, y: number): void {
+    const alpha = this.backAlpha!;
+    const aw = this.background?.width ?? buf.width;
+    // The rectangle clipped to the parent's surface.
+    const cw = ctx.canvas.width;
+    const ch = ctx.canvas.height;
+    const left = Math.max(0, x);
+    const top = Math.max(0, y);
+    const w = Math.min(cw, x + buf.width, x + aw) - left;
+    const h = Math.min(ch, y + buf.height, y + Math.trunc(alpha.length / aw)) - top;
+    if (w <= 0 || h <= 0) return;
+    let sc = this.composeBuffer;
+    if (!sc || sc.canvas.width < w || sc.canvas.height < h) {
+      sc = this.composeBuffer = new OffscreenCanvas(buf.width, buf.height).getContext("2d", { willReadFrequently: true });
+      if (!sc) return;
+    }
+    sc.drawImage(ctx.canvas, left, top, w, h, 0, 0, w, h);
+    const dst = sc.getImageData(0, 0, w, h);
+    const src = buf.getContext("2d", { willReadFrequently: true })!.getImageData(left - x, top - y, w, h);
+    compose565(dst.data, src.data, w, h, alpha, aw, left - x, top - y);
+    sc.putImageData(dst, 0, 0);
+    ctx.drawImage(sc.canvas, 0, 0, w, h, left, top, w, h);
+  }
+
   /** Clicks only land where the background is at least half opaque. */
   override isPointInWindowWindowCoordinates(x: number, y: number): boolean {
     if (x < 0 || y < 0 || x >= this.getW() || y >= this.getH()) return false;
@@ -836,18 +861,70 @@ export class WinViewControl extends TSWin {
 }
 
 /**
- * AlphaBlend_565_565_P5's weight per alpha value: below 8 the destination is
- * kept, above 0xf7 the source copied, otherwise the table built by
- * InitAlphaZSpriteBlit (lbl_105BA5E0, [alpha >> 3][src][dst] on 5-bit
- * channels) gives the mean over its 8 x 8 x 8 sub-samples of
- * dst + (8 * level + k) / 255 * (src - dst): a weight of (8 * level + 3.5) / 255
- * for the level alpha >> 3. The canvas blends at that weight; the table's
- * rounding to 5-bit channels (the 565 buffers) is not reproduced.
+ * InitAlphaZSpriteBlit's table (lbl_105BA5E0, [alpha >> 3][src][dst] on 5-bit
+ * channels): each entry is the mean, over the 8 sub-values of the level
+ * (8 * level + k), of the source (8 * src + i) and of the destination
+ * (8 * dst + j), of (int)(0.5 + (k' / 255) * (s - d) + d) (fmuls, fmadds,
+ * fadds and fctiwz in single precision), rounded ((int)(0.5 + sum / 512)) and
+ * shifted down to 5 bits. A level is built on its first use; the original
+ * builds the 32 at startup, to the same values.
  */
-export function alphaBlendWeight(alpha: number): number {
-  if (alpha < 8) return 0;
-  if (alpha > 0xf7) return 0xff;
-  return 8 * (alpha >> 3) + 4;
+const ALPHA_TABLE = new Uint8Array(32 * 32 * 32);
+const alphaLevelBuilt = new Uint8Array(32);
+
+function alphaTableLevel(level: number): void {
+  if (alphaLevelBuilt[level]) return;
+  alphaLevelBuilt[level] = 1;
+  const f = Math.fround;
+  const inv255 = f(1 / 255);
+  const m: number[] = [];
+  for (let k = 0; k < 8; k++) m.push(f(inv255 * f(8 * level + k)));
+  for (let src = 0; src < 32; src++) {
+    for (let dst = 0; dst < 32; dst++) {
+      let sum = 0;
+      for (let j = 0; j < 8; j++) {
+        const d = 8 * dst + j;
+        for (let i = 0; i < 8; i++) {
+          const diff = 8 * src + i - d;
+          for (let k = 0; k < 8; k++) sum += Math.trunc(f(0.5 + f(m[k]! * diff + d)));
+        }
+      }
+      ALPHA_TABLE[(level << 10) | (src << 5) | dst] = Math.trunc(f(0.5 + sum / 512)) >> 3;
+    }
+  }
+}
+
+/**
+ * AlphaBlend_565_565_P5 (Compose's 565 blit) on RGBA pixels: `dst` (w x h)
+ * is the parent, `src` the private buffer, `alpha` the alpha buffer (`aw`
+ * wide) read from (ax, ay). Below 8 the parent is kept, above 0xf7 the
+ * source copied, otherwise each channel is the table entry for the level
+ * alpha >> 3 and the 5-bit source and destination (the 565 green's top 5
+ * bits; the result is written back to them, the low green bit cleared),
+ * expanded with zero low bits like Cvt565toRGB.
+ */
+export function compose565(dst: Uint8ClampedArray, src: Uint8ClampedArray, w: number, h: number, alpha: Uint8Array, aw: number, ax: number, ay: number): void {
+  const t = ALPHA_TABLE;
+  for (let row = 0; row < h; row++) {
+    let ai = (ay + row) * aw + ax;
+    let i = row * w * 4;
+    for (let col = 0; col < w; col++, ai++, i += 4) {
+      const a = alpha[ai]!;
+      if (a < 8) continue;
+      if (a > 0xf7) {
+        dst[i] = src[i]!;
+        dst[i + 1] = src[i + 1]!;
+        dst[i + 2] = src[i + 2]!;
+        continue;
+      }
+      const level = a >> 3;
+      if (!alphaLevelBuilt[level]) alphaTableLevel(level);
+      const base = level << 10;
+      dst[i] = t[base | ((src[i]! >> 3) << 5) | (dst[i]! >> 3)]! << 3;
+      dst[i + 1] = t[base | ((src[i + 1]! >> 3) << 5) | (dst[i + 1]! >> 3)]! << 3;
+      dst[i + 2] = t[base | ((src[i + 2]! >> 3) << 5) | (dst[i + 2]! >> 3)]! << 3;
+    }
+  }
 }
 
 /**
@@ -855,13 +932,13 @@ export function alphaBlendWeight(alpha: number): number {
  * lbl_105BA7EC set, as everywhere but the Magic Town fog): alpha 0 gives the
  * transparent color, 0xff the color, otherwise the premultiplied color times
  * 255 / alpha (float, + 0.5, truncated). Returns the keyed and opaque color
- * buffers and the alpha buffer weighed for AlphaBlend_565_P5.
+ * buffers and the alpha buffer.
  */
-function gimexDecode(img: RgbaImage): { keyed: ImageData; opaque: ImageData; mask: ImageData } {
+function gimexDecode(img: RgbaImage): { keyed: ImageData; opaque: ImageData; alpha: Uint8Array } {
   const { width, height, data } = img;
   const keyed = new ImageData(width, height);
   const opaque = new ImageData(width, height);
-  const mask = new ImageData(width, height);
+  const alpha = new Uint8Array(width * height);
   const f = Math.fround;
   for (let i = 0; i < data.length; i += 4) {
     const a = data[i + 3]!;
@@ -885,7 +962,7 @@ function gimexDecode(img: RgbaImage): { keyed: ImageData; opaque: ImageData; mas
     }
     keyed.data[i + 3] = a === 0 ? 0 : 0xff;
     opaque.data[i + 3] = 0xff;
-    mask.data[i + 3] = alphaBlendWeight(a);
+    alpha[i >> 2] = a;
   }
-  return { keyed, opaque, mask };
+  return { keyed, opaque, alpha };
 }

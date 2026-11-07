@@ -11,7 +11,8 @@ import type { RgbaImage } from "../res/bmp.js";
 import type { SkeletonBinding } from "./deformablemesh.js";
 import { LoopMode, Practice } from "./practice.js";
 import type { Skeleton } from "./skeleton.js";
-import type { Skill } from "./skill.js";
+import { type Skill, skillClock } from "./skill.js";
+import type { Suit } from "./suit.js";
 import type { VBAnimMgr } from "./vbanimmgr.js";
 
 /** One skin of a worn suit (VBAnimMgrMakeDressingData's result) and its texture. */
@@ -25,6 +26,8 @@ export interface Dressing {
   suit: string;
   texture: string;
   meshes: DressingMesh[];
+  /** The suit the dressing holds (Suit::NewDressing; released by Suit::UnbindDressing). */
+  bound?: Suit;
 }
 
 export class VitaBoy {
@@ -73,7 +76,10 @@ export class VitaBoy {
       binding.deform();
       meshes.push({ binding, image: await this.mgr.loadTexture(binding.texture) });
     }
-    this.dressings.set(slot, { suit: suitName, texture, meshes });
+    const previous = this.dressings.get(slot);
+    suit.bindDressing();
+    this.dressings.set(slot, { suit: suitName, texture, meshes, bound: suit });
+    previous?.bound?.unbindDressing(skillClock.now);
     this.version++;
     return meshes.length > 0;
   }
@@ -97,7 +103,11 @@ export class VitaBoy {
   }
 
   undress(slot: string): void {
-    if (this.dressings.delete(slot)) this.version++;
+    const d = this.dressings.get(slot);
+    if (!d) return;
+    this.dressings.delete(slot);
+    d.bound?.unbindDressing(skillClock.now);
+    this.version++;
   }
 
   /** VitaBoy::StartPractice with a loaded skill; replaces the running practices. */

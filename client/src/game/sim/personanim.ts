@@ -17,9 +17,10 @@
  * synchronously): a skill not loaded yet keeps the primitive waiting.
  */
 
+import { enterLiveModeHooks } from "../cpstate.js";
 import { LoopMode, Practice } from "../sims/practice.js";
 import type { Skeleton } from "../sims/skeleton.js";
-import type { Skill } from "../sims/skill.js";
+import { type Skill, skillClock } from "../sims/skill.js";
 import { VBAnimMgr } from "../sims/vbanimmgr.js";
 
 /** Animator::GetMilsPerTick. */
@@ -158,6 +159,9 @@ export function requestSkill(name: string): Skill | null | undefined {
 export function tryUnloadSkills(nowMs: number): void {
   mgr?.tryUnloadSkills(nowMs);
 }
+
+// CPState::SetMode, entering Live mode: VBAnimMgr::TryUnloadAll(lbl_105BA230).
+enterLiveModeHooks.add(() => mgr?.tryUnloadAll(skillClock.now));
 
 /** Wait for every requested skill (tests). */
 export async function skillsSettled(): Promise<void> {

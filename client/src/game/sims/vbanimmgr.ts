@@ -94,7 +94,9 @@ export class VBAnimMgr {
   private readonly skillData = new Map<Skill, Promise<boolean>>();
   /** The CMX file (cmxCache key) each skill was read from. */
   private readonly skillFile = new Map<Skill, string>();
-  /** lbl_105BADF0: the clock of the last TryUnloadSkills pass. */
+  /** The CMX file (cmxCache key) each suit was read from. */
+  private readonly suitFile = new Map<Suit, string>();
+  /** lbl_105BADF0: the clock of the last TryUnloadSkills / TryUnloadSuits pass (one for both). */
   private lastUnloadPass = 0;
   /** Called with the (lowercased) name of each skill tryUnloadSkills unloads, for the caches holding skills by name. */
   readonly skillUnloaded = new Set<(name: string) => void>();
@@ -168,7 +170,11 @@ export class VBAnimMgr {
         }
         if (!a) return null;
         for (const s of a.skeletons) if (!this.skeletons.has(s.name.toLowerCase())) this.skeletons.set(s.name.toLowerCase(), s);
-        for (const s of a.suits) if (!this.suits.has(s.name)) this.suits.set(s.name, s);
+        for (const s of a.suits) {
+          if (this.suits.has(s.name)) continue;
+          this.suits.set(s.name, s);
+          this.suitFile.set(s, key);
+        }
         for (const s of a.skills) {
           if (this.skills.has(s.name.toLowerCase())) continue;
           this.skills.set(s.name.toLowerCase(), s);
@@ -271,6 +277,51 @@ export class VBAnimMgr {
       this.skillFile.delete(s);
       for (const cb of this.skillUnloaded) cb(k);
     }
+  }
+
+  /**
+   * VBAnimMgr::TryUnloadSuits(now): the same gate as tryUnloadSkills (the
+   * one clock lbl_105BADF0, interval lbl_105BADEC never set), then every
+   * loaded suit that Suit::CanUnload allows is unloaded (Envelope<Suit>::
+   * Unload, Suit::Release): dropped from the table with its CMX file's parsed
+   * form, and its skins' meshes (LoadDeformableMesh's cache) unless a suit
+   * still loaded names them. Textures are DDDTextureMgr's and stay. A suit a
+   * dressing wears is never unloaded (Suit::CanUnload).
+   */
+  tryUnloadSuits(now: number): void {
+    if (!(this.lastUnloadPass < now)) return;
+    this.lastUnloadPass = now;
+    const dropped: Suit[] = [];
+    for (const [k, s] of this.suits) {
+      if (!s.canUnload(now)) continue;
+      this.suits.delete(k);
+      const file = this.suitFile.get(s);
+      if (file !== undefined) this.cmxCache.delete(file);
+      this.suitFile.delete(s);
+      dropped.push(s);
+    }
+    if (dropped.length === 0) return;
+    const kept = new Set<string>();
+    for (const s of this.suits.values()) for (const skin of s.skins) kept.add(skin.meshName.toLowerCase());
+    for (const s of dropped) {
+      for (const skin of s.skins) {
+        const m = skin.meshName.toLowerCase();
+        if (!kept.has(m)) this.meshCache.delete(m);
+      }
+    }
+  }
+
+  /**
+   * VBAnimMgr::TryUnloadAll(now) (CPState::SetMode on entering Live mode):
+   * TryUnloadSkills(now), then TryUnloadSuits(now). Both passes share the
+   * gate lbl_105BADF0 + lbl_105BADEC (0) < now, and the skills pass leaves
+   * lbl_105BADF0 at now or above, so the suits pass returns at once (the
+   * Mac 103865D0 and Windows 005a0410 builds alike): the game never unloads
+   * a suit.
+   */
+  tryUnloadAll(now: number): void {
+    this.tryUnloadSkills(now);
+    this.tryUnloadSuits(now);
   }
 
   private loadSkillData(s: Skill): Promise<boolean> {

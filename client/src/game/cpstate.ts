@@ -10,6 +10,13 @@
 import type { ResFile } from "./world/iffres.js";
 import type { PlacedObject } from "./world/objects.js";
 
+/**
+ * Called by setMode when the mode becomes Live from another one (CPState::SetMode:
+ * House::EnterLiveMode, ObjectFolder::FreeUnusedData, VBAnimMgr::TryUnloadAll,
+ * UpdateComeSeeMeObjects); the modules owning those register here.
+ */
+export const enterLiveModeHooks = new Set<() => void>();
+
 export const enum Mode {
   Build = 0,
   Buy = 1,
@@ -324,7 +331,9 @@ export class CPState {
 
   setMode(mode: Mode, force = false): void {
     if (this.mode === mode && !force) return;
+    const enteringLive = this.mode !== Mode.Live && mode === Mode.Live;
     this.mode = mode;
+    if (enteringLive) for (const hook of enterLiveModeHooks) hook();
     // CPState::SetMode marks everything but two bits dirty.
     this.touch(0xfff7ffbf);
   }
