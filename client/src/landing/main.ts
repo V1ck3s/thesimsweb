@@ -5,15 +5,30 @@
  * offline support (engine/pwa.ts). On an instance that serves no game file
  * (GAME_FILES=client), the import of the player's own install folder into
  * this browser (engine/gamefiles.ts); the game cannot start before it.
- * The game's language (engine/language.ts), its screen size and centred HUD
- * (engine/display.ts) and links to the family web pages
+ * The game's language (engine/language.ts), its screen size, fullscreen and
+ * centred HUD options (engine/display.ts) and links to the family web pages
  * the game wrote (served by /webpages/ with their compatibility script).
+ *
+ * The page speaks the game language chosen in its own selector (strings.ts)
+ * and switches live: every text it shows is produced by a render function
+ * that is run again on a change.
  */
 
 import { exportSaves, getSaveMode, importSaves, listSaves, type SaveMode } from "../engine/saves.js";
-import { offlineStatus, registerServiceWorker } from "../engine/pwa.js";
+import { registerServiceWorker } from "../engine/pwa.js";
 import { LANGUAGES, readLanguage, storeLanguage } from "../engine/language.js";
-import { readCentredHud, readResolution, RESOLUTIONS, storeCentredHud, storeResolution, windowSize, type ResolutionChoice } from "../engine/display.js";
+import {
+  readCentredHud,
+  readFullscreen,
+  readResolution,
+  RESOLUTIONS,
+  storeCentredHud,
+  storeFullscreen,
+  storeResolution,
+  windowSize,
+  DEFAULT_SCREEN,
+  type ResolutionChoice,
+} from "../engine/display.js";
 import {
   gameFilesStatus,
   hasFolderPicker,
@@ -29,6 +44,7 @@ import {
   sourceFromInput,
   type SourceFile,
 } from "../engine/gamefiles.js";
+import { formatBytes, type Key, LOCALES, localeTag, setLocale, t } from "./strings.js";
 
 const $ = <T extends HTMLElement>(id: string): T => {
   const el = document.getElementById(id);
@@ -36,16 +52,25 @@ const $ = <T extends HTMLElement>(id: string): T => {
   return el as T;
 };
 
-function formatBytes(n: number): string {
-  if (n < 1024) return `${n} B`;
-  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
-  if (n < 1024 * 1024 * 1024) return `${(n / 1024 / 1024).toFixed(1)} MB`;
-  return `${(n / 1024 / 1024 / 1024).toFixed(2)} GB`;
+type Kind = "" | "ok" | "warn" | "err";
+/** A text in the current language (run again when the language changes). */
+type Text = () => string;
+
+/** Re-renders run on a language change. */
+const renders: Array<() => void> = [];
+
+/** Shows `text` in `el` now and after every language change (replacing any earlier one for `el`). */
+const bound = new WeakMap<HTMLElement, Text>();
+function show(el: HTMLElement, text: Text): void {
+  const first = !bound.has(el);
+  bound.set(el, text);
+  el.textContent = text();
+  if (first) renders.push(() => (el.textContent = bound.get(el)!()));
 }
 
-function setStatus(text: string, kind: "" | "ok" | "warn" | "err" = ""): void {
+function setStatus(text: Text | "", kind: Kind = ""): void {
   const el = $("saves-status");
-  el.textContent = text;
+  show(el, text === "" ? () => "" : text);
   el.className = `status ${kind}`;
 }
 
@@ -56,13 +81,11 @@ async function refreshSaves(): Promise<void> {
   try {
     const list = await listSaves();
     const total = list.reduce((n, f) => n + f.size, 0);
-    $("saves-count").textContent = list.length
-      ? `${list.length} file${list.length > 1 ? "s" : ""}, ${formatBytes(total)}`
-      : "none yet (the game starts from the neighborhoods of the game folder)";
+    show($("saves-count"), () => (list.length ? t("savesCount", { n: list.length, size: formatBytes(total) }) : t("savesNone")));
     $<HTMLButtonElement>("export").disabled = busy || !list.length;
     showWebPages(list.map((f) => f.path));
   } catch (e) {
-    $("saves-count").textContent = `unavailable (${(e as Error).message})`;
+    show($("saves-count"), () => t("unavailable", { error: (e as Error).message }));
     $<HTMLButtonElement>("export").disabled = true;
   }
   $<HTMLButtonElement>("import").disabled = busy;
@@ -87,14 +110,14 @@ function download(blob: Blob, name: string): void {
 
 async function onExport(): Promise<void> {
   setBusy(true);
-  setStatus("Exporting…");
+  setStatus(() => t("exporting"));
   try {
-    const { blob, count, bytes } = await exportSaves((done, total) => setStatus(`Exporting… ${done} / ${total}`));
+    const { blob, count, bytes } = await exportSaves((done, total) => setStatus(() => t("exportingN", { done, total })));
     const stamp = new Date().toISOString().slice(0, 10);
     download(blob, `thesims-saves-${stamp}.zip`);
-    setStatus(`Exported ${count} file${count > 1 ? "s" : ""} (${formatBytes(bytes)}).`, "ok");
+    setStatus(() => t("exported", { n: count, size: formatBytes(bytes) }), "ok");
   } catch (e) {
-    setStatus(`Export failed: ${(e as Error).message}`, "err");
+    setStatus(() => t("exportFailed", { error: (e as Error).message }), "err");
   } finally {
     setBusy(false);
     await refreshSaves();
@@ -102,23 +125,15 @@ async function onExport(): Promise<void> {
 }
 
 async function onImport(file: File): Promise<void> {
-  const where = mode === "client" ? "this browser" : "the server (for everyone who plays on it)";
-  const ok = confirm(
-    `Replace every save of ${where} with the content of "${file.name}"?\n\n` +
-      "Saves that are not in the archive are deleted. This cannot be undone: export the current saves first if in doubt. " +
-      "Close the game's tabs before importing.",
-  );
-  if (!ok) return;
+  const where = t(mode === "client" ? "whereClient" : "whereServer");
+  if (!confirm(t("importConfirm", { where, file: file.name }))) return;
   setBusy(true);
-  setStatus("Importing…");
+  setStatus(() => t("importing"));
   try {
-    const { count, ignored } = await importSaves(file, (done, total) => setStatus(`Importing… ${done} / ${total}`));
-    setStatus(
-      `Imported ${count} file${count > 1 ? "s" : ""}` + (ignored ? ` (${ignored} other file${ignored > 1 ? "s" : ""} ignored)` : "") + ".",
-      "ok",
-    );
+    const { count, ignored } = await importSaves(file, (done, total) => setStatus(() => t("importingN", { done, total })));
+    setStatus(() => t("imported", { n: count }) + (ignored ? ` ${t("importedIgnored", { m: ignored })}` : ""), "ok");
   } catch (e) {
-    setStatus(`Import failed: ${(e as Error).message}`, "err");
+    setStatus(() => t("importFailed", { error: (e as Error).message }), "err");
   } finally {
     setBusy(false);
     await refreshSaves();
@@ -132,9 +147,9 @@ let localGame = false;
 /** The import in progress (Stop aborts it). */
 let importing: AbortController | null = null;
 
-function setGameStatus(text: string, kind: "" | "ok" | "warn" | "err" = ""): void {
+function setGameStatus(text: Text | "", kind: Kind = ""): void {
   const el = $("gamefiles-status");
-  el.textContent = text;
+  show(el, text === "" ? () => "" : text);
   el.className = `status ${kind}`;
 }
 
@@ -143,9 +158,11 @@ function setPlayable(ok: boolean): void {
   const play = $<HTMLAnchorElement>("play");
   play.setAttribute("aria-disabled", String(!ok));
   play.tabIndex = ok ? 0 : -1;
-  $("play-note").textContent = ok
-    ? "The game opens in this tab. Close other tabs of the game first."
-    : "Import the game folder first (below).";
+  show($("play-note"), () => t(ok ? "playNote" : "playNoteImport"));
+}
+
+function formatDate(ms: number): string {
+  return new Date(ms).toLocaleString(localeTag());
 }
 
 async function refreshGameFiles(): Promise<void> {
@@ -163,22 +180,24 @@ async function refreshGameFiles(): Promise<void> {
   try {
     st = await gameFilesStatus();
   } catch (e) {
-    stateEl.textContent = `unavailable (${(e as Error).message})`;
+    show(stateEl, () => t("unavailable", { error: (e as Error).message }));
     setPlayable(false);
     return;
   }
   if (st.state === "complete") {
-    stateEl.textContent = `"${st.source}": ${st.fileCount} files, ${formatBytes(st.bytes)}, imported ${new Date(st.finishedAt).toLocaleString()}`;
+    const s = st;
+    show(stateEl, () => t("gfComplete", { source: s.source, n: s.fileCount, size: formatBytes(s.bytes), date: formatDate(s.finishedAt) }));
     stateEl.className = "ok";
-    select.textContent = "Import again…";
+    show(select, () => t("gfImportAgain"));
   } else if (st.state === "partial") {
-    stateEl.textContent = `incomplete: ${formatBytes(st.storedBytes)} of ${formatBytes(st.bytes)} copied from "${st.source}". Select the folder again to resume.`;
+    const s = st;
+    show(stateEl, () => t("gfPartial", { done: formatBytes(s.storedBytes), size: formatBytes(s.bytes), source: s.source }));
     stateEl.className = "warn";
-    select.textContent = "Select the game folder…";
+    show(select, () => t("gfSelect"));
   } else {
-    stateEl.textContent = "nothing imported yet";
+    show(stateEl, () => t("gfNone"));
     stateEl.className = "";
-    select.textContent = "Select the game folder…";
+    show(select, () => t("gfSelect"));
   }
   resume.hidden = busy || st.state !== "partial" || !(await hasRememberedFolder());
   remove.hidden = st.state === "none";
@@ -193,7 +212,7 @@ async function runImport(read: () => Promise<SourceFile[]>, handle?: unknown): P
   const progress = $<HTMLProgressElement>("gamefiles-progress");
   progress.value = 0;
   await refreshGameFiles();
-  setGameStatus("Reading the folder…");
+  setGameStatus(() => t("gfReading"));
   try {
     const plan = planImport(await read());
     if (handle) await rememberFolder(handle);
@@ -201,19 +220,23 @@ async function runImport(read: () => Promise<SourceFile[]>, handle?: unknown): P
       plan,
       (p) => {
         progress.value = p.totalBytes ? p.doneBytes / p.totalBytes : 0;
-        setGameStatus(`Copying into this browser… ${formatBytes(p.doneBytes)} of ${formatBytes(p.totalBytes)} (${p.doneFiles} / ${p.totalFiles} files)`);
+        setGameStatus(() =>
+          t("gfCopying", { done: formatBytes(p.doneBytes), size: formatBytes(p.totalBytes), k: p.doneFiles, n: p.totalFiles }),
+        );
       },
       signal,
     );
-    setGameStatus(`Imported ${plan.files.length} files (${formatBytes(plan.bytes)}). Ready to play.`, "ok");
+    setGameStatus(() => t("gfImported", { n: plan.files.length, size: formatBytes(plan.bytes) }), "ok");
   } catch (e) {
-    if ((e as Error).name === "AbortError") setGameStatus("Stopped. What was copied is kept: select the folder again to resume.", "warn");
-    else setGameStatus(`Import failed: ${(e as Error).message}`, "err");
+    if ((e as Error).name === "AbortError") setGameStatus(() => t("gfStopped"), "warn");
+    else setGameStatus(() => t("gfFailed", { error: (e as Error).message }), "err");
   } finally {
     importing = null;
     await Promise.all([refreshGameFiles(), refreshStorage()]);
   }
 }
+
+const readingN = (n: number): void => setGameStatus(() => t("gfReadingN", { n }));
 
 async function onSelectFolder(): Promise<void> {
   if (!hasFolderPicker()) {
@@ -229,32 +252,31 @@ async function onSelectFolder(): Promise<void> {
     $<HTMLInputElement>("gamefiles-input").click();
     return;
   }
-  await runImport(() => sourceFromHandle(handle, (n) => setGameStatus(`Reading the folder… ${n} files`)), handle);
+  await runImport(() => sourceFromHandle(handle, readingN), handle);
 }
 
 async function onResume(): Promise<void> {
   const handle = await rememberedFolder(true);
   if (!handle) {
-    setGameStatus("The browser no longer allows reading that folder: select it again.", "warn");
+    setGameStatus(() => t("gfNoAccess"), "warn");
     return;
   }
-  await runImport(() => sourceFromHandle(handle, (n) => setGameStatus(`Reading the folder… ${n} files`)), handle);
+  await runImport(() => sourceFromHandle(handle, readingN), handle);
 }
 
 async function onRemoveGameFiles(): Promise<void> {
-  if (!confirm("Remove the game files from this browser? The saves are kept. Playing again needs a new import of the game folder.")) return;
+  if (!confirm(t("gfRemoveConfirm"))) return;
   try {
     await removeGameFiles();
-    setGameStatus("The game files were removed from this browser.", "ok");
+    setGameStatus(() => t("gfRemoved"), "ok");
   } catch (e) {
-    setGameStatus(`Removal failed: ${(e as Error).message}`, "err");
+    setGameStatus(() => t("gfRemoveFailed", { error: (e as Error).message }), "err");
   }
   await Promise.all([refreshGameFiles(), refreshStorage()]);
 }
 
 function initGameFiles(): void {
   $("gamefiles").hidden = false;
-  $("lead").textContent = "A web port of The Sims (2000, Complete Collection), running on your own copy of the game, imported into this browser.";
   const input = $<HTMLInputElement>("gamefiles-input");
   input.addEventListener("change", () => {
     const list = input.files;
@@ -274,26 +296,50 @@ function initGameFiles(): void {
   setPlayable(false);
 }
 
+/** The game files paragraph: its text with the folder names as code. */
+function renderGameFilesHelp(): void {
+  const el = $("gamefiles-help");
+  el.replaceChildren();
+  for (const part of t("gamefilesHelp").split(/(\{\w+\})/)) {
+    const m = /^\{(\w+)\}$/.exec(part);
+    if (m) {
+      const code = document.createElement("code");
+      code.textContent = m[1]!;
+      el.append(code);
+    } else if (part) el.append(part);
+  }
+}
+
 async function refreshStorage(): Promise<void> {
   const persistEl = $("storage-persist");
   const persistBtn = $<HTMLButtonElement>("persist");
   const storage = navigator.storage as StorageManager | undefined;
   if (!storage?.persisted) {
-    persistEl.textContent = "this browser does not say whether it may clear it";
+    show(persistEl, () => t("persistUnknown"));
   } else {
     const persisted = await storage.persisted().catch(() => false);
-    persistEl.textContent = persisted
-      ? "persistent: the browser keeps it until you clear it"
-      : "best effort: the browser may clear it when the disk runs short";
+    show(persistEl, () => t(persisted ? "persistYes" : "persistNo"));
     persistEl.className = persisted ? "ok" : mode === "client" ? "warn" : "";
     persistBtn.hidden = persisted || !storage.persist;
   }
   const est = await storage?.estimate?.().catch(() => null);
-  $("storage-usage").textContent = est?.usage !== undefined ? `${formatBytes(est.usage)} (${localGame ? "imported game files" : "game files cache"} and saves)` : "unknown";
+  const usage = est?.usage;
+  show($("storage-usage"), () => (usage !== undefined ? t(localGame ? "usageLocal" : "usageCache", { size: formatBytes(usage) }) : t("unknown")));
+}
+
+/** engine/pwa.ts offlineStatus, as a message key of this page. */
+async function offlineKey(): Promise<Key> {
+  if (import.meta.env.DEV) return "offDev";
+  if (!("serviceWorker" in navigator)) return "offUnsupported";
+  if (!window.isSecureContext) return "offInsecure";
+  const reg = await registerServiceWorker();
+  if (!reg) return "offFailed";
+  return reg.active ? "offReady" : "offPreparing";
 }
 
 async function refreshOffline(): Promise<void> {
-  $("offline").textContent = await offlineStatus();
+  const key = await offlineKey();
+  show($("offline"), () => t(key));
 }
 
 /** One link per neighborhood whose saves hold the game's web pages (its Web Pages/neighborhood.html). */
@@ -317,6 +363,40 @@ function showWebPages(paths: string[]): void {
   $("webpages").hidden = dirs.size === 0;
 }
 
+// --- Language of the page ------------------------------------------------------------
+
+/** Web fonts for the scripts the heading and body fonts do not cover (Google Fonts serves only the glyphs used). */
+const SCRIPT_FONTS: Readonly<Record<string, string>> = {
+  ja: "Noto+Sans+JP",
+  "zh-CN": "Noto+Sans+SC",
+  "zh-TW": "Noto+Sans+TC",
+  ko: "Noto+Sans+KR",
+  th: "Noto+Sans+Thai",
+};
+const loadedFonts = new Set<string>();
+
+function loadScriptFont(tag: string): void {
+  const family = SCRIPT_FONTS[tag];
+  if (!family || loadedFonts.has(family)) return;
+  loadedFonts.add(family);
+  const link = document.createElement("link");
+  link.rel = "stylesheet";
+  link.href = `https://fonts.googleapis.com/css2?family=${family}:wght@400;600;700&display=swap`;
+  document.head.append(link);
+}
+
+/** Puts the page in the language `code`: the static texts, then every dynamic one. */
+function applyLanguage(code: number): void {
+  setLocale(code);
+  const tag = localeTag();
+  document.documentElement.lang = tag;
+  loadScriptFont(tag);
+  document.title = t("pageTitle");
+  for (const el of document.querySelectorAll<HTMLElement>("[data-i18n]")) el.textContent = t(el.dataset["i18n"] as Key);
+  renderGameFilesHelp();
+  for (const r of renders) r();
+}
+
 function initLanguage(): void {
   const select = $<HTMLSelectElement>("language");
   const current = readLanguage();
@@ -324,30 +404,36 @@ function initLanguage(): void {
     const opt = document.createElement("option");
     opt.value = String(l.code);
     opt.textContent = l.name;
+    opt.lang = LOCALES[l.code]?.tag ?? "";
     opt.selected = l.code === current;
     select.append(opt);
   }
   select.addEventListener("change", () => {
     if (!storeLanguage(Number(select.value))) select.value = String(readLanguage());
+    applyLanguage(Number(select.value));
   });
+  applyLanguage(current);
 }
 
 function initDisplay(): void {
   const select = $<HTMLSelectElement>("resolution");
   const current = readResolution();
-  const add = (value: ResolutionChoice, text: string): void => {
+  const add = (value: ResolutionChoice, text: Text): void => {
     const opt = document.createElement("option");
     opt.value = value;
-    opt.textContent = text;
+    show(opt, text);
     opt.selected = value === current;
     select.append(opt);
   };
   const win = windowSize();
-  add("window", "Fit the window, following its size");
-  add("auto", `Fit the window when the game starts (now ${win.w} × ${win.h})`);
-  for (const [w, h] of RESOLUTIONS) add(`${w}x${h}`, `${w} × ${h}${w === 1024 && h === 768 ? " (default)" : ""}`);
+  add("window", () => t("resWindow"));
+  add("auto", () => t("resAuto", { w: String(win.w), h: String(win.h) }));
+  for (const [w, h] of RESOLUTIONS) {
+    const original = w === DEFAULT_SCREEN.w && h === DEFAULT_SCREEN.h;
+    add(`${w}x${h}`, () => (original ? t("resOriginal", { w: String(w), h: String(h) }) : `${w} × ${h}`));
+  }
   // A size given by ?res= or stored by hand that the list does not hold.
-  if (select.value !== current) add(current, current.replace("x", " × "));
+  if (select.value !== current) add(current, () => current.replace("x", " × "));
   select.addEventListener("change", () => {
     if (!storeResolution(select.value as ResolutionChoice)) select.value = readResolution();
   });
@@ -356,11 +442,19 @@ function initDisplay(): void {
   hud.addEventListener("change", () => {
     if (!storeCentredHud(hud.checked)) hud.checked = readCentredHud();
   });
+  const full = $<HTMLInputElement>("fullscreen");
+  full.checked = readFullscreen();
+  full.addEventListener("change", () => {
+    if (!storeFullscreen(full.checked)) full.checked = readFullscreen();
+  });
 }
 
 async function main(): Promise<void> {
-  initLanguage();
+  show($("lead"), () => t(localGame ? "leadLocal" : "lead"));
+  show($("saves-mode"), () => t("savesChecking"));
+  show($("play-note"), () => t("playNote"));
   initDisplay();
+  initLanguage();
   $<HTMLButtonElement>("export").addEventListener("click", () => void onExport());
   const input = $<HTMLInputElement>("import-file");
   $<HTMLButtonElement>("import").addEventListener("click", () => input.click());
@@ -384,11 +478,8 @@ async function main(): Promise<void> {
   mode = await getSaveMode();
   localGame = await isGameFilesLocal();
   if (localGame) initGameFiles();
-  $("saves-mode").textContent =
-    (mode === "client"
-      ? "This server keeps no saves: they stay in this browser, on this device, for this address. Another browser or device starts from the game's original neighborhoods."
-      : "Saves are kept on this server and shared by every browser that plays on it.") +
-    (online ? "" : " The server cannot be reached: offline.");
+  show($("lead"), () => t(localGame ? "leadLocal" : "lead"));
+  show($("saves-mode"), () => t(mode === "client" ? "savesClient" : "savesServer") + (online ? "" : ` ${t("savesOffline")}`));
   setBusy(false);
   navigator.serviceWorker?.addEventListener("controllerchange", () => void refreshOffline());
   await Promise.all([refreshSaves(), refreshStorage(), refreshGameFiles(), registerServiceWorker().then(refreshOffline, refreshOffline)]);

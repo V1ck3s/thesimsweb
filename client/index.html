@@ -5,217 +5,497 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>The Sims (web)</title>
     <meta name="description" content="A web port of The Sims (2000) running on your own copy of the game." />
-    <meta name="theme-color" content="#1d3a5f" />
+    <meta name="theme-color" content="#123a8c" />
     <link rel="icon" href="/icons/icon.svg" type="image/svg+xml" />
     <link rel="manifest" href="/manifest.webmanifest" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fredoka:wght@500;600;700&family=Nunito:wght@400;600;700;800&display=swap" />
     <style>
+      /*
+       * One look for light and dark schemes: the 2000 game's deep blue panels
+       * with lighter bevels over a sky backdrop. Nothing here comes from the
+       * game's files: colours, plumbob and clouds are drawn in CSS / SVG.
+       */
       :root {
-        color-scheme: light dark;
-        --bg: #f4f5f7;
-        --panel: #ffffff;
-        --text: #1b1f24;
-        --muted: #5b6470;
-        --line: #d9dde3;
-        --accent: #1d5fa8;
-        --accent-text: #ffffff;
-        --ok: #1f7a3a;
-        --warn: #9a5b00;
-        --err: #b3261e;
+        color-scheme: dark;
+        --local-font: ;
+        --sky-top: #9fd4ff;
+        --sky-mid: #4f97e8;
+        --sky-low: #1f56b8;
+        --panel-hi: #2557b8;
+        --panel: #173f94;
+        --panel-lo: #0f2c6e;
+        --bevel-light: #8db8ff;
+        --bevel-dark: #081d4d;
+        --well: #0b2460;
+        --text: #f4f8ff;
+        --muted: #c3d5f7;
+        --heading: #fff1a8;
+        --pill-top: #9cc4ff;
+        --pill-bot: #3f73d6;
+        --pill-edge: #d6e6ff;
+        --green-hi: #c8ff9e;
+        --green: #5fd84a;
+        --green-mid: #2fa82a;
+        --green-lo: #1b7a1f;
+        --ok: #9df28b;
+        --warn: #ffd66e;
+        --err: #ffaa9e;
+        --link: #ffe680;
+        --head-font: "Fredoka", var(--local-font) "Nunito", system-ui, sans-serif;
+        --body-font: "Nunito", var(--local-font) system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
       }
-      @media (prefers-color-scheme: dark) {
-        :root {
-          --bg: #15181c;
-          --panel: #1e2227;
-          --text: #e6e8eb;
-          --muted: #9aa3ad;
-          --line: #343a42;
-          --accent: #5b9be0;
-          --accent-text: #0d1117;
-          --ok: #5cc27a;
-          --warn: #e0a84a;
-          --err: #f08178;
-        }
-      }
+      :root:lang(ja) { --local-font: "Noto Sans JP", ; }
+      :root:lang(zh-CN) { --local-font: "Noto Sans SC", ; }
+      :root:lang(zh-TW) { --local-font: "Noto Sans TC", ; }
+      :root:lang(ko) { --local-font: "Noto Sans KR", ; }
+      :root:lang(th) { --local-font: "Noto Sans Thai", ; }
+      :root:lang(ja) body { line-break: strict; word-break: auto-phrase; }
+
       * { box-sizing: border-box; }
       [hidden] { display: none !important; }
+      html { background: var(--sky-low); }
       body {
         margin: 0;
-        background: var(--bg);
+        min-height: 100vh;
         color: var(--text);
-        font: 15px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+        font: 16px/1.55 var(--body-font);
+        background: linear-gradient(180deg, var(--sky-top) 0, var(--sky-mid) 340px, var(--sky-low) 900px, #163f8f 100%) var(--sky-low);
+        overflow-x: hidden;
       }
-      main { max-width: 760px; margin: 0 auto; padding: 32px 16px 48px; }
-      h1 { font-size: 28px; margin: 0 0 4px; }
-      h2 { font-size: 17px; margin: 0 0 8px; }
-      p { margin: 0 0 8px; }
-      .lead { color: var(--muted); margin-bottom: 24px; }
-      section {
-        background: var(--panel);
-        border: 1px solid var(--line);
-        border-radius: 8px;
-        padding: 16px 18px;
-        margin-bottom: 16px;
+
+      /* --- Sky ---------------------------------------------------------- */
+      .sky { position: fixed; inset: 0; overflow: hidden; pointer-events: none; z-index: 0; }
+      .cloud {
+        position: absolute;
+        width: 260px;
+        height: 70px;
+        border-radius: 70px;
+        background: rgba(255, 255, 255, 0.85);
+        filter: blur(1px);
+        animation: drift 90s linear infinite;
       }
-      .play { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 16px; }
-      a.button, button {
-        font: inherit;
-        border-radius: 6px;
-        border: 1px solid var(--line);
-        background: var(--panel);
-        color: var(--text);
-        padding: 7px 14px;
-        cursor: pointer;
-        text-decoration: none;
-        display: inline-block;
+      .cloud::before, .cloud::after {
+        content: "";
+        position: absolute;
+        background: inherit;
+        border-radius: 50%;
       }
-      a.button.primary {
-        background: var(--accent);
-        border-color: var(--accent);
-        color: var(--accent-text);
-        font-size: 18px;
-        font-weight: 600;
-        padding: 10px 28px;
+      .cloud::before { width: 110px; height: 110px; left: 40px; top: -55px; }
+      .cloud::after { width: 140px; height: 140px; left: 100px; top: -78px; }
+      .cloud.c1 { top: 70px; left: -10%; transform: scale(0.9); animation-duration: 120s; }
+      .cloud.c2 { top: 190px; left: 60%; transform: scale(0.6); opacity: 0.7; animation-duration: 160s; animation-delay: -60s; }
+      .cloud.c3 { top: 30px; left: 35%; transform: scale(0.45); opacity: 0.6; animation-duration: 200s; animation-delay: -120s; }
+      .cloud.c4 { top: 420px; left: 10%; transform: scale(0.7); opacity: 0.35; animation-duration: 180s; animation-delay: -30s; }
+      @keyframes drift {
+        from { translate: -30vw 0; }
+        to { translate: 130vw 0; }
       }
-      select {
-        font: inherit;
-        border-radius: 6px;
-        border: 1px solid var(--line);
-        background: var(--panel);
-        color: var(--text);
-        padding: 6px 10px;
-        max-width: 100%;
+
+      /* --- Layout ------------------------------------------------------- */
+      .page { position: relative; z-index: 1; max-width: 860px; margin: 0 auto; padding: 24px 16px 40px; }
+      .panel {
+        position: relative;
+        background: linear-gradient(180deg, var(--panel-hi) 0, var(--panel) 46px, var(--panel-lo) 100%);
+        border: 3px solid var(--bevel-light);
+        border-bottom-color: #4d7fd6;
+        border-radius: 22px;
+        box-shadow:
+          inset 0 2px 0 rgba(255, 255, 255, 0.35),
+          inset 0 -4px 0 rgba(0, 0, 0, 0.28),
+          0 0 0 2px var(--bevel-dark),
+          0 10px 24px rgba(6, 22, 66, 0.45);
+        padding: 18px 22px 20px;
+        margin-bottom: 22px;
       }
-      label { display: inline-flex; align-items: center; gap: 10px; flex-wrap: wrap; }
-      button:disabled { opacity: 0.55; cursor: default; }
-      a.button.primary[aria-disabled="true"] { opacity: 0.55; pointer-events: none; }
-      progress { width: 100%; height: 10px; margin-top: 10px; }
-      button:not(:disabled):hover, a.button:hover { filter: brightness(0.95); }
-      .row { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+      h1, h2 { font-family: var(--head-font); font-weight: 600; letter-spacing: 0.01em; }
+      h2 {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        font-size: 22px;
+        line-height: 1.2;
+        margin: 0 0 12px;
+        color: var(--heading);
+        text-shadow: 0 2px 0 rgba(0, 0, 0, 0.35);
+      }
+      h2::before {
+        content: "";
+        flex: none;
+        width: 13px;
+        height: 22px;
+        background: linear-gradient(90deg, var(--green-hi) 0 50%, var(--green-mid) 50% 100%);
+        clip-path: polygon(50% 0, 100% 45%, 50% 100%, 0 45%);
+        filter: drop-shadow(0 0 4px rgba(150, 255, 120, 0.6));
+      }
+      p { margin: 0 0 10px; }
+      a { color: var(--link); }
+      a:hover { color: #fff6c2; }
       .muted { color: var(--muted); }
-      .status { min-height: 1.5em; margin-top: 8px; }
+      .note { font-size: 14.5px; }
+      code {
+        font: 13.5px/1.2 ui-monospace, "SFMono-Regular", Consolas, monospace;
+        background: var(--well);
+        border: 1px solid #3c66bb;
+        border-radius: 6px;
+        padding: 1px 6px;
+        white-space: nowrap;
+      }
+
+      /* --- Hero ---------------------------------------------------------- */
+      .hero {
+        text-align: center;
+        padding: 26px 22px 24px;
+        margin-top: 64px;
+        background:
+          radial-gradient(120% 80% at 50% 0, rgba(140, 190, 255, 0.35), transparent 60%),
+          linear-gradient(180deg, var(--panel-hi) 0, var(--panel) 60%, var(--panel-lo) 100%);
+      }
+      .plumbob {
+        display: block;
+        width: 64px;
+        height: 110px;
+        margin: -96px auto 4px;
+        filter: drop-shadow(0 0 14px rgba(130, 255, 100, 0.65)) drop-shadow(0 6px 6px rgba(0, 40, 0, 0.35));
+        animation: bob 3.2s ease-in-out infinite;
+      }
+      @keyframes bob {
+        0%, 100% { transform: translateY(0) rotateY(0deg); }
+        50% { transform: translateY(-8px) rotateY(180deg); }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        .plumbob, .cloud { animation: none; }
+      }
+      h1 {
+        margin: 0;
+        font-size: clamp(44px, 11vw, 76px);
+        font-weight: 700;
+        line-height: 1.05;
+        color: #fff;
+        text-shadow:
+          0 3px 0 #0a2a72,
+          0 -2px 0 #0a2a72,
+          3px 0 0 #0a2a72,
+          -3px 0 0 #0a2a72,
+          0 8px 14px rgba(0, 0, 0, 0.4);
+      }
+      .badge {
+        display: inline-block;
+        margin: 10px 0 14px;
+        padding: 2px 14px;
+        border-radius: 999px;
+        font: 600 14px/1.6 var(--head-font);
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+        color: #0d3a0d;
+        background: linear-gradient(180deg, var(--green-hi), var(--green));
+        border: 2px solid #e6ffd6;
+        box-shadow: 0 2px 0 var(--green-lo);
+      }
+      :root:lang(ja) .badge, :root:lang(zh-CN) .badge, :root:lang(zh-TW) .badge, :root:lang(ko) .badge, :root:lang(th) .badge { text-transform: none; letter-spacing: 0.02em; }
+      .lead { font-size: 17px; color: var(--muted); max-width: 600px; margin: 0 auto 20px; }
+      .play { display: flex; flex-direction: column; align-items: center; gap: 12px; }
+      .play .note { margin: 0; max-width: 520px; }
+
+      /* --- Controls ------------------------------------------------------ */
+      a.button, button {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-height: 40px;
+        font: 600 15.5px/1.2 var(--head-font);
+        letter-spacing: 0.01em;
+        text-decoration: none;
+        color: #fff;
+        text-shadow: 0 1px 1px rgba(0, 25, 80, 0.7);
+        background: linear-gradient(180deg, var(--pill-top) 0, #6b9cf0 45%, var(--pill-bot) 100%);
+        border: 2px solid var(--pill-edge);
+        border-radius: 999px;
+        padding: 8px 20px;
+        box-shadow: inset 0 2px 0 rgba(255, 255, 255, 0.45), inset 0 -2px 0 rgba(0, 0, 0, 0.2), 0 3px 0 var(--bevel-dark);
+        cursor: pointer;
+        transition: transform 0.08s, filter 0.12s;
+        max-width: 100%;
+        text-align: center;
+      }
+      a.button:hover, button:not(:disabled):hover { filter: brightness(1.1); color: #fff; }
+      a.button:active, button:not(:disabled):active { transform: translateY(2px); box-shadow: inset 0 2px 0 rgba(255, 255, 255, 0.3), 0 1px 0 var(--bevel-dark); }
+      a.button:focus-visible, button:focus-visible, select:focus-visible, input:focus-visible {
+        outline: 3px solid var(--heading);
+        outline-offset: 3px;
+      }
+      button:disabled { opacity: 0.5; cursor: default; filter: saturate(0.4); }
+      a.button.primary {
+        min-height: 64px;
+        min-width: 220px;
+        padding: 12px 44px;
+        font-size: 30px;
+        font-weight: 700;
+        color: #fff;
+        text-shadow: 0 2px 0 #13600f, 0 0 2px #13600f;
+        background: linear-gradient(180deg, var(--green-hi) 0, var(--green) 40%, var(--green-mid) 80%, var(--green-lo) 100%);
+        border: 3px solid #eaffdc;
+        box-shadow:
+          inset 0 3px 0 rgba(255, 255, 255, 0.55),
+          inset 0 -4px 0 rgba(0, 60, 0, 0.3),
+          0 5px 0 #0b4a10,
+          0 0 26px rgba(120, 255, 90, 0.45);
+      }
+      a.button.primary:active { transform: translateY(3px); box-shadow: inset 0 3px 0 rgba(255, 255, 255, 0.4), 0 2px 0 #0b4a10; }
+      a.button.primary[aria-disabled="true"] { opacity: 0.5; pointer-events: none; filter: grayscale(0.7); }
+
+      select {
+        font: 600 15px/1.3 var(--body-font);
+        color: var(--text);
+        background:
+          linear-gradient(45deg, transparent 50%, var(--heading) 50%) right 20px center / 7px 7px no-repeat,
+          linear-gradient(135deg, var(--heading) 50%, transparent 50%) right 13px center / 7px 7px no-repeat,
+          var(--well);
+        border: 2px solid var(--bevel-light);
+        border-radius: 999px;
+        padding: 8px 40px 8px 16px;
+        min-height: 40px;
+        max-width: 100%;
+        appearance: none;
+        cursor: pointer;
+        box-shadow: inset 0 2px 4px rgba(0, 0, 0, 0.45);
+      }
+      select option { background: #0f2c6e; color: #fff; }
+
+      .field { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; margin-bottom: 12px; }
+      .field > span { font-weight: 700; }
+      .field select { flex: 0 1 auto; min-width: 0; }
+      .check {
+        display: grid;
+        grid-template-columns: auto 1fr;
+        align-items: start;
+        gap: 2px 12px;
+        padding: 10px 14px;
+        margin: 0 0 10px;
+        border-radius: 14px;
+        background: rgba(5, 20, 60, 0.35);
+        border: 1px solid rgba(141, 184, 255, 0.35);
+        cursor: pointer;
+      }
+      .check input {
+        grid-row: span 2;
+        width: 22px;
+        height: 22px;
+        margin: 1px 0 0;
+        accent-color: var(--green);
+        cursor: pointer;
+      }
+      .check > span:first-of-type { font-weight: 700; }
+      .check .note { margin: 0; }
+
+      .row { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 12px; }
+      .status { min-height: 1.55em; margin: 10px 0 0; font-weight: 600; }
       .ok { color: var(--ok); }
       .warn { color: var(--warn); }
       .err { color: var(--err); }
-      dl { display: grid; grid-template-columns: max-content 1fr; gap: 4px 16px; margin: 0; }
-      dt { color: var(--muted); }
-      dd { margin: 0; }
-      ul { margin: 0; padding-left: 20px; }
-      li { margin-bottom: 4px; }
-      code { font-size: 13px; }
+
+      dl {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr);
+        gap: 0;
+        margin: 0;
+        padding: 12px 16px;
+        border-radius: 14px;
+        background: var(--well);
+        box-shadow: inset 0 2px 5px rgba(0, 0, 0, 0.45);
+        border: 1px solid #2c58b0;
+      }
+      dt { color: var(--muted); font-size: 13.5px; }
+      dd { margin: 0 0 8px; font-weight: 600; overflow-wrap: anywhere; }
+      dd:last-child { margin-bottom: 0; }
+      progress {
+        appearance: none;
+        width: 100%;
+        height: 16px;
+        margin-top: 12px;
+        border-radius: 999px;
+        border: 2px solid var(--bevel-light);
+        background: var(--well);
+        overflow: hidden;
+      }
+      progress::-webkit-progress-bar { background: var(--well); }
+      progress::-webkit-progress-value { background: linear-gradient(180deg, var(--green-hi), var(--green-mid)); }
+      progress::-moz-progress-bar { background: linear-gradient(180deg, var(--green-hi), var(--green-mid)); }
+
+      ul.help { list-style: none; margin: 0; padding: 0; }
+      ul.help li { position: relative; padding-left: 26px; margin-bottom: 10px; }
+      ul.help li::before {
+        content: "";
+        position: absolute;
+        left: 4px;
+        top: 0.3em;
+        width: 10px;
+        height: 16px;
+        background: linear-gradient(90deg, var(--green-hi) 0 50%, var(--green-mid) 50% 100%);
+        clip-path: polygon(50% 0, 100% 45%, 50% 100%, 0 45%);
+      }
+
+      footer { text-align: center; font-size: 13px; color: #d6e4ff; text-shadow: 0 1px 2px rgba(0, 0, 0, 0.5); margin-top: 6px; }
+
+      @media (min-width: 900px) {
+        .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0 22px; align-items: stretch; }
+        .grid > .wide { grid-column: 1 / -1; }
+        .split { display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr); gap: 0 26px; align-items: start; }
+      }
+      @media (max-width: 520px) {
+        body { font-size: 15px; }
+        .panel { padding: 16px 16px 18px; border-radius: 18px; }
+        .hero { padding: 22px 14px 20px; }
+        h2 { font-size: 20px; }
+        .field select { width: 100%; }
+        .row button { flex: 1 1 auto; }
+        a.button.primary { width: 100%; min-width: 0; }
+      }
     </style>
   </head>
   <body>
-    <main>
-      <h1>The Sims</h1>
-      <p class="lead" id="lead">A web port of The Sims (2000, Complete Collection), running on the game files of this server.</p>
+    <div class="sky" aria-hidden="true">
+      <div class="cloud c1"></div>
+      <div class="cloud c2"></div>
+      <div class="cloud c3"></div>
+      <div class="cloud c4"></div>
+    </div>
 
-      <section class="play">
-        <a class="button primary" href="game.html" id="play">Play</a>
-        <span class="muted" id="play-note">The game opens in this tab. Close other tabs of the game first.</span>
-      </section>
-
-      <section>
-        <h2>Language</h2>
-        <label>
-          <span>Language of the game</span>
-          <select id="language"></select>
-        </label>
-        <p class="muted">
-          The game files hold the texts of every language; the choice applies at the next start of the game (reload
-          its tab). The neighborhoods and families keep the names they were given.
-        </p>
-      </section>
-
-      <section>
-        <h2>Display</h2>
-        <div class="row">
-          <label>
-            <span>Resolution</span>
-            <select id="resolution"></select>
-          </label>
+    <div class="page">
+      <header class="panel hero">
+        <svg class="plumbob" viewBox="0 0 64 110" aria-hidden="true">
+          <defs>
+            <linearGradient id="pb-a" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0" stop-color="#e2ffc8" />
+              <stop offset="1" stop-color="#7fe85f" />
+            </linearGradient>
+            <linearGradient id="pb-b" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0" stop-color="#8cf06c" />
+              <stop offset="1" stop-color="#36b52c" />
+            </linearGradient>
+            <linearGradient id="pb-c" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0" stop-color="#4fcf3c" />
+              <stop offset="1" stop-color="#1f8a1d" />
+            </linearGradient>
+            <linearGradient id="pb-d" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0" stop-color="#2b9e25" />
+              <stop offset="1" stop-color="#145f16" />
+            </linearGradient>
+          </defs>
+          <polygon points="32,2 3,50 26,58" fill="url(#pb-a)" />
+          <polygon points="32,2 26,58 61,50" fill="url(#pb-b)" />
+          <polygon points="3,50 32,108 26,58" fill="url(#pb-c)" />
+          <polygon points="26,58 32,108 61,50" fill="url(#pb-d)" />
+          <polyline points="32,2 3,50 32,108 61,50 32,2" fill="none" stroke="#eaffdc" stroke-width="1.5" stroke-linejoin="round" opacity="0.7" />
+          <polygon points="30,10 12,46 22,50" fill="#fff" opacity="0.45" />
+        </svg>
+        <h1 data-i18n="title">The Sims</h1>
+        <span class="badge" data-i18n="badge">web edition</span>
+        <p class="lead" id="lead">A web port of The Sims (2000, Complete Collection), running on the game files of this server.</p>
+        <div class="play">
+          <a class="button primary" href="game.html" id="play" data-i18n="play">Play</a>
+          <p class="muted note" id="play-note">The game opens in this tab. Close other tabs of the game first.</p>
         </div>
-        <div class="row">
-          <label>
-            <input type="checkbox" id="centred-hud" />
-            <span>Keep the interface centred on very wide screens</span>
-          </label>
-        </div>
-        <p class="muted" style="margin-top: 10px">
-          The game's screen size. At any size the game keeps the look of the original's 1024 × 768: the same zoom
-          and panel sizes, scaled up to the screen; wider screens show more of the neighborhood and the lot. “Fit the
-          window, following its size” adapts while you play; “when the game starts” keeps the size the window had
-          then. The centred interface (not in the original) keeps the control panel in a 16:9 band in the middle of
-          wider screens. Other choices apply at the next start of the game (reload its tab).
-        </p>
-      </section>
+      </header>
 
-      <section id="gamefiles" hidden>
-        <h2>Game files</h2>
-        <p class="muted">
-          This server does not provide the game. Import your own copy of The Sims (Complete Collection): select its
-          install folder, the one that holds <code>GameData</code>, <code>ExpansionShared</code>, <code>UserData</code>…
-          The files the game reads (about 3.2 GB) are copied into this browser; nothing is sent to the server.
-        </p>
-        <dl>
-          <dt>In this browser</dt>
-          <dd id="gamefiles-state">–</dd>
-        </dl>
-        <progress id="gamefiles-progress" max="1" value="0" hidden></progress>
-        <div class="row">
-          <button type="button" id="gamefiles-select" disabled>Select the game folder…</button>
-          <button type="button" id="gamefiles-resume" hidden>Resume</button>
-          <button type="button" id="gamefiles-stop" hidden>Stop</button>
-          <button type="button" id="gamefiles-remove" hidden>Remove the game files</button>
-          <input type="file" id="gamefiles-input" webkitdirectory multiple hidden />
-        </div>
-        <p class="status" id="gamefiles-status" role="status"></p>
-      </section>
+      <main class="grid">
+        <section class="panel wide">
+          <h2 data-i18n="languageH">Language</h2>
+          <div class="split">
+            <label class="field">
+              <span data-i18n="languageLabel">Language of the game</span>
+              <select id="language"></select>
+            </label>
+            <p class="muted note" data-i18n="languageHelp"></p>
+          </div>
+        </section>
 
-      <section>
-        <h2>Saves</h2>
-        <p id="saves-mode" class="muted">Checking the server…</p>
-        <dl>
-          <dt>Saved files</dt>
-          <dd id="saves-count">–</dd>
-        </dl>
-        <div class="row">
-          <button type="button" id="export" disabled>Export saves (.zip)</button>
-          <button type="button" id="import" disabled>Import saves…</button>
-          <input type="file" id="import-file" accept=".zip,application/zip" hidden />
-        </div>
-        <p class="status" id="saves-status" role="status"></p>
-        <p id="webpages" hidden>
-          Family web pages (written by the game when “Export HTML” is on, or by its Internet update button in the
-          neighborhood): <span id="webpages-links"></span>
-        </p>
-      </section>
+        <section class="panel wide">
+          <h2 data-i18n="displayH">Display</h2>
+          <div class="split">
+            <div>
+              <label class="field">
+                <span data-i18n="resolutionLabel">Resolution</span>
+                <select id="resolution"></select>
+              </label>
+              <label class="check">
+                <input type="checkbox" id="fullscreen" />
+                <span data-i18n="fullscreen">Fullscreen</span>
+                <span class="muted note" data-i18n="fullscreenHelp"></span>
+              </label>
+              <label class="check">
+                <input type="checkbox" id="centred-hud" />
+                <span data-i18n="centredHud">Keep the interface centred on very wide screens</span>
+              </label>
+            </div>
+            <p class="muted note" data-i18n="displayHelp"></p>
+          </div>
+        </section>
 
-      <section>
-        <h2>Storage and offline play</h2>
-        <dl>
-          <dt>Browser storage</dt>
-          <dd id="storage-persist">–</dd>
-          <dt>Used by this site</dt>
-          <dd id="storage-usage">–</dd>
-          <dt>Offline</dt>
-          <dd id="offline">–</dd>
-        </dl>
-        <div class="row">
-          <button type="button" id="persist" hidden>Keep this site's data</button>
-        </div>
-      </section>
+        <section class="panel wide" id="gamefiles" hidden>
+          <h2 data-i18n="gamefilesH">Game files</h2>
+          <p class="muted" id="gamefiles-help"></p>
+          <dl>
+            <dt data-i18n="inBrowser">In this browser</dt>
+            <dd id="gamefiles-state">–</dd>
+          </dl>
+          <progress id="gamefiles-progress" max="1" value="0" hidden></progress>
+          <div class="row">
+            <button type="button" id="gamefiles-select" disabled>Select the game folder…</button>
+            <button type="button" id="gamefiles-resume" data-i18n="gfResume" hidden>Resume</button>
+            <button type="button" id="gamefiles-stop" data-i18n="gfStop" hidden>Stop</button>
+            <button type="button" id="gamefiles-remove" data-i18n="gfRemove" hidden>Remove the game files</button>
+            <input type="file" id="gamefiles-input" webkitdirectory multiple hidden />
+          </div>
+          <p class="status" id="gamefiles-status" role="status"></p>
+        </section>
 
-      <section>
-        <h2>Help</h2>
-        <ul>
-          <li>The first start reads the whole object catalog and takes a minute or two; the game files are then kept in this browser and later starts are much faster.</li>
-          <li>Firefox and Chrome (or Edge) are supported. The game is made for a mouse and a keyboard.</li>
-          <li>The game saves as the original does. Export the saves now and then: when they are kept in the browser, clearing this site's data loses them.</li>
-          <li>Offline: once the game has been played on this device, it starts without a network connection, with what it has already loaded (neighborhoods, lots and catalog pages visited). Anything never opened needs the server, and when the saves are kept on the server the game cannot save offline.</li>
-          <li>Install it as an app from the browser's address bar or menu (Chrome, Edge) for a window of its own.</li>
-        </ul>
-      </section>
-    </main>
+        <section class="panel">
+          <h2 data-i18n="savesH">Saves</h2>
+          <p id="saves-mode" class="muted note">Checking the server…</p>
+          <dl>
+            <dt data-i18n="savedFiles">Saved files</dt>
+            <dd id="saves-count">–</dd>
+          </dl>
+          <div class="row">
+            <button type="button" id="export" data-i18n="export" disabled>Export saves (.zip)</button>
+            <button type="button" id="import" data-i18n="import" disabled>Import saves…</button>
+            <input type="file" id="import-file" accept=".zip,application/zip" hidden />
+          </div>
+          <p class="status" id="saves-status" role="status"></p>
+          <p id="webpages" class="note" hidden><span data-i18n="webpages"></span> <span id="webpages-links"></span></p>
+        </section>
+
+        <section class="panel">
+          <h2 data-i18n="storageH">Storage and offline play</h2>
+          <dl>
+            <dt data-i18n="browserStorage">Browser storage</dt>
+            <dd id="storage-persist">–</dd>
+            <dt data-i18n="usedBySite">Used by this site</dt>
+            <dd id="storage-usage">–</dd>
+            <dt data-i18n="offline">Offline</dt>
+            <dd id="offline">–</dd>
+          </dl>
+          <div class="row">
+            <button type="button" id="persist" data-i18n="persist" hidden>Keep this site's data</button>
+          </div>
+        </section>
+
+        <section class="panel wide">
+          <h2 data-i18n="helpH">Help</h2>
+          <ul class="help">
+            <li data-i18n="help1"></li>
+            <li data-i18n="help2"></li>
+            <li data-i18n="help3"></li>
+            <li data-i18n="help4"></li>
+            <li data-i18n="help5"></li>
+          </ul>
+        </section>
+      </main>
+
+      <footer data-i18n="footer"></footer>
+    </div>
     <script type="module" src="/src/landing/main.ts"></script>
   </body>
 </html>
