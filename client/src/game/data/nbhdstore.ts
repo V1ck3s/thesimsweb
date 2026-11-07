@@ -23,7 +23,7 @@ import { createCharacterFile, createCharacterFileFrom, deleteCharacterFile, GUID
 import { serializeFamilyHistory } from "./familyhistory.js";
 import { deleteGameFile, writeGameFile } from "./files.js";
 import { buildIff, decodeStrSet, parseIff, stringSetBaseResave, stringSetMultiSave, stringSetMultiSaveLocal, type IffChunk } from "./iff.js";
-import { PD, type NeighborhoodData } from "./neighborhood.js";
+import { PD, type Neighbor, type NeighborhoodData } from "./neighborhood.js";
 import { ReconReader, ReconWriter } from "./recon.js";
 
 /** RelMatrix: a counted list (count >= 0) or a pointer vector (count < 0). */
@@ -607,6 +607,12 @@ export class NeighborhoodStore {
   /** PersonFinder::GetData without an instance: the neighbor's person data (live). */
   getPersonData(guid: number): Int16Array {
     return this.neighborByGuid(guid)?.personData ?? new Int16Array(256);
+  }
+
+  /** The neighbor of `guid` as a simulator's NeighborhoodData holds it (a copy, without relationships), or null. */
+  neighborData(guid: number): Neighbor | null {
+    const n = this.neighborByGuid(guid);
+    return n ? { id: n.id, guid: n.guid >>> 0, name: n.name, personData: n.personData.slice(), relationships: [], version: n.pdVersion } : null;
   }
 
   /** GetUnhousedFamilies (NghInterface) */

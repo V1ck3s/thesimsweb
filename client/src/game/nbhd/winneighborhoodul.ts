@@ -42,6 +42,7 @@ import { getOptionsMgr } from "../optionsmgr.js";
 import { listNeighborhoodDirs, neighborhoodNumber, type Neighborhood } from "./nghinterface.js";
 import { WinLotBtn, type LotBtnOwner } from "./winlotbtn.js";
 import { WinLotPopup } from "./winlotpopup.js";
+import { CasLot } from "../cas/caslot.js";
 import { WinPickFamily } from "../cas/winpickfamily.js";
 import { NeighborhoodStore } from "../data/nbhdstore.js";
 import { IDOK, IDYES, MB_OK, MB_OKCANCEL, MB_YESNO, TSWinMsgBox } from "../ui/msgbox.js";
@@ -342,10 +343,16 @@ export class WinNeighborhoodUL extends TSWin implements LotBtnOwner {
   /** +0xf0..+0x104: the Nessie easter egg (nessie.ts). */
   private readonly nessie: Nessie;
 
+  /** House 0, which Neighborhood::UnloadHouse loaded for the main screen (cas/caslot.ts). */
+  private house0: Promise<CasLot | null> | null = null;
+
   /** cWinNeighborhoodUL::Init (main screen) */
   override async init(): Promise<boolean> {
     const { ctx } = this;
     const res = ctx.res;
+    // cSimsApp::ShowNbhdDialog: Neighborhood::UnloadHouse (LoadHouse(0)) before the main screen;
+    // Create-a-Sim's people live there.
+    if (!this.picker) this.house0 = CasLot.unloadHouse(this.nb.dir, ctx.width, ctx.height);
     const lang: number = UI_LANGUAGE;
     const us = lang === 1;
 
@@ -603,6 +610,8 @@ export class WinNeighborhoodUL extends TSWin implements LotBtnOwner {
     winMgr.canvas.removeEventListener("drop", this.onDrop);
     TSWinBtn.overrideDefaultUISound();
     winMgr.setGlobalCursor(null);
+    // The next LoadHouse replaces house 0.
+    if (this.house0) CasLot.release(this.house0);
     super.shutdown();
   }
 

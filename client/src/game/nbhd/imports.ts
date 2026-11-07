@@ -271,10 +271,10 @@ async function templateChunks(nbhdDir: string, kind: number): Promise<IffChunk[]
 }
 
 /**
- * ImportFamily(ImportInfo*, int*): Neighborhood::ImportFamily, then
- * PersonFinder::GenerateBitmaps(0x1f, save) of every member (here with their
- * strings: the new character files get the body strings, the catalog name and
- * description and the portraits) and Neighborhood::ExportFamily of the new
+ * ImportFamily(ImportInfo*, int*): Neighborhood::ImportFamily (whose member
+ * loop writes each new character file's body strings and catalog name /
+ * description, and NewFileAdded), then PersonFinder::GenerateBitmaps(0x1f,
+ * save) of every member and Neighborhood::ExportFamily of the new
  * family (unless 4000) and of the family it displaced.
  *
  * Neighborhood::ImportFamily's file part: without a house the .FAM is deleted;
@@ -293,12 +293,22 @@ export async function importFamily(nbhdDir: string, info: ImportInfo): Promise<n
     if (done.gtab) chunks.push(done.gtab);
     await writeGameFile(`${nbhdDir}/Houses/House${String(done.house).padStart(2, "0")}.iff`, buildIff(chunks));
   }
+  // Neighborhood::ImportFamily's member loop: right after AddNewCharacter (ObjectFolder::NewFileAdded),
+  // the body strings (STR# 200) and the catalog name / description (CatalogResource::Save) go into the
+  // new character file, before the neighborhood is saved: nothing reads a member without its name.
+  const folder = await ObjectFolder.get(nbhdDir);
+  for (const m of done.members) {
+    await saveCharacter(nbhdDir, m.fileName, { firstName: m.firstName, bio: m.bio, bodyStrings: m.bodyStrings });
+    await folder.newFileAdded(`${nbhdDir}/Characters/${m.fileName}`, 1).catch((e: unknown) => console.warn("[import] NewFileAdded", e));
+  }
   await deleteGameFile(info.path).catch(() => undefined);
   await store.save();
+  // ImportFamily(ImportInfo*): PersonFinder::GenerateBitmaps(0x1f, save) of every member.
   const { generatePortraits } = await import("../cas/portraits.js");
   for (const m of done.members) {
     const bitmaps = await generatePortraits(m.bodyStrings).catch(() => new Map<number, Uint8Array>());
     await saveCharacter(nbhdDir, m.fileName, { firstName: m.firstName, bio: m.bio, bodyStrings: m.bodyStrings, bitmaps });
+    folder.fileChanged(`${nbhdDir}/Characters/${m.fileName}`);
   }
   if (done.familyId !== 4000) await store.exportFamily(done.familyId);
   if (done.displaced > 0) await store.exportFamily(done.displaced);

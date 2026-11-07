@@ -149,6 +149,12 @@ export class WinDesignCharacter extends TSWinGenDlg implements PersonalityOwner 
   private person: CasPerson | null = null;
   /** +0x118: designing a new person (deleted on cancel). */
   private isNew = true;
+  /**
+   * +0x119 (SetPerson's flag, 0 from the constructor): the instance stays
+   * on the lot when the design ends (EndDesignAPerson's kill = +0x119 == 0
+   * for Done and Shutdown; Cancel always kills).
+   */
+  private keepInstance = false;
   private edit: EditPerson | null = null;
   /** +0x120: the design was ended (saved or not). */
   private ended = false;
@@ -202,10 +208,11 @@ export class WinDesignCharacter extends TSWinGenDlg implements PersonalityOwner 
     this.target = t;
   }
 
-  /** cWinDesignCharacter::SetPerson: edit an existing person. */
-  setPerson(p: CasPerson): void {
+  /** cWinDesignCharacter::SetPerson(person, keepInstance): edit an existing person (cWinDesignFamily passes false). */
+  setPerson(p: CasPerson, keepInstance = false): void {
     this.person = p;
     this.isNew = false;
+    this.keepInstance = keepInstance;
   }
 
   private str(i: number): string {
@@ -470,7 +477,7 @@ export class WinDesignCharacter extends TSWinGenDlg implements PersonalityOwner 
   }
 
   private async createInstance(p: CasPerson, edit: EditPerson): Promise<void> {
-    const lot = await this.session.lot();
+    const lot = await this.session.lot(this.ctx.width, this.ctx.height);
     if (this.ended) return;
     // SetAge: ObjectModule::KillObject of the old instance (BeginDesignAPerson finds none).
     lot?.killInstance(p.guid);
@@ -595,7 +602,9 @@ export class WinDesignCharacter extends TSWinGenDlg implements PersonalityOwner 
     this.widgets.forEach((w, i) => (p.personData[TRAIT_FIELDS[i]!] = w.getValue() * 100));
     if (this.edit.getAge() === 0) this.edit.setupNewHDSkins();
     this.ended = true;
-    await this.session.endDesignAPerson(p, true, this.isNew);
+    // PersonFinder::SetName / SetDescription, then EndDesignAPerson(person, 1, +0x119 == 0, 1).
+    await this.session.setName(p);
+    await this.session.endDesignAPerson(p, true, this.isNew, !this.keepInstance, true);
     if (this.isNew) this.target?.personDesigned(p);
     this.tsEndDialog(1);
   }
@@ -605,7 +614,8 @@ export class WinDesignCharacter extends TSWinGenDlg implements PersonalityOwner 
     const p = this.person;
     if (p && !this.ended) {
       this.ended = true;
-      await this.session.endDesignAPerson(p, false, this.isNew);
+      // EndDesignAPerson(person, 0, 1, 1)
+      await this.session.endDesignAPerson(p, false, this.isNew, true, true);
       if (this.isNew) await this.session.deletePerson(p);
     }
     this.tsEndDialog(0);

@@ -8,6 +8,8 @@
  *    file, in the template's resource order. The OBJD gets a new GUID
  *    (timeGetTime() << 16 ^ rand()), keeps the template GUID at +0x8c and its
  *    label gets the prefix "User%05d " (StubObject::SetPrefix).
+ *  - saveCharacterName: PersonFinder::SetName + SetDescription alone (the
+ *    design dialog's Done names the file before EndDesignAPerson);
  *  - saveCharacter: what PersonFinder::EndDesignAPerson(save) leaves in the
  *    file: PersonFinder::SetName / SetDescription (CatalogResource::Save into
  *    CTSS <OBJD+0x52> through StringSetMulti, a CATS chunk of that id removed;
@@ -179,6 +181,32 @@ export async function saveCharacter(dir: string, fileName: string, c: CharacterS
   for (const [id, bytes] of c.bitmaps ?? []) {
     put(chunks, { type: "BMP_", id, flags: ADDED_FLAGS, label: PORTRAIT_LABELS[id] ?? "", data: bytes });
   }
+  await writeGameFile(`${dir}/Characters/${fileName}`, buildIff(chunks));
+}
+
+/**
+ * PersonFinder::SetName + SetDescription (cWinDesignCharacter's Done, before
+ * EndDesignAPerson): CatalogResource::Save of the name and the description
+ * into CTSS <OBJD+0x52> (a CATS chunk of that id removed) and
+ * ObjSelector::SetObjectName("<short name> - <name>") on the OBJD. The
+ * rest of the file is kept.
+ */
+export async function saveCharacterName(dir: string, fileName: string, name: string, bio: string): Promise<void> {
+  const chunks = await readCharacterFile(dir, fileName);
+  const objd = chunks.find((x) => x.type === "OBJD");
+  if (!objd) throw new Error(`${fileName}: no OBJD`);
+  const catalogId = new DataView(objd.data.buffer, objd.data.byteOffset, objd.data.byteLength).getInt16(OBJD_CATALOG_STRINGS_ID, true);
+  const old = chunks.find((x) => x.type === "CTSS" && x.id === catalogId);
+  put(chunks, {
+    type: "CTSS",
+    id: catalogId,
+    flags: old?.flags ?? ADDED_FLAGS,
+    label: old?.label ?? "",
+    data: stringSetMultiSave(old?.data ?? null, CURRENT_LANG, [name, bio]),
+  });
+  const cats = chunks.findIndex((x) => x.type === "CATS" && x.id === catalogId);
+  if (cats >= 0) chunks.splice(cats, 1);
+  put(chunks, { ...objd, label: `${fileName.replace(/\.iff$/i, "").toLowerCase()} - ${name}` });
   await writeGameFile(`${dir}/Characters/${fileName}`, buildIff(chunks));
 }
 
