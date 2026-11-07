@@ -85,13 +85,16 @@ Interface / triches
   chargé ; le rendu du lot, ~25 ms par image ici, est la limite). Piste restante : afficher le canvas
   WebGL du lot comme calque sous un canvas UI transparent (supprime la copie WebGL → 2D).
 - **Serveur sur /mnt/c** : inventaire du jeu gardé sur disque (`server/data/manifest-cache.json`) ;
-  la première liste des sauvegardes après un démarrage prend encore 50 à 90 s.
+  dossiers parcourus en parallèle : `/api/saves` ~10 s au premier appel après un démarrage
+  (~2 min avant, 5 000 fichiers), `?refresh` 0,2 s.
 
 ## 6. À vérifier (comparaison avec l'original à faire)
 
 - Suivi de caméra, emménagement sans boîte aux lettres, popups des besoins des animaux et page
   célébrité : conformes au code décompilé, non vus en jeu.
 - U50 (objet invisible) : le cas exact de l'utilisateur n'a pas été reproduit.
+- Page d'accueil : vue dans Chrome seulement (pas Firefox) ; traductions écrites par le portage
+  (termes du jeu repris de UIText quand ils existent), à relire par des locuteurs natifs.
 - Résolutions ≠ 1024x768 : non vues aux villes, pages d'options, catégories du catalogue ouvertes,
   écran de transit ; langues double octet non vues. Mode « following its size » : non vu sur les
   villes, en mode caméra, ni avec l'incrustation ouverte.
