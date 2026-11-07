@@ -40,7 +40,7 @@ import { ObjectIcon } from "./buy/objecticon.js";
 import { soundPlayer, UI } from "../audio/index.js";
 import { getOptionsMgr } from "../optionsmgr.js";
 import { ALIGN_LEFT, type FfnFont } from "../res/ffn.js";
-import { DOUBLE_BYTE_UI } from "../res/uires.js";
+import { DOUBLE_BYTE_UI, UI_LANGUAGE } from "../res/uires.js";
 import { SYS_POPUP_TILES, TSWinCtrlMgr } from "../ui/ctrlmgr.js";
 import { bltEdge } from "../ui/dlg.js";
 import { ASYNC_ON_DOWN, ASYNC_ON_ENTER, ASYNC_ON_UP, CMD_ASYNC_EXIT, CMD_ASYNC_TIMEOUT, type TSWinBtn } from "../ui/btn.js";
@@ -299,7 +299,8 @@ export class WinLivePopup extends TSWin {
     let textBottom = MIN_H;
     if (c) {
       textLeft = c.hasPane(0) ? PANE_RECTS[0]!.right : 5;
-      textRight = c.hasPane(1) ? PANE_RECTS[1]!.left : 0x217;
+      // Without a right pane the text reaches 0x217 (0x212 in Thai).
+      textRight = c.hasPane(1) ? PANE_RECTS[1]!.left : UI_LANGUAGE === 0x13 ? 0x212 : 0x217;
       textBottom =
         title.height + body.calculateNumberOfLines(c.desc, textRight - textLeft) * body.height;
       if (textBottom + 0x18 < MIN_H) textBottom = 0x67;

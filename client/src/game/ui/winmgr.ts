@@ -42,6 +42,15 @@ function isTextInput(w: TSWin | null): boolean {
   return !!w && (w as Partial<TextInputWindow>).acceptsTextInput?.() === true;
 }
 
+/** The IME composition window's messages (ui/imecomposition.ts). */
+export interface ImeListener {
+  start(): void;
+  update(text: string): void;
+  end(): void;
+  /** Where the candidate list goes (game pixels): the hidden input sits there. */
+  candidatePoint(): { x: number; y: number };
+}
+
 /** A tooltip window: placed and faded in by UnfurlToolTip(rect, t). */
 export type ToolTipWindow = TSWin & { unfurlToolTip(rect: Rect, t: number): void };
 
@@ -171,6 +180,45 @@ export class WinMgr {
     prev?.tsOnKillFocus(w);
     this.focus = w;
     w?.tsOnSetFocus(prev);
+    this.syncImeFocus();
+  }
+
+  /**
+   * The games with IME windows (ui/imecomposition.ts): while a text field has
+   * the focus the hidden input holds the browser's focus, so an input method
+   * composes into it; its composition shows in the game's window and the
+   * result reaches the field as typed characters.
+   */
+  setImeListener(l: ImeListener): void {
+    this.ime = l;
+    this.syncImeFocus();
+  }
+
+  private syncImeFocus(): void {
+    if (!this.ime || this.touchMode) return;
+    const want = isTextInput(this.focus);
+    const input = this.textInput;
+    if (want) {
+      this.ensureTextInput();
+      const el = this.textInput!;
+      if (document.activeElement !== el) {
+        this.placeImeInput();
+        this.resetTextInput();
+        el.focus({ preventScroll: true });
+      }
+    } else if (input && document.activeElement === input && !this.composing) {
+      input.blur();
+    }
+  }
+
+  /** The hidden input at the candidate list's place (the browser opens its list next to it). */
+  private placeImeInput(): void {
+    const input = this.textInput;
+    if (!input || !this.ime) return;
+    const p = this.ime.candidatePoint();
+    const r = this.canvas.getBoundingClientRect();
+    input.style.left = `${r.left + (p.x * r.width) / this.width}px`;
+    input.style.top = `${r.top + (p.y * r.height) / this.height}px`;
   }
 
   /** The window would take the focus (cTSWin::GetAcceptFocus: no 0x2000 flag). */
@@ -438,7 +486,7 @@ export class WinMgr {
    */
   private fit(): void {
     const host = this.canvas.parentElement;
-    const vv = this.textInput && document.activeElement === this.textInput ? window.visualViewport : null;
+    const vv = this.touchMode && this.textInput && document.activeElement === this.textInput ? window.visualViewport : null;
     if (host) {
       host.style.top = vv ? `${vv.offsetTop}px` : "";
       host.style.height = vv ? `${vv.height}px` : "";
@@ -618,6 +666,8 @@ export class WinMgr {
       const p = this.toLogical(e);
       // The browser's click count: Windows follows a double click with a plain press.
       this.pointerDown(e.button, p.x, p.y, e.detail >= 2 && e.detail % 2 === 0);
+      // The press took the browser's focus off the hidden input: give it back to a text field.
+      if (this.ime) setTimeout(() => this.syncImeFocus(), 0);
     });
     window.addEventListener("mouseup", (e) => {
       this.buttons = e.buttons;
@@ -637,6 +687,8 @@ export class WinMgr {
     window.addEventListener("keyup", (e) => this.keysDown.delete(e.key));
     window.addEventListener("blur", () => this.keysDown.clear());
     window.addEventListener("keydown", (e) => {
+      // A key the input method takes (the composition's keys) stays with it.
+      if (this.ime && (e.isComposing || e.keyCode === 229)) return;
       if (this.inputBlocked) {
         e.preventDefault();
         return;
@@ -696,6 +748,7 @@ export class WinMgr {
   private textInput: HTMLInputElement | null = null;
   private textValue = "";
   private composing = false;
+  private ime: ImeListener | null = null;
 
   private bindTouch(): void {
     const c = this.canvas;
@@ -930,9 +983,15 @@ export class WinMgr {
     // 16px: no zoom on focus (iOS); off screen to the left, nothing shows.
     Object.assign(input.style, { position: "fixed", left: "-1000px", top: "0", width: "1px", height: "1px", opacity: "0", fontSize: "16px", border: "0", padding: "0" });
     input.addEventListener("input", () => this.onTextInput());
-    input.addEventListener("compositionstart", () => (this.composing = true));
+    input.addEventListener("compositionstart", () => {
+      this.composing = true;
+      this.placeImeInput();
+      this.ime?.start();
+    });
+    input.addEventListener("compositionupdate", (e) => this.ime?.update(e.data));
     input.addEventListener("compositionend", () => {
       this.composing = false;
+      this.ime?.end();
       this.onTextInput();
     });
     input.addEventListener("focus", () => this.fit());
@@ -963,6 +1022,8 @@ export class WinMgr {
   private onTextInput(): void {
     const input = this.textInput;
     if (!input) return;
+    // With the IME window the text being composed is not typed yet: the result comes at its end.
+    if (this.ime && this.composing) return;
     const v = input.value;
     const old = this.textValue;
     let same = 0;

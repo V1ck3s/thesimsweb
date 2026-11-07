@@ -431,6 +431,14 @@ export class WinPeople extends TSWin implements TrackingPanel {
     // Vertical flow from (0xca - w, 8), 0x12 px apart; (0xca - w, 0xf), 0x19 px apart in a double-byte UI.
     const [traitsTop, traitsStep] = DOUBLE_BYTE_UI ? [0xf, 0x19] : [8, 0x12];
     flowLayout(this.personalities, 0xca - this.personalities[0]!.getW(), traitsTop, 0, traitsStep, 0, this.personalities[0]!.getW());
+    if (UI_LANGUAGE === LANG_THAI) {
+      // Thai: the last trait moves 0x19 px right, takes its own text rect, then 3 px more.
+      const last = this.personalities[this.personalities.length - 1]!;
+      const a = last.area;
+      last.setArea(a.left + 0x19, a.top, a.right, a.bottom);
+      last.setTextRect(last.computeTextRect());
+      last.moveTo(last.area.left + 3, last.area.top);
+    }
 
     // Zodiac sign (cWinPeople+0x1bc): a captioned button without image, font lbl_105BA2E8[12].
     this.zodiacBtn.font = await fonts.acquire(12);

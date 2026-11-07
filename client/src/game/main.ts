@@ -8,6 +8,7 @@
  * instead (each exports `mount(ctx, mgr)`).
  */
 
+import { installImeComposition } from "./ui/imecomposition.js";
 import { modeMusicEvent, soundPlayer, UI_SOURCE } from "./audio/index.js";
 import { installLotAudio } from "./audio/lotaudio.js";
 import { resetSaveFileCache } from "../engine/assets.js";
@@ -359,6 +360,8 @@ async function boot(): Promise<void> {
   // cSimsApp::SetupWinCtrlMgr: the cursor files (UIGraphics/shared/cursors).
   await loadCursors();
   mgr.setDefaultTTWindow(await DefaultTTWindow.create(ctx.fonts));
+  // cSimsApp's window setup: the Japanese, Chinese and Korean games' IME composition window.
+  await installImeComposition(ctx, mgr);
   const tick = (): void => {
     ctx.state.update();
     requestAnimationFrame(tick);

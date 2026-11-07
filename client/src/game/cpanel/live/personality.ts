@@ -15,7 +15,7 @@
  *  - TSPaint: value = personData[trait] / 100 clamped to 0..10, kPersBkg at
  *    (slotX, slotY), then the first 4 * value columns of the bars at
  *    (slotX, slotY - 1); text drawn with DrawTextPara style 2 (right aligned)
- *    in the button's hilite color.
+ *    in the button's hilite color, 3 px higher in Thai (0x13).
  *
  * The popup client (+0x194, UpdateClient) shows the level name and
  * description of the person's value (below 3, below 8, else the top level)
@@ -25,6 +25,7 @@
 import type { GameContext } from "../../context.js";
 import { personGender } from "../../cpstate.js";
 import { ALIGN_RIGHT, type FfnFont } from "../../res/ffn.js";
+import { UI_LANGUAGE } from "../../res/uires.js";
 import { BTN_TOGGLE_ON_DOWN, TSWinBtn } from "../../ui/btn.js";
 import { hiliteColor } from "../../ui/syscolors.js";
 import type { Gfx, Rect } from "../../ui/tswin.js";
@@ -178,7 +179,9 @@ export class WinPersonality extends TSWinBtn {
     const font = this.captionFont;
     if (font) {
       const r = this.textRect;
-      const rect = { left: g.ox + r.left, top: g.oy + r.top, right: g.ox + r.right, bottom: g.oy + r.bottom };
+      // Thai draws the text 3 px higher.
+      const dy = UI_LANGUAGE === 0x13 ? -3 : 0;
+      const rect = { left: g.ox + r.left, top: g.oy + r.top + dy, right: g.ox + r.right, bottom: g.oy + r.bottom + dy };
       font.drawTextPara(g.ctx, rect, this.caption, ALIGN_RIGHT, hiliteColor(this.cols, this.fixedCol >= 0 ? this.fixedCol : this.frameColumn()));
     }
   }

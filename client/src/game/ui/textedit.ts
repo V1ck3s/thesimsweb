@@ -50,7 +50,12 @@
  *    Simplified Chinese games a character the double-byte font cannot draw
  *    is entered as "-" (IsUnsupportedDBLeadByte, res/dbfont.ts). The
  *    original collects a double-byte character's two WM_CHAR bytes before
- *    inserting it; the browser hands whole characters;
+ *    inserting it; the browser hands whole characters (an input method's
+ *    result too: ui/imecomposition.ts, ui/winmgr.ts);
+ *  - the capacity (+0x138, SetCapacity) counts bytes of the game's code
+ *    page: InsertText cuts what does not fit before a character that would
+ *    end on a lead byte; ReplaceTextA (overwrite mode) removes as many
+ *    characters as the new text has bytes;
  *  - undo / redo: cTEState snapshots (text, cursor, scroll, top line,
  *    selection) on two stacks. Inserting or replacing snapshots first unless
  *    it is one character other than a space typed within 3 s of the last
@@ -76,6 +81,7 @@
  * Not ported: the double-byte font paths.
  */
 
+import { encodeGameText } from "../res/codepage.js";
 import { dbInputChar } from "../res/dbfont.js";
 import type { FfnFont } from "../res/ffn.js";
 import { TSWinBtn } from "./btn.js";
@@ -137,6 +143,27 @@ interface TEState {
   selEnd: number;
 }
 
+/** A string's length in the game's bytes (its code page; a double-byte character counts 2). */
+function byteLength(s: string): number {
+  return encodeGameText(s).length;
+}
+
+/**
+ * The code units of the longest prefix of `s` whose whole characters fit in
+ * `bytes` of the game's code page (InsertText: a cut that would end on a lead
+ * byte leaves that character out).
+ */
+function fitBytes(s: string, bytes: number): number {
+  let used = 0;
+  let i = 0;
+  for (const ch of s) {
+    used += byteLength(ch);
+    if (used > bytes) break;
+    i += ch.length;
+  }
+  return i;
+}
+
 let clipboardInstalled = false;
 
 /** The browser clipboard events go to the focused edit (cTSWin::DoMessage, Ctrl+X / C / V). */
@@ -169,6 +196,7 @@ export class TSWinTextEdit2 extends TSWin {
   caretColor = "#ffffff";
   frameColor = "#ffffff";
   transparent = false;
+  /** +0x138: the most bytes the text holds (bytes of the game's code page, as the original counts). */
   capacity = 0x7fffffff;
   /** +0x124 */
   linesAllowed = 0;
@@ -322,7 +350,7 @@ export class TSWinTextEdit2 extends TSWin {
   /** cTSWinTextEdit2::SetText(text, false, false): the cursor at the end, nothing selected. */
   setText(text: string): void {
     if (!this.inited) {
-      this.text = text.slice(0, this.capacity);
+      this.text = text.slice(0, fitBytes(text, this.capacity));
       this.ensureInit();
       return;
     }
@@ -728,7 +756,7 @@ export class TSWinTextEdit2 extends TSWin {
     if (!this.ensureInit() || this.mode === MODE_READ_ONLY) return false;
     let ok = true;
     let snap = this.insertionSnapshots(s);
-    if (this.capacity <= this.text.length) snap = false;
+    if (this.capacity <= byteLength(this.text)) snap = false;
     if (snap) this.takeUndoRedoSnapshot();
     if (this.selStart < this.selEnd) {
       this.text = this.text.slice(0, this.selStart) + this.text.slice(this.selEnd);
@@ -736,8 +764,9 @@ export class TSWinTextEdit2 extends TSWin {
       if (this.selStart < this.cursor) this.cursor = this.selStart;
     }
     let n = s.length;
-    if (this.capacity < n + this.text.length) {
-      n = this.capacity - this.text.length;
+    const room = this.capacity - byteLength(this.text);
+    if (room < byteLength(s)) {
+      n = fitBytes(s, room);
       ok = false;
     }
     if (n > 0) this.text = this.text.slice(0, this.cursor) + s.slice(0, n) + this.text.slice(this.cursor);
@@ -747,7 +776,7 @@ export class TSWinTextEdit2 extends TSWin {
     return ok;
   }
 
-  /** cTSWinTextEdit2::ReplaceTextA: overwrites as many characters as it inserts. */
+  /** cTSWinTextEdit2::ReplaceTextA: overwrites as many characters as the new text has bytes. */
   private replaceText(s: string): boolean {
     if (this.insertionSnapshots(s)) this.takeUndoRedoSnapshot();
     if (this.selStart < this.selEnd) {
@@ -760,9 +789,21 @@ export class TSWinTextEdit2 extends TSWin {
       this.moveCursor(0, false, false);
       return true;
     }
-    if (this.cursor + n <= this.text.length) this.text = this.text.slice(0, this.cursor) + this.text.slice(this.cursor + n);
-    let ok = n + this.text.length <= this.capacity;
-    if (!ok) n = this.capacity - this.text.length;
+    // As many characters go as the new text has bytes (a double-byte character
+    // typed over single-byte ones takes two of them), when that many bytes follow.
+    const bytes = byteLength(s);
+    if (byteLength(this.text.slice(0, this.cursor)) + bytes <= byteLength(this.text)) {
+      let end = this.cursor;
+      let k = 0;
+      for (const ch of this.text.slice(this.cursor)) {
+        if (k++ === bytes) break;
+        end += ch.length;
+      }
+      this.text = this.text.slice(0, this.cursor) + this.text.slice(end);
+    }
+    const room = this.capacity - byteLength(this.text);
+    let ok = bytes <= room;
+    if (!ok) n = fitBytes(s, room);
     if (n < 1) ok = false;
     else {
       this.text = this.text.slice(0, this.cursor) + s.slice(0, n) + this.text.slice(this.cursor);

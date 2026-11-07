@@ -14,13 +14,14 @@
  *    view's frames), FitWindowToText, then the text goes 3 pixels inside the
  *    view's right edge, its bottom 3 pixels above the view's bottom when the
  *    control panel is collapsed (CP mode 1), else at the control panel's top
- *    + 0x2f (3 pixels above the panel's top with a double byte UI, which this
- *    port does not have).
+ *    + 0x2f (its bottom 3 pixels above the panel's top with a double byte UI,
+ *    whose panel is 50 pixels taller there).
  * The frame frequency here counts the browser's animation frames over the
  * last second (the game paints once per animation frame).
  */
 
 import type { GameContext } from "../context.js";
+import { DOUBLE_BYTE_UI } from "../res/uires.js";
 import { rgb } from "./syscolors.js";
 import { TSWinText, WTF_MULTILINE } from "./text.js";
 import type { TSWin } from "./tswin.js";
@@ -100,7 +101,12 @@ export class FrameRateText extends TSWinText {
     const h = this.getH();
     const left = this.view.getW() - w - EDGE;
     const panel = this.panel();
-    const top = this.cpMode() === 0 && panel ? panel.area.top + PANEL_TOP_OFFSET - h : this.view.getH() - EDGE - h;
+    const top =
+      this.cpMode() === 0 && panel
+        ? DOUBLE_BYTE_UI
+          ? panel.area.top - EDGE - h
+          : panel.area.top + PANEL_TOP_OFFSET - h
+        : this.view.getH() - EDGE - h;
     this.setArea(left, top, left + w, top + h);
   }
 }

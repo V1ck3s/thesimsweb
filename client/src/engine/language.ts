@@ -8,12 +8,11 @@
  *
  * Offered: the languages whose strings are complete and whose fonts the port
  * draws: the Windows-1252 ones, Polish (Windows-1250, its own VariableSans;
- * res/codepage.ts, res/fonts.ts), and Japanese, Simplified and Traditional
- * Chinese and Korean (res/dbfont.ts, with the control panel's double-byte
- * layouts, isDoubleByteUI below). Hebrew and Russian have a third of the
- * strings (the rest falls back to US English), and this install's Russian
- * VariableSans only holds ASCII. Thai (res/thaifont.ts) draws (see
- * PREVIEW_LANGUAGES).
+ * res/codepage.ts, res/fonts.ts), Japanese, Simplified and Traditional
+ * Chinese and Korean (res/dbfont.ts) and Thai (Windows-874, res/thaifont.ts),
+ * the last five with the control panel's double-byte layouts (isDoubleByteUI
+ * below). Hebrew and Russian have a third of the strings (the rest falls back
+ * to US English), and this install's Russian VariableSans only holds ASCII.
  */
 
 export interface UiLanguage {
@@ -41,15 +40,12 @@ export const LANGUAGES: readonly UiLanguage[] = [
   { code: 16, name: "Polski", tags: ["pl"] },
   { code: 17, name: "简体中文", tags: ["zh-cn", "zh-sg", "zh-hans", "zh"] },
   { code: 18, name: "繁體中文", tags: ["zh-tw", "zh-hk", "zh-mo", "zh-hant"] },
+  { code: 19, name: "ภาษาไทย", tags: ["th"] },
   { code: 20, name: "한국어", tags: ["ko"] },
 ];
 
-/**
- * Languages the port draws (res/thaifont.ts) but does not offer yet (Thai:
- * its double-byte layouts are ported with the others but not verified).
- * `?lang=<code>` still selects them.
- */
-export const PREVIEW_LANGUAGES: readonly number[] = [19];
+/** Languages `?lang=<code>` selects without offering them (none at the moment). */
+export const PREVIEW_LANGUAGES: readonly number[] = [];
 
 /**
  * CPState::IsDoubleByteUI: Japanese, the Chinese languages, Thai and Korean

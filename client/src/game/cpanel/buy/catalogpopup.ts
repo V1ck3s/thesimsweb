@@ -10,7 +10,7 @@
  * BuildMyBuffer:
  *  - the object picture (DrawDefaultObjectIcon) in (0, 0)-(0xa8, height);
  *  - at (0xb2, 0xc): name, " -- ", price, in the title font;
- *  - below, the description wrapped to width - 0xc, then the non-zero
+ *  - below, the description wrapped to width - 0xc (- 0x11 in Thai), then the non-zero
  *    ratings (motives as "%d" formats, skills as their name), one per line,
  *    then the age/species restriction and the group activity line, these in
  *    green (InitSimsColors lbl_105BA7C4);
@@ -189,7 +189,8 @@ export class WinCatalogPopup extends TSWin {
     const serial = ++this.serial;
     const text = this.textFont!;
     const title = this.titleFont!;
-    const right = WIDTH - MARGIN;
+    // The text's right edge: width - 0xc (width - 0x11 in Thai).
+    const right = WIDTH - (UI_LANGUAGE === 0x13 ? 0x11 : MARGIN);
     const textW = right - TEXT_X;
     const lines = (s: string): number => (s ? text.calculateNumberOfLines(s, textW) : 0);
 

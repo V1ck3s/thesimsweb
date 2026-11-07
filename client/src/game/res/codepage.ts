@@ -47,6 +47,13 @@ export function codePageLabel(lang: number): string {
 /** Double-byte code pages: a lead byte and a trail byte per character outside ASCII. */
 const DOUBLE_BYTE = new Set(["shift_jis", "gbk", "big5", "euc-kr"]);
 
+/** WHATWG Big5 encoder: the code points encoded with their last Big5 pointer. */
+const BIG5_LAST = new Set(["\u2550", "\u255e", "\u2561", "\u256a", "\u5341", "\u5345"]);
+
+function range(from: number, to: number): number[] {
+  return Array.from({ length: to - from }, (_, i) => from + i);
+}
+
 class CodePage {
   readonly decoder: TextDecoder;
   readonly doubleByte: boolean;
@@ -72,13 +79,22 @@ class CodePage {
     }
     if (this.doubleByte) {
       const two = new Uint8Array(2);
-      for (let lead = 0x81; lead < 0xff; lead++) {
+      // The browsers' Big5 decoder also maps the HKSCS rows (lead bytes 0x81..0xA0), where some
+      // characters of Big5 proper appear again (響 at 0x90F1 besides 0xC554): their glyphs are
+      // not in font16b5, so Big5 proper goes first (as the WHATWG Big5 encoder does), and the six
+      // characters that Big5 itself has twice take their last code, as that encoder does too.
+      const big5 = this.label === "big5";
+      const leads = big5 ? [...range(0xa1, 0xff), ...range(0x81, 0xa1)] : range(0x81, 0xff);
+      for (const lead of leads) {
         two[0] = lead;
         for (let trail = 0x40; trail < 0xff; trail++) {
           two[1] = trail;
           const s = this.decoder.decode(two);
           // A pair the code page does not map decodes to two characters (or a replacement one).
-          if (s.length === 1) add(s, (lead << 8) | trail);
+          if (s.length === 1) {
+            if (big5 && lead >= 0xa1 && BIG5_LAST.has(s)) t.delete(s);
+            add(s, (lead << 8) | trail);
+          }
         }
       }
     }

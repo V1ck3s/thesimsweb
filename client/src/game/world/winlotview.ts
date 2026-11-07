@@ -10,6 +10,7 @@
  * around an anchor (OnMouseDownR / OnMouseMove / OnMouseUpR).
  */
 
+import { PauseText } from "../ui/pausetext.js";
 import { computeCameraFrame, drawCameraFrame, takeAsyncSnapshot, takeCameraSnapshot } from "../cpanel/camsnapshot.js";
 import { characterAfterTool, characterBeforeTool, modeKeyDown, viewKeyDown } from "../cpanel/modekeys.js";
 import { WinCPanel } from "../cpanel/cpanel.js";
@@ -352,6 +353,8 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
     st.setZoom(v.scale);
     st.setRotation(world.rotation);
     st.setLevel(v.level);
+    // cDDDSimsView::Init's pause text (+0x178 / +0x17c).
+    await PauseText.attach(this.ctx, this);
     return true;
   }
 

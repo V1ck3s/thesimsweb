@@ -492,7 +492,7 @@ export class WinSubpanelJob extends TSWin {
       btn.showWindow();
       btn.caption = this.friendsFormat.replace(/%d/, String(needed));
       btn.imageX = (btn.font?.stringWidth(btn.caption) ?? 0) + 3;
-      btn.imageY = 2;
+      btn.imageY = UI_LANGUAGE === 0x13 ? 9 : 2; // (9 in Thai)
     } else {
       btn.hideWindow();
     }
