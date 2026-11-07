@@ -44,48 +44,42 @@ async function writeCache(cacheFile: string, assetsDir: string, files: ManifestE
   }
 }
 
+/**
+ * The folder's files, recursively, in listing order. Each folder's entries are
+ * looked at in parallel: one after another, the stats of a game folder and
+ * its saves on a Windows drive under WSL (/mnt/c) took over a minute.
+ */
 async function walk(dir: string, base = dir): Promise<ManifestEntry[]> {
-  const entries: ManifestEntry[] = [];
   let listing;
   try {
     listing = await readdir(dir, { withFileTypes: true });
   } catch {
-    return entries;
+    return [];
   }
-  for (const ent of listing) {
-    const full = join(dir, ent.name);
-    let isDir = ent.isDirectory();
-    let isFile = ent.isFile();
-    if (ent.isSymbolicLink()) {
-      // Resolve the symlink target so users can `ln -s "/mnt/c/.../Les Sims" server/assets/Sims`
-      // and have the manifest find the install.
-      try {
-        const s = await stat(full);
+  const parts = await Promise.all(
+    listing.map(async (ent): Promise<ManifestEntry[]> => {
+      const full = join(dir, ent.name);
+      let isDir = ent.isDirectory();
+      let isFile = ent.isFile();
+      if (ent.isSymbolicLink()) {
+        // Resolve the symlink target so users can `ln -s "/mnt/c/.../Les Sims" server/assets/Sims`
+        // and have the manifest find the install.
+        const s = await stat(full).catch(() => null);
+        if (!s) return [];
         isDir = s.isDirectory();
         isFile = s.isFile();
-      } catch {
-        continue;
       }
-    }
-    if (isDir) {
-      entries.push(...(await walk(full, base)));
-    } else if (isFile) {
+      if (isDir) return walk(full, base);
+      if (!isFile) return [];
       // A file can vanish between readdir and stat (a save being replaced): skip it.
       const s = await stat(full).catch(() => null);
-      if (!s) continue;
+      if (!s) return [];
       const rel = relative(base, full).split("\\").join("/");
-      entries.push({
-        path: rel,
-        size: s.size,
-        kind: rel.toLowerCase().endsWith(".far")
-          ? "far"
-          : rel.toLowerCase().endsWith(".iff")
-            ? "iff"
-            : "other",
-      });
-    }
-  }
-  return entries;
+      const lower = rel.toLowerCase();
+      return [{ path: rel, size: s.size, kind: lower.endsWith(".far") ? "far" : lower.endsWith(".iff") ? "iff" : "other" }];
+    }),
+  );
+  return parts.flat();
 }
 
 export async function registerManifestRoute(

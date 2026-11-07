@@ -1,6 +1,6 @@
 import { existsSync } from "node:fs";
 import { mkdir, readdir, rm, stat, writeFile } from "node:fs/promises";
-import { dirname, resolve, sep } from "node:path";
+import { dirname, join, resolve, sep } from "node:path";
 import type { FastifyInstance } from "fastify";
 import fastifyStatic from "@fastify/static";
 
@@ -86,18 +86,30 @@ export async function registerUserDataRoute(
    */
   app.get("/api/saves", async () => {
     const files: Array<{ path: string; size: number; mtime: number }> = [];
-    let names: string[] = [];
-    try {
-      names = await readdir(resolve(overlayDir, "Sims"), { recursive: true });
-    } catch {
-      // no saves yet
-    }
-    for (const name of names) {
-      const rel = `Sims/${name.split(sep).join("/")}`;
-      if (!WRITABLE.test(rel)) continue;
-      const s = await stat(resolve(overlayDir, rel)).catch(() => null);
-      if (s?.isFile()) files.push({ path: rel, size: s.size, mtime: s.mtimeMs });
-    }
+    // The folder walk and the stats run in parallel: one after another (and
+    // readdir's own `recursive`) they took minutes for a few thousand files on
+    // a Windows drive under WSL (/mnt/c); this takes about a second.
+    const rels: string[] = [];
+    const walk = async (dir: string, rel: string): Promise<void> => {
+      const entries = await readdir(dir, { withFileTypes: true }).catch(() => []);
+      await Promise.all(
+        entries.map(async (e) => {
+          const r = `${rel}/${e.name}`;
+          if (e.isDirectory()) await walk(join(dir, e.name), r);
+          else if (e.isFile() && WRITABLE.test(r)) rels.push(r);
+        }),
+      );
+    };
+    await walk(resolve(overlayDir, "Sims"), "Sims");
+    let next = 0;
+    const worker = async (): Promise<void> => {
+      while (next < rels.length) {
+        const rel = rels[next++]!;
+        const s = await stat(resolve(overlayDir, rel)).catch(() => null);
+        if (s?.isFile()) files.push({ path: rel, size: s.size, mtime: s.mtimeMs });
+      }
+    };
+    await Promise.all(Array.from({ length: 64 }, worker));
     files.sort((a, b) => a.path.localeCompare(b.path));
     return { files };
   });
