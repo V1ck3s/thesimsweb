@@ -302,8 +302,9 @@ The language comes from the landing page or `?lang=` (`engine/language.ts`, `UI_
   WebM (VP8 + Vorbis) into `server/data/movies/` when the server has ffmpeg (`FFMPEG`, else
   `ffmpeg` on the PATH), else answers 404 and the client skips the movie (also with
   GAME_FILES=client and offline). A browser refusing sound before any input plays it muted.
-- cDDDSimsView's pause text (`ui/pausetext.ts`): "Paused" (not translated, Mac lbl_105BC0E4 +
-  0x102, Windows s_Paused), size 48 (12 in Finnish), red (0xff, 0, 0), centred at the top of the
+- cDDDSimsView's pause text (`ui/pausetext.ts`): the constructor's "Paused" (Mac lbl_105BC0E4 +
+  0x102, Windows s_Paused) and 3000 ms are replaced in Init by UIText STR# 148 entries 0 and 1
+  (the language's text, "Pause" in French; the time), size 48 (12 in Finnish), red (0xff, 0, 0), centred at the top of the
   view (y 0x14), with the +0x17c child window over it. CPState::SetMode shows it for 3 s
   (+0x188 = 3000) entering build, buy and camera modes, for good in options, and in live mode
   while paused (CPState::Pause: shown or hidden, no timer). Verified: shown 1 s after entering
