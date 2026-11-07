@@ -444,7 +444,8 @@ Left:
   expansion archive, and the tail of the object folder scan (`world/objectfolder.ts` `pool`, one
   OBJD read per Downloads / expansion file as the last workers finish). Merging those means
   issuing them in parallel in their callers (prefetching the tables, the sound files), not a
-  batcher change; a timer window would only add latency to every chain.
+  batcher change; a timer window would only add latency to every chain. (Done in the fourth
+  pass below.)
 - **Portraits off the main thread**: rendering them in a worker (OffscreenCanvas) needs the
   person's skeleton, suits, meshes and textures (VBAnimMgr) and the UI template bitmaps (UIRes)
   loaded in the worker; not done. They cannot simply be deferred: the control panel shows the
@@ -452,3 +453,66 @@ Left:
   cache since the second pass).
 - In a warm load, ours that remain are small and spread out (WASM glue building JS objects with
   `Reflect.set` ~40 ms, audio `parseHot` / `listDir`, the floors' plugin scan, BMP decoding).
+
+## Lot load, fourth pass: serial read chains (2026-11-07)
+
+Method as in the third pass (Chrome SwiftShader, Vite dev server, House01 of a copy of UserData,
+CDP CPU profile from navigation; cold = empty browser profile, left 30 s so its IndexedDB writes
+land, warm = the same profile again), plus a second end point: the lot view joining the screen
+(`window.game.lotView.parent`, after the control panel's init; `lotView.sim` is set before it).
+Old files served by a second Vite from a snapshot of the tree; before and after alternated, three
+runs each (machine load 3..6).
+
+| | before | after |
+|---|---|---|
+| cold: wall clock to `lotView.sim` | 10.1..10.3 s | 7.8..7.9 s |
+| cold: wall clock to the lot on screen | 13.6..13.8 s | 9.3..9.4 s |
+| cold: main thread busy to `lotView.sim` | 2.59..2.64 s | 2.41..2.42 s |
+| cold: main thread busy to the lot on screen | 3.47..3.52 s | 3.00..3.04 s |
+| cold: POST /api/ranges to `lotView.sim` (single-range) | 240..243 (154..155) | 112..123 (32..48) |
+| cold: POST /api/ranges to the lot on screen (single-range) | 491..495 (271..275) | 131..141 (32..48) |
+| warm: to `lotView.sim` / on screen | 4.6..4.7 s / 5.1..5.2 s | 4.5..4.7 s / 4.9..5.1 s |
+| warm: main thread busy (sim / screen) | 1.03..1.11 s / 1.49..1.59 s | 1.01..1.12 s / 1.47..1.58 s |
+
+Found with the initiator stacks of the single-range posts (CDP `Network.requestWillBeSent` with
+async stacks). The callers now ask for their reads together and use the results in the same
+order as before; the loaded state is the same (digests of the sound tables, UI resource ids, the
+VitaBoy indexes, both object folder indexes, the buy catalog, the careers / fame / zoning tables
+compared between old and new, cold and warm):
+
+- **VitaBoy indexes** (`sims/vbanimmgr.ts` `create`): the `.ndx` of each expansion archive and of
+  every Downloads archive (~80) were read one after another (~1.3 s of 10 ms round trips, on the
+  portrait path of the lot load); now one batch, applied in site order.
+- **Control panel bitmaps** (`res/uires.ts` `prefetchTable`, `game/main.ts` `enterLot`): the
+  control panel's windows load their bitmaps one by one (interest, view control, camera, people,
+  options panels: ~70 dependent reads, ~2 s between `lotView.sim` and the lot on screen). The
+  bytes of every bitmap `Res_CPanel.RT` maps (in the UI language) are now read when `enterLot`
+  starts, during the lot load, and handed to the first read of each; the rest is dropped when
+  `enterLot` ends. A cold load reads up to ~3 MB more than it uses (once: then IndexedDB).
+- **UI resource tables** (`res/uires.ts` `read`): the four `.RT` tables in one batch, then the
+  `.h` headers they include in a second, parsed in the old order (9 round trips to 2).
+- **Sound tables** (`audio/boxx.ts` `init`, `readDataDirectory`; `audio/fresh.ts` `init`'s
+  `read`): the `.hot` / `.HIT` / `.hsm` of the nine data folders and the four ambience scores in
+  one batch, registered folder by folder as before.
+- **FAR tables** (`engine/assets.ts` `readFarManifest`, `farTailGuess`): with the archive size
+  from the asset manifest, its last 1/256 (4..64 KiB) is read with the header; a manifest table
+  that fits (all but the dozen biggest archives) costs one round trip instead of two, a bigger one
+  two as before (the part before the guess, then the guess). At most ~1.5 MB more read for the
+  ~90 archives, once.
+- **Object folder scans** (`world/objectfolder.ts` `scannedObjds`): the start-up scan
+  (`ObjectFolder.get("UserData")`) and the lot's neighborhood scan read the same OBJD
+  ranges of the game's object files twice (cold, when the neighborhood is not UserData); the
+  OBJD chunks a scan read are now kept for the page (a copy, ~1 MB) and shared, the save files
+  (`Sims/UserData*`) excepted.
+- **Smaller ones**: the four placeholder selectors (`ObjectFolder.getPlaceholders`) together;
+  `Simulator.create` asks for LotZoning.iff, work.iff (careers, grades) and fame.iff (titles,
+  scoring: it was read twice) when it starts and uses them where it did.
+
+Left:
+
+- The buy catalog scan (`data/catalog.ts`, 64 files in flight, each reading its OBJDs one after
+  another) still runs ~25 s after a cold lot load in 64-range posts. More files in flight
+  (tried 512) pulled that work into the lot load (main thread busy +0.5 s) for little gain.
+- The remaining single-range posts are dependent by nature (a CMX, then its meshes, then their
+  textures for each portrait; a font, then its bitmap), or single files read at different times
+  (floors.iff, Sprites.iff).

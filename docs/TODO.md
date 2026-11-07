@@ -68,10 +68,10 @@ Interface / triches
 
 ## 5. Performance
 
-- **Chargement d'un lot** : à froid 2,65 s de thread principal, ~240 POST /api/ranges ; à chaud
-  1,1 s. Les POST restants viennent de lectures en chaîne (tables RT de `res/uires.ts`, triplets
-  .hot/.HIT/.hsm de l'audio, en-tête puis manifeste des FAR d'extension, fin du scan des objets) :
-  les lancer en parallèle. Portraits encore rendus sur le thread principal au premier chargement.
+- **Chargement d'un lot** : à froid, lot à l'écran en 9,3 s (13,7 avant les lectures en
+  parallèle), ~135 POST /api/ranges ; à chaud ~5 s. Restent : lectures dépendantes par nature
+  (CMX puis maillages puis textures), scan du catalogue d'achat ~25 s après un chargement à froid,
+  portraits rendus sur le thread principal au premier chargement.
 - **Mémoire** : `entryCache` borné, TryUnloadSkills / TryUnloadSuits / TryUnloadAll portés (le
   passage des costumes ne libère rien, comme l'original : horloge partagée avec les compétences).
 - **Pics de tick** : restent les recherches de route et l'interprétation des BHAV (travail de
