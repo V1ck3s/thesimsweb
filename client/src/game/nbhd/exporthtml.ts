@@ -75,7 +75,7 @@
  * overlay has none: StockGFX / FamilyGFX exist once a file is in them).
  */
 
-import { fetchManifest, readAssetFile, readFarManifest } from "../../engine/assets.js";
+import { fetchManifest, readAssetFile } from "../../engine/assets.js";
 import { MUSIC, soundPlayer } from "../audio/index.js";
 import { computeZodiacSign, getZodiacName } from "../cas/zodiac.js";
 import { personBitmap } from "../cas/personpictures.js";
@@ -833,123 +833,20 @@ function shortFilename(sel: ObjSelector): string {
   return dot < 0 ? name : name.slice(0, dot);
 }
 
-/** nRZHash::OneAtATime (signed chars). */
-function oneAtATime(s: string): number {
-  let h = 0;
-  for (let i = 0; i < s.length; i++) {
-    const c = ((s.charCodeAt(i) & 0xff) << 24) >> 24;
-    h = Math.imul((h + c) >>> 0, 0x401) >>> 0;
-    h = (h ^ (h >>> 6)) >>> 0;
-  }
-  const t = Math.imul(h, 9) >>> 0;
-  return Math.imul((t ^ (t >>> 11)) >>> 0, 0x8001) >>> 0;
-}
-
-/** The bucket counts of the Windows build's hash_map (the SGI prime list from 53). */
-const HASH_PRIMES = [53, 97, 193, 389, 769, 1543, 3079, 6151, 12289, 24593, 49157, 98317, 196613];
-
-/**
- * The iteration order of one CTGFileManager directory image: a
- * hash_map<CTGString, sDirectoryEntry, CTGStringHash> keyed by the lowercase
- * names, made with the default 100 buckets (193), a new node at the front of
- * its bucket, a rehash to the next prime once the count passes the bucket
- * count (moving each chain's nodes, from its head, to the front of their new
- * bucket); FindFirstFile / FindNextFile walk the buckets in order. `keys` are
- * in insertion order (ScanDirectory: the disk's order; AddFARToMapping adds a
- * FAR's entries to its folder's image when the FAR is met).
- */
-function directoryImageOrder(keys: readonly string[]): string[] {
-  let n = 193;
-  let buckets: string[][] = Array.from({ length: n }, () => []);
-  let count = 0;
-  for (const k of keys) {
-    if (buckets[oneAtATime(k) % n]!.includes(k)) continue;
-    if (count + 1 > n) {
-      const nn = HASH_PRIMES.find((p) => p >= count + 1) ?? n;
-      const nb: string[][] = Array.from({ length: nn }, () => []);
-      for (const chain of buckets) for (const x of chain) nb[oneAtATime(x) % nn]!.unshift(x);
-      buckets = nb;
-      n = nn;
-    }
-    buckets[oneAtATime(k) % n]!.unshift(k);
-    count++;
-  }
-  return buckets.flat();
-}
-
-/** One entry of a scanned folder: a sub-folder, a loose file, or an entry of one of its FARs. */
-interface ScanEntry {
-  key: string;
-  dir: string | null;
-  file: string | null;
-}
-
-let scanRanks: Promise<Map<string, number>> | null = null;
-
-/**
- * ObjectFolder::ScanForNewFiles' AddSelector order of the user object and
- * download files (GameData/UserObjects, then Downloads: the folders the .pub
- * lists come from): FolderScanner::ScanFileManager walks each folder's
- * directory image depth first, AddAllSelectors on every .iff. Lowercase file
- * key ("Downloads/X/X.far|Y.iff") -> rank. Our ObjectFolder scans in name
- * order instead, so the .pub sorts by this.
- */
-function folderScanRanks(): Promise<Map<string, number>> {
-  scanRanks ??= (async () => {
-    const files = (await fetchManifest()).files.filter((f) => f.path.startsWith("Sims/")).map((f) => f.path.slice("Sims/".length));
-    const ranks = new Map<string, number>();
-    const upper = (a: string, b: string): number => (a.toUpperCase() < b.toUpperCase() ? -1 : a.toUpperCase() > b.toUpperCase() ? 1 : 0);
-    const walk = async (dir: string): Promise<void> => {
-      const lower = dir.toLowerCase();
-      const names = new Map<string, string>();
-      for (const p of files) {
-        if (!p.toLowerCase().startsWith(lower)) continue;
-        const rest = p.slice(dir.length);
-        const slash = rest.indexOf("/");
-        const name = slash < 0 ? rest : `${rest.slice(0, slash)}/`;
-        names.set(name.toLowerCase(), name);
-      }
-      const keys: string[] = [];
-      const entries = new Map<string, ScanEntry>();
-      for (const name of [...names.values()].sort(upper)) {
-        const isDir = name.endsWith("/");
-        const key = (isDir ? name.slice(0, -1) : name).toLowerCase();
-        keys.push(key);
-        entries.set(key, { key, dir: isDir ? `${dir}${name}` : null, file: isDir ? null : `${dir}${name}` });
-        if (isDir || !key.endsWith(".far")) continue;
-        const far = await readFarManifest(`Sims/${dir}${name}`).catch(() => []);
-        for (const e of far) {
-          const k = e.filename.toLowerCase();
-          keys.push(k);
-          if (!entries.has(k)) entries.set(k, { key: k, dir: null, file: `${dir}${name}|${e.filename}` });
-        }
-      }
-      for (const k of directoryImageOrder(keys)) {
-        const e = entries.get(k)!;
-        if (e.dir) await walk(e.dir);
-        else if (e.file && k.endsWith(".iff")) ranks.set(e.file.toLowerCase(), ranks.size);
-      }
-    };
-    await walk(await resolveDir("GameData/UserObjects/"));
-    await walk(await resolveDir("Downloads/"));
-    return ranks;
-  })();
-  return scanRanks;
-}
-
 /**
  * The house's files for the .pub: the floor and wall usage maps, and the
  * folder's selectors from the download folders (+0xb4 source 2 or 3) that
- * have a save type index (+0xa4: the house holds instances), in folder order.
+ * have a save type index (+0xa4: the house holds instances), in folder order
+ * (the selector index: ObjectFolder::ScanForNewFiles walks
+ * GameData/UserObjects then Downloads in the directory images' order,
+ * data/dirimage.ts).
  */
-async function houseFiles(house: ResFile, module: ObjectModule): Promise<HouseFiles> {
+function houseFiles(house: ResFile, module: ObjectModule): HouseFiles {
   const used = new Map<number, ObjSelector>();
   for (const o of module.objects.values()) used.set(o.selector.index, o.selector);
-  const ranks = await folderScanRanks();
-  const rank = (s: ObjSelector): number => ranks.get(s.fileKey.toLowerCase()) ?? Number.MAX_SAFE_INTEGER;
   const objects = [...used.values()]
     .filter((s) => s.source === 2 || s.source === 3)
-    .sort((a, b) => rank(a) - rank(b) || a.index - b.index)
+    .sort((a, b) => a.index - b.index)
     // The Windows build's file names come out lowercase (its .pub files list
     // "sccontroller" for SCController.iff).
     .map((s) => shortFilename(s).toLowerCase());
@@ -1827,7 +1724,7 @@ async function exportHTML(ctx: GameContext, store: NeighborhoodStore, fam: Expor
   const gfx = `${out}${FAMILY_GFX}`;
   await generateFamilyMemberJpegs(fam, nbhdDir, gfx);
   await makeHousePictures(gfx, lot, nb, edition);
-  return makePublishingInfo(nbhdDir, `${site}${SIM_LANE}/`, `${name}_${f.id}`, tags, values, f, edition, await houseFiles(lot.house, lot.module));
+  return makePublishingInfo(nbhdDir, `${site}${SIM_LANE}/`, `${name}_${f.id}`, tags, values, f, edition, houseFiles(lot.house, lot.module));
 }
 
 /** ExportHTMLHomelessFamilies(templates, web pages, family) */

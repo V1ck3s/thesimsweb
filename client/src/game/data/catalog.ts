@@ -40,6 +40,7 @@ import { engine } from "../../engine/wasm.js";
 import { decodeImage } from "../res/bmp.js";
 import { UI_LANGUAGE } from "../res/uires.js";
 import { ResFile } from "../world/iffres.js";
+import { ObjectFolder } from "../world/objectfolder.js";
 import { gameTextDecoder } from "../res/codepage.js";
 
 /** OBJD field indices (in-memory offset in the comment). */
@@ -485,8 +486,13 @@ let catalog: Promise<Catalog> | null = null;
 
 /** CPState::GetCatalog: built once, on first use. */
 export function loadCatalog(): Promise<Catalog> {
-  catalog ??= scanAll().then((records) => {
-    const products = records.map((r) => new Product(r));
+  catalog ??= Promise.all([scanAll(), ObjectFolder.get()]).then(([records, folder]) => {
+    // Catalog::Init walks the folder's selectors (GetNthSelector) in AddSelector
+    // order, which the sort then reorders by price and name; the order of the
+    // ties is that walk's here (a stable sort over it).
+    const rank = (r: ProductRecord): number => folder.scanRank(r.file.far ? `${r.file.far}|${r.file.entry}` : r.file.entry, r.objdId) ?? Number.MAX_SAFE_INTEGER;
+    const ranked = records.map((r, i) => ({ r, i, k: rank(r) })).sort((a, b) => a.k - b.k || a.i - b.i);
+    const products = ranked.map(({ r }) => new Product(r));
     if (products.length > 2) products.sort(catalogSortPred);
     return new Catalog(products);
   });

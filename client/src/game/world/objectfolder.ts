@@ -16,7 +16,12 @@
  * bit 1, 2, 4, 8, 0x10 Deluxe, 0x20, 0x40, 0x80; here: present in the asset
  * manifest). Windows maps a folder's FAR archives as directory images
  * (CTGFileManager::AddDirectoryImage), so the .iff entries of every .far
- * under a source folder are scanned like loose .iff files.
+ * under a source folder are scanned like loose .iff files. Within a folder
+ * the files come in FolderScanner::ScanFileManager's order (the folder's
+ * directory image, a hash map of the lowercase names: data/dirimage.ts), not
+ * in name order; AddAllSelectors adds a file's OBJDs in resource order. The
+ * selector index (+0xa8, AddSelector order) follows that order; saved lots do
+ * not depend on it (the "objt" table maps its own save indexes to GUIDs).
  *
  * AddSelector skips disabled definitions (OBJD +0x20, ObjectFolder::Init is
  * called with "skip disabled" = 1). Reading every OBJD of ~1400 files is what
@@ -31,6 +36,7 @@
 import { assetFetch, type FarEntryInfo, fetchManifest, RangeBatcher, readFarManifest } from "../../engine/assets.js";
 import { idbGetFarManifest, idbPutFarManifest } from "../../engine/idb.js";
 import { engine } from "../../engine/wasm.js";
+import { scanFolder } from "../data/dirimage.js";
 import { parseIff } from "../data/iff.js";
 import { ResFile } from "./iffres.js";
 import { getSubIndex, ObjDefinition, ObjSelector, type SelectorFolder } from "./objselector.js";
@@ -93,7 +99,8 @@ interface FolderIndex {
   keyGuids: number[];
 }
 
-const INDEX_VERSION = 2;
+/** 3: files and definitions in the original's folder order (data/dirimage.ts), was name order. */
+const INDEX_VERSION = 3;
 const IFF_HEADER = 64;
 const CHUNK_HEADER = 76;
 const OBJD_SIZE = 0xd8;
@@ -389,7 +396,12 @@ export class ObjectFolder implements SelectorFolder {
     return b ?? null;
   }
 
-  /** ScanForNewFiles over the asset manifest. */
+  /**
+   * ScanForNewFiles over the asset manifest: each source folder in turn,
+   * walked in the original's order (FolderScanner::ScanFileManager, see
+   * data/dirimage.ts), so that the selector order (+0xa8), the "later file
+   * wins a GUID" rule and GetKeyGUID's "last one" follow the Windows build.
+   */
   private static async scan(userDir: string): Promise<FolderIndex> {
     const manifest = await fetchManifest();
     const all = manifest.files
@@ -400,36 +412,34 @@ export class ObjectFolder implements SelectorFolder {
     PACK_DIRS.forEach((d, i) => {
       if (all.some((f) => f.lower.startsWith(d.toLowerCase()))) packs |= 1 << i;
     });
-    const scanned: Array<{ rel: string; lower: string; size: number; flag: number }> = [];
-    for (const s of sources(userDir)) {
-      if (s.pack === -1 ? packs <= 3 : s.pack !== 0 && !(packs & s.pack)) continue;
+    const active = sources(userDir).filter((s) => (s.pack === -1 ? packs > 3 : s.pack === 0 || (packs & s.pack) !== 0));
+    // The cache stamp: the object files of the scanned folders (any name or size change rescans).
+    const stampFiles: string[] = [];
+    for (const s of active) {
       const dir = s.dir.toLowerCase();
       for (const f of all) {
-        if (f.lower.startsWith(dir) && (f.lower.endsWith(".iff") || f.lower.endsWith(".far"))) scanned.push({ ...f, flag: s.flag });
+        if (f.lower.startsWith(dir) && (f.lower.endsWith(".iff") || f.lower.endsWith(".far"))) stampFiles.push(`${f.rel}:${f.size}`);
       }
     }
-    const stamp = stampOf(scanned.map((f) => `${f.rel}:${f.size}`).join("|"));
+    const stamp = stampOf(stampFiles.join("|"));
     const cacheKey = `@ObjectFolder/${userDir}`;
     const cached = (await idbGetFarManifest(cacheKey)) as FolderIndex | null;
     // (an index cached before keyGuids existed is scanned again)
     if (cached && cached.stamp === stamp && Array.isArray(cached.keyGuids)) return cached;
 
     // Every IFF (loose or inside a FAR) in scan order, then their OBJDs in parallel.
+    const sizes = new Map(all.map((f) => [f.rel, f.size]));
+    const paths = all.map((f) => f.rel);
+    const readFar = (far: string): Promise<FarEntryInfo[]> => readFarManifest(`Sims/${far}`);
     const iffs: Array<{ key: string; path: string; base: number; size: number; flag: number }> = [];
-    // The FAR entry tables are fetched together; the list keeps the scan order.
-    const farEntries = await Promise.all(
-      scanned.map((f) => (f.lower.endsWith(".iff") ? null : readFarManifest(`Sims/${f.rel}`).catch(() => null))),
-    );
-    for (const [k, f] of scanned.entries()) {
-      if (f.lower.endsWith(".iff")) {
-        iffs.push({ key: f.rel, path: `Sims/${f.rel}`, base: 0, size: f.size, flag: f.flag });
-        continue;
-      }
-      const entries: FarEntryInfo[] | null = farEntries[k] ?? null;
-      if (!entries) continue;
-      for (const e of entries) {
-        if (!e.filename.toLowerCase().endsWith(".iff")) continue;
-        iffs.push({ key: `${f.rel}|${e.filename}`, path: `Sims/${f.rel}`, base: e.offset, size: e.sizeCompressed, flag: f.flag });
+    // (the folders' FAR entry tables are fetched together; the list keeps the scan order)
+    const walks = await Promise.all(active.map((s) => scanFolder(paths, s.dir, readFar)));
+    for (const [i, s] of active.entries()) {
+      for (const f of walks[i]!) {
+        // ObjFolderScanner::ProcessOneFile: the ".iff" files.
+        if (!f.key.toLowerCase().endsWith(".iff")) continue;
+        if (f.entry) iffs.push({ key: f.key, path: `Sims/${f.file}`, base: f.entry.offset, size: f.entry.sizeCompressed, flag: s.flag });
+        else iffs.push({ key: f.key, path: `Sims/${f.file}`, base: 0, size: sizes.get(f.file) ?? 0, flag: s.flag });
       }
     }
     const found = new Map<string, Array<{ id: number; objd: Uint8Array }>>();
@@ -512,6 +522,45 @@ export class ObjectFolder implements SelectorFolder {
       this.selectors.delete(objd.guid);
     }
     return this.openFile(fi);
+  }
+
+  private scanRanks: Map<string, number> | null = null;
+
+  /**
+   * The AddSelector position (the selector index, +0xa8) of OBJD `objdId` of
+   * object file `fileKey` (a loose path or "<far>|<entry>", any case), or
+   * null when the scan kept no such definition (Catalog::Init walks the
+   * folder's selectors in this order).
+   */
+  scanRank(fileKey: string, objdId: number): number | null {
+    if (!this.scanRanks) {
+      this.scanRanks = new Map();
+      for (const [i, [, file, id]] of this.index.objds.entries()) {
+        const key = `${this.index.files[file]![0].toLowerCase()}#${id}`;
+        if (!this.scanRanks.has(key)) this.scanRanks.set(key, i);
+      }
+    }
+    return this.scanRanks.get(`${fileKey.toLowerCase()}#${objdId}`) ?? null;
+  }
+
+  /**
+   * A character file the game edits through its selector (PersonFinder::
+   * SetName / SetDescription's CatalogResource::Save, BodyStrings::Save,
+   * GenerateBitmaps' BMP_s, Neighborhood::ImportFamily's strings) changes
+   * the selector in memory; the port rewrites the file instead, so the
+   * file's selectors are built again from it on their next use. `rel` as
+   * given to newFileAdded (or as the scan listed it).
+   */
+  fileChanged(rel: string): void {
+    const lower = rel.toLowerCase();
+    const files = [...this.index.files, ...this.addedFiles];
+    let fi = files.length - 1;
+    while (fi >= 0 && files[fi]![0].toLowerCase() !== lower) fi--;
+    if (fi < 0) return;
+    const key = files[fi]![0];
+    for (const sel of this.byFile.get(key) ?? []) if (this.selectors.get(sel.guid) === sel) this.selectors.delete(sel.guid);
+    this.byFile.delete(key);
+    this.opened.delete(fi);
   }
 
   /** The source folder flag & 3 of a GUID's definition (ObjSelector +0xb4 bits 2-3), without opening its file; null when unknown. */
