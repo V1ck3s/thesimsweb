@@ -639,6 +639,19 @@ not caught in TickAllObjects (none in the original either).
   through `personLooks` (sims/personlook.ts, set by PersonSim): redressed when person data
   8 / 21 / 22 / 23 or the accessories change. "dress" / "undress" animation props and primitive 6
   fill `PersonAnimator.accessories`; Cleanup's ResetSuits clears them and the gestures.
+- **VBAnimMgr::TryUnloadSuits / TryUnloadAll** (`sims/vbanimmgr.ts`): CPState::SetMode entering
+  Live mode calls TryUnloadAll(lbl_105BA230) (port: `enterLiveModeHooks` in cpstate.ts, registered
+  by `sim/personanim.ts` with `skillClock.now`), which is TryUnloadSkills(now) then
+  TryUnloadSuits(now). Suit::CanUnload: reference count 1 (no dressing: `Suit.activeDressings`,
+  counted by `VitaBoy.dress` / `undress`), a dressing has unbound (+0x2c, stamped by
+  Suit::UnbindDressing when the last one goes) and lbl_105BA0DC = 640 s (Globs, 128 MB or more)
+  since. Envelope<Suit>::Unload drops the suit, its CMX file's parsed form and the meshes of its
+  skins no loaded suit still names (textures are DDDTextureMgr's and stay). Both passes share the
+  one gate lbl_105BADF0 + lbl_105BADEC (0, never written) < now, and the skills pass has just left
+  lbl_105BADF0 at now or above, so the suits pass returns at once: in the shipped game (Mac
+  103865D0, Windows 005a0410 -> 005a042b, 005a047e) no suit is ever unloaded, and the port keeps
+  that. Checked on House 1: 281 suits / 16 meshes before and after entering Live mode; with the gate
+  forced open and the clock 700 s later, 2 suits (the unbound ones) and 2 meshes would go.
 - VBAnimMgr also scans the loose skin folders Sims.exe names (ExpansionShared/Skins, Deluxe/Skins,
   ExpansionPack2..7/Skins): House Party's costume trunk textures are only in ExpansionPack2/Skins.
 - **cWinVitaBtnSolo**: the outfit is UpdateOutfitAndHands on the copy's person data (costumes in

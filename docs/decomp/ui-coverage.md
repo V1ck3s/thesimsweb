@@ -47,7 +47,7 @@ or developer-only tools).
 | Class | What it is | Status | Where |
 |---|---|---|---|
 | cWinCPanel | Control panel container, panel switching | ported | `cpanel/cpanel.ts` |
-| cWinViewControl | Clock, speed, zoom, rotation, levels, funds, help button, friend count dialog (STR# 162), SetMode with BoboVision (panel fade) | ported (BlitPrivateBufferToParent: the gadget is drawn into its private buffer, UniversalBack.tga as GIMEXFactory decodes it: premultiplied colors divided back by the alpha, the transparent color where the alpha is 0. BoboVision: Compose through the TGA's alpha with AlphaBlend_565_P5's weights, alpha < 8 keeps the lot view, > 0xf7 copies, else level alpha >> 3 at (8 * level + 3.5) / 255, the mean of the InitAlphaZSpriteBlit table; the table's 5-bit rounding is not reproduced. Without BoboVision: the color-keyed Blt, hard edges, children drawn over alpha-0 pixels shown. The mode patch is drawn after, unmasked). The panel's fade-in end (message 0x1b) sets the viewport height in WinLotView.doAsyncShowHideMessage (cDDDSimsView::DoMessage) | `cpanel/viewcontrol.ts` |
+| cWinViewControl | Clock, speed, zoom, rotation, levels, funds, help button, friend count dialog (STR# 162), SetMode with BoboVision (panel fade) | ported (BlitPrivateBufferToParent: the gadget is drawn into its private buffer, UniversalBack.tga as GIMEXFactory decodes it: premultiplied colors divided back by the alpha, the transparent color where the alpha is 0. BoboVision: Compose through the TGA's alpha with AlphaBlend_565_565_P5, exact: alpha < 8 keeps the lot view, > 0xf7 copies, else each 5-bit channel (the 565 green's top 5 bits) is InitAlphaZSpriteBlit's table entry [alpha >> 3][src][dst] (built as the original does, single-precision fmadds / fctiwz, per level on first use), expanded with zero low bits; the parent's pixels under the gadget only (220 x 183) are read back through a CPU-side canvas, blended and put back (`compose565`; ~0.7 ms more per frame than the canvas blend, Chrome SwiftShader). Without BoboVision: the color-keyed Blt, hard edges, children drawn over alpha-0 pixels shown. The mode patch is drawn after, unmasked). The panel's fade-in end (message 0x1b) sets the viewport height in WinLotView.doAsyncShowHideMessage (cDDDSimsView::DoMessage) | `cpanel/viewcontrol.ts` |
 | cWinBudgetDlg, cWinBudgetRow | Budget window (funds click on a residential lot): 3-day / today income and expenses by type, funds, net worth, days | ported (object / architecture values recomputed at opening) | `cpanel/budgetdlg.ts` |
 | cWinHelp | Help window (view control "?" button): topic list and text | ported | `cpanel/help.ts` |
 | cWinPeople | Live panel: portraits (person popup, TrackPerson / StopTracking, UpdateAtWorkStatus), mood, page buttons | ported (its two pie menus are the lot's) | `cpanel/people.ts`, `world/tracking.ts` |
@@ -146,9 +146,11 @@ The language comes from the landing page or `?lang=` (`engine/language.ts`, `UI_
   labels (BuildPlayButtons table: 8 in 3, 5, 9; 7 in 4, 14, 16; 9 otherwise); the other
   per-language tables (Job, Fame, Pet skills, House positions, Help, Catalog popup, Options y
   offsets) only differ for 0x0f..0x14: the double-byte ones are ported with the double-byte
-  layouts below (with their Thai entries); of the Thai-only branches, Help and Options are
-  ported, cWinCatalogPopup's text width (w - 0x11), cWinLivePopup's text right edge without
-  a right pane (0x212) and cWinPersonality's 0x13 case are not.
+  layouts below (with their Thai entries); the Thai-only branches are all ported: Help,
+  Options, cWinCatalogPopup's text width (w - 0x11), cWinLivePopup's text right edge without
+  a right pane (0x212), cWinPersonality's caption 3 px higher, cWinPeople::Init's last
+  personality trait (0x19 px right, its own text rect, then 3 px right), cWinSubpanelJob's
+  friends button image at y 9 (2 otherwise), the Job summary table lbl_105BC598.
 - cWinPeople::Init: the personality page title takes font table entry 9 in German and 10 in
   Dutch (11 otherwise); cWinScrapbook::Init: the page buttons take entry +0x30 (12) in Dutch
   instead of +0x38 (14). Both ported.
@@ -170,8 +172,13 @@ The language comes from the landing page or `?lang=` (`engine/language.ts`, `UI_
   line height (height of "A"), baseline (line + 1), shadow (black pixel below and below-right
   of each pixel), word wrapping with the kinsoku tables (no line start / no line end lists
   dumped from Sims.exe) are the original's. No browser font is used.
+  Big5 (`res/codepage.ts`): the browsers' Big5 decoder also maps the HKSCS rows (lead bytes
+  0x81..0xA0), where some Big5 characters appear a second time (響 at 0x90F1 besides 0xC554);
+  the encoding table took the first code, outside font16b5's table (glyph 0: the blank in the
+  hunger popup's "會影響他們"); Big5 proper now goes first (as the WHATWG encoder), and
+  U+2550, 255E, 2561, 256A, 5341, 5345 take their last code, as that encoder does.
   Offered: the 1252 languages, Polish (verified in the neighborhood dialogs), Japanese (日本語),
-  Simplified Chinese (简体中文), Traditional Chinese (繁體中文) and Korean (한국어), the last four
+  Simplified Chinese (简体中文), Traditional Chinese (繁體中文), Korean (한국어) and Thai (ภาษาไทย), the last five
   with the double-byte layouts below (verified in a lot of a throwaway neighborhood: every
   Live page, the description popup, Buy and Build modes, the catalog, the neighborhood, the
   family dialogs and Create-a-Sim).
@@ -210,12 +217,19 @@ The language comes from the landing page or `?lang=` (`engine/language.ts`, `UI_
     popup is listed right behind the control panel (as cWinPeople::Init adds it while
     cWinCPanel is being added), which hides that band.
   - cWinPictureInPicture / cDDDSimsView::SetMiniUI: the window 0x9b above the panel instead of
-    0x69 (SetMiniUI itself is not ported); cDDDSimsView's frame rate text (not ported).
+    0x69 (SetMiniUI itself, called by CPState when the camera mode's mini UI changes, only
+    re-places that window and the edge scroller: not ported); cDDDSimsView's frame rate text
+    (`ui/framerate.ts`): its bottom 3 px above the panel's top (Simulate, asm 1020E3CC).
   - CWinMagicBook: the description in font table entry 10. Create-a-Sim: name capacity 16 in
-    Japanese (cWinDesignCharacter::Init), counted in characters (see below).
+    Japanese (cWinDesignCharacter::Init), counted in bytes (see below).
   - Object and UI string sets read through `sim/behavior.ts` (parseStringSet: careers, fame,
     object dialogs, catalog strings) are decoded with the game's code page, not Windows-1252.
-  Not verified: Thai (19, below) and the 800 x 600 page widths. Thai (19) draws with cTSDBFontThai (`res/thaifont.ts`): font20th.fon (256 glyphs of
+  Not verified: the 800 x 600 page widths. The original picks its resolution at start (the
+  largest mode up to 0x1400 x 0x5a0 the display offers, 1024 x 768 with `-r1024x768`), so
+  800 x 600 only happens on a small display; the port always runs at 1024 x 768
+  (`SCREEN_W` / `SCREEN_H` in `main.ts`): the 800-wide branches (people, gifts, interests,
+  relationships, live popup) are kept but never taken, and the double-byte layouts at that
+  size cannot be checked. Thai (19) draws with cTSDBFontThai (`res/thaifont.ts`): font20th.fon (256 glyphs of
   Windows-874, 12 x 20, 1 bit, a blank row above and below: line height 22, baseline 23),
   every instance whatever the size and style; text drawn by clusters (FUN_0060964c: a
   consonant with its vowel above or below and its tone mark, the tables DAT_006d98bc width,
@@ -223,15 +237,38 @@ The language comes from the landing page or `?lang=` (`engine/language.ts`, `UI_
   tail dropped over a vowel below (glyph 0x9F), ro / fo fa / fo fan move a vowel below 3 px
   right), one pixel after each cluster but spaces, "_" invisible and without width, no drop
   shadow (TSDrawText ignores the shadow flag; flag 4 underlines), word wrapping at space,
-  hyphen, no-break space and "_" only (FUN_0060aefc). Verified with `?lang=19`: neighborhood
-  lot popup, Live mode motives, a tooltip, the catalog popup's wrapped description. Reachable
-  with `?lang=` only (`PREVIEW_LANGUAGES`): IsDoubleByteUI is true for Thai, so the same
-  window layouts as for the CJK languages apply. Not offered: Hebrew and Russian (a third of
-  the UIText strings; this install's Russian VariableSans has only the 96 ASCII glyphs; Hebrew
-  draws VariableSans, no right-to-left). Not ported for Thai: the selection highlight and the
-  clip rectangle of TSDrawText (as for cTSDBFontKorean), any Thai-specific typing rule of the
-  edit fields. Edit fields count characters where the original counts bytes (capacity of a
-  double-byte name).
+  hyphen, no-break space and "_" only (FUN_0060aefc). Verified: neighborhood lot popup, Live
+  mode motives, personality page and its popup, fame and relationship pages, a tooltip, the
+  catalog popup's wrapped description. IsDoubleByteUI is true for Thai, so the same window
+  layouts as for the CJK languages apply. Not ported for Thai: the selection highlight and
+  the clip rectangle of TSDrawText (as for cTSDBFontKorean); the Thai game has no IME windows
+  and no Thai rule in cTSWinTextEdit2.
+  Not offered: Hebrew (12) and Russian (13). The original takes them from the command line
+  (-lHebrew, -lRussian) and has no code of its own for them (no right-to-left, no 0xc / 0xd
+  branch); but this install has no Hebrew or Russian text at all: their STR# / CTSS entries
+  (383 of UIText's 988, 388 in Live.iff, 104 in Behavior.iff...) are copies of the US English
+  strings, the others missing; the Russian VariableSans (Fonts\Russian) has only the ASCII
+  glyphs. Such a game is the US English one with a few glyphs missing (™), so it is not
+  offered.
+- Text fields (`ui/textedit.ts`): the capacity counts the bytes of the game's code page, as
+  cTSWinTextEdit2::InsertText / ReplaceTextA do (Japanese name capacity 16 = 8 kanji);
+  InsertText keeps whole characters; overwriting removes as many characters as the new text
+  has bytes. Verified: capacity 5, "日本語" -> "日本", "ab" + "日本" -> "ab日".
+- IME (Windows build: the window procedure FUN_005f1654, cTSWinIMEComposition,
+  cTSWinIMECandidate; `ui/imecomposition.ts`, `ui/winmgr.ts`): the Japanese, Chinese and
+  Korean games (0xf, 0x11, 0x12, 0x14) create a composition window (system font 0, at (0x14,
+  0x14), 200 x char height + 8 while composing, black with a (0xa6, 0xb4, 0xb4) inside, the
+  target clause on white) and a candidate list window (at (0x14, char height + 0x1e), numbered
+  "1:" in Chinese). The result string is posted as WM_CHAR bytes to the focused field. Port:
+  while a text field has the focus (desktop too), a hidden input holds the browser focus;
+  compositionstart / update / end show, fill and hide the composition window; the composed
+  text reaches the field at compositionend as typed characters (through TSOnCharacter, so the
+  IsUnsupportedDBLeadByte "-" rule and the byte capacity apply); keys the input method takes
+  (isComposing, keyCode 229) stay with it. The browser gives neither the clause attributes
+  (no white target clause) nor the candidates: its own candidate list opens at the hidden
+  input, placed where the original's list window is. Verified with Chrome's
+  Input.imeSetComposition: "にほん" shown in the window, "日本" committed once, then typed
+  letters.
 - UI TGAs (nsSMResFac::LoadBuffer -> GIMEXFactory, Windows 0x4dea..): a 32-bit TGA gets an
   alpha buffer; with the flag lbl_105BA7EC / DAT_006c8c2c set (always, but around
   cMagiclandSprites::LoadClouds' three fog TGAs) alpha 0 takes the transparent colour, 0xff
@@ -265,5 +302,9 @@ The language comes from the landing page or `?lang=` (`engine/language.ts`, `UI_
   WebM (VP8 + Vorbis) into `server/data/movies/` when the server has ffmpeg (`FFMPEG`, else
   `ffmpeg` on the PATH), else answers 404 and the client skips the movie (also with
   GAME_FILES=client and offline). A browser refusing sound before any input plays it muted.
-- Not ported: cDDDSimsView::Init's centred overlay text (+0x178, size 48, 12 in Finnish),
-  whose window is not ported.
+- cDDDSimsView's pause text (`ui/pausetext.ts`): "Paused" (not translated, Mac lbl_105BC0E4 +
+  0x102, Windows s_Paused), size 48 (12 in Finnish), red (0xff, 0, 0), centred at the top of the
+  view (y 0x14), with the +0x17c child window over it. CPState::SetMode shows it for 3 s
+  (+0x188 = 3000) entering build, buy and camera modes, for good in options, and in live mode
+  while paused (CPState::Pause: shown or hidden, no timer). Verified: shown 1 s after entering
+  buy mode, gone at 4.5 s, not shown in live mode unpaused.

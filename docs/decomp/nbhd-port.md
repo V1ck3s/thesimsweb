@@ -517,10 +517,28 @@ Files: `client/src/game/screens/frozen.ts` (new), `world/moveout.ts` (new), `mai
   bucket counts 1..5000 only 193 orders both shipped .pub files (Charmant_13: sccontroller, walllite,
   blacktrash, plants2, ccphoneplugin, unsnacker; Fez_7: sccontroller, hsupersculpture, flowerscoped x2,
   sculpturesdeluxe2, ccphoneplugin, unsnacker), and the full simulation over the game's Downloads gives
-  both lists. `houseFiles` sorts by that rank (`folderScanRanks`), then by OBJD order within a file. Our
-  ObjectFolder (world/objectfolder.ts) still indexes in name order: the selector index (+0xa8), the
-  "later file overrides a GUID" rule and other folder walks follow name order, not this one. (The Mac
-  build's Metrowerks hash_table starts at 0 buckets and grows x4 to the next odd prime: other orders.)
+  both lists. (The Mac build's Metrowerks hash_table starts at 0 buckets and grows x4 to the next odd
+  prime: other orders.)
+  ObjectFolder in that order (2026-11-07): the order code lives in `data/dirimage.ts` (`oneAtATime`,
+  `directoryImageOrder`, `scanFolder` = ScanFileManager's depth-first walk, FAR entries added to their
+  folder's image after the FAR, the folder's FARs listed together first). `ObjectFolder.scan`
+  (world/objectfolder.ts) walks every source folder with it (index version 3: the cached name-order
+  indexes are rebuilt once), so the selector index (+0xa8 = AddSelector order), the "later file
+  overrides a GUID" rule (AddSelector's find_or_insert), GetKeyGUID's "last type 13" and the sim
+  objects' order follow the Windows build. `houseFiles` now just sorts by the selector index (the
+  separate `folderScanRanks` walk is gone). Catalog::Init walks GetNthSelector in that order before its
+  price / name sort: `loadCatalog` (data/catalog.ts) orders the records by `ObjectFolder.scanRank`
+  first, so ties (same price, same name) come in folder order (a stable sort; the original's
+  std::customsort is not stable and is not reproduced). Saves are unaffected: PrepareForModuleSave numbers
+  the used selectors 1.. in folder order and the "objt" table maps those numbers to GUIDs, which
+  PrepareForModuleLoad resolves by GUID; only the order of the records in newly written objt tables
+  changes. Checked offline against the game's files: the two .pub lists come out in walk order, no GUID is
+  defined by two enabled OBJDs in different files in this install (so no override winner changes), and
+  one name collides inside an image (ExpansionShared/work.iff, loose and inside ExpansionShared.far, no
+  OBJD): the loose file is kept, as before; which one CTGFileManager keeps is not checked.
+  Not moved to this order: the other FolderScanner walks (the floor / wall plugin scan in world/floors.ts,
+  TextureScanner in sims/vbanimmgr.ts, MatchFolderScanner) and `listDir` (template folders, NTFS order);
+  `scanFolder` is there for them.
 - Pictures (SaveGimex = the browser's JPEG encoder, `convertToBlob("image/jpeg", quality / 100)`: same size and
   quality setting, other bytes):
   - family<n>_face.jpg: PersonFinder::GetWebPictureBuffer (BMP_ 2007, or rendered), quality 100;

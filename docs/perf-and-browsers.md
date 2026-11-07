@@ -298,6 +298,14 @@ by (type, constructor) with retainer paths for the new nodes.
   an unloaded skill keeps its own copy. Measured (dev server, Chrome SwiftShader, UserData copy, four
   lots one after the other, 60 s at speed 3 each): 809 skills / 623 with keyframes after lot 1, 753 /
   567 once lot 1's skills passed 160 s unused; heap after a forced GC 61 → 66 → 70 → 73 MB.
+- **Animation suits**: VBAnimMgr::TryUnloadSuits / TryUnloadAll are ported (`sims/vbanimmgr.ts`,
+  called on entering Live mode), but as in the original the suits pass shares the skills pass's
+  clock gate and never runs, so no memory is freed (see docs/decomp/sim-port.md).
+- **BoboVision gadget blend** (`cpanel/viewcontrol.ts`, `compose565`): the exact AlphaBlend_565_565_P5
+  table blend reads back the parent's 220 x 183 pixels under the view control gadget every frame it
+  is plotted. Measured (Chrome SwiftShader, House 1, 10 s live): WinViewControl.plot 0.58 ms mean
+  with the old canvas blend at the table's mean weights, 1.24 ms with the exact blend (max 4.2 ms);
+  0.28..0.33 ms without BoboVision.
 - **Route searches**: the original's XRoute::FindPath runs its whole search in one call (budget goals x
   area + 50 steps, at most 1000; no per-tick routing budget anywhere in the shipped code), so there is
   nothing to spread over ticks faithfully. 900 searches recorded on House01 (240 s, speed 3) replay in
@@ -384,3 +392,63 @@ Left: IndexedDB gets deserialize on the main thread (warm load 0.25..0.4 s; read
 worker would move it, at the price of a copy back or a transfer per entry); the cold load still makes
 ~290 `/api/ranges` posts (each task's reads are one post; a short delay before flushing would merge
 more of them, at a latency cost); portraits are still rendered on the first load of a person.
+
+## Lot load, third pass (2026-11-07)
+
+Method as in the second pass (Chrome SwiftShader, Vite dev server, a copy of UserData, House01, CDP
+CPU profile of the main thread from navigation to `window.game.lotView.sim`; cold = empty browser
+profile, warm = the same profile again). Before and after were run alternately, three times each,
+with the old files served from a snapshot of the same tree (machine load ~5).
+
+| | before | after |
+|---|---|---|
+| cold: main thread busy | 2.97..3.08 s | 2.63..2.68 s |
+| cold: POST /api/ranges (of which single-range) | 286..291 (209..218) | 235..247 (152..167) |
+| cold: wall clock to the lot view | 10.1..10.8 s | 10.7..11.1 s |
+| cold: portrait rendering (`renderPortraits`, inclusive) | 250..266 ms | 180..203 ms |
+| warm: main thread busy | 1.57..1.61 s | 1.06..1.14 s |
+| warm: `engine/idb.ts` self time | 229..245 ms | 14..16 ms |
+
+What changed (behaviour unchanged):
+
+- **IndexedDB gets in the worker** (`engine/idb.ts` `queueGet`, `readGets`; `engine/idbworker.ts`):
+  the gets batched per task are read by the cache's worker (the one that already wrote the puts),
+  which answers each batch with one message, the values' buffers transferred: the main thread no
+  longer deserializes the FAR entries, files and ranges it reads (the 0.23..0.25 s of
+  `req.onsuccess` in a warm load). Every get of a batch now answers in the same task, so the misses
+  of a cold load ask the range batcher together (fewer, larger `/api/ranges` posts). Without
+  workers the batch is read on the main thread as before. FAR manifest puts (`idbPutFarManifest`)
+  go through the same batched worker puts instead of one main-thread transaction each.
+- **One copy per range read** (`engine/assets.ts` `RangeBatcher(copies)`, `readAssetRangeBatched`'s
+  `persist`): the shared batcher copies each range out of the `/api/ranges` response for its
+  reader, and the reads to be kept in IndexedDB (FAR entries, small files, cached ranges) hand
+  their view of the response to the put queue, which transfers the response buffer to the worker
+  (the worker stores each view's own bytes: `ownBytes`). Before, each such read was copied twice on
+  the main thread (once for the reader, once for the put). The put batch's transfer list is a Set
+  (it was an O(n²) `includes` over ~2500 buffers).
+- **FAR entry lookup by name** (`assets.ts` `entryByName`): `readFarEntry` searched the archive's
+  manifest with two `toLowerCase` per entry for each of ~2000 reads; a per-manifest map is made once.
+- **Portrait rendering** (`cas/portraits.ts`): `quantize` masks the channels (`& 0xf8 / 0xfc / 0xf8`,
+  what expand565 of the 565 color gives) instead of building a 3-element array per pixel, and
+  `scaleBitmap` uses precomputed taps and direct array reads instead of closures; the output is
+  bit-identical (checked on random images against the old code). What remains of the ~0.2 s is
+  mostly `readPixels` waiting for the (software) GPU: 12 head renders per person.
+
+Left:
+
+- **Range posts**: of the ~240 cold posts, ~150 still carry one range, but they are spaced
+  20..40 ms apart: they are chains of dependent reads, not reads that a flush window would catch
+  (only ~30 posts follow the previous within 5 ms). The single-range chains are the UI resource
+  tables (`res/uires.ts`: each `.RT` / `.h` read after the previous one is parsed), the sound
+  `.hot` / `.HIT` / `.hsm` triples per expansion (`audio/`), the FAR header-then-manifest of each
+  expansion archive, and the tail of the object folder scan (`world/objectfolder.ts` `pool`, one
+  OBJD read per Downloads / expansion file as the last workers finish). Merging those means
+  issuing them in parallel in their callers (prefetching the tables, the sound files), not a
+  batcher change; a timer window would only add latency to every chain.
+- **Portraits off the main thread**: rendering them in a worker (OffscreenCanvas) needs the
+  person's skeleton, suits, meshes and textures (VBAnimMgr) and the UI template bitmaps (UIRes)
+  loaded in the worker; not done. They cannot simply be deferred: the control panel shows the
+  family's faces (2002 / 2003) as soon as the lot is up. First load of a person only (IndexedDB
+  cache since the second pass).
+- In a warm load, ours that remain are small and spread out (WASM glue building JS objects with
+  `Reflect.set` ~40 ms, audio `parseHot` / `listDir`, the floors' plugin scan, BMP decoding).

@@ -123,9 +123,14 @@ The person on it:
   (instance, no params, tree) (vtable +0x3c), or ObjectModule::SetSimFlag
   (instance, 1, 0) without it. BeginDesignAPerson then sets cSimulator::SetSpeed
   (0.5 + lbl_105BC1F8[3] * [4] = 0.5 + 1000 * 0.7602339 = 760).
-- EndDesignAPerson kills the instance (its third argument, cWinDesignCharacter
-  +0x119, which the constructor sets to 0 and SetPerson's flag sets; the port
-  always kills).
+- EndDesignAPerson(person, save, kill, saveNeighborhood) kills the instance
+  when `kill` is set: Done and Shutdown pass cWinDesignCharacter +0x119 == 0
+  (+0x119 is SetPerson's second argument, 0 from the constructor;
+  cWinDesignFamily calls SetPerson(person, false), only the cSimsApp cheat that
+  designs the selected Sim on a lot passes true), Cancel always kills. Ported as
+  `endDesignAPerson(p, save, isNew, kill, saveNeighborhood)` and
+  `WinDesignCharacter.setPerson(p, keepInstance)`. BeginDesignAPerson's bool is
+  never read (r4 unused in the asm).
 - cWinVitaBtn::TSPaint draws the instance's SAnimator (cXPerson vtable +0x94)
   with VitaBoy::Render: the preview is what the simulator plays.
 - Neighborhood::AddNewCharacter calls ObjectFolder::NewFileAdded on the new
@@ -134,7 +139,10 @@ The person on it:
   this session (before, a file made this session was only indexed after a
   reload).
 
-Port: `CasLot.load` = House::LoadFile (loadLotModule) + KillAllObjects +
+Port: `CasLot.unloadHouse` (called by cWinNeighborhoodUL's init for the main
+screen, released by its shutdown; `CasSession.lot` uses it, or loads house 0
+itself when a design screen is opened without the neighborhood screen) =
+House::LoadFile (loadLotModule) + KillAllObjects +
 `Simulator.create(..., deferPostLoad)` + PostLoad, with a Placement whose hooks
 add new objects to the simulator (Init tree), and the simulator's world hooks
 (like the headless ones of world/moveout.ts). The edited body strings reach the
@@ -154,19 +162,73 @@ in "8334 do new adult left stand hips" / "8331 do new adult left stand" playing
 58 = 9, child skeleton), female (65 = 1), dark (60 = 2) follow; Cancel and Done
 kill the instance (the module ends empty).
 
+FindGoodLocation's start (GViewer::GetCentermostTile = HouseViewer::
+ComputeCentermostTile, the view tile at the middle of the viewer, level 1; the
+lot's center when off the interior; RotateCoords back by 4 - rotation): the
+viewer holds what HouseViewer::DoStream read from House00's HOUS 0 (zoom,
+SetOffsets of the scroll origin, rotation from version 9). `CasLot.centermostStart`
+builds a HouseViewer of the lot view's size (width x height - 100) that is never
+drawn and asks it; on the shipped House00 (zoom 1, origin (536, -238), rotation
+1) at 1024x768 that is tile (36, 28) of the 64-tile lot, not the center.
+
+The new person's neighbor: Neighborhood::AddNewCharacter adds it to the one
+in-memory Neighborhood, which the simulator reads. The port's simulator has its
+own NeighborhoodData; `CasLot.setNeighbor` / `removeNeighbor` mirror the
+NeighborhoodStore at MakeNewPerson (and when house 0 comes after it),
+EndDesignAPerson's SavePersistentData and DeletePerson, so the instance's
+LoadPersistentData finds its neighbor id (and the saved data when an already
+designed person is edited). EndDesignAPerson(save) with saveNeighborhood (the
+design dialogs) then runs Neighborhood::Save: the neighbor is in
+Neighborhood.iff from the person's Done on, before the family exists.
+
 Gaps:
-- House 0 is loaded on the first Create a Sim of a CasSession, not with the
-  neighborhood screen, and dropped with the session; the port's neighborhood
-  has no simulator running.
-- No view: FindGoodLocation starts at the lot's center (the original's view
-  centermost tile is whatever the house viewer was left at).
-- The simulator's neighborhood is read from disk; a character made this
-  session has its neighbor only in the NeighborhoodStore until the family is
-  saved, so the instance's LoadPersistentData finds none (neighbor id 0).
+- The simulator of house 0 runs only while a design dialog pumps it
+  (cSimsApp::Simulate runs it behind the neighborhood screen too; with every
+  object killed nothing happens there).
 - LoadHouse's Tutorial object (tutorial lots) is not made; not relevant to
   house 0 of the shipped neighborhoods.
 - The preview VitaBoy is not redressed from the instance's outfit / hands
   person data (cWinVitaBtn calls VitaBoy::Render, not SAnimator::Render).
+
+## Writing order of a character file ("user00177" names)
+
+A family member showed as "user00177" (data/neighborhood.ts `loadCharacter` falls
+back to the neighbor's short name when the character file has no CTSS). The
+original never leaves a member's file nameless where it can be read:
+
+- MakeNewPerson: StubObject::CreateNew writes the template copy (no CTSS) and
+  NewFileAdded; nothing lists the person until Done.
+- cWinDesignCharacter's Done: PersonFinder::SetName and SetDescription first
+  (CatalogResource::Save: CTSS and the OBJD label written at once), then
+  EndDesignAPerson: SavePersistentData + Neighborhood::Save, GenerateBitmaps
+  (BMP_s), the instance killed, EditPerson::End (BodyStrings::Save). The port
+  wrote everything in one go after generating the portraits, so a failure there
+  (or a reload) left the file nameless; it now follows the original
+  (`CasSession.setName` -> `saveCharacterName`, then `endDesignAPerson`; a
+  portrait failure is logged and the rest is still written).
+- Neighborhood::ImportFamily (the tutorial and every .FAM): in the member loop,
+  right after AddNewCharacter (NewFileAdded), the body strings (STR# 200) and
+  the catalog name / description (CTSS <id> + 2000, else the catalog resource
+  <id>) go into the new file, before Neighborhood::Save; GenerateBitmaps comes
+  after. The port saved the neighborhood first, then generated each member's
+  portraits and only then wrote its strings, so the neighborhood screen (which
+  reads the saved file while CheckForNewImports imports the tutorial in the
+  background) showed the file names meanwhile, for good if the page went away.
+  `importFamily` (nbhd/imports.ts) now writes the strings first and calls
+  `ObjectFolder.newFileAdded` (the imported members had no selector this
+  session before: the folder is built before the files exist).
+- The game edits the selector in memory (catalog, body strings); the port
+  rewrites the file, so `ObjectFolder.fileChanged` drops the file's selectors
+  to be rebuilt from it (before, a person made this session kept the template's
+  body strings and "*User%05d TemplatePerson" as catalog name on a lot entered
+  in the same session).
+
+The orphan files seen in the user's UserData (User00177 / User00178, 5011
+bytes, template only, no neighbor) are persons whose design was interrupted by a
+page reload (server log: PUT, then the page reloads); the game leaves the same
+files when it crashes. A web-only cause of the same thing: an overlay folder
+copied by hand while the server runs is not in the manifest until
+`/api/manifest?refresh`, so AddNewCharacter sees its User%05d.iff names as free.
 
 ## Portraits
 
