@@ -256,6 +256,8 @@ let loadedCatalog: Catalog | null = null;
 function loadCatalog(mgr?: VBAnimMgr): Promise<Catalog> {
   catalog ??= (async () => {
     const m = mgr ?? (await VBAnimMgr.get());
+    // The suits of the loose skin files, under their own names (LoadAllAnimations at startup).
+    await m.loadLooseAnimations();
     // EditPerson::GetSuit: every suit but the "suit-*" ones.
     const suits = m
       .suitNames()

@@ -182,14 +182,35 @@ export class VBAnimMgr {
   }
 
   /**
+   * VBAnimMgr::LoadAllAnimations' pass over the loose files of the skin
+   * folders: every text ".cmx" there (without a binary ".cmx.bcf") is read and
+   * its suits registered under the names written inside it. Downloaded skins
+   * often name their suit after the texture ("C603MA_Patch.cmx" holds suit
+   * "C603MAlgt_Patch"), so the file name is not the suit's name. Done once,
+   * before the suit table is walked (EditPerson::GetSuit).
+   */
+  loadLooseAnimations(): Promise<void> {
+    this.looseLoaded ??= (async () => {
+      const files: string[] = [];
+      for (const [n, src] of this.files) {
+        if ("path" in src && n.endsWith(".cmx") && !this.files.has(`${n}.bcf`)) files.push(n);
+      }
+      await Promise.all(files.map((f) => this.loadCmx(f).catch(() => null)));
+    })();
+    return this.looseLoaded;
+  }
+
+  private looseLoaded: Promise<void> | null = null;
+
+  /**
    * Names of the suits the manager knows (the animation manager's suit
    * table that EditPerson::GetSuit walks): every suit of the .ndx indexes
-   * plus the loose ".cmx" files of the skin folders (one suit each, named
-   * after the file). Lowercased.
+   * plus the suits read from the loose ".cmx" files (loadLooseAnimations
+   * first). Lowercased.
    */
   suitNames(): string[] {
     const out = new Set(this.suitIndex.keys());
-    for (const [n, src] of this.files) if ("path" in src && n.endsWith(".cmx")) out.add(n.slice(0, -4));
+    for (const k of this.suits.keys()) out.add(k);
     return [...out];
   }
 
@@ -207,10 +228,15 @@ export class VBAnimMgr {
     return this.skeletons.get(k) ?? null;
   }
 
-  /** VBAnimMgr::FindSuit. Suits missing from the indexes are looked up as "<name>.cmx". */
+  /**
+   * VBAnimMgr::FindSuit. Suits missing from the indexes are looked up as
+   * "<name>.cmx", then among the suits of every loose ".cmx" (the original
+   * has read them all at startup, LoadAllAnimations).
+   */
   async findSuit(name: string): Promise<Suit | null> {
     const k = name.toLowerCase();
     if (!this.suits.has(k)) await this.loadCmx(this.suitIndex.get(k) ?? `${k}.cmx`);
+    if (!this.suits.has(k) && !this.suitIndex.has(k)) await this.loadLooseAnimations();
     return this.suits.get(k) ?? null;
   }
 
