@@ -472,6 +472,13 @@ not caught in TickAllObjects (none in the original either).
   OnSelectionChange and GlobalDispatch 0xe4), then the popped pie (sub pie
   first) ends with −2; DoMenu returns true and liveClick makes the menu again
   for the new person on the same object (cObjPickerTool::TryClick's loop).
+- Clicks off the lot (cObjPickerTool::Click, Mac 0x1017cd70): unless the
+  last Float left a person (0x1d / 0x2a) or object (0x1e) cursor (tool
+  +0x68, `pickerCursor`), a click whose view tile is outside the world
+  bounds shrunk by one (RotatableWorld +0x70..+0x7c, the same test Float uses
+  for LiveObjectUnavail; `World.inInterior`) is dropped before TryClick, so
+  the grey area and the border row offer no Go Here (`liveClick`). Buy /
+  build tools have their own Click and are not affected.
 - Outside a pie (cObjPickerTool::OnChar, Live mode): Space advances and
   centers the view on the selected person (CenterHouseViewOnMe; here a jump,
   not smooth), N advances only.

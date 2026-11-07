@@ -1174,6 +1174,15 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
     const lot = this.lotObjects;
     const person = this.selectedPerson();
     if (!sim || !v || !p || !lot || !person) return;
+    // cObjPickerTool::Click (Mac 0x1017cd70): unless the last Float left a person
+    // (0x1d / 0x2a) or object (0x1e) cursor, a click whose view tile is on the
+    // lot's border row or beyond (outside RotatableWorld +0x70..+0x7c, shrunk by
+    // one) is dropped before TryClick: no Go Here off the lot.
+    const pc = this.pickerCursor;
+    if (pc !== 0x1d && pc !== 0x2a && pc !== 0x1e) {
+      const t = v.pointToWholeTile(x, y, v.level || 1);
+      if (!v.world.inInterior(t.x, t.y)) return;
+    }
     const people = this.people;
     // TryClick runs Float first: the picked person replaces PointToObjectID's object.
     const id = this.pickedPersonId(pointToObjectId(v, p, (r) => lot.renderer(r), x, y, v.level || 1, PickMode.Any, people ? (o) => people.screenRect(o, v) : null, sim.globals[G.modeFreeze]));
@@ -2421,6 +2430,15 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
     }
   }
 
+  /** Float: cObjPickerTool +0x68 = id, then cDDDSimsView::SetToolCursor(id). */
+  private setPickerCursor(id: number): void {
+    this.pickerCursor = id;
+    this.setToolCursor(id);
+  }
+
+  /** cObjPickerTool +0x68: the cursor id the last Float chose (read by Click). */
+  private pickerCursor = 0;
+
   /**
    * cObjPickerTool::Float (Live mode): the object under the mouse
    * (HouseViewer::PointToObjectID, on the current level) becomes the hilite
@@ -2453,14 +2471,14 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
       const w = v.world;
       const outside = t.x < w.minX + 1 || t.x > w.maxX - 1 || t.y < w.minY + 1 || t.y > w.maxY - 1;
       const pet = !!person && ((person.pd[PDX.gender] ?? 0) & 6) !== 0;
-      this.setToolCursor(outside ? 0x1f : pet ? 0x2b : 0x1c);
+      this.setPickerCursor(outside ? 0x1f : pet ? 0x2b : 0x1c);
       return;
     }
     const sel = target.obj.selector;
     if (target.person) {
       if (sel.objd.i16(0xb6) & 4) {
         this.tip = null;
-        this.setToolCursor(0x1f);
+        this.setPickerCursor(0x1f);
         return;
       }
       const guid = sel.guid | 0;
@@ -2469,11 +2487,11 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
       const pet = ((target as PersonSim).pd[PDX.gender] ?? 0) & 6;
       if (info?.firstName && this.tipWin) this.tip = { win: this.tipWin, x: x + 0x11, y: y - 5, text: info.firstName };
       else this.tip = null;
-      this.setToolCursor(pet && (guid >>> 0) !== 0xfc697613 ? 0x2a : 0x1d);
+      this.setPickerCursor(pet && (guid >>> 0) !== 0xfc697613 ? 0x2a : 0x1d);
       return;
     }
     this.tip = null;
-    this.setToolCursor(this.liveHiliteAvail ? 0x1e : 0x1f);
+    this.setPickerCursor(this.liveHiliteAvail ? 0x1e : 0x1f);
   }
 
   override tsOnMouseExit(): void {
