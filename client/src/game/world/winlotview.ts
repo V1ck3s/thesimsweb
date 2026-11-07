@@ -2059,6 +2059,11 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
     const h = this.getH();
     const v = this.viewer;
     if (v) v.setViewportSize(w, this.hudBeside() ? h : v.viewH + h - oldH);
+    if (this.edge) {
+      // The scroll zones along the screen's right and bottom edges.
+      this.edge.width = w;
+      this.edge.height = h;
+    }
     const left = this.ctx.hud?.left ?? 0;
     const right = this.ctx.hud?.right ?? w;
     const oldLeft = this.hudLeft;

@@ -21,7 +21,7 @@
  * screen about 768 high. Sizes no larger than 1024 x 768 run as they are.
  *
  * - `?res=<w>x<h>` / `?res=auto` / `?res=window` in the game's URL, else the
- *   stored choice, else 1024 x 768.
+ *   stored choice, else "window" (1024 x 768 is the original's default mode).
  * - "auto": the browser window's size when the game starts; a later resize
  *   only rescales the canvas.
  * - "window": the browser window's size, followed while the game runs (the
@@ -87,7 +87,7 @@ function urlParam(name: string): string | null {
   }
 }
 
-/** The chosen resolution: `?res=` in the page's URL, else the stored choice, else 1024 x 768. */
+/** The chosen resolution: `?res=` in the page's URL, else the stored choice, else "window". */
 export function readResolution(): ResolutionChoice {
   const q = parseChoice(urlParam("res"));
   if (q) return q;
@@ -97,7 +97,7 @@ export function readResolution(): ResolutionChoice {
   } catch {
     // (storage blocked: the default)
   }
-  return `${DEFAULT_SCREEN.w}x${DEFAULT_SCREEN.h}`;
+  return "window";
 }
 
 /** Keeps the player's choice for the next game start; false when the browser refuses to store it. */
@@ -179,4 +179,32 @@ export function hudBand(width: number, _height: number, centred: boolean): { lef
   if (!centred || width <= DEFAULT_SCREEN.w) return { left: 0, right: width };
   const left = (width - DEFAULT_SCREEN.w) >> 1;
   return { left, right: left + DEFAULT_SCREEN.w };
+}
+
+const FULLSCREEN_KEY = "thesimsweb.fullscreen";
+
+/**
+ * The fullscreen option (a port setting): the game page asks the browser for
+ * fullscreen (Element.requestFullscreen, at the first click or key, which the
+ * browser requires) instead of relying on F11, whose toolbar slides back in
+ * when the mouse reaches the top of the screen. `?fullscreen=1|0`, else the
+ * stored choice, else off.
+ */
+export function readFullscreen(): boolean {
+  const q = urlParam("fullscreen");
+  if (q === "1" || q === "0") return q === "1";
+  try {
+    return localStorage.getItem(FULLSCREEN_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
+export function storeFullscreen(on: boolean): boolean {
+  try {
+    localStorage.setItem(FULLSCREEN_KEY, on ? "1" : "0");
+    return true;
+  } catch {
+    return false;
+  }
 }

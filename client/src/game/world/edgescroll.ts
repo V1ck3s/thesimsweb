@@ -124,8 +124,9 @@ export class EdgeDetectScroller {
 
   constructor(
     private readonly viewer: HouseViewer,
-    private readonly width: number,
-    private readonly height: number,
+    /** The screen size (the port's live screen resize updates it, WinLotView.screenResized). */
+    public width: number,
+    public height: number,
     private readonly hooks: ScrollerHooks | null = null,
   ) {}
 

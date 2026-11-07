@@ -12,7 +12,7 @@ import { installImeComposition } from "./ui/imecomposition.js";
 import { modeMusicEvent, soundPlayer, UI_SOURCE } from "./audio/index.js";
 import { installLotAudio } from "./audio/lotaudio.js";
 import { resetSaveFileCache } from "../engine/assets.js";
-import { hudBand, readCentredHud, readResolution, screenSize } from "../engine/display.js";
+import { hudBand, readCentredHud, readFullscreen, readResolution, screenSize } from "../engine/display.js";
 import { holdsScreenSize, resizeTopLevel } from "./ui/screenresize.js";
 import { getSaveMode, requestPersistentStorage } from "../engine/saves.js";
 import { isGameFilesLocal, localGameIndex } from "../engine/gamefiles.js";
@@ -440,6 +440,28 @@ class Game {
   }
 }
 
+/**
+ * The fullscreen option (engine/display.ts readFullscreen, a port setting):
+ * the page asks for fullscreen at the first click or key (browsers only grant
+ * it on a user gesture), and again at the next one after the player left it.
+ * In fullscreen the browser's bar does not slide in at the top of the screen
+ * as it does with F11. Chrome also lets the game keep Escape (Keyboard Lock:
+ * holding Escape leaves fullscreen).
+ */
+function installFullscreen(): void {
+  const enter = (): void => {
+    if (document.fullscreenElement || !document.fullscreenEnabled) return;
+    document.documentElement
+      .requestFullscreen({ navigationUI: "hide" })
+      .then(() => (navigator as Navigator & { keyboard?: { lock?(keys?: string[]): Promise<void> } }).keyboard?.lock?.(["Escape"]))
+      .catch(() => {
+        // (refused: asked again at the next click)
+      });
+  };
+  window.addEventListener("pointerdown", enter, true);
+  window.addEventListener("keydown", enter, true);
+}
+
 async function boot(): Promise<void> {
   // GAME_FILES=client: the game files come from this browser's import (engine/gamefiles.ts);
   // without one, back to the landing page, which imports them.
@@ -448,6 +470,7 @@ async function boot(): Promise<void> {
     return;
   }
   const mgr = new WinMgr(document.getElementById("screen")!, SCREEN_W, SCREEN_H);
+  if (readFullscreen()) installFullscreen();
   const ctx = await createContext();
   // Saves kept in this browser (SAVES=client): ask the browser not to evict them.
   if ((await getSaveMode()) === "client") void requestPersistentStorage();
