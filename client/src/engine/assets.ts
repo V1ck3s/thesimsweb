@@ -436,6 +436,17 @@ async function manifestFileSize(path: string): Promise<number | null> {
 }
 
 /**
+ * Bytes at the end of a FAR archive of `size` bytes read with its header, as
+ * a guess at its manifest table: 1/256 of the archive, 4..64 KiB. The shipped
+ * tables are 0.1..1 % of their archive (UIGraphics.far 37 KB of 55 MB,
+ * ExpansionPack2.far 64 KB of 60 MB; the Downloads archives' a few hundred
+ * bytes), so most fit; a bigger one costs one more read, as without a guess.
+ */
+function farTailGuess(size: number): number {
+  return Math.min(size, Math.max(4096, Math.min(65536, Math.floor(size / 256))));
+}
+
+/**
  * Read the FAR header (first 16 B) + the manifest tail and parse the entry table via WASM.
  * Pulls only `header_size + tail_size` bytes from the network — typically a few hundred B.
  */
@@ -447,9 +458,17 @@ export async function readFarManifest(farPath: string): Promise<FarEntryInfo[]> 
       const persisted = local ? null : ((await idbGetFarManifest(farPath)) as FarEntryInfo[] | null);
       if (Array.isArray(persisted)) return persisted;
       const wasm = await engine();
+      // The archive's size from the asset manifest (the manifest table runs to its end).
+      const known = local ? null : await manifestFileSize(farPath);
       // Header and manifest through the shared batcher: the archives scanned in
       // one task (the plugin folders, ~70 Downloads archives) share one request
-      // per step instead of three requests each (range, HEAD, range).
+      // per step instead of three requests each (range, HEAD, range). With the
+      // size known, the archive's last bytes are asked for with the header (a
+      // guess at the manifest table, farTailGuess): most tables fit, and the
+      // header-then-table chain of round trips becomes one.
+      const guessStart = known !== null && known > FAR_HEADER_SIZE ? Math.max(FAR_HEADER_SIZE, known - farTailGuess(known)) : -1;
+      const guessRead = known !== null && guessStart >= 0 ? readAssetRangeBatched(farPath, guessStart, known) : null;
+      guessRead?.catch(() => {}); // (its failure is the header's, or it is read again below)
       const head = await readAssetRangeBatched(farPath, 0, FAR_HEADER_SIZE);
       if (!wasm.checkFarMagic(head)) {
         throw new Error(`${farPath}: not a FAR archive`);
@@ -460,7 +479,6 @@ export async function readFarManifest(farPath: string): Promise<FarEntryInfo[]> 
       let totalSize: number;
       if (local) totalSize = (await localGameSize(farPath)) ?? 0;
       else {
-        const known = await manifestFileSize(farPath);
         if (known !== null) totalSize = known;
         else {
           const headRes = await fetch(`${ASSETS_BASE}${farPath}`, { method: "HEAD" });
@@ -471,7 +489,21 @@ export async function readFarManifest(farPath: string): Promise<FarEntryInfo[]> 
       if (!Number.isFinite(totalSize) || totalSize === 0) {
         throw new Error(`${farPath}: no content-length`);
       }
-      const tail = await readAssetRangeBatched(farPath, manifestOffset, totalSize);
+      const guess = guessRead && manifestOffset >= FAR_HEADER_SIZE && manifestOffset <= totalSize ? await guessRead.catch(() => null) : null;
+      let tail: Uint8Array | null = null;
+      if (guess && guess.length === totalSize - guessStart) {
+        if (manifestOffset >= guessStart) tail = guess.subarray(manifestOffset - guessStart);
+        else {
+          // A bigger table: the part before the guess, then the guess.
+          const before = await readAssetRangeBatched(farPath, manifestOffset, guessStart);
+          if (before.length === guessStart - manifestOffset) {
+            tail = new Uint8Array(before.length + guess.length);
+            tail.set(before, 0);
+            tail.set(guess, before.length);
+          }
+        }
+      }
+      tail ??= await readAssetRangeBatched(farPath, manifestOffset, totalSize);
       // Reassemble a minimal "FAR view" for the WASM parser: header pointing at offset 16
       // for the manifest, then the manifest bytes. We rebuild the header so the parser
       // sees a coherent buffer without downloading the payload region.

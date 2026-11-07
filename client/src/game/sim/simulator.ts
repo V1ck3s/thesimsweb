@@ -195,6 +195,18 @@ export class Simulator {
     sim.globals[G.machineLevel] = MACHINE_LEVEL;
     sim.globals[G.freeFunds] = 0;
     const placed = [...objects];
+    const nbhdDir = house.name.split("/")[0] ?? "UserData";
+    // The files read below, after the module is built, are asked for now (read
+    // together with the resources; the results are used in the same order).
+    const ahead = <T>(p: Promise<T>): Promise<T> => {
+      p.catch(() => {});
+      return p;
+    };
+    const zoningRead = ahead(ResFile.open(`${nbhdDir}/LotZoning.iff`).catch(() => null));
+    const careersRead = ahead(loadSimCareers());
+    const gradesRead = ahead(loadJobGrades());
+    const fameTitlesRead = ahead(loadFameTitles());
+    const fameScoringRead = ahead(loadFameScoring());
     const res = await SimResources.load();
     await res.prepare(placed.map((o) => o.selector));
     // Objects created later (buy / build mode) need their semi-globals synchronously.
@@ -205,17 +217,16 @@ export class Simulator {
     } catch {
       sim.world = null;
     }
-    const nbhdDir = house.name.split("/")[0] ?? "UserData";
     sim.module.initPeople(await loadNeighborhood(nbhdDir).catch(() => null));
     // Neighborhood::Load reads the lot zoning from <neighborhood>/LotZoning.iff.
-    const zoning = await ResFile.open(`${nbhdDir}/LotZoning.iff`).catch(() => null);
+    const zoning = await zoningRead;
     if (zoning) sim.module.loadZoning(loadStringSet(zoning, 1) ?? []);
     // LoadCareers: one cCareer per CARR chunk of work.iff, in index order (GetCareers).
-    sim.module.careers = await loadSimCareers();
-    sim.module.jobGrades = await loadJobGrades();
+    sim.module.careers = await careersRead;
+    sim.module.jobGrades = await gradesRead;
     // cFameTrack::LoadUpFameTrackScoring
-    sim.module.fameTitles = await loadFameTitles();
-    sim.module.fameScoring = await loadFameScoring();
+    sim.module.fameTitles = await fameTitlesRead;
+    sim.module.fameScoring = await fameScoringRead;
     // SAnimator::Initialize: a skeleton per person (the lot view attaches its VitaBoy's instead).
     for (const p of sim.module.persons) await Simulator.attachSkeleton(p);
     sim.module.onPersonMade = (p) => void Simulator.attachSkeleton(p);

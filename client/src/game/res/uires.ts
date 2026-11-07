@@ -61,11 +61,28 @@ export class UIRes {
     for (const f of manifest.files) {
       if (f.path.startsWith(ROOT)) res.looseFiles.set(f.path.toLowerCase(), f.path);
     }
-    for (const table of TABLES) {
-      const rt = await res.readText(`${table}.RT`);
-      await res.parseRt(rt);
-    }
+    // The tables and the headers they include are read together (one batch
+    // each step), then parsed in order as before.
+    const rts = TABLES.map((table) =>
+      res.readText(`${table}.RT`).then((text) => {
+        for (const file of includesOf(text)) res.prefetchText(file);
+        return text;
+      }),
+    );
+    for (const p of rts) p.catch(() => {}); // (a failure surfaces in order below)
+    for (const [i, rt] of rts.entries()) await res.parseRt(await rt, TABLES[i]!);
+    res.prefetched.clear();
     return res;
+  }
+
+  /** Texts read ahead of parseRt (the INCLUDEd headers), by name. */
+  private readonly prefetched = new Map<string, Promise<string>>();
+
+  private prefetchText(rel: string): void {
+    if (this.prefetched.has(rel)) return;
+    const p = this.readText(rel);
+    p.catch(() => {});
+    this.prefetched.set(rel, p);
   }
 
   /** Numeric value of a `k...` constant from the Res_*.h headers. */
@@ -132,7 +149,41 @@ export class UIRes {
     return cached;
   }
 
+  /** The ids each table ("Res_CPanel") maps, for prefetchTable. */
+  private readonly tableIds = new Map<string, Set<number>>();
+  /** Bitmap bytes read ahead (prefetchTable), by normalized path, each handed to the first readBytes of its path. */
+  private readonly ahead = new Map<string, Promise<Uint8Array>>();
+
+  /**
+   * Read the bytes of every bitmap a table maps (in this language) ahead of
+   * use, together (one batch): the control panel's windows load their
+   * bitmaps one after another, each read waiting for the previous one. Kept
+   * until endPrefetch; a bitmap already decoded is skipped.
+   */
+  prefetchTable(table: string): void {
+    for (const id of this.tableIds.get(table) ?? []) {
+      const p = this.path(id);
+      if (!p || this.cache.has(p.toLowerCase())) continue;
+      const key = aheadKey(p);
+      if (this.ahead.has(key)) continue;
+      const read = this.readBytes(p);
+      read.catch(() => {});
+      this.ahead.set(key, read);
+    }
+  }
+
+  /** Drop the bytes prefetchTable read that nothing asked for. */
+  endPrefetch(): void {
+    this.ahead.clear();
+  }
+
   private async readBytes(rel: string): Promise<Uint8Array> {
+    const key = aheadKey(rel);
+    const read = this.ahead.get(key);
+    if (read) {
+      this.ahead.delete(key);
+      return read;
+    }
     const loose = this.looseFiles.get((ROOT + rel.replace(/\\/g, "/")).toLowerCase());
     if (loose) {
       const bytes = await readAssetFile(loose).catch(() => null);
@@ -146,14 +197,17 @@ export class UIRes {
     return new TextDecoder("latin1").decode(bytes);
   }
 
-  private async parseRt(text: string): Promise<void> {
+  private async parseRt(text: string, table: string): Promise<void> {
+    const ids = this.tableIds.get(table) ?? new Set<number>();
+    this.tableIds.set(table, ids);
     for (const raw of text.split(/\r?\n/)) {
       const line = raw.trim();
       if (!line.startsWith("{")) continue;
       const fields = line.slice(1, line.lastIndexOf("}")).split(",").map((f) => f.trim());
       const kind = fields[0]!;
       if (kind === "INCLUDE") {
-        this.parseHeader(await this.readText(fields[1]!));
+        const ahead = this.prefetched.get(fields[1]!);
+        this.parseHeader(await (ahead ?? this.readText(fields[1]!)));
         continue;
       }
       // The shipped tables reference a few undeclared names (kStudiownBulldoze);
@@ -165,6 +219,7 @@ export class UIRes {
       const list = this.entries.get(id) ?? [];
       list.push({ kind, path, lang });
       this.entries.set(id, list);
+      ids.add(id);
     }
   }
 
@@ -182,4 +237,21 @@ export class UIRes {
     if (/^-?(0x[0-9a-f]+|\d+)$/i.test(token)) return Number(token);
     return this.id(token);
   }
+}
+
+/** The files a table's {INCLUDE,...} lines name, as parseRt reads them. */
+function includesOf(text: string): string[] {
+  const out: string[] = [];
+  for (const raw of text.split(/\r?\n/)) {
+    const line = raw.trim();
+    if (!line.startsWith("{")) continue;
+    const fields = line.slice(1, line.lastIndexOf("}")).split(",").map((f) => f.trim());
+    if (fields[0] === "INCLUDE" && fields[1]) out.push(fields[1]);
+  }
+  return out;
+}
+
+/** prefetchTable's key of a bitmap path (either slash, any case). */
+function aheadKey(rel: string): string {
+  return rel.replace(/\\/g, "/").toLowerCase();
 }

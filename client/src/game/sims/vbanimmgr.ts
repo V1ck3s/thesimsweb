@@ -138,9 +138,12 @@ export class VBAnimMgr {
         else if (!m.files.has(n)) m.files.set(n, { far, entry: e.filename });
       }
     });
-    // LoadIndexedAnimations: the first site to name a resource wins.
-    for (const { far, entry } of ndx) {
-      const idx = loadIndexFromFile(await readFarEntry(far, entry));
+    // LoadIndexedAnimations: the first site to name a resource wins. (The
+    // indexes are read together, one batch, and applied in site order.)
+    const reads = ndx.map(({ far, entry }) => readFarEntry(far, entry));
+    for (const r of reads) r.catch(() => {}); // (a failure surfaces in order below)
+    for (const read of reads) {
+      const idx = loadIndexFromFile(await read);
       for (const [k, v] of idx.skeletons) if (!m.skeletonIndex.has(k.toLowerCase())) m.skeletonIndex.set(k.toLowerCase(), v);
       for (const [k, v] of idx.suits) if (!m.suitIndex.has(k.toLowerCase())) m.suitIndex.set(k.toLowerCase(), v);
       for (const [k, v] of idx.skills) if (!m.skillIndex.has(k.toLowerCase())) m.skillIndex.set(k.toLowerCase(), v);

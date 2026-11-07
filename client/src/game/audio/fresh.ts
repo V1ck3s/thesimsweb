@@ -591,10 +591,11 @@ export class FreshPlayer {
    * cFreshPlayer::Init(dir, file, timer, cache): cFreshScore::LoadScore(dir + file),
    * then Init(score, dir, ...). Returns false when the score cannot be read.
    */
-  async init(dir: string, file: string): Promise<boolean> {
+  async init(dir: string, file: string, read?: Promise<Uint8Array>): Promise<boolean> {
     let text: string;
     try {
-      text = new TextDecoder("latin1").decode(await readGameFile(dir + file));
+      // (`read`: the score's bytes already asked for, readGameFile(dir + file))
+      text = new TextDecoder("latin1").decode(await (read ?? readGameFile(dir + file)));
     } catch {
       return false;
     }

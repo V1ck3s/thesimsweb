@@ -33,7 +33,7 @@
  * based lookups (master / sub-tile selectors) need.
  */
 
-import { assetFetch, type FarEntryInfo, fetchManifest, RangeBatcher, readFarManifest } from "../../engine/assets.js";
+import { assetFetch, type FarEntryInfo, fetchManifest, isWritableAssetPath, RangeBatcher, readFarManifest } from "../../engine/assets.js";
 import { idbGetFarManifest, idbPutFarManifest } from "../../engine/idb.js";
 import { engine } from "../../engine/wasm.js";
 import { scanFolder } from "../data/dirimage.js";
@@ -171,6 +171,27 @@ async function readObjdChunks(fetchRange: ReadRange, path: string, base: number,
     out.push({ id: cv.getInt16(8, false), objd: span.subarray(o + CHUNK_HEADER, Math.min(span.length, o + csize)) });
   }
   return out;
+}
+
+/**
+ * The OBJD chunks of the game's object files read by a scan in this page (a
+ * copy of each, ~1 MB in all), by file and place: the scan of another
+ * neighborhood (the start-up scan of UserData, then the lot's) reads only its
+ * own Characters files again. The game files do not change while the page
+ * runs; the save files (Sims/UserData*) are never kept.
+ */
+const objdsRead = new Map<string, Promise<Array<{ id: number; objd: Uint8Array }>>>();
+
+function scannedObjds(fetchRange: ReadRange, path: string, base: number, size: number): Promise<Array<{ id: number; objd: Uint8Array }>> {
+  if (isWritableAssetPath(path)) return readObjdChunks(fetchRange, path, base, size);
+  const key = `${path}|${base}|${size}`;
+  let p = objdsRead.get(key);
+  if (!p) {
+    p = readObjdChunks(fetchRange, path, base, size).then((list) => list.map(({ id, objd }) => ({ id, objd: objd.slice() })));
+    objdsRead.set(key, p);
+    p.catch(() => objdsRead.delete(key));
+  }
+  return p;
 }
 
 /** Fallback for IFFs without a resource map: read the whole file and walk its chunks. */
@@ -447,7 +468,7 @@ export class ObjectFolder implements SelectorFolder {
     const read: ReadRange = (path, start, end) => ranges.read(path, start, end);
     await pool(iffs, SCAN_CONCURRENCY, async (f) => {
       try {
-        found.set(f.key, await readObjdChunks(read, f.path, f.base, f.size));
+        found.set(f.key, await scannedObjds(read, f.path, f.base, f.size));
       } catch (e) {
         console.warn(`ObjectFolder: ${f.key}:`, e);
       }
@@ -603,12 +624,15 @@ export class ObjectFolder implements SelectorFolder {
 
   /** ObjectFolder::GetStandardPlaceholder etc. (dog / cat fall back to standard without the pets pack). */
   async getPlaceholders(): Promise<{ standard: ObjSelector | null; person: ObjSelector | null; dog: ObjSelector | null; cat: ObjSelector | null }> {
-    const standard = await this.getSelectorByGUID(GUID_STANDARD_PLACEHOLDER);
-    const person = await this.getSelectorByGUID(GUID_PERSON_PLACEHOLDER);
+    // (their files are read together, one batch)
     const pets = (this.packs & PACK_UNLEASHED) !== 0;
-    const dog = pets ? await this.getSelectorByGUID(GUID_DOG_PLACEHOLDER) : standard;
-    const cat = pets ? await this.getSelectorByGUID(GUID_CAT_PLACEHOLDER) : standard;
-    return { standard, person, dog, cat };
+    const [standard, person, dog, cat] = await Promise.all([
+      this.getSelectorByGUID(GUID_STANDARD_PLACEHOLDER),
+      this.getSelectorByGUID(GUID_PERSON_PLACEHOLDER),
+      pets ? this.getSelectorByGUID(GUID_DOG_PLACEHOLDER) : null,
+      pets ? this.getSelectorByGUID(GUID_CAT_PLACEHOLDER) : null,
+    ]);
+    return pets ? { standard, person, dog, cat } : { standard, person, dog: standard, cat: standard };
   }
 
   /** ObjectFolder::GetMasterSelector: the same file's definition with the master id and sub index -1. */

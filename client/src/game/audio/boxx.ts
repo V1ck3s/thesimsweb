@@ -8,7 +8,7 @@
  * table) or by event code (Event, a switch on the kSndob... and k... codes).
  */
 
-import { listDir, readLooseFile } from "./audiosys.js";
+import { listDir, readGameFile, readLooseFile } from "./audiosys.js";
 import { getAudioInfo } from "./audioinfo.js";
 import { FreshPlayer, FreshTimer } from "./fresh.js";
 import { checkHit, parseHot, parseHsm, type HitCode, type MappedEvent } from "./hitdata.js";
@@ -191,6 +191,31 @@ const DATA_DIRS = [
   "ExpansionPack7\\Sound",
 ];
 
+/** A folder's .hot file with its .hit and .hsm, as read. */
+interface DataTriple {
+  hitPath: string;
+  hotText: string | null;
+  hitBytes: Uint8Array | null;
+  hsmText: string | null;
+}
+
+/** The files cBoxX::LoadDataDirectory reads: each .hot of the folder (name order) with its .hit (required) and .hsm, all read at once. */
+async function readDataDirectory(dir: string): Promise<DataTriple[]> {
+  const { files } = await listDir(dir);
+  const reads: Array<Promise<DataTriple>> = [];
+  for (const hotPath of files.filter((f) => f.toLowerCase().endsWith(".hot"))) {
+    const base = hotPath.slice(0, -4);
+    const find = (ext: string): string | undefined => files.find((f) => f.toLowerCase() === `${base}${ext}`.toLowerCase());
+    const hitPath = find(".hit");
+    const hsmPath = find(".hsm");
+    if (!hitPath) continue;
+    reads.push(
+      Promise.all([fetchText(hotPath), fetchBytes(hitPath), hsmPath ? fetchText(hsmPath) : Promise.resolve("")]).then(([hotText, hitBytes, hsmText]) => ({ hitPath, hotText, hitBytes, hsmText })),
+    );
+  }
+  return Promise.all(reads);
+}
+
 async function fetchText(path: string): Promise<string | null> {
   const bytes = await readLooseFile(path);
   // (UTF-8, as Response.text() decoded it)
@@ -304,7 +329,13 @@ export class BoxX {
 
   /** cBoxX::Init */
   async init(usVersion = false): Promise<void> {
-    for (const dir of DATA_DIRS) await this.loadDataDirectory(dir);
+    // Every folder's .hot / .hit / .hsm files and the ambience scores are read
+    // together (one batch); the folders are then loaded in order, as before.
+    const dataDirs = DATA_DIRS.map((dir) => readDataDirectory(dir));
+    for (const d of dataDirs) d.catch(() => {}); // (a failure surfaces in order below)
+    const scores = AMBIENCE_SCORES.map(([dir, file]) => readGameFile(dir + file));
+    for (const p of scores) p.catch(() => {}); // (FreshPlayer.init handles a failure)
+    for (const d of dataDirs) this.loadDataDirectory(await d);
     for (const r of receiverDefs(usVersion)) {
       const n = await initReceiver(this.hm, r.dir, r.hitList);
       if (n > 0) this.loaded.receivers[r.dir] = n;
@@ -312,7 +343,7 @@ export class BoxX {
     for (let i = 0; i < AMBIENCE_SCORES.length; i++) {
       const [dir, file] = AMBIENCE_SCORES[i]!;
       const p = new FreshPlayer(this.freshTimer);
-      if (await p.init(dir, file)) {
+      if (await p.init(dir, file, scores[i])) {
         this.ambience[i] = p;
         this.loaded.ambience.push(dir + file);
       }
@@ -324,16 +355,9 @@ export class BoxX {
     this.timer = window.setInterval(() => this.onTimer(), TICK_MS);
   }
 
-  /** cBoxX::LoadDataDirectory: every .hsm/.hit/.hot triple in the folder. */
-  private async loadDataDirectory(dir: string): Promise<void> {
-    const { files } = await listDir(dir);
-    for (const hotPath of files.filter((f) => f.toLowerCase().endsWith(".hot"))) {
-      const base = hotPath.slice(0, -4);
-      const find = (ext: string): string | undefined => files.find((f) => f.toLowerCase() === `${base}${ext}`.toLowerCase());
-      const hitPath = find(".hit");
-      const hsmPath = find(".hsm");
-      if (!hitPath) continue;
-      const [hotText, hitBytes, hsmText] = await Promise.all([fetchText(hotPath), fetchBytes(hitPath), hsmPath ? fetchText(hsmPath) : Promise.resolve("")]);
+  /** cBoxX::LoadDataDirectory: every .hsm/.hit/.hot triple in the folder (read by readDataDirectory). */
+  private loadDataDirectory(triples: DataTriple[]): void {
+    for (const { hitPath, hotText, hitBytes, hsmText } of triples) {
       if (!hotText || !hitBytes || !checkHit(hitBytes)) continue;
       const hot = parseHot(hotText, parseHsm(hsmText ?? ""));
       const code: HitCode = { name: hitPath, bytes: hitBytes };

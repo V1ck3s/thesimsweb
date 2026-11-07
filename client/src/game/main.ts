@@ -293,9 +293,20 @@ class Game {
 
   /** Neighborhood::LoadHouse + cSimsApp control panel setup (`moveInFamily`: the family just moved in). */
   async enterLot(house: number, moveInFamily = 0): Promise<void> {
+    const { ctx } = this;
+    resetSaveFileCache();
+    // The control panel's bitmaps, read while the lot loads (its windows read them one by one).
+    ctx.res.prefetchTable("Res_CPanel");
+    try {
+      await this.enterLotLoaded(house, moveInFamily);
+    } finally {
+      ctx.res.endPrefetch();
+    }
+  }
+
+  private async enterLotLoaded(house: number, moveInFamily: number): Promise<void> {
     const { ctx, mgr } = this;
     const state = ctx.state;
-    resetSaveFileCache();
     const arrival = this.arrival;
     this.arrival = null;
     if (!(await prepareArrival(ctx, this.nbhdDir, arrival)) && !(await activateFamily(state, await loadNeighborhood(this.nbhdDir), house))) {
