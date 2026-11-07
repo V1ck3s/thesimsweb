@@ -516,3 +516,49 @@ Left:
 - The remaining single-range posts are dependent by nature (a CMX, then its meshes, then their
   textures for each portrait; a font, then its bitmap), or single files read at different times
   (floors.iff, Sprites.iff).
+
+## Screen sizes (2026-11-07)
+
+The screen size is now a setting (`engine/display.ts`, see docs/decomp/ui-coverage.md "Screen
+size"). Measured on House01 of a throwaway copy of UserData, Live, speed 3, 15 s, mouse over the
+lot, with `perf.mjs` taking the viewport and `?res=` (fps / frame mean / screen plot mean /
+lot render mean, ms). "CPU blend" is the view control gadget's exact BoboVision blend as it was
+(`compose565`, the screen read back with `getImageData`), "GPU blend" the new path below.
+
+| Size | Chrome headed (ANGLE D3D12), CPU blend | Chrome headed, GPU blend | Chrome SwiftShader, CPU blend | SwiftShader, GPU blend | Firefox headless (Linux), GPU blend |
+|---|---|---|---|---|---|
+| 1024 x 768 | 28.3 / 35.3 / 32.8 / 17.2 | 29.6 / 33.8 / 31.1 / 17.8 | 23.5 / 42.5 / 39.5 / 34.0 | 20.7 / 48.3 / 45.0 / 38.4 | 25.1 / 39.8 / 32.0 / 24.7 (copy 5.9) |
+| 1920 x 1080 | 13.5 / 74.7 / 71.5 / 51.5 (noisy) | 25.3 / 39.6 / 36.5 / 22.8 | 10.4 / 96.4 / 90.2 / 76.0 | | 22.0 / 45.4 / 40.1 / 23.8 (copy 11.5) |
+| 2560 x 1440 | 18.3 / 54.8 / 51.0 / 26.7 | 22.2 / 45.0 / 41.5 / 26.8 | 7.7 / 130 / 126 / 102 | 6.8 / 148 / 143 / 116 | |
+| 3840 x 2160 | 12.5 / 80.4 / 75.9 / 38.2 | 17.0 / 58.9 / 54.9 / 37.4 | 4.3 / 231 / 225 / 169 | 4.3 / 234 / 228 / 171 | |
+| 5120 x 1440 | 13.7 / 72.7 / 68.2 / 34.9 | 17.0 / 58.6 / 54.0 / 37.1 | 4.7 / 214 / 208 / 158 | 4.5 / 221 / 215 / 164 | 11.7 / 85.1 / 76.2 / 32.0 (copy 35.3) |
+
+The 1024 x 768 numbers are well below the 2026-10-28 table (59.8 fps headed): the host was
+busier (other browser sessions on the same GPU) and the lot does more since; compare columns,
+not with that table.
+
+- **View control blend read back (fixed).** A headed Chrome CPU profile at 1024 x 768 had 73 % of
+  the main thread in `getImageData` under `WinViewControl.compose`: reading the screen canvas
+  waits for the GPU to finish everything queued for the frame. The blend now runs in a small
+  WebGL 2 context (`cpanel/compose565gl.ts`): the screen rectangle under the gadget is copied
+  canvas to canvas, uploaded, blended by a fragment shader with the same table and integer
+  arithmetic, and drawn back. Checked identical to `compose565` on a noise background (0 of
+  360 000 bytes differ; `WinViewControl.cpuCompose = true` switches back for checks). The upload
+  still waits for the screen canvas (it moved the sync to `texImage2D`), so the gain is the
+  readback and CPU blend, not the wait: +5 % fps at 1024 x 768, +25..85 % at the large sizes in
+  headed Chrome. Without the blend at all (BoboVision off, or the call stubbed) headed Chrome
+  runs at 48 fps at 1024 x 768: the remaining cost is the GPU itself, see below. In SwiftShader
+  the second GL context costs a little (GL is on the CPU there).
+- **The lot render is GPU bound here.** The CPU profile of the lot render is mostly idle while the
+  frame takes ~17 ms at 1024 x 768 (340 draw calls a frame); it grows to ~37 ms at 5120 x 1440 as
+  more of the lot is on screen (the original draws more there too). ANGLE on D3D12 through WSLg
+  is a slow path for many small draws; on a native Windows browser it should be far faster
+  (not measured here).
+- **Firefox (headless, Linux): the WebGL -> 2D copy grows with the size**: 5.9 ms at 1024 x 768,
+  11.5 ms at 1920 x 1080, 35 ms at 5120 x 1440 (a CPU readback of the lot frame, see "Remaining
+  issues"). Firefox on Windows draws canvases on the GPU and is expected not to read back (not
+  measurable from WSL). Removing the copy means showing the lot's WebGL canvas as its own layer
+  under a transparent UI canvas; the view control blend and the frozen-screen copy
+  (`screens/frozen.ts`) would then have to read both layers. Not done.
+- SwiftShader rasterizes GL on the CPU: its frame time grows with the pixel count (4.5 fps at
+  5120 x 1440). Use it for screenshots, not for timings of large sizes.

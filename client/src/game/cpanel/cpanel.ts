@@ -187,7 +187,9 @@ export class WinCPanel extends TSWin {
     if (!view) return;
     const vc = this.viewControl;
     const top = view.getH() - vc.getH();
-    vc.setArea(0, top, vc.getW(), top + vc.getH());
+    // The panel's left edge: 0 in the original; the port's centred HUD moves the panel (ctx.hud).
+    const left = this.area.left;
+    vc.setArea(left, top, left + vc.getW(), top + vc.getH());
     view.childAdd(vc);
   }
 

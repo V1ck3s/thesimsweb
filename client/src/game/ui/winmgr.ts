@@ -3,8 +3,9 @@
  * routes mouse input (capture first, then the front-most window under the
  * cursor), tracks mouse enter/exit and drives the paint loop.
  *
- * The canvas has the game's logical resolution (800x600 or 1024x768) and is
- * scaled by CSS to fit the browser window with integer-free nearest scaling.
+ * The canvas has the game's screen size (engine/display.ts: 1024x768 by
+ * default, any size the player picks) and is scaled by CSS to fit the browser
+ * window (fit(): whole-number scales when they fit, nearest-neighbour).
  */
 
 import { getStandardCursor, HIDDEN_CURSOR } from "./cursor.js";
@@ -115,7 +116,6 @@ export class WinMgr {
     this.canvas = document.createElement("canvas");
     this.canvas.width = width;
     this.canvas.height = height;
-    this.canvas.style.imageRendering = "pixelated";
     host.appendChild(this.canvas);
     this.ctx = this.canvas.getContext("2d", { alpha: false })!;
     this.ctx.imageSmoothingEnabled = false;
@@ -494,9 +494,17 @@ export class WinMgr {
     }
     const w = vv?.width ?? window.innerWidth;
     const h = vv?.height ?? window.innerHeight;
-    const scale = Math.min(w / this.width, h / this.height);
-    this.canvas.style.width = `${Math.floor(this.width * scale)}px`;
-    this.canvas.style.height = `${Math.floor(this.height * scale)}px`;
+    // In device pixels: a whole-number scale (1 at the window's own size) maps
+    // each game pixel to a square of screen pixels; a larger fractional scale
+    // stays nearest-neighbour (uneven but sharp pixels); a game larger than the
+    // window is shrunk smoothly (nearest would drop whole rows of text).
+    const dpr = window.devicePixelRatio || 1;
+    let scale = Math.min((w * dpr) / this.width, (h * dpr) / this.height);
+    const whole = Math.floor(scale);
+    if (whole >= 1 && (scale - whole) * Math.max(this.width, this.height) < 2) scale = whole;
+    this.canvas.style.imageRendering = scale >= 1 ? "pixelated" : "auto";
+    this.canvas.style.width = `${Math.floor(this.width * scale) / dpr}px`;
+    this.canvas.style.height = `${Math.floor(this.height * scale) / dpr}px`;
   }
 
   private toLogical(e: { clientX: number; clientY: number }): { x: number; y: number } {

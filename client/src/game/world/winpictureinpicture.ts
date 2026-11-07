@@ -160,7 +160,9 @@ export class WinPictureInPicture extends TSWin {
     const parent = this.parent;
     if (parent) {
       const up = this.host.cpMode() === 1 ? 5 : DOUBLE_BYTE_UI ? 0x9b : 0x69;
-      this.moveTo(parent.getW() - w - 5, parent.getH() - h - up);
+      // The lot view's right edge (the port's centred HUD: its band's, ctx.hud).
+      const right = Math.min(parent.getW(), this.ctx.hud?.right ?? parent.getW());
+      this.moveTo(right - w - 5, parent.getH() - h - up);
     }
     if (this.timerMs !== 0) this.timerEnd = performance.now() + this.timerMs;
     this.fade(true);

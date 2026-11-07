@@ -12,6 +12,7 @@ import { installImeComposition } from "./ui/imecomposition.js";
 import { modeMusicEvent, soundPlayer, UI_SOURCE } from "./audio/index.js";
 import { installLotAudio } from "./audio/lotaudio.js";
 import { resetSaveFileCache } from "../engine/assets.js";
+import { hudBand, readCentredHud, screenSize } from "../engine/display.js";
 import { getSaveMode, requestPersistentStorage } from "../engine/saves.js";
 import { isGameFilesLocal, localGameIndex } from "../engine/gamefiles.js";
 import { CPState, DIRTY_ALL, Mode } from "./cpstate.js";
@@ -45,8 +46,8 @@ import { moveOutHouse } from "./world/moveout.js";
 import { installCheatConsole } from "./ui/cheat.js";
 import { firstRunTutorial, resetTutorial } from "./nbhd/tutorial.js";
 
-const SCREEN_W = 1024;
-const SCREEN_H = 768;
+/** The screen size for this start (engine/display.ts: cSimsApp::PreFrameWorkInit's display mode). */
+const { w: SCREEN_W, h: SCREEN_H } = screenSize();
 
 /**
  * cSimsApp::LoadGame's PlaySoundA after a successful load: the outdoor
@@ -73,6 +74,7 @@ async function createContext(): Promise<GameContext> {
     state: new CPState(),
     width: SCREEN_W,
     height: SCREEN_H,
+    hud: hudBand(SCREEN_W, SCREEN_H, readCentredHud()),
   };
 }
 
@@ -340,7 +342,9 @@ class Game {
     this.lotView = view;
     markLotClean(view);
     const cpanel = new WinCPanel(ctx);
-    cpanel.setArea(0, ctx.height - CPANEL_HEIGHT, ctx.width, ctx.height);
+    // cSimsApp::WindowSetup: SetArea(view.left, view.bottom - 150, view.right, view.bottom)
+    // (the port's centred HUD narrows it to ctx.hud).
+    cpanel.setArea(ctx.hud?.left ?? 0, ctx.height - CPANEL_HEIGHT, ctx.hud?.right ?? ctx.width, ctx.height);
     if (!(await cpanel.init())) throw new Error("control panel init failed");
     view.childAdd(cpanel);
     cpanel.postInit();

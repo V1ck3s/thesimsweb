@@ -76,6 +76,10 @@ Interface / triches
   passage des costumes ne libère rien, comme l'original : horloge partagée avec les compétences).
 - **Pics de tick** : restent les recherches de route et l'interprétation des BHAV (travail de
   l'original) ; familyFriendCount mis en cache comme l'original.
+- **Grandes résolutions** : 5120x1440 ≈ 17 i/s dans Chrome (GPU sous WSL), 29,6 à 1024x768 ;
+  Firefox Linux 11,7 i/s à 5120x1440 à cause de la copie WebGL → canvas 2D (35 ms). Piste :
+  afficher le canvas WebGL du lot comme calque sous un canvas UI transparent. Chiffres :
+  `docs/perf-and-browsers.md` « Screen sizes ».
 - **Serveur sur /mnt/c** : inventaire du jeu gardé sur disque (`server/data/manifest-cache.json`) ;
   la première liste des sauvegardes après un démarrage prend encore 50 à 90 s.
 
@@ -84,6 +88,9 @@ Interface / triches
 - Suivi de caméra, emménagement sans boîte aux lettres, popups des besoins des animaux et page
   célébrité : conformes au code décompilé, non vus en jeu.
 - U50 (objet invisible) : le cas exact de l'utilisateur n'a pas été reproduit.
+- Résolutions ≠ 1024x768 : non vues aux quartiers-villes, pages d'options, catégories du
+  catalogue ouvertes, écran de transit, boîtes de message ; langues double octet non vues.
+  HUD centré : « centrer sur le lot » vise toute la hauteur (~50 px plus bas).
 - Version tactile : testée en émulation Chrome seulement (pas d'appareil réel, pas de Firefox Android).
 
 ## 7. Action de l'utilisateur

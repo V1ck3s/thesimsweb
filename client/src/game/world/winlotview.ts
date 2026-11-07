@@ -222,9 +222,10 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
     const floors = new FloorGraphicsMgr();
     await floors.initialize();
     await floors.loadUsageMap(house, world.fixed);
-    // cAnimDeviceSub::NewWorld sizes the 3D viewport to (width, height - 100).
+    // cAnimDeviceSub::NewWorld sizes the 3D viewport to (width, height - 100)
+    // (the whole height with the port's centred HUD: the view shows beside the panel).
     const viewW = this.ctx.width;
-    const viewH = this.ctx.height - 100;
+    const viewH = this.hudBeside() ? this.ctx.height : this.ctx.height - 100;
     const comp = new Compositor(viewW, viewH);
     const v = new HouseViewer(world, comp, floors, viewW, viewH);
     v.isBuildMode = () => this.ctx.state.getMode() === Mode.Build;
@@ -2039,7 +2040,18 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
     this.viewer?.setLevel(level);
   }
 
+  /**
+   * The port's centred HUD (engine/display.ts hudBand) leaves the lot view
+   * visible left and right of the control panel: the viewport then always
+   * takes the view's whole height instead of stopping above the panel.
+   */
+  private hudBeside(): boolean {
+    const hud = this.ctx.hud;
+    return !!hud && (hud.left > 0 || hud.right < this.ctx.width);
+  }
+
   setViewportHeight(height: number): void {
+    if (this.hudBeside()) height = this.getH();
     const v = this.viewer;
     if (!v || v.viewH === height) return;
     v.setViewportHeight(height);

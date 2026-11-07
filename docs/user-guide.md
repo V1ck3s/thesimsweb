@@ -40,7 +40,31 @@ proxy avec mot de passe et HTTPS, ou sur un réseau privé.
   jeu dans le navigateur (§ 3 bis) ; **Play** n'est actif qu'une fois l'import terminé ;
 - le mode de sauvegarde de l'instance, le nombre de fichiers sauvegardés, **Export saves** et
   **Import saves…** (§ 4) ;
-- l'état du stockage du navigateur (persistant ou non, place occupée) et du mode hors ligne (§ 6).
+- l'état du stockage du navigateur (persistant ou non, place occupée) et du mode hors ligne (§ 6) ;
+- la section **Display** : la résolution du jeu et l'interface centrée (ci-dessous).
+
+### Résolution et interface centrée
+
+Le jeu original choisit sa taille d'écran au démarrage (800 × 600, 1024 × 768 avec `-r1024x768`, ou
+la taille que l'astuce « widescreen » met dans `Sims.exe`) et toutes ses fenêtres se placent selon
+cette taille : plus l'écran est grand, plus on voit du quartier et du terrain ; les panneaux gardent
+leur taille. Le portage fait de même :
+
+- **Resolution** : 1024 × 768 par défaut, ou une taille courante de 800 × 600 à 5120 × 2160 (dont
+  5120 × 1440 en 32:9). **Fit the window** prend la taille de la fenêtre du navigateur au lancement
+  (en pixels CSS, ou en pixels réels de l'écran à un zoom Windows de 125 % : voir
+  `client/src/engine/display.ts`). Comme dans l'original, un écran plus large que 1024 prend les mises
+  en page « 800 » des pages du panneau Vie (personnes, cadeaux, centres d'intérêt, relations) : le jeu
+  ne prévoit ces pages larges qu'à exactement 1024 de large.
+- **Keep the interface centred on very wide screens** (option du portage, absente de l'original,
+  désactivée par défaut) : sur un écran plus large que 16:9, le panneau de contrôle, la commande de vue
+  (le disque en bas à gauche) et l'incrustation (picture-in-picture) sont placés dans une bande 16:9
+  centrée ; le terrain occupe toujours tout l'écran, y compris à côté du panneau.
+- Le jeu remplit l'onglet en gardant ses proportions, avec des pixels nets (mise à l'échelle entière
+  quand elle tombe juste, sinon au plus proche ; lissée seulement si la résolution choisie dépasse la
+  fenêtre).
+- Le choix s'applique au prochain lancement (recharger l'onglet du jeu), comme la ligne de commande de
+  l'original. Dans l'URL : `?res=1920x1080` ou `?res=auto`, `?hud=centred` ou `?hud=full`.
 
 Les adresses directes du jeu restent valables : `/game.html`, et `/` suivi d'une query string
 (`/?house=1` entre directement dans la maison 1, `/?nbhd=UserData2` choisit le quartier). Un

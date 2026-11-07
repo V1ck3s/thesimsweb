@@ -13,8 +13,15 @@ export interface GameContext {
   fonts: Fonts;
   strings: Strings;
   state: CPState;
+  /** The screen size (engine/display.ts): the main window's area, as the original's display mode. */
   width: number;
   height: number;
+  /**
+   * The horizontal band the control panel, the view control and the
+   * picture-in-picture are placed in (engine/display.ts hudBand): the whole
+   * width as in the original, or a centred band with the port's centred HUD.
+   */
+  hud?: { left: number; right: number };
   /** cSimsApp services the control panel calls into; the game shell fills it. */
   hooks?: GameHooks;
 }

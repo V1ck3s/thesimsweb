@@ -37,6 +37,7 @@ import { Gfx, TSWin } from "../ui/tswin.js";
 import type { RgbaImage } from "../res/bmp.js";
 import { winMgr } from "../ui/winmgr.js";
 import { WinBudgetDlg } from "./budgetdlg.js";
+import { Compose565GL } from "./compose565gl.js";
 import type { WinCPanel } from "./cpanel.js";
 import { WinHelp } from "./help.js";
 import { getCursor } from "../ui/cursor.js";
@@ -166,6 +167,8 @@ export class WinViewControl extends TSWin {
   private privateBuffer: OffscreenCanvas | null = null;
   /** Compose's work buffer: the parent's pixels under the gadget, read back and blended. */
   private composeBuffer: OffscreenCanvasRenderingContext2D | null = null;
+  /** Dev / check: blend on the CPU (compose565) instead of the GPU (compose565gl.ts). */
+  static cpuCompose = false;
   private bgAlpha: Uint8ClampedArray | null = null;
   private clockFont: FfnFont | null = null;
   private patches = new Map<Mode, ImageBitmap>();
@@ -462,7 +465,8 @@ export class WinViewControl extends TSWin {
     }
     if (parent && this.background) {
       const top = parent.getH() - this.background.height;
-      this.setArea(0, top, this.getW(), top + this.getH());
+      // (left: 0 in the original; the port's centred HUD moves the gadget with the panel)
+      this.setArea(this.area.left, top, this.area.left + this.getW(), top + this.getH());
     }
   }
 
@@ -832,6 +836,8 @@ export class WinViewControl extends TSWin {
     const w = Math.min(cw, x + buf.width, x + aw) - left;
     const h = Math.min(ch, y + buf.height, y + Math.trunc(alpha.length / aw)) - top;
     if (w <= 0 || h <= 0) return;
+    // The same blend on the GPU (cpanel/compose565gl.ts): no read back of the screen.
+    if (!WinViewControl.cpuCompose && GL_COMPOSE.compose(ctx, buf, left, top, w, h, alpha, aw, left - x, top - y)) return;
     let sc = this.composeBuffer;
     if (!sc || sc.canvas.width < w || sc.canvas.height < h) {
       sc = this.composeBuffer = new OffscreenCanvas(buf.width, buf.height).getContext("2d", { willReadFrequently: true });
@@ -871,6 +877,12 @@ export class WinViewControl extends TSWin {
  */
 const ALPHA_TABLE = new Uint8Array(32 * 32 * 32);
 const alphaLevelBuilt = new Uint8Array(32);
+
+/** The GPU compose565, handed the whole table (built at its first use). */
+const GL_COMPOSE = new Compose565GL(() => {
+  for (let level = 0; level < 32; level++) alphaTableLevel(level);
+  return ALPHA_TABLE;
+});
 
 function alphaTableLevel(level: number): void {
   if (alphaLevelBuilt[level]) return;

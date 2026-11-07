@@ -224,12 +224,7 @@ The language comes from the landing page or `?lang=` (`engine/language.ts`, `UI_
     Japanese (cWinDesignCharacter::Init), counted in bytes (see below).
   - Object and UI string sets read through `sim/behavior.ts` (parseStringSet: careers, fame,
     object dialogs, catalog strings) are decoded with the game's code page, not Windows-1252.
-  Not verified: the 800 x 600 page widths. The original picks its resolution at start (the
-  largest mode up to 0x1400 x 0x5a0 the display offers, 1024 x 768 with `-r1024x768`), so
-  800 x 600 only happens on a small display; the port always runs at 1024 x 768
-  (`SCREEN_W` / `SCREEN_H` in `main.ts`): the 800-wide branches (people, gifts, interests,
-  relationships, live popup) are kept but never taken, and the double-byte layouts at that
-  size cannot be checked. Thai (19) draws with cTSDBFontThai (`res/thaifont.ts`): font20th.fon (256 glyphs of
+  Screen size: see "Screen size" below; the double-byte layouts at 800 x 600 are not checked. Thai (19) draws with cTSDBFontThai (`res/thaifont.ts`): font20th.fon (256 glyphs of
   Windows-874, 12 x 20, 1 bit, a blank row above and below: line height 22, baseline 23),
   every instance whatever the size and style; text drawn by clusters (FUN_0060964c: a
   consonant with its vowel above or below and its tone mark, the tables DAT_006d98bc width,
@@ -309,3 +304,45 @@ The language comes from the landing page or `?lang=` (`engine/language.ts`, `UI_
   (+0x188 = 3000) entering build, buy and camera modes, for good in options, and in live mode
   while paused (CPState::Pause: shown or hidden, no timer). Verified: shown 1 s after entering
   buy mode, gone at 4.5 s, not shown in live mode unpaused.
+
+## Screen size (2026-11-07)
+
+The original sets its screen size once, at start (cSimsApp::PreFrameWorkInit): the Mac build
+runs at 800 x 600, or 1024 x 768 with the "r1024x768" switch; the Windows build asks DirectDraw
+for exactly that mode (cTSGraphicSystemW95::Init, FUN_005ef53d looks it up in the mode list,
+no "largest mode" search). The widescreen trick patches those numbers: this install's Sims.exe
+asks for 0x1400 x 0x5a0 (5120 x 1440) unless "-r1024x768" is given, and its kLargeMask
+(Downtown/LargeBack.bmp) is 5120 x 1440 in the files the port reads. Nothing is laid out again
+while the game runs.
+
+The port takes the size as a setting (`client/src/engine/display.ts`: landing page "Display",
+`?res=<w>x<h>` / `?res=auto`, 1024 x 768 by default; "auto" = the browser window at start, in
+CSS pixels or, at a fractional devicePixelRatio below 1.5, device pixels). `main.ts` hands it to
+`WinMgr` (the canvas) and `ctx.width` / `ctx.height` (the main window's area), and every window
+places itself from there as the original does, which the existing ports already did:
+
+- screen-wide windows (splash, neighborhood, towns, CAS, lot view) take the main window's area;
+  the neighborhood and town maps are centred on their background, kLargeMask drawn above 800
+  wide; the lot view's 3D viewport is (width, height - 100) (cAnimDeviceSub::NewWorld);
+- the control panel spans the lot view's width, bottom 150 px (cSimsApp::WindowSetup); the view
+  control is bottom-left (cWinCPanel::PostInit), the subpanels run to the panel's right edge, the
+  picture-in-picture is bottom-right;
+- the people page widths, gift / interest / relationship counts and the live popup test
+  `GetBuffDims()[0] == 0x400` (cWinPeople, cWinLivePopup): exactly 1024 wide, so every other
+  width (wider ones included) takes the 800 layouts, as the widescreen-patched original does;
+  the roof panel tests `== 800`; the transit splash and the town masks test `> 800`;
+- dialogs, message boxes, the budget, help, phone book, magic book, scrapbook and pie menu are
+  centred on (or clamped to) the main window; tooltips are kept on screen;
+- the intro movie fills the game window (stretched, as DirectShow to the client rect).
+
+Checked with screenshots at 1920 x 1080 (neighborhood, its tooltip, family picker, Create a
+Family, lot in Live / Buy / Build / Camera with tooltips) and 5120 x 1440 with the centred HUD
+(lot, Live and Build panels). Not checked at other sizes: the towns, the options panel pages,
+the catalogs' open categories, the transit splash, message boxes over the lot.
+
+Port option, not in the original: the **centred HUD** (`?hud=centred`, landing page checkbox, off
+by default). On a screen wider than 16:9, `ctx.hud` (display.ts `hudBand`) is a centred 16:9
+band (at least 1024 wide): the control panel is placed in it instead of the full width, the view
+control at its left edge (`cpanel/cpanel.ts` postInit, `cpanel/viewcontrol.ts` SetMode), the
+picture-in-picture at its right edge (`world/winpictureinpicture.ts`), and the lot viewport takes
+the whole height (`world/winlotview.ts` hudBeside) so the lot shows left and right of the panel.
