@@ -53,6 +53,7 @@ class LineRender16 extends TerrainRenderer {
       if (clipped && (x < t.clip.left || t.clip.right <= x || y < t.clip.top || t.clip.bottom <= y)) return;
       if (x < 0 || y < 0 || x >= t.width || y >= t.height) return;
       t.color[y * t.width + x] = black;
+      if (t.color2) t.color2[y * t.width + x] = black;
     };
     // 16.16 fixed-point line from the left corner to the top corner.
     const slope = idiv((yTop - yLeft) * 0x10000, half);
@@ -220,6 +221,12 @@ export class Terrain {
    * drawn with it depends on, besides the world and the view: null while a
    * PreCompute is pending or the dirt tool highlights tiles (no reuse).
    */
+  /** Not part of the original: see ColorSwatch.carryLog. */
+  carryLog(log: Map<number, string> | null): void {
+    this.swatch.carryLog = log;
+    this.swatch.carryBorder = !this.interiorOnly;
+  }
+
   cacheKey(): string | null {
     if (this.dirty || this.swatch.stale || this.swatch.highlightAt) return null;
     if (this.terrainZ !== this.keyedZ) {

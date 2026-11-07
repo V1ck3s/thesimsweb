@@ -16,6 +16,7 @@
 
 import { getNextRandomNumber, getSRandSeed, setSRandSeed, sgsRand } from "./random.js";
 import {
+  rgbaLut,
   TerrainRenderer,
   fmadds,
   getColor16FromRGB,
@@ -104,15 +105,42 @@ export class FixRamp {
 /** Unpacked ColorChunk (4 x 16-bit) used for the z values. */
 type ZChunk = Uint16Array;
 
-/** Write one 4-pixel row of 16-bit colors (chunk[at..at+3]) and z values. */
-function putRow4(t: TerrainTarget, x: number, y: number, colors: Uint16Array, at: number, z: ZChunk): void {
+/**
+ * Write one 4-pixel row of 16-bit colors (chunk[at..at+3]) and z values;
+ * `at2`: the colors for the other row parity (TerrainTarget.color2).
+ */
+function putRow4(t: TerrainTarget, x: number, y: number, colors: Uint16Array, at: number, z: ZChunk, at2 = at): void {
   if (y < 0 || y >= t.height) return;
-  const row = y * t.width;
+  const w = t.width;
+  const row = y * w;
+  const col = t.color;
+  const col2 = t.color2;
+  const dep = t.depth;
+  const lut = rgbaLut();
+  if (x >= 0 && x + 4 <= w) {
+    const o = row + x;
+    col[o] = lut[colors[at]!]!;
+    col[o + 1] = lut[colors[at + 1]!]!;
+    col[o + 2] = lut[colors[at + 2]!]!;
+    col[o + 3] = lut[colors[at + 3]!]!;
+    if (col2) {
+      col2[o] = lut[colors[at2]!]!;
+      col2[o + 1] = lut[colors[at2 + 1]!]!;
+      col2[o + 2] = lut[colors[at2 + 2]!]!;
+      col2[o + 3] = lut[colors[at2 + 3]!]!;
+    }
+    dep[o] = z[0]!;
+    dep[o + 1] = z[1]!;
+    dep[o + 2] = z[2]!;
+    dep[o + 3] = z[3]!;
+    return;
+  }
   for (let i = 0; i < 4; i++) {
     const px = x + i;
-    if (px < 0 || px >= t.width) continue;
-    t.color[row + px] = rgbaFrom16(colors[at + i]!);
-    t.depth[row + px] = z[i]!;
+    if (px < 0 || px >= w) continue;
+    col[row + px] = lut[colors[at + i]!]!;
+    if (col2) col2[row + px] = lut[colors[at2 + i]!]!;
+    dep[row + px] = z[i]!;
   }
 }
 
@@ -120,7 +148,9 @@ function putRow4(t: TerrainTarget, x: number, y: number, colors: Uint16Array, at
 function putPixel(t: TerrainTarget, x: number, y: number, c: number, z: number): void {
   if (x < 0 || y < 0 || x >= t.width || y >= t.height) return;
   const i = y * t.width + x;
-  t.color[i] = rgbaFrom16(c);
+  const rgba = rgbaFrom16(c);
+  t.color[i] = rgba;
+  if (t.color2) t.color2[i] = rgba;
   t.depth[i] = z;
 }
 
@@ -153,7 +183,8 @@ export function colorSwatchColumnBlit(
     // The ramps stay inside the table; clamp only to keep reads in bounds.
     s = s < 0 ? 0 : s >= numShades ? numShades - 1 : s;
     c = c < 0 ? 0 : c >= rows ? rows - 1 : c;
-    putRow4(t, x, y + i, table, (c * numShades + s) * 8 + parity * 4, z);
+    const at = (c * numShades + s) * 8;
+    putRow4(t, x, y + i, table, at + parity * 4, z, at + (parity ^ 1) * 4);
     parity ^= 1;
   }
 }
@@ -935,6 +966,18 @@ export class ColorSwatch extends GouraudSwatch {
     return i;
   }
 
+  /**
+   * Not part of the original (perf, HouseViewer.scrollTerrain): when set, the
+   * state each tile took from the tile drawn before it, by tile ((x << 8) | y).
+   */
+  carryLog: Map<number, string> | null = null;
+  /** The border tiles are drawn too (cTerrain +0x1d clear): their whole state is carried. */
+  carryBorder = false;
+
+  private logCarry(x: number, y: number): void {
+    this.carryLog?.set((x << 8) | y, `${this.mesh.join()}|${this.tileGrass}|${this.tileRandom}|${this.bladeCount}|${this.bladeCount ? this.bladeStart : 0}|${+this.shortBlades}`);
+  }
+
   override predraw(rp: RenderParam, world: RotatableWorld, x: number, y: number, alt: PackedAlt): void {
     super.predraw(rp, world, x, y, alt);
     this.highlight = 0;
@@ -946,7 +989,11 @@ export class ColorSwatch extends GouraudSwatch {
     const rx = ((x - world.minX) << 24) >> 24;
     const ry = ((y - world.minY) << 24) >> 24;
     this.initGrass(rp.scale);
-    if (!world.inInterior(x, y)) return;
+    if (!world.inInterior(x, y)) {
+      // Everything else stays as the previous tile left it (drawn only without cTerrain's interior-only flag).
+      if (this.carryBorder) this.logCarry(x, y);
+      return;
+    }
 
     const m = this.mesh;
     if (this.highlight !== 0) {
@@ -967,6 +1014,7 @@ export class ColorSwatch extends GouraudSwatch {
     // +0x368 (sprite grass kind) is only computed when fEnableSpriteGrass,
     // which is off, and nothing draws it.
 
+    let carried = false;
     if (!this.fEnableBladeGrass) {
       this.bladeCount = 0;
     } else {
@@ -999,12 +1047,15 @@ export class ColorSwatch extends GouraudSwatch {
         // Floored tile: no blades. With a diagonal wall the tile keeps the
         // previous tile's blade count (the original leaves it untouched).
         this.bladeCount = 0;
+      } else {
+        carried = true;
       }
     }
     if (this.bladeCount !== 0) {
       const span = (this.totalBlades - this.bladeCount) >>> 0;
       this.bladeStart = span === 0 ? 0 : (this.tileRandom >>> 0) % span;
     }
+    if (carried) this.logCarry(x, y);
   }
 
   /** Lay out the column's blades for this tile: position, length and color (Draw / DrawClipped). */

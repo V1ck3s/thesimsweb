@@ -11,6 +11,12 @@ export interface TerrainTarget {
   height: number;
   /** RGBA8 pixels packed little-endian: 0xAABBGGRR (alpha 255). */
   color: Uint32Array;
+  /**
+   * Not part of the original (perf, HouseViewer.scrollTerrain): when set, the
+   * pixels as they would be with the other row parity (the swatches dither
+   * by screen row), written along with `color`.
+   */
+  color2?: Uint32Array;
   /** 16-bit z-buffer, same units as the original (0xffff = cleared/far). */
   depth: Uint16Array;
   /** Clip rectangle in target pixels (the original's lbl_105BA5F4 rect). */
@@ -89,13 +95,13 @@ let displayFormat = 2;
  * ((v << 3) | (v >> 2)) is available as an option.
  */
 let replicateLowBits = false;
-let rgbaLut: Uint32Array | null = null;
+let rgbaLutTable: Uint32Array | null = null;
 
 export function setDisplayFormat(format: number, replicate = false): void {
   if (format !== displayFormat || replicate !== replicateLowBits) {
     displayFormat = format;
     replicateLowBits = replicate;
-    rgbaLut = null;
+    rgbaLutTable = null;
   }
 }
 
@@ -140,17 +146,22 @@ function expand(v: number, bits: number): number {
 
 /** 16-bit framebuffer color -> RGBA8 (0xAABBGGRR) as it shows on screen. */
 export function rgbaFrom16(c: number): number {
-  if (!rgbaLut) {
+  return rgbaLut()[c & 0xffff]!;
+}
+
+/** rgbaFrom16 as a table of the 65536 colors. */
+export function rgbaLut(): Uint32Array {
+  if (!rgbaLutTable) {
     const [rb, gb, bb, rs, gs, bs] = layout();
-    rgbaLut = new Uint32Array(0x10000);
+    rgbaLutTable = new Uint32Array(0x10000);
     for (let i = 0; i < 0x10000; i++) {
       const r = expand((i >> rs) & ((1 << rb) - 1), rb);
       const g = expand((i >> gs) & ((1 << gb) - 1), gb);
       const b = expand((i >> bs) & ((1 << bb) - 1), bb);
-      rgbaLut[i] = ((0xff << 24) | (b << 16) | (g << 8) | r) >>> 0;
+      rgbaLutTable[i] = ((0xff << 24) | (b << 16) | (g << 8) | r) >>> 0;
     }
   }
-  return rgbaLut[c & 0xffff]!;
+  return rgbaLutTable;
 }
 
 /** Single-precision fused multiply-add (PPC fmadds): round(a * b + c) to float. */

@@ -275,9 +275,19 @@ export class Compositor {
    */
   light: { base: number; maps: LitMap[] } | null = null;
   private readonly lightTex = new Map<object, WebGLTexture>();
-  /** Raw layer textures (terrain), reused across frames. */
-  private rawColor: WebGLTexture | null = null;
-  private rawZ: WebGLTexture | null = null;
+  /**
+   * Raw layer textures (terrain), reused across frames: two sets, so a
+   * scrolled layer is copied shifted from one to the other on the GPU
+   * (shiftRaw); `rawCur` is the one drawn. Each holds the colors for an
+   * even and for an odd view origin row (the swatches dither by screen
+   * row) and the depth, with their framebuffers.
+   */
+  private raw: Array<{ tex: WebGLTexture[]; fb: WebGLFramebuffer[] }> = [];
+  private rawCur = 0;
+  private rawW = 0;
+  private rawH = 0;
+  /** The current raw layer holds an upload for the target's size. */
+  private rawValid = false;
   private rawZBytes: Uint16Array | null = null;
   /** drawWallSprite's uniform arrays (rewritten every call). */
   private readonly wallColIdx = new Int32Array(8);
@@ -378,6 +388,7 @@ export class Compositor {
     gl.uniform1f(this.u.uViewH!, height);
     gl.viewport(0, 0, width, height);
     this.rawZBytes = null;
+    this.rawValid = false;
   }
 
   /** The frame is finished: copy the target's color to the canvas. */
@@ -773,29 +784,104 @@ export class Compositor {
     });
   }
 
-  /**
-   * Full-target layer with its own 16-bit depth (terrain swatch output).
-   * `changed` false redraws the layer uploaded by the previous call.
-   */
-  drawRaw(color: Uint32Array, depth: Uint16Array, changed = true): void {
+  /** The raw layer textures at the target's size (allocated, contents undefined). */
+  private ensureRaw(): void {
     const gl = this.gl;
     const w = this.width;
     const h = this.height;
-    if (changed || !this.rawColor || !this.rawZ) {
-      this.rawColor ??= this.texture();
-      gl.bindTexture(gl.TEXTURE_2D, this.rawColor);
-      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, w, h, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array(color.buffer, color.byteOffset, w * h * 4));
-      // RG8 big-endian depth: one u16 store per pixel (the platform is little-endian).
-      const zm = (this.rawZBytes ??= new Uint16Array(w * h));
-      for (let i = 0; i < w * h; i++) {
-        const d = depth[i]!;
-        zm[i] = (d >> 8) | ((d & 0xff) << 8);
-      }
-      this.rawZ ??= this.texture();
-      gl.bindTexture(gl.TEXTURE_2D, this.rawZ);
-      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RG8, w, h, 0, gl.RG, gl.UNSIGNED_BYTE, new Uint8Array(zm.buffer));
+    if (this.raw.length && this.rawW === w && this.rawH === h) return;
+    for (const r of this.raw) {
+      for (const t of r.tex) gl.deleteTexture(t);
+      for (const f of r.fb) gl.deleteFramebuffer(f);
     }
-    const tex: SpriteTex = { width: w, height: h, color: this.rawColor, zmode: this.rawZ, hasOpaque: true, hasAlpha: false };
+    this.raw = [];
+    for (let i = 0; i < 2; i++) {
+      const tex: WebGLTexture[] = [];
+      const fb: WebGLFramebuffer[] = [];
+      for (const [fmt, ifmt] of [[gl.RGBA, gl.RGBA8], [gl.RGBA, gl.RGBA8], [gl.RG, gl.RG8]] as const) {
+        const t = this.texture();
+        gl.texImage2D(gl.TEXTURE_2D, 0, ifmt, w, h, 0, fmt, gl.UNSIGNED_BYTE, null);
+        const f = gl.createFramebuffer()!;
+        gl.bindFramebuffer(gl.FRAMEBUFFER, f);
+        gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, t, 0);
+        tex.push(t);
+        fb.push(f);
+      }
+      this.raw.push({ tex, fb });
+    }
+    gl.bindFramebuffer(gl.FRAMEBUFFER, this.target);
+    this.rawW = w;
+    this.rawH = h;
+    this.rawCur = 0;
+    this.rawValid = false;
+  }
+
+  /**
+   * Uploads the rectangle (x, y, w, h) of the raw layer: `even` / `odd` the
+   * colors for an even / odd view origin row (RGBA8 packed), `depth` the
+   * 16-bit depth, `w` x `h` pixels each.
+   */
+  uploadRaw(x: number, y: number, w: number, h: number, even: Uint32Array, odd: Uint32Array, depth: Uint16Array): void {
+    const gl = this.gl;
+    this.ensureRaw();
+    const r = this.raw[this.rawCur]!;
+    const n = w * h;
+    gl.bindTexture(gl.TEXTURE_2D, r.tex[0]!);
+    gl.texSubImage2D(gl.TEXTURE_2D, 0, x, y, w, h, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array(even.buffer, even.byteOffset, n * 4));
+    gl.bindTexture(gl.TEXTURE_2D, r.tex[1]!);
+    gl.texSubImage2D(gl.TEXTURE_2D, 0, x, y, w, h, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array(odd.buffer, odd.byteOffset, n * 4));
+    // RG8 big-endian depth: one u16 store per pixel (the platform is little-endian).
+    if (!this.rawZBytes || this.rawZBytes.length < n) this.rawZBytes = new Uint16Array(this.width * this.height);
+    const zm = this.rawZBytes;
+    for (let i = 0; i < n; i++) {
+      const d = depth[i]!;
+      zm[i] = (d >> 8) | ((d & 0xff) << 8);
+    }
+    gl.bindTexture(gl.TEXTURE_2D, r.tex[2]!);
+    gl.texSubImage2D(gl.TEXTURE_2D, 0, x, y, w, h, gl.RG, gl.UNSIGNED_BYTE, new Uint8Array(zm.buffer, 0, n * 2));
+    if (x === 0 && y === 0 && w === this.width && h === this.height) this.rawValid = true;
+  }
+
+  /**
+   * Not part of the original (perf): moves the raw layer's contents by
+   * (dx, dy) pixels on the GPU (the view scrolled); the uncovered strips are
+   * left for uploadRaw. False when there is no layer to move.
+   */
+  shiftRaw(dx: number, dy: number): boolean {
+    if (!this.rawValid || this.rawW !== this.width || this.rawH !== this.height) return false;
+    const gl = this.gl;
+    const w = this.width;
+    const h = this.height;
+    const src = this.raw[this.rawCur]!;
+    const dst = this.raw[1 - this.rawCur]!;
+    const sx0 = Math.max(0, -dx);
+    const sy0 = Math.max(0, -dy);
+    const sx1 = Math.min(w, w - dx);
+    const sy1 = Math.min(h, h - dy);
+    gl.disable(gl.SCISSOR_TEST);
+    if (sx1 > sx0 && sy1 > sy0) {
+      for (let i = 0; i < src.fb.length; i++) {
+        gl.bindFramebuffer(gl.READ_FRAMEBUFFER, src.fb[i]!);
+        gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, dst.fb[i]!);
+        gl.blitFramebuffer(sx0, sy0, sx1, sy1, sx0 + dx, sy0 + dy, sx1 + dx, sy1 + dy, gl.COLOR_BUFFER_BIT, gl.NEAREST);
+      }
+    }
+    gl.bindFramebuffer(gl.FRAMEBUFFER, this.target);
+    this.rawCur = 1 - this.rawCur;
+    return true;
+  }
+
+  /**
+   * Full-target layer with its own 16-bit depth (terrain swatch output):
+   * `even` / `odd` as for uploadRaw, drawn for a view origin row of parity
+   * `oddRow`. `changed` false redraws the layer as it is (uploaded or
+   * shifted before).
+   */
+  drawRaw(even: Uint32Array, odd: Uint32Array, depth: Uint16Array, oddRow: boolean, changed = true): void {
+    if (changed || !this.rawValid) this.uploadRaw(0, 0, this.width, this.height, even, odd, depth);
+    const gl = this.gl;
+    const r = this.raw[this.rawCur]!;
+    const tex: SpriteTex = { width: this.width, height: this.height, color: r.tex[oddRow ? 1 : 0]!, zmode: r.tex[2]!, hasOpaque: true, hasAlpha: false };
     this.draw(tex, 0, 0, false, () => {
       gl.uniform1i(this.u.uMode!, 2);
     });

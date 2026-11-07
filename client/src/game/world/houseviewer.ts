@@ -22,6 +22,7 @@ import { RenderParam } from "./renderparam.js";
 import { getOverlappingSprite, poolCornerSpriteId, poolSpriteId, rotateTileBits, type ByteLayer } from "./pools.js";
 import { LIGHT_POOLS_ENABLED, lightMapSet, NO_LIGHT, processFloorLightEntry } from "./lightmaps.js";
 import { RoofRenderer } from "./roofrender.js";
+import { ColorSwatch } from "./terrain_swatch.js";
 import { getNextRandomNumber } from "./random.js";
 import { PX_COLOR, type SpriteFrame } from "./spr.js";
 import { getViewWall } from "./tools/wallworld.js";
@@ -45,6 +46,8 @@ export interface TerrainTarget {
   width: number;
   height: number;
   color: Uint32Array;
+  /** The pixels with the other row parity (terrain_renderer.ts TerrainTarget). */
+  color2?: Uint32Array;
   depth: Uint16Array;
   clip: { left: number; top: number; right: number; bottom: number };
 }
@@ -54,6 +57,8 @@ export interface TerrainDrawer {
   draw(target: TerrainTarget, world: RotatableWorld, x: number, y: number, sx: number, sy: number, alt: readonly number[], scale: number): void;
   /** Identity of the drawer's own state for TerrainCache (null: do not reuse a frame). */
   cacheKey?(): string | null;
+  /** Collects the state tiles take from the tile drawn before them (HouseViewer.scrollTerrain). */
+  carryLog?(log: Map<number, string> | null): void;
 }
 
 /**
@@ -61,10 +66,15 @@ export interface TerrainDrawer {
  * frame, reused while nothing it reads changed. Its inputs are the view
  * (origin, scale, rotation, bounds), the drawer's own state (cacheKey) and
  * the fixed world arrays RenderTerrainRow and the swatches read, compared
- * byte for byte with a copy taken when the frame was drawn.
+ * byte for byte with a copy taken when the frame was drawn. A scroll only
+ * moves the frame (the origin is not part of the key; check gives the
+ * shift): the terrain's pixels do not depend on where the view is, so the
+ * layer is moved on the GPU and only the uncovered strips are drawn.
  */
 class TerrainCache {
   private key: string | null = null;
+  private originX = 0;
+  private originY = 0;
   private snap: Uint8Array[] = [];
   /** RenderParam fields left by the last RenderTerrainRow (later draws read the level). */
   private rp: Partial<RenderParam> = {};
@@ -78,21 +88,26 @@ class TerrainCache {
     const t = v.terrain?.cacheKey?.() ?? null;
     if (t === null || v.thumbnailClearColor !== null) return null;
     const w = v.world;
-    return `${t}|${v.viewW}x${v.viewH}|${v.originX},${v.originY},${v.scale},${w.rotation},${w.size},${w.minX},${w.maxX},${w.minY},${w.maxY}|${+cheatFlags.genable.terrain}`;
+    return `${t}|${v.viewW}x${v.viewH}|${v.scale},${w.rotation},${w.size},${w.minX},${w.maxX},${w.minY},${w.maxY}|${+cheatFlags.genable.terrain}`;
   }
 
-  /** Whether the target still holds the terrain pass for the viewer's current state. */
-  valid(v: HouseViewer): boolean {
+  /**
+   * How far the last terrain pass must move to be the viewer's current one
+   * ({0, 0}: as it is), or null when it must be drawn again.
+   */
+  check(v: HouseViewer): { dx: number; dy: number } | null {
     const key = TerrainCache.keyOf(v);
-    if (key === null || key !== this.key) return false;
+    if (key === null || key !== this.key) return null;
     const now = TerrainCache.arrays(v.world);
-    if (now.length !== this.snap.length) return false;
-    for (let i = 0; i < now.length; i++) if (!sameBytes(now[i]!, this.snap[i]!)) return false;
-    return true;
+    if (now.length !== this.snap.length) return null;
+    for (let i = 0; i < now.length; i++) if (!sameBytes(now[i]!, this.snap[i]!)) return null;
+    return { dx: v.originX - this.originX, dy: v.originY - this.originY };
   }
 
   /** Record the state the target was just drawn for. */
   store(v: HouseViewer, rp: RenderParam): void {
+    this.originX = v.originX;
+    this.originY = v.originY;
     this.key = TerrainCache.keyOf(v);
     this.snap = this.key === null ? [] : TerrainCache.arrays(v.world).map((a, i) => {
       const old = this.snap[i];
@@ -163,6 +178,15 @@ export class HouseViewer {
   private readonly waterTex = new Map<number, SpriteTex | null>();
   private target: TerrainTarget;
   private readonly terrainCache = new TerrainCache();
+  /** The scroll strips' terrain pixels (see renderStatic). */
+  private stripColor = new Uint32Array(0);
+  private stripColor2 = new Uint32Array(0);
+  private stripDepth = new Uint16Array(0);
+  /** computeTerrainExtents for the last full terrain pass. */
+  private extentTop = new Int32Array(0);
+  private extentBottom = new Int32Array(0);
+  /** ColorSwatch.carryLog of the last terrain pass. */
+  private carried = new Map<number, string>();
   terrain: TerrainDrawer | null = null;
   walls: WallDrawer | null = null;
   objects: ObjectDrawer | null = null;
@@ -232,6 +256,7 @@ export class HouseViewer {
       width: comp.width,
       height: comp.height,
       color: new Uint32Array(comp.width * comp.height),
+      color2: new Uint32Array(comp.width * comp.height),
       depth: new Uint16Array(comp.width * comp.height),
       clip: { left: 0, top: 0, right: comp.width, bottom: comp.height },
     };
@@ -864,6 +889,174 @@ export class HouseViewer {
     comp.writeRegion(left, top, cw, ch, out);
   }
 
+  /**
+   * The rows of pixels each tile can draw, relative to its top corner at
+   * altitude 0 (scrollTerrain): cTerrain::Draw's tile rectangle
+   * (cColorSwatch::ModifyTileRect's room for the blades included) and
+   * ColorSwatch.draw's columns, which can run past it: each half's columns
+   * start at py - (corner << (scale + 1)) and step their top and height
+   * linearly, so the extremes are at the first and last column; the blades
+   * rise from a column's top.
+   */
+  private computeTerrainExtents(): void {
+    const w = this.world;
+    const s = this.scale;
+    const s1 = s + 1;
+    const last = (2 << s) - 1;
+    const blades = ColorSwatch.grassHeight[s - 1]! + 1;
+    const n = w.size;
+    const top = new Int32Array(n * n);
+    const bottom = new Int32Array(n * n);
+    for (let i = 0; i < n; i++) {
+      for (let j = 0; j < n; j++) {
+        const [a0, a1, a2, a3] = w.getPackedAlt(w.minX + i, w.minY + j);
+        // cTerrain::Draw's rectangle, with ModifyTileRect's room.
+        const ys = [-(a1 << s1), -((a2 - 2) << s1), -((a0 - 2) << s1), -((a3 - 4) << s1)];
+        let lo = Math.min(...ys) - 2 - blades;
+        let hi = Math.max(...ys) + 2;
+        const py = 4 << s;
+        const dh = a1 - a3 + 4;
+        for (const [corner, dy] of [[a0, a1 - a0 + 2], [a2, a1 - a2 + 2]] as const) {
+          for (const k of [0, last]) {
+            const cy = py - (corner << s1) - k * dy;
+            const ch = corner - a3 + 2 + k * dh;
+            lo = Math.min(lo, cy - blades);
+            hi = Math.max(hi, cy + Math.max(0, ch));
+          }
+        }
+        top[i * n + j] = lo;
+        bottom[i * n + j] = hi;
+      }
+    }
+    this.extentTop = top;
+    this.extentBottom = bottom;
+  }
+
+  /**
+   * The rows [lo, hi) the tiles crossing the view's row `y` can draw (null:
+   * none crosses it), of the tiles whose center is within the columns
+   * [x0, x1) (the others are culled, tileVisible): the most a clip or a cull
+   * at that row can change.
+   */
+  private crossing(y: number, x0: number, x1: number): [number, number] | null {
+    const w = this.world;
+    const s = this.scale;
+    const n = w.size;
+    const o = this.tileToPoint(w.minX, w.minY, 1, s, 0);
+    let lo = Infinity;
+    let hi = -Infinity;
+    for (let i = 0; i < n; i++) {
+      for (let j = 0; j < n; j++) {
+        const sx = o.h + (8 << s) * (i - j);
+        if (sx < x0 || sx >= x1) continue;
+        const sy = o.v + (4 << s) * (i + j);
+        const t = sy + this.extentTop[i * n + j]!;
+        const b = sy + this.extentBottom[i * n + j]!;
+        if (t <= y && y <= b) {
+          if (t < lo) lo = t;
+          if (b + 1 > hi) hi = b + 1;
+        }
+      }
+    }
+    return lo === Infinity ? null : [lo, hi];
+  }
+
+  /**
+   * Not part of the original (perf): the terrain pass of a view scrolled by
+   * (dx, dy) since the last one, made from that one. The terrain's pixels
+   * follow the view except near its edges, where the original's clipping
+   * shows: tiles are culled by their top corner (tileVisible) and by a
+   * rectangle the swatch's columns overrun, a column clipped at the bottom
+   * takes the clip's row parity, the right edge drops a partial column, and
+   * the swatches dither by the screen row's parity. So the layer is moved on
+   * the GPU (Compositor.shiftRaw; the layer keeps both parities' colors, see
+   * TerrainTarget.color2), then the strips it uncovers and the bands along
+   * the edges, old and new, are drawn again by the whole pass (the same tiles
+   * in the same order, so the swatches' carried state and the RenderParam end
+   * as a full pass leaves them) clipped to a target that reaches past each
+   * strip's inner edges. False (draw it all) when that is more than the
+   * view, or when a tile took another state from the tile before it.
+   */
+  private scrollTerrain(dx: number, dy: number, clear: number, pass: (t: TerrainTarget, ox: number, oy: number) => void): boolean {
+    const w = this.target.width;
+    const h = this.target.height;
+    if (cheatFlags.mapEdit || (dx & 3) !== 0 || Math.abs(dx) * 2 >= w || Math.abs(dy) * 2 >= h) return false;
+    // The tiles drawn in this view or the last one (tileVisible: center within half a tile of the view).
+    const x0 = -(8 << this.scale) - Math.abs(dx);
+    const x1 = w + (8 << this.scale) + Math.abs(dx);
+    const cols: Array<[number, number]> = [];
+    const rows: Array<[number, number]> = [];
+    if (dx !== 0) {
+      cols.push(dx > 0 ? [0, dx] : [w + dx, w]);
+      const right = (w & ~3) - 4;
+      cols.push([right, w], [right + dx, w + dx]);
+    }
+    if (dy !== 0) {
+      rows.push(dy > 0 ? [0, dy] : [h + dy, h]);
+      // The top and bottom edges, new and moved.
+      for (const y of [0, dy, h, h + dy]) {
+        const c = this.crossing(y, x0, x1);
+        if (c) rows.push(c);
+      }
+    }
+    const merge = (list: Array<[number, number]>, max: number, align: number): Array<[number, number]> => {
+      const out: Array<[number, number]> = [];
+      const sorted = list
+        .map(([a, b]): [number, number] => [Math.max(0, Math.floor(a / align) * align), Math.min(max, Math.ceil(b / align) * align)])
+        .filter(([a, b]) => a < b)
+        .sort((p, q) => p[0] - q[0]);
+      for (const r of sorted) {
+        const last = out[out.length - 1];
+        if (last && r[0] <= last[1]) last[1] = Math.max(last[1], r[1]);
+        else out.push(r);
+      }
+      return out;
+    };
+    const colSpans = merge(cols, w, 4);
+    const rowSpans = merge(rows, h, 1);
+    let area = 0;
+    for (const [a, b] of colSpans) area += (b - a) * h;
+    // Each strip drawn from a row no tile crossing its top crosses, down to one no tile crossing its bottom crosses.
+    const spans = rowSpans.map(([a, b]) => [a, b, Math.max(0, Math.min(a, this.crossing(a, x0, x1)?.[0] ?? a)) & ~1, Math.min(h, Math.max(b, this.crossing(b, x0, x1)?.[1] ?? b))] as const);
+    for (const [, , y0, y1] of spans) area += (y1 - y0) * w;
+    if (area > w * h) return false;
+    if (!this.comp.shiftRaw(dx, dy)) return false;
+    const odd = (this.originY & 1) !== 0;
+    // Draws the view's pixels (x, y0, cw, y1 - y0), even y0 (the dither's parity), uploads rows [u0, u1).
+    const draw = (x: number, cw: number, y0: number, y1: number, u0: number, u1: number): void => {
+      const ch = y1 - y0;
+      const n = cw * ch;
+      if (this.stripColor.length < n) {
+        this.stripColor = new Uint32Array(n);
+        this.stripColor2 = new Uint32Array(n);
+        this.stripDepth = new Uint16Array(n);
+      }
+      const t: TerrainTarget = { width: cw, height: ch, color: this.stripColor.subarray(0, n), color2: this.stripColor2.subarray(0, n), depth: this.stripDepth.subarray(0, n), clip: { left: 0, top: 0, right: cw, bottom: ch } };
+      t.color.fill(clear);
+      t.color2!.fill(clear);
+      t.depth.fill(0xffff);
+      pass(t, x, y0);
+      const from = (u0 - y0) * cw;
+      const to = (u1 - y0) * cw;
+      // y0 is even: `color` has the view's parity, as in a full pass.
+      const c = t.color.subarray(from, to);
+      const c2 = t.color2!.subarray(from, to);
+      this.comp.uploadRaw(x, u0, cw, u1 - u0, odd ? c2 : c, odd ? c : c2, t.depth.subarray(from, to));
+    };
+    const log = new Map<number, string>();
+    this.terrain?.carryLog?.(log);
+    for (const [a, b] of colSpans) draw(a, b - a, 0, h, 0, h);
+    for (const [a, b, y0, y1] of spans) draw(0, w, y0, y1, a, b);
+    this.terrain?.carryLog?.(null);
+    // A tile the scroll gave another predecessor may draw differently anywhere: all again.
+    for (const [k, v] of log) {
+      const old = this.carried.get(k);
+      if (old !== undefined && old !== v) return false;
+    }
+    this.carried = log;
+    return true;
+  }
+
   /** HouseViewer::RenderStatic: rows of tiles of equal x + y, top to bottom. */
   private renderStatic(level: number, terrainPass: boolean, rp: RenderParam): void {
     const w = this.world;
@@ -876,21 +1069,39 @@ export class HouseViewer {
     const tileH = 8 << s;
     const margin = this.levelPx() * 2 + (0x40 << (s + 1));
     if (terrainPass) {
-      const reuse = this.terrainCache.valid(this);
-      if (reuse) {
-        this.terrainCache.restore(rp);
-      } else {
-        const c = this.thumbnailClearColor ?? CLEAR_COLOR;
-        this.target.color.fill(0xff000000 | ((c & 0xff) << 16) | (c & 0xff00) | ((c >> 16) & 0xff));
-        this.target.depth.fill(0xffff);
+      const c = this.thumbnailClearColor ?? CLEAR_COLOR;
+      const clear = 0xff000000 | ((c & 0xff) << 16) | (c & 0xff00) | ((c >> 16) & 0xff);
+      const terrainRows = (t: TerrainTarget, ox: number, oy: number): void => {
         for (const r of rows) {
           const top = this.tileToPoint(r.x, r.y, level, s, 0).v;
           if (top - margin > this.viewH || top + tileH < 0) continue;
-          this.renderTerrainRow(r.x, r.y, r.count, step, level, rp);
+          this.renderTerrainRow(r.x, r.y, r.count, step, level, rp, t, ox, oy);
         }
+      };
+      const shift = this.terrainCache.check(this);
+      const t = this.target;
+      // The pass draws `color` for the view's origin row parity, `color2` for the other.
+      const odd = (this.originY & 1) !== 0;
+      const draw = (changed: boolean): void => this.comp.drawRaw(odd ? t.color2! : t.color, odd ? t.color : t.color2!, t.depth, odd, changed);
+      if (shift && shift.dx === 0 && shift.dy === 0) {
+        this.terrainCache.restore(rp);
+        draw(false);
+      } else if (shift && this.scrollTerrain(shift.dx, shift.dy, clear, terrainRows)) {
         this.terrainCache.store(this, rp);
+        draw(false);
+      } else {
+        t.color.fill(clear);
+        t.color2!.fill(clear);
+        t.depth.fill(0xffff);
+        const log = new Map<number, string>();
+        this.terrain?.carryLog?.(log);
+        terrainRows(this.target, 0, 0);
+        this.terrain?.carryLog?.(null);
+        this.carried = log;
+        this.computeTerrainExtents();
+        this.terrainCache.store(this, rp);
+        draw(true);
       }
-      this.comp.drawRaw(this.target.color, this.target.depth, !reuse);
       for (const r of rows) {
         const top = this.tileToPoint(r.x, r.y, level, s, 0).v;
         if (top - margin > this.viewH || top + tileH < 0) continue;
@@ -910,8 +1121,12 @@ export class HouseViewer {
     return sx + (8 << s) >= 0 && sx - (8 << s) < this.viewW && sy + (8 << s) >= 0 && sy - (0x40 << (s + 1)) < this.viewH;
   }
 
-  /** RenderTerrainRow, terrain half: cTerrain::Draw per tile into the software target. */
-  private renderTerrainRow(x0: number, y0: number, count: number, step: readonly [number, number], level: number, rp: RenderParam): void {
+  /**
+   * RenderTerrainRow, terrain half: cTerrain::Draw per tile into the software
+   * target; `t` holds the view's pixels from (ox, oy) on (the whole view, or a
+   * strip of it, HouseViewer.scrollTerrain).
+   */
+  private renderTerrainRow(x0: number, y0: number, count: number, step: readonly [number, number], level: number, rp: RenderParam, t: TerrainTarget, ox: number, oy: number): void {
     const terrain = this.terrain;
     if (!terrain) return;
     const w = this.world;
@@ -925,7 +1140,7 @@ export class HouseViewer {
       const alt = w.getPackedAlt(x, y);
       rp.setGridCoords(...this.fixedCenter(x, y), 1);
       // (lbl_105BA674: "genable terrain")
-      if (cheatFlags.genable.terrain) terrain.draw(this.target, w, x, y, p.h, p.v, alt, this.scale);
+      if (cheatFlags.genable.terrain) terrain.draw(t, w, x, y, p.h - ox, p.v - oy, alt, this.scale);
     }
   }
 

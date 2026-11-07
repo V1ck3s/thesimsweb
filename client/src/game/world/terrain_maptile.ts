@@ -56,6 +56,7 @@ export class MapTileSwatch extends TerrainRenderer {
       if (clipped && (x < t.clip.left || t.clip.right <= x || y < t.clip.top || t.clip.bottom <= y)) return;
       if (x < 0 || y < 0 || x >= t.width || y >= t.height) return;
       t.color[y * t.width + x] = c;
+      if (t.color2) t.color2[y * t.width + x] = c;
     };
     const column = (x: number, y: number, count: number): void => {
       let row = 0;
