@@ -95,14 +95,16 @@ function expand565(c: number): [number, number, number] {
   return [r << 3, g << 2, b << 3];
 }
 
-/** Quantize to 565 and back, like a pixel of the game's 16-bit buffers. */
+/**
+ * Quantize to 565 and back, like a pixel of the game's 16-bit buffers
+ * (expand565 of the 565 color: the low bits of each channel cleared).
+ */
 function quantize(p: Pixels): void {
   const d = p.data;
   for (let i = 0; i < d.length; i += 4) {
-    const [r, g, b] = expand565(((d[i]! & 0xf8) << 8) | ((d[i + 1]! & 0xfc) << 3) | (d[i + 2]! >> 3));
-    d[i] = r;
-    d[i + 1] = g;
-    d[i + 2] = b;
+    d[i] = d[i]! & 0xf8;
+    d[i + 1] = d[i + 1]! & 0xfc;
+    d[i + 2] = d[i + 2]! & 0xf8;
     d[i + 3] = 255;
   }
 }
@@ -239,48 +241,77 @@ function shrinkWrap(p: Pixels, r: Rect, bg: number): Rect | null {
   return { left: l - r.left, top: t - r.top, right: r.right - 1 - rr, bottom: r.bottom - 1 - b };
 }
 
-/** ScaleBitmap(sx, sy, buffer, rect): separable tent-filtered resample of `r` to w x h. */
-function scaleBitmap(p: Pixels, r: Rect, w: number, h: number): Pixels {
-  const pass = (srcW: number, srcH: number, get: (x: number, y: number, c: number) => number, dstW: number, horizontal: boolean): Float32Array => {
-    const outW = horizontal ? dstW : srcW;
-    const outH = horizontal ? srcH : dstW;
-    const n = horizontal ? srcW : srcH;
-    const scale = dstW / n;
-    const radius = Math.max(1, 1 / scale);
-    const out = new Float32Array(outW * outH * 3);
-    for (let o = 0; o < dstW; o++) {
-      const center = (o + 0.5) / scale - 0.5;
-      const lo = Math.max(0, Math.ceil(center - radius));
-      const hi = Math.min(n - 1, Math.floor(center + radius));
-      const taps: [number, number][] = [];
-      let sum = 0;
-      for (let s = lo; s <= hi; s++) {
-        const wt = Math.max(0, 1 - Math.abs(s - center) / radius);
-        if (wt > 0) {
-          taps.push([s, wt]);
-          sum += wt;
-        }
-      }
-      if (!taps.length) taps.push([Math.min(n - 1, Math.max(0, Math.round(center))), (sum = 1)]);
-      const other = horizontal ? srcH : srcW;
-      for (let k = 0; k < other; k++) {
-        for (let c = 0; c < 3; c++) {
-          let v = 0;
-          for (const [s, wt] of taps) v += wt * (horizontal ? get(s, k, c) : get(k, s, c));
-          const idx = horizontal ? (k * outW + o) * 3 + c : (o * outW + k) * 3 + c;
-          out[idx] = v / sum;
-        }
+/** One output position of a resample pass: the source positions and weights it averages. */
+interface Taps {
+  at: Int32Array;
+  wt: Float64Array;
+  sum: number;
+}
+
+/** The tent-filter taps of each of `dstN` positions resampled from `n`. */
+function tapsFor(n: number, dstN: number): Taps[] {
+  const scale = dstN / n;
+  const radius = Math.max(1, 1 / scale);
+  const out: Taps[] = [];
+  for (let o = 0; o < dstN; o++) {
+    const center = (o + 0.5) / scale - 0.5;
+    const lo = Math.max(0, Math.ceil(center - radius));
+    const hi = Math.min(n - 1, Math.floor(center + radius));
+    const at: number[] = [];
+    const wt: number[] = [];
+    let sum = 0;
+    for (let s = lo; s <= hi; s++) {
+      const w = Math.max(0, 1 - Math.abs(s - center) / radius);
+      if (w > 0) {
+        at.push(s);
+        wt.push(w);
+        sum += w;
       }
     }
-    return out;
-  };
+    if (!at.length) {
+      at.push(Math.min(n - 1, Math.max(0, Math.round(center))));
+      wt.push((sum = 1));
+    }
+    out.push({ at: Int32Array.from(at), wt: Float64Array.from(wt), sum });
+  }
+  return out;
+}
+
+/** ScaleBitmap(sx, sy, buffer, rect): separable tent-filtered resample of `r` to w x h. */
+function scaleBitmap(p: Pixels, r: Rect, w: number, h: number): Pixels {
   const cw = r.right - r.left;
   const ch = r.bottom - r.top;
-  const h1 = pass(cw, ch, (x, y, c) => p.data[((r.top + y) * p.w + r.left + x) * 4 + c]!, w, true);
-  const v = pass(w, ch, (x, y, c) => h1[(y * w + x) * 3 + c]!, h, false);
+  // Horizontal pass: cw x ch (of the source's RGBA) -> w x ch RGB.
+  const h1 = new Float32Array(w * ch * 3);
+  const xt = tapsFor(cw, w);
+  const src = p.data;
+  for (let o = 0; o < w; o++) {
+    const { at, wt, sum } = xt[o]!;
+    for (let k = 0; k < ch; k++) {
+      const row = (r.top + k) * p.w + r.left;
+      for (let c = 0; c < 3; c++) {
+        let v = 0;
+        for (let t = 0; t < at.length; t++) v += wt[t]! * src[(row + at[t]!) * 4 + c]!;
+        h1[(k * w + o) * 3 + c] = v / sum;
+      }
+    }
+  }
+  // Vertical pass: w x ch -> w x h.
+  const v2 = new Float32Array(w * h * 3);
+  const yt = tapsFor(ch, h);
+  for (let o = 0; o < h; o++) {
+    const { at, wt, sum } = yt[o]!;
+    for (let k = 0; k < w; k++) {
+      for (let c = 0; c < 3; c++) {
+        let v = 0;
+        for (let t = 0; t < at.length; t++) v += wt[t]! * h1[(at[t]! * w + k) * 3 + c]!;
+        v2[(o * w + k) * 3 + c] = v / sum;
+      }
+    }
+  }
   const data = new Uint8ClampedArray(w * h * 4);
   for (let i = 0; i < w * h; i++) {
-    for (let c = 0; c < 3; c++) data[i * 4 + c] = Math.round(v[i * 3 + c]!);
+    for (let c = 0; c < 3; c++) data[i * 4 + c] = Math.round(v2[i * 3 + c]!);
     data[i * 4 + 3] = 255;
   }
   const out = { w, h, data };
@@ -292,6 +323,8 @@ class HeadCamera {
   private readonly canvas: OffscreenCanvas;
   private readonly gl: WebGL2RenderingContext;
   private renderer: SimRenderer | null = null;
+  /** readPixels' buffer (rows bottom-up), reused. */
+  private readonly raw = new Uint8Array(AREA * AREA * 4);
   private readonly view: SimView = { zoom: ZOOM, rotation: 0, originX: 0, originY: 0, width: AREA, height: AREA };
 
   constructor() {
@@ -324,7 +357,7 @@ class HeadCamera {
     gl.depthMask(true);
     gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
     r.renderSimModel(vb, model, this.view, { ambient: 1 });
-    const raw = new Uint8Array(AREA * AREA * 4);
+    const raw = this.raw;
     gl.readPixels(0, 0, AREA, AREA, gl.RGBA, gl.UNSIGNED_BYTE, raw);
     const data = new Uint8ClampedArray(AREA * AREA * 4);
     for (let y = 0; y < AREA; y++) data.set(raw.subarray((AREA - 1 - y) * AREA * 4, (AREA - y) * AREA * 4), y * AREA * 4);

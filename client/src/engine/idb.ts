@@ -86,6 +86,14 @@ type QueuedPut = [store: string, key: string, value: unknown, transfer: boolean]
 let queuedPuts: QueuedPut[] = [];
 let queuedPutsDone: Promise<void> | null = null;
 
+/**
+ * A Uint8Array view that does not cover its whole buffer stored as its own
+ * bytes: IndexedDB (structured clone) would store the whole buffer.
+ */
+function ownBytes(value: unknown): unknown {
+  return value instanceof Uint8Array && (value.byteOffset !== 0 || value.byteLength !== value.buffer.byteLength) ? value.slice() : value;
+}
+
 /** The puts of one batch in one readwrite transaction; `done` when it ends (committed or not). */
 export function writePuts(db: IDBDatabase, puts: ReadonlyArray<readonly [store: string, key: string, value: unknown, ...rest: unknown[]]>, done: () => void): void {
   try {
@@ -94,7 +102,7 @@ export function writePuts(db: IDBDatabase, puts: ReadonlyArray<readonly [store: 
     for (const [name, key, value] of puts) {
       try {
         // A failed put must not abort the others.
-        tx.objectStore(name).put(value, key).onerror = (e) => e.preventDefault();
+        tx.objectStore(name).put(ownBytes(value), key).onerror = (e) => e.preventDefault();
       } catch {
         // (value that cannot be cloned)
       }
@@ -105,48 +113,106 @@ export function writePuts(db: IDBDatabase, puts: ReadonlyArray<readonly [store: 
 }
 
 /**
- * The worker that writes the batches (engine/idbworker.ts): IndexedDB copies
- * every value it stores (structured clone) on the calling thread, which was
- * the biggest main-thread cost of a cold lot load (~1 s for the ~2500 FAR
- * entries and ranges of House01). Bytes handed over with `transfer` move to
- * the worker without a copy. null when workers are unavailable (the batches
- * are then written here).
+ * The values of one batch of gets, read in one readonly transaction (null for
+ * a missing key or a failed get); `done` once every get has answered.
  */
-let putWorker: Worker | null | undefined;
-const workerBatches = new Map<number, () => void>();
+export function readGets(db: IDBDatabase, gets: ReadonlyArray<readonly [store: string, key: string, ...rest: unknown[]]>, done: (values: unknown[]) => void): void {
+  const values = new Array<unknown>(gets.length).fill(null);
+  let tx: IDBTransaction;
+  try {
+    tx = db.transaction([...new Set(gets.map((g) => g[0]))], "readonly");
+  } catch {
+    done(values);
+    return;
+  }
+  let left = gets.length;
+  let finished = false;
+  const finish = (): void => {
+    if (finished) return;
+    finished = true;
+    done(values);
+  };
+  tx.onabort = finish;
+  const answered = (): void => {
+    if (--left === 0) finish();
+  };
+  gets.forEach(([store, key], i) => {
+    try {
+      const req = tx.objectStore(store).get(key);
+      req.onsuccess = () => {
+        values[i] = req.result ?? null;
+        answered();
+      };
+      req.onerror = (e) => {
+        e.preventDefault();
+        answered();
+      };
+    } catch {
+      answered();
+    }
+  });
+  if (!gets.length) finish();
+}
+
+/**
+ * The buffers of the Uint8Arrays in `values` and in arrays within (the
+ * portraits' [id, bytes] pairs), each once, to transfer with a message.
+ */
+export function bufferList(values: Iterable<unknown>, into = new Set<ArrayBuffer>()): Set<ArrayBuffer> {
+  for (const v of values) {
+    if (v instanceof Uint8Array) {
+      if (v.buffer instanceof ArrayBuffer) into.add(v.buffer);
+    } else if (Array.isArray(v)) {
+      bufferList(v, into);
+    }
+  }
+  return into;
+}
+
+/**
+ * The worker that does the cache's IndexedDB work (engine/idbworker.ts):
+ * IndexedDB copies every value it stores or reads (structured clone) on the
+ * calling thread, which was the biggest main-thread cost of a lot load (~1 s
+ * of puts for the ~2500 FAR entries and ranges of House01 cold, 0.25..0.4 s of
+ * gets warm). Bytes go both ways as transfers (no copy). null when workers
+ * are unavailable (the batches are then done here).
+ */
+let idbWorker: Worker | null | undefined;
+const workerBatches = new Map<number, (values?: unknown[]) => void>();
 let nextBatch = 1;
 
-function getPutWorker(): Worker | null {
-  if (putWorker !== undefined) return putWorker;
-  putWorker = null;
+function getIdbWorker(): Worker | null {
+  if (idbWorker !== undefined) return idbWorker;
+  idbWorker = null;
   if (typeof Worker === "undefined" || typeof window === "undefined") return null;
   try {
     const w = new Worker(new URL("./idbworker.ts", import.meta.url), { type: "module" });
-    w.onmessage = (e: MessageEvent<{ batch: number }>) => {
-      workerBatches.get(e.data.batch)?.();
+    w.onmessage = (e: MessageEvent<{ batch: number; values?: unknown[] }>) => {
+      workerBatches.get(e.data.batch)?.(e.data.values);
       workerBatches.delete(e.data.batch);
     };
     w.onerror = (e) => {
-      // A worker that cannot start: later batches are written here, the pending ones are lost (it is a cache).
+      // A worker that cannot start: later batches are done here, the pending puts are lost (it is a cache), the pending gets answer null.
       e.preventDefault();
-      if (putWorker === w) putWorker = null;
+      if (idbWorker === w) idbWorker = null;
       for (const done of workerBatches.values()) done();
       workerBatches.clear();
       w.terminate();
     };
-    putWorker = w;
+    idbWorker = w;
   } catch {
-    putWorker = null;
+    idbWorker = null;
   }
-  return putWorker;
+  return idbWorker;
 }
 
 /**
  * Asset bytes arrive in bursts (a lot loading hundreds of FAR entries, a
  * catalog page of icons): the puts issued in one task share one transaction
  * instead of one each, which Chrome commits much faster. `transfer`: the
- * value is a Uint8Array the caller does not keep (its buffer is handed to the
- * writer worker and becomes unusable here).
+ * value is a Uint8Array whose buffer the caller does not keep (it is handed
+ * to the worker and becomes unusable here); it may be a view on part of a
+ * buffer (the buffer is handed over, the view's bytes are stored).
  */
 function queuePut(store: string, key: string, value: unknown, transfer = false): Promise<void> {
   queuedPuts.push([store, key, value, transfer]);
@@ -155,17 +221,13 @@ function queuePut(store: string, key: string, value: unknown, transfer = false):
       const puts = queuedPuts;
       queuedPuts = [];
       queuedPutsDone = null;
-      const w = getPutWorker();
+      const w = getIdbWorker();
       if (w) {
         const batch = nextBatch++;
-        const buffers: ArrayBuffer[] = [];
-        for (const [, , v, t] of puts) {
-          // Only a buffer the view covers whole (a fresh copy) is moved.
-          if (t && v instanceof Uint8Array && v.buffer instanceof ArrayBuffer && v.byteOffset === 0 && v.byteLength === v.buffer.byteLength && !buffers.includes(v.buffer)) buffers.push(v.buffer);
-        }
+        const buffers = bufferList(puts.filter((p) => p[3]).map((p) => p[2]));
         try {
-          workerBatches.set(batch, done);
-          w.postMessage({ batch, puts: puts.map(([s, k, v]) => [s, k, v]) }, buffers);
+          workerBatches.set(batch, () => done());
+          w.postMessage({ batch, puts: puts.map(([s, k, v]) => [s, k, v]) }, [...buffers]);
           return;
         } catch {
           workerBatches.delete(batch);
@@ -188,8 +250,10 @@ let getsScheduled = false;
  * Reads come in the same bursts as the puts (a lot load looks up ~2000 FAR
  * entries): the gets issued in one task share one readonly transaction
  * instead of one each (a transaction per get was the biggest main-thread
- * cost of a cold lot load). Each get still answers on its own; a failed one
- * answers null.
+ * cost of a cold lot load), read by the worker (the values come back in one
+ * message, bytes transferred) or, without it, here. Every get of a batch
+ * answers at once, in one task: the misses of a cold load then ask the range
+ * batcher (engine/assets.ts) for their bytes together. A failed get answers null.
  */
 function queueGet(store: string, key: string): Promise<unknown> {
   return new Promise((resolve) => {
@@ -200,39 +264,21 @@ function queueGet(store: string, key: string): Promise<unknown> {
       const gets = queuedGets;
       queuedGets = [];
       getsScheduled = false;
-      void openDb().then((db) => {
-        if (!db) {
-          for (const g of gets) g[2](null);
-          return;
-        }
-        let tx: IDBTransaction;
+      const answer = (values?: unknown[]): void => gets.forEach((g, i) => g[2](values?.[i] ?? null));
+      const w = getIdbWorker();
+      if (w) {
+        const batch = nextBatch++;
         try {
-          tx = db.transaction([...new Set(gets.map((g) => g[0]))], "readonly");
-        } catch {
-          for (const g of gets) g[2](null);
+          workerBatches.set(batch, answer);
+          w.postMessage({ batch, gets: gets.map(([s, k]) => [s, k]) });
           return;
+        } catch {
+          workerBatches.delete(batch);
         }
-        const pending = new Set(gets);
-        tx.onabort = () => {
-          for (const g of pending) g[2](null);
-        };
-        for (const g of gets) {
-          try {
-            const req = tx.objectStore(g[0]).get(g[1]);
-            req.onsuccess = () => {
-              pending.delete(g);
-              g[2](req.result);
-            };
-            req.onerror = (e) => {
-              e.preventDefault();
-              pending.delete(g);
-              g[2](null);
-            };
-          } catch {
-            pending.delete(g);
-            g[2](null);
-          }
-        }
+      }
+      void openDb().then((db) => {
+        if (!db) return answer();
+        readGets(db, gets, answer);
       });
     });
   });
@@ -243,7 +289,7 @@ export async function idbGetFarManifest(farPath: string): Promise<unknown | null
 }
 
 export async function idbPutFarManifest(farPath: string, value: unknown): Promise<void> {
-  await withStore(STORE_FAR_MANIFEST, "readwrite", (s) => s.put(value, farPath));
+  await queuePut(STORE_FAR_MANIFEST, farPath, value);
 }
 
 export async function idbGetFarEntry(

@@ -334,11 +334,10 @@ export function readAssetFile(path: string): Promise<Uint8Array> {
     // loose wall / floor plugins) share one request.
     const size = resolvedManifest ? sizeIn(resolvedManifest, path) : null;
     if (size !== null && size <= BATCHED_FILE_MAX_BYTES) {
-      const data = await readAssetRangeBatched(path, 0, size).catch(() => null);
-      if (data?.length === size) {
-        void idbPutIffFile(path, data.slice());
-        return data;
-      }
+      const data = await readAssetRangeBatched(path, 0, size, (view) => {
+        if (view.length === size) void idbPutIffFile(path, view);
+      }).catch(() => null);
+      if (data?.length === size) return data;
     }
     const res = await fetch(assetUrl(path));
     if (!res.ok) throw new Error(`${path}: ${res.status}`);
@@ -383,10 +382,14 @@ let sharedBatcher: RangeBatcher | null = null;
  * Bytes [start, end) of a file under /assets, not cached, read through a
  * shared RangeBatcher: the reads issued in one task go out in one request.
  * The result is a copy (the batch response buffer is not kept alive).
+ * `persist`, for bytes read from the server: called with a view of them in
+ * the response, which it may hand to the IndexedDB writer (idbPut*: the
+ * response buffer is transferred to its worker once every read of the batch
+ * has its copy), saving a copy on this thread.
  */
-export async function readAssetRangeBatched(path: string, start: number, end: number): Promise<Uint8Array> {
-  sharedBatcher ??= new RangeBatcher();
-  return (await sharedBatcher.read(path, start, end)).slice();
+export function readAssetRangeBatched(path: string, start: number, end: number, persist?: (view: Uint8Array) => void): Promise<Uint8Array> {
+  sharedBatcher ??= new RangeBatcher(true);
+  return sharedBatcher.read(path, start, end, persist);
 }
 
 const rangeReads = new Map<string, Promise<Uint8Array>>();
@@ -405,9 +408,7 @@ export function readAssetRangeCached(path: string, start: number, end: number): 
     if (await isGameFilesLocal()) return readAssetRangeBatched(path, start, end);
     const persisted = await idbGetRange(path, start, end);
     if (persisted) return persisted;
-    const bytes = await readAssetRangeBatched(path, start, end);
-    void idbPutRange(path, start, end, bytes.slice());
-    return bytes;
+    return readAssetRangeBatched(path, start, end, (view) => void idbPutRange(path, start, end, view));
   })();
   rangeReads.set(key, p);
   const settled = (): void => void rangeReads.delete(key);
@@ -491,6 +492,23 @@ export async function readFarManifest(farPath: string): Promise<FarEntryInfo[]> 
   return cached;
 }
 
+/** The entries of each FAR manifest by lower-case name (the first of a name), made once per manifest. */
+const farEntryNames = new WeakMap<FarEntryInfo[], Map<string, FarEntryInfo>>();
+
+/** The entry of `entries` named `name` (case-insensitive), like a search of the list in order. */
+function entryByName(entries: FarEntryInfo[], name: string): FarEntryInfo | undefined {
+  let byName = farEntryNames.get(entries);
+  if (!byName) {
+    byName = new Map();
+    for (const e of entries) {
+      const k = e.filename.toLowerCase();
+      if (!byName.has(k)) byName.set(k, e);
+    }
+    farEntryNames.set(entries, byName);
+  }
+  return byName.get(name.toLowerCase());
+}
+
 /**
  * Read one entry from a FAR archive: the entry's bytes only, batched with the
  * other reads of the same task (RangeBatcher), kept in IndexedDB.
@@ -510,21 +528,16 @@ export function readFarEntry(farPath: string, entryName: string): Promise<Uint8A
       const local = await isGameFilesLocal();
       const persisted = local ? null : await idbGetFarEntry(farPath, entryName);
       if (persisted) return persisted;
-      const entries = await readFarManifest(farPath);
-      const target = entries.find(
-        (e) => e.filename.toLowerCase() === entryName.toLowerCase(),
-      );
+      const target = entryByName(await readFarManifest(farPath), entryName);
       if (!target) {
         throw new Error(`${farPath}: entry "${entryName}" not found`);
       }
       // Through the shared batcher: the entries asked for in one task (a lot
       // load asks for ~2000, Live mode a few dozen per new animation) share one
       // POST /api/ranges instead of one Range request each.
+      // (the put gets the response's bytes, not the caller's copy: the caller may change them)
       const start = target.offset;
-      const bytes = await readAssetRangeBatched(farPath, start, start + target.sizeCompressed);
-      // (a copy: the put is queued, the caller may change its bytes meanwhile)
-      if (!local) void idbPutFarEntry(farPath, entryName, bytes.slice());
-      return bytes;
+      return readAssetRangeBatched(farPath, start, start + target.sizeCompressed, (view) => void idbPutFarEntry(farPath, entryName, view));
     })();
     entryReads.set(cacheKey, pending);
     const p = pending;
@@ -592,6 +605,7 @@ interface PendingRange {
   path: string;
   start: number;
   end: number;
+  persist: ((view: Uint8Array) => void) | undefined;
   resolve: (b: Uint8Array) => void;
   reject: (e: unknown) => void;
 }
@@ -609,33 +623,45 @@ export class RangeBatcher {
   private scheduled = false;
   private static endpoint: boolean | null = null;
 
-  /** Bytes [start, end) of `path` (relative to /assets/). */
-  read(path: string, start: number, end: number): Promise<Uint8Array> {
+  /**
+   * `copies`: every read gets its own buffer (else views of the batch's
+   * response, which they keep alive), and the response is handed to the
+   * reads' `persist`.
+   */
+  constructor(private readonly copies = false) {}
+
+  /**
+   * Bytes [start, end) of `path` (relative to /assets/). `persist` (a
+   * copying batcher only): called with a view of the bytes in the server's
+   * response, before the read resolves; it may hand the view to the
+   * IndexedDB writer (the response is used here only by the copies).
+   */
+  read(path: string, start: number, end: number, persist?: (view: Uint8Array) => void): Promise<Uint8Array> {
     // A save file read in this load or kept in this browser (client save mode) is read from there.
     if (isWritableAssetPath(path)) {
       return saveFileRange(path, start, end).then(
-        (known) => known ?? this.source(path, start, end),
+        (known) => known ?? this.source(path, start, end, persist),
         () => {
           throw new Error(`${path} ${start}-${end}: unreadable`);
         },
       );
     }
-    return this.source(path, start, end);
+    return this.source(path, start, end, persist);
   }
 
   /** The imported game files when the server serves none (GAME_FILES=client), else the server, batched. */
-  private async source(path: string, start: number, end: number): Promise<Uint8Array> {
+  private async source(path: string, start: number, end: number, persist: ((view: Uint8Array) => void) | undefined): Promise<Uint8Array> {
     if (await isGameFilesLocal()) {
       return localGameRange(path, start, end).catch(() => {
         throw new Error(`${path} ${start}-${end}: unreadable`);
       });
     }
-    return this.enqueue(path, start, end);
+    return this.enqueue(path, start, end, persist);
   }
 
-  private enqueue(path: string, start: number, end: number): Promise<Uint8Array> {
+  private enqueue(path: string, start: number, end: number, persist: ((view: Uint8Array) => void) | undefined): Promise<Uint8Array> {
     return new Promise((resolve, reject) => {
-      this.queue.push({ path, start, end, resolve, reject });
+      this.queue.push({ path, start, end, persist: this.copies ? persist : undefined, resolve, reject });
       if (!this.scheduled) {
         this.scheduled = true;
         setTimeout(() => this.flush(), 0);
@@ -682,8 +708,12 @@ export class RangeBatcher {
               r.reject(new Error(`${r.path} ${r.start}-${r.end}: unreadable`));
               return;
             }
-            r.resolve(body.subarray(at, at + len));
+            const view = body.subarray(at, at + len);
             at += len;
+            // The copy first: `persist` may hand the response buffer over.
+            const out = this.copies ? view.slice() : view;
+            r.persist?.(view);
+            r.resolve(out);
           });
           return;
         }
@@ -691,14 +721,14 @@ export class RangeBatcher {
         // fall through to single requests
       }
     }
-    await RangeBatcher.single(batch);
+    await RangeBatcher.single(batch, this.copies);
   }
 
   /** Requests in flight on the fallback path (browsers fail requests beyond a few hundred). */
   private static singleSlots = 12;
   private static readonly singleWaiters: Array<() => void> = [];
 
-  private static async single(batch: PendingRange[]): Promise<void> {
+  private static async single(batch: PendingRange[], copies: boolean): Promise<void> {
     await Promise.all(
       batch.map(async (r) => {
         if (RangeBatcher.singleSlots > 0) RangeBatcher.singleSlots--;
@@ -708,7 +738,9 @@ export class RangeBatcher {
           if (res.status !== 206 && res.status !== 200) throw new Error(`${r.path} ${r.start}-${r.end}: ${res.status}`);
           const b = new Uint8Array(await res.arrayBuffer());
           // A server ignoring Range answers 200 with the whole file.
-          r.resolve(res.status === 200 ? b.subarray(r.start, r.end) : b);
+          const view = res.status === 200 ? b.subarray(r.start, r.end) : b;
+          r.persist?.(view.slice());
+          r.resolve(copies && view !== b ? view.slice() : view);
         } catch (e) {
           r.reject(e);
         } finally {
