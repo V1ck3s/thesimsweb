@@ -38,7 +38,7 @@
  * ui/piemenu.ts TSPieMenu.forLiveMode); the portraits have no pie menu.
  */
 
-import type { GameContext } from "../context.js";
+import { hudLayoutWidth, type GameContext } from "../context.js";
 import { soundPlayer, UI } from "../audio/index.js";
 import { personGender, type CPState, type PersonInfo } from "../cpstate.js";
 import { getOptionsMgr } from "../optionsmgr.js";
@@ -347,7 +347,7 @@ export class WinPeople extends TSWin implements TrackingPanel {
       w.moveTo(PAGE_ORIGIN.x, PAGE_ORIGIN.y);
       this.childAdd(w);
     }
-    const wide = ctx.width === 0x400 ? WIDE_SCREEN_EXTRA : 0;
+    const wide = hudLayoutWidth(ctx) === 0x400 ? WIDE_SCREEN_EXTRA : 0;
     const placePage = async (win: TSWin, setArea: boolean): Promise<boolean> => {
       if (!(await win.init())) return false;
       if (setArea) {
@@ -936,7 +936,7 @@ export class WinPeople extends TSWin implements TrackingPanel {
       return;
     }
     // A double-byte UI tests the page rect at lbl_105BC4E4 (the page's own origin).
-    const right = PAGE_ORIGIN.x + PAGE_AREA.right + (this.ctx.width === 0x400 ? WIDE_SCREEN_EXTRA : 0);
+    const right = PAGE_ORIGIN.x + PAGE_AREA.right + (hudLayoutWidth(this.ctx) === 0x400 ? WIDE_SCREEN_EXTRA : 0);
     const inPage = lx >= PAGE_ORIGIN.x && ly >= PAGE_AREA.top && lx < right && ly < PAGE_AREA.bottom;
     if (!inside || !inPage) popup.disablePopup();
   }

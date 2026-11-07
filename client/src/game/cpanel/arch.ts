@@ -507,7 +507,9 @@ export class WinArch extends TSWin {
       place(this.nextBtn, this.getW() - NEXT_PAGE_FROM_RIGHT, PAGE_Y);
       this.needLayout = false;
     }
-    if (this.background) g.blit(this.background, 0, 0);
+    // Clipped to the panel's area, as cTSWin paints (this install's widescreen
+    // kUniversalCPBkg is wider than the panel; the people and options panels do the same).
+    if (this.background) g.blitPart(this.background, 0, 0, this.getW(), this.getH(), 0, 0);
     if (this.toothPick1) g.blit(this.toothPick1, TOOTHPICK1_POS[0], TOOTHPICK1_POS[1]);
     if (this.toothPick2) g.blit(this.toothPick2, TOOTHPICK2_POS[0], TOOTHPICK2_POS[1]);
   }

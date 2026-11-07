@@ -80,10 +80,10 @@ Interface / triches
   passage des costumes ne libère rien, comme l'original : horloge partagée avec les compétences).
 - **Pics de tick** : restent les recherches de route et l'interprétation des BHAV (travail de
   l'original) ; familyFriendCount mis en cache comme l'original.
-- **Grandes résolutions** : 5120x1440 ≈ 17 i/s dans Chrome (GPU sous WSL), 29,6 à 1024x768 ;
-  Firefox Linux 11,7 i/s à 5120x1440 à cause de la copie WebGL → canvas 2D (35 ms). Piste :
-  afficher le canvas WebGL du lot comme calque sous un canvas UI transparent. Chiffres :
-  `docs/perf-and-browsers.md` « Screen sizes ».
+- **Grandes résolutions** : le jeu tourne à ~768 de haut puis est agrandi, une grande résolution
+  coûte donc à peu près un 1024x768 (17,8 i/s en 5120x1440 contre 19,6 en 1024x768 sur l'hôte WSL
+  chargé ; le rendu du lot, ~25 ms par image ici, est la limite). Piste restante : afficher le canvas
+  WebGL du lot comme calque sous un canvas UI transparent (supprime la copie WebGL → 2D).
 - **Serveur sur /mnt/c** : inventaire du jeu gardé sur disque (`server/data/manifest-cache.json`) ;
   la première liste des sauvegardes après un démarrage prend encore 50 à 90 s.
 
@@ -92,9 +92,9 @@ Interface / triches
 - Suivi de caméra, emménagement sans boîte aux lettres, popups des besoins des animaux et page
   célébrité : conformes au code décompilé, non vus en jeu.
 - U50 (objet invisible) : le cas exact de l'utilisateur n'a pas été reproduit.
-- Résolutions ≠ 1024x768 : non vues aux quartiers-villes, pages d'options, catégories du
-  catalogue ouvertes, écran de transit, boîtes de message ; langues double octet non vues.
-  HUD centré : « centrer sur le lot » vise toute la hauteur (~50 px plus bas).
+- Résolutions ≠ 1024x768 : non vues aux villes, pages d'options, catégories du catalogue ouvertes,
+  écran de transit ; langues double octet non vues. Mode « following its size » : non vu sur les
+  villes, en mode caméra, ni avec l'incrustation ouverte.
 - Version tactile : testée en émulation Chrome seulement (pas d'appareil réel, pas de Firefox Android).
 
 ## 7. Action de l'utilisateur

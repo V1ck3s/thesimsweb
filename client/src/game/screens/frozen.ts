@@ -30,6 +30,9 @@ import type { WinMgr } from "../ui/winmgr.js";
 const WATCH_CURSOR = 3;
 
 class FrozenScreen extends TSWin {
+  /** Made for one screen size: a live screen resize waits until it is gone (ui/screenresize.ts). */
+  readonly holdsScreenSize = true;
+
   constructor(private readonly image: HTMLCanvasElement) {
     super();
     this.setFlag(WF_MODAL, true);

@@ -503,6 +503,8 @@ export class WinCatalog extends TSWin {
 
   /** cWinCatalog::TSPaint: the control panel background from the catalog's origin. */
   override tsPaint(g: Gfx): void {
-    if (this.background) g.blit(this.background, 0, 0);
+    // Clipped to the panel's area, as cTSWin paints (this install's widescreen
+    // kUniversalCPBkg is wider than the panel; the people and options panels do the same).
+    if (this.background) g.blitPart(this.background, 0, 0, this.getW(), this.getH(), 0, 0);
   }
 }

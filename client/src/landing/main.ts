@@ -13,7 +13,7 @@
 import { exportSaves, getSaveMode, importSaves, listSaves, type SaveMode } from "../engine/saves.js";
 import { offlineStatus, registerServiceWorker } from "../engine/pwa.js";
 import { LANGUAGES, readLanguage, storeLanguage } from "../engine/language.js";
-import { autoScreenSize, readCentredHud, readResolution, RESOLUTIONS, storeCentredHud, storeResolution, type ResolutionChoice } from "../engine/display.js";
+import { readCentredHud, readResolution, RESOLUTIONS, storeCentredHud, storeResolution, windowSize, type ResolutionChoice } from "../engine/display.js";
 import {
   gameFilesStatus,
   hasFolderPicker,
@@ -342,8 +342,9 @@ function initDisplay(): void {
     opt.selected = value === current;
     select.append(opt);
   };
-  const auto = autoScreenSize();
-  add("auto", `Fit the window (now ${auto.w} × ${auto.h})`);
+  const win = windowSize();
+  add("window", "Fit the window, following its size");
+  add("auto", `Fit the window when the game starts (now ${win.w} × ${win.h})`);
   for (const [w, h] of RESOLUTIONS) add(`${w}x${h}`, `${w} × ${h}${w === 1024 && h === 768 ? " (default)" : ""}`);
   // A size given by ?res= or stored by hand that the list does not hold.
   if (select.value !== current) add(current, current.replace("x", " × "));

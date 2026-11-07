@@ -316,9 +316,13 @@ asks for 0x1400 x 0x5a0 (5120 x 1440) unless "-r1024x768" is given, and its kLar
 while the game runs.
 
 The port takes the size as a setting (`client/src/engine/display.ts`: landing page "Display",
-`?res=<w>x<h>` / `?res=auto`, 1024 x 768 by default; "auto" = the browser window at start, in
-CSS pixels or, at a fractional devicePixelRatio below 1.5, device pixels). `main.ts` hands it to
-`WinMgr` (the canvas) and `ctx.width` / `ctx.height` (the main window's area), and every window
+`?res=<w>x<h>` / `?res=auto` / `?res=window`, 1024 x 768 by default). Port change: the game does
+not run at the screen's pixels but at `gameSize`, the screen divided by the scale at which 1024 x
+768 fits it (5120 x 1440 -> 2731 x 768, 3840 x 2160 -> 1365 x 768), and the canvas is scaled up:
+zoom and panels look as at 1024 x 768 at any resolution, wider screens show more of the lot, and
+the drawing costs about what 1024 x 768 does. 800 x 600 and 1024 x 768 run as they are. `main.ts`
+hands the size to `WinMgr` (the canvas) and `ctx.width` / `ctx.height` (the main window's area),
+and every window
 places itself from there as the original does, which the existing ports already did:
 
 - screen-wide windows (splash, neighborhood, towns, CAS, lot view) take the main window's area;
@@ -335,14 +339,30 @@ places itself from there as the original does, which the existing ports already 
   centred on (or clamped to) the main window; tooltips are kept on screen;
 - the intro movie fills the game window (stretched, as DirectShow to the client rect).
 
-Checked with screenshots at 1920 x 1080 (neighborhood, its tooltip, family picker, Create a
-Family, lot in Live / Buy / Build / Camera with tooltips) and 5120 x 1440 with the centred HUD
-(lot, Live and Build panels). Not checked at other sizes: the towns, the options panel pages,
-the catalogs' open categories, the transit splash, message boxes over the lot.
+Port fixes for the large backdrops of this install's widescreen files: kLargeMask (5120 x 1440,
+a 1024 x 768 frame at its centre) is drawn centred on the screen (`nbhd/winneighborhoodul.ts`,
+`nbhd/wintown.ts`; the original draws it from (0, 0), where only its own size lines up), and the
+catalog and build panels clip kUniversalCPBkg to their area as the people and options panels do
+(it ran to the screen's right edge).
+
+"Window" (port addition): the game follows the browser window while it runs (`main.ts`
+Game.resizeScreen, `ui/screenresize.ts`): the canvas and main window take the new size, full-screen
+windows lay out again (neighborhood and town maps re-centred, lot viewport `HouseViewer.
+setViewportSize`, picture-in-picture and tutorial icon re-anchored), other top-level windows keep
+their place relative to the centre, and the control panel (whose pages choose their layout at
+Init) is made again, the old one kept at the bottom until the new one is ready. Create a Family /
+a Sim and the frozen screen hold the size (`holdsScreenSize`): the resize waits for them.
+
+Checked with screenshots at 1024 x 768, 3840 x 2160, 5120 x 1440 and 5120 x 2160 (neighborhood),
+5120 x 1440 with the centred HUD (lot in Live / Buy / Build), and "window" resized live on the
+neighborhood, the lot (Live, Buy) and over the family picker. Not checked at large sizes: the
+towns, the options panel pages, the catalogs' open categories, the transit splash.
 
 Port option, not in the original: the **centred HUD** (`?hud=centred`, landing page checkbox, off
-by default). On a screen wider than 16:9, `ctx.hud` (display.ts `hudBand`) is a centred 16:9
-band (at least 1024 wide): the control panel is placed in it instead of the full width, the view
-control at its left edge (`cpanel/cpanel.ts` postInit, `cpanel/viewcontrol.ts` SetMode), the
-picture-in-picture at its right edge (`world/winpictureinpicture.ts`), and the lot viewport takes
-the whole height (`world/winlotview.ts` hudBeside) so the lot shows left and right of the panel.
+by default). On a screen wider than 1024, `ctx.hud` (display.ts `hudBand`) is a centred band 1024
+wide, the 1024 x 768 interface: the control panel is placed in it instead of the full width, its
+pages take the 1024 layouts (`context.ts` hudLayoutWidth replaces the screen width in the
+`== 0x400` / `== 800` tests), the view control sits at its left edge (`cpanel/cpanel.ts`
+postInit, `cpanel/viewcontrol.ts` SetMode), the picture-in-picture at its right edge
+(`world/winpictureinpicture.ts`), and the lot viewport takes the whole height
+(`world/winlotview.ts` hudBeside) so the lot shows left and right of the panel.

@@ -109,8 +109,8 @@ export class WinMgr {
 
   constructor(
     host: HTMLElement,
-    readonly width: number,
-    readonly height: number,
+    public width: number,
+    public height: number,
   ) {
     winMgr = this;
     this.canvas = document.createElement("canvas");
@@ -477,6 +477,22 @@ export class WinMgr {
       requestAnimationFrame(frame);
     };
     requestAnimationFrame(frame);
+  }
+
+  /**
+   * The port's screen resize ("window" resolution, game/main.ts Game.resizeScreen):
+   * the canvas and the main window take the new size; the windows in it are
+   * laid out again by their owners.
+   */
+  resize(width: number, height: number): void {
+    if (width === this.width && height === this.height) return;
+    this.width = width;
+    this.height = height;
+    this.canvas.width = width;
+    this.canvas.height = height;
+    this.ctx.imageSmoothingEnabled = false;
+    this.main.setArea(0, 0, width, height);
+    this.fit();
   }
 
   /**

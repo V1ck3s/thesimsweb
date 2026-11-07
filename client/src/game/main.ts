@@ -12,7 +12,8 @@ import { installImeComposition } from "./ui/imecomposition.js";
 import { modeMusicEvent, soundPlayer, UI_SOURCE } from "./audio/index.js";
 import { installLotAudio } from "./audio/lotaudio.js";
 import { resetSaveFileCache } from "../engine/assets.js";
-import { hudBand, readCentredHud, screenSize } from "../engine/display.js";
+import { hudBand, readCentredHud, readResolution, screenSize } from "../engine/display.js";
+import { holdsScreenSize, resizeTopLevel } from "./ui/screenresize.js";
 import { getSaveMode, requestPersistentStorage } from "../engine/saves.js";
 import { isGameFilesLocal, localGameIndex } from "../engine/gamefiles.js";
 import { CPState, DIRTY_ALL, Mode } from "./cpstate.js";
@@ -158,6 +159,89 @@ class Game {
     };
   }
 
+  /** cSimsApp::WindowSetup's control panel, made for the lot view (not added yet). */
+  private async makeControlPanel(): Promise<WinCPanel> {
+    const { ctx } = this;
+    const cpanel = new WinCPanel(ctx);
+    // cSimsApp::WindowSetup: SetArea(view.left, view.bottom - 150, view.right, view.bottom)
+    // (the port's centred HUD narrows it to ctx.hud).
+    cpanel.setArea(ctx.hud?.left ?? 0, ctx.height - CPANEL_HEIGHT, ctx.hud?.right ?? ctx.width, ctx.height);
+    if (!(await cpanel.init())) throw new Error("control panel init failed");
+    return cpanel;
+  }
+
+  private addControlPanel(view: WinLotView, cpanel: WinCPanel): void {
+    view.childAdd(cpanel);
+    cpanel.postInit();
+    this.cpanel = cpanel;
+    this.cpanelSize = { w: this.ctx.width, h: this.ctx.height };
+  }
+
+  /** The screen size the control panel was made for. */
+  private cpanelSize = { w: 0, h: 0 };
+
+  /** The control panel of the loaded lot. */
+  private cpanel: WinCPanel | null = null;
+  /** A live screen resize is running or waiting (resizeScreen). */
+  private resizing = false;
+  private resizeAgain = false;
+
+  /**
+   * The port's live screen resize ("window" resolution, engine/display.ts):
+   * the game takes the window's new size. The windows on screen are moved
+   * (ui/screenresize.ts) and the control panel, whose pages pick their
+   * layout from the screen width at Init, is made again, as a lot load
+   * makes it. Waits while Create a Sim or a frozen screen is up.
+   */
+  async resizeScreen(): Promise<void> {
+    if (this.resizing) {
+      this.resizeAgain = true;
+      return;
+    }
+    const { ctx, mgr } = this;
+    this.resizing = true;
+    try {
+      do {
+        this.resizeAgain = false;
+        const { w, h } = screenSize("window");
+        if (w !== ctx.width || h !== ctx.height) {
+          if (holdsScreenSize(mgr.main)) {
+            // Checked again shortly (a resize event may not come back).
+            setTimeout(() => void this.resizeScreen(), 500);
+            break;
+          }
+          const oldW = ctx.width;
+          const oldH = ctx.height;
+          mgr.resize(w, h);
+          ctx.width = w;
+          ctx.height = h;
+          ctx.hud = hudBand(w, h, readCentredHud());
+          resizeTopLevel(mgr.main, oldW, oldH);
+        }
+        // A control panel made for another size is made again; the old one
+        // stays (moved with the screen's bottom) until the new one is ready.
+        const view = this.lotView;
+        const old = this.cpanel;
+        if (view && old && old.parent === view && (this.cpanelSize.w !== ctx.width || this.cpanelSize.h !== ctx.height)) {
+          const fresh = await this.makeControlPanel();
+          if (this.resizeAgain || this.lotView !== view || this.cpanel !== old) {
+            fresh.shutdown();
+            continue;
+          }
+          view.childDelete(old);
+          this.addControlPanel(view, fresh);
+          // The new panel shows the current mode and panel state (as after a lot load).
+          const st = ctx.state;
+          st.setMode(st.getMode(), true);
+          st.setCPMode(st.getCPMode(), true);
+          st.dirty = DIRTY_ALL;
+        }
+      } while (this.resizeAgain);
+    } finally {
+      this.resizing = false;
+    }
+  }
+
   private leaveLot(): void {
     if (!this.lotView) return;
     // UnloadHouse: the next Neighborhood::Save no longer takes the lot's live data.
@@ -166,6 +250,7 @@ class Game {
     this.lotAudioOff?.();
     this.lotAudioOff = null;
     this.lotView = null;
+    this.cpanel = null;
     this.musicMode = null;
     this.soundsPaused = null;
   }
@@ -341,13 +426,7 @@ class Game {
     soundPlayer.playBySource(lotAmbience(house), UI_SOURCE);
     this.lotView = view;
     markLotClean(view);
-    const cpanel = new WinCPanel(ctx);
-    // cSimsApp::WindowSetup: SetArea(view.left, view.bottom - 150, view.right, view.bottom)
-    // (the port's centred HUD narrows it to ctx.hud).
-    cpanel.setArea(ctx.hud?.left ?? 0, ctx.height - CPANEL_HEIGHT, ctx.hud?.right ?? ctx.width, ctx.height);
-    if (!(await cpanel.init())) throw new Error("control panel init failed");
-    view.childAdd(cpanel);
-    cpanel.postInit();
+    this.addControlPanel(view, await this.makeControlPanel());
     mgr.main.childAdd(view);
     // cSimsApp: the game view takes the focus once the lot is loaded (the arrows, F1..F5, Space).
     mgr.offerFocus(view);
@@ -409,6 +488,17 @@ async function boot(): Promise<void> {
   splash.setSplashMessage("ocns");
   await ObjectFolder.get("UserData");
   const game = new Game(ctx, mgr);
+  // The "window" resolution: the game follows the window's size (Game.resizeScreen),
+  // once the resizing has settled.
+  if (readResolution() === "window") {
+    let timer = 0;
+    const later = (): void => {
+      clearTimeout(timer);
+      timer = window.setTimeout(() => void game.resizeScreen(), 150);
+    };
+    window.addEventListener("resize", later);
+    later();
+  }
   // cOptionsMgr::GetQuickTips reads the lot's simulator (tutorial house global).
   getOptionsMgr().simulatorGlobals = () => game.lotView?.sim?.globals ?? null;
   // cSimsApp::Init: RegisterCheats and the cheat widget (the shipped builds

@@ -16,7 +16,7 @@
  * entry index + 1) in it.
  */
 
-import type { GameContext } from "../../context.js";
+import { hudLayoutWidth, type GameContext } from "../../context.js";
 import type { PersonInfo } from "../../cpstate.js";
 import { DOUBLE_BYTE_UI } from "../../res/uires.js";
 import { BTN_TOGGLE, CMD_ASYNC_EXIT, TSWinBtn } from "../../ui/btn.js";
@@ -131,7 +131,7 @@ export class InterestsPanel extends TSWin {
 
   constructor(readonly ctx: GameContext) {
     super();
-    this.columns = ctx.width === 1024 ? 3 : 2;
+    this.columns = hudLayoutWidth(ctx) === 1024 ? 3 : 2;
   }
 
   /** cWinPeople::BuildInterestWindow. */
@@ -141,7 +141,7 @@ export class InterestsPanel extends TSWin {
     // The subpanel rect (0, 50, 280, 150), 224 px wider at 1024 x 768, moved to (300, 50);
     // (0, 0, 280, 150) moved to (300, 0) in a double-byte UI (lbl_105BC4EC / lbl_105BC4E4).
     const top = DOUBLE_BYTE_UI ? 0 : 50;
-    this.setArea(0, top, 280 + (ctx.width === 1024 ? 0xe0 : 0), 150);
+    this.setArea(0, top, 280 + (hudLayoutWidth(ctx) === 1024 ? 0xe0 : 0), 150);
     this.moveTo(300, top);
 
     // Caption (STR# 140 entry 0) in the small font at (5, 0) (lbl_105BC4D8; (10, 5), lbl_105BC4DC, double-byte).

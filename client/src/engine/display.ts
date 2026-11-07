@@ -9,17 +9,24 @@
  * trick patches those numbers (this install's Sims.exe asks for 0x1400 x 0x5a0
  * = 5120 x 1440 unless "-r1024x768" is given). The main window, the lot view
  * and every window that places itself then read that size (their parent's
- * area, AnimDevice::GetBuffDims); nothing is laid out again while the game
- * runs. The port takes the size as a setting chosen on the landing page
- * (client/src/landing/main.ts), read once when the game starts: a change
- * applies at the next start, like the original's command line.
+ * area, AnimDevice::GetBuffDims).
  *
- * - `?res=<w>x<h>` / `?res=auto` in the game's URL, else the stored choice,
- *   else 1024 x 768.
- * - "auto": the browser window's size, in pixels of a whole-number scale of
- *   the device pixels (see autoScreenSize), at least 800 x 600. Taken at start;
- *   a later window resize only rescales the canvas (the original's windows
- *   never lay themselves out again).
+ * The original draws one game pixel per screen pixel, so a large mode shows
+ * the lot and the neighborhood far away and the panels small. The port keeps
+ * the look of the default 1024 x 768 at any resolution instead: the game runs
+ * at a size whose smaller side matches 1024 x 768 (gameSize: 5120 x 1440 ->
+ * 2731 x 768, 3840 x 2160 -> 1365 x 768) and the canvas is scaled up to the
+ * screen. Wider screens still show more of the lot left and right; zoom and
+ * panels keep their default size, and the cost of drawing stays that of a
+ * screen about 768 high. Sizes no larger than 1024 x 768 run as they are.
+ *
+ * - `?res=<w>x<h>` / `?res=auto` / `?res=window` in the game's URL, else the
+ *   stored choice, else 1024 x 768.
+ * - "auto": the browser window's size when the game starts; a later resize
+ *   only rescales the canvas.
+ * - "window": the browser window's size, followed while the game runs (the
+ *   windows lay themselves out again, game/main.ts Game.resizeScreen; a port
+ *   addition, the original never changes its mode).
  * - `?hud=centred` / `?hud=full`, else the stored choice (off): the centred
  *   HUD (a port option, not in the original), see hudBand.
  */
@@ -54,8 +61,8 @@ export const MIN_SCREEN = { w: 800, h: 600 } as const;
 /** The largest size accepted (the widescreen patch's 5120 x 1440 and the 5120 x 2160 above, with room). */
 const MAX_SIDE = 7680;
 
-/** A stored or URL choice: "auto" or "<w>x<h>". */
-export type ResolutionChoice = "auto" | `${number}x${number}`;
+/** A stored or URL choice: "auto", "window" or "<w>x<h>". */
+export type ResolutionChoice = "auto" | "window" | `${number}x${number}`;
 
 const RES_KEY = "thesimsweb.resolution";
 const HUD_KEY = "thesimsweb.centredHud";
@@ -63,7 +70,7 @@ const HUD_KEY = "thesimsweb.centredHud";
 function parseChoice(s: string | null): ResolutionChoice | null {
   if (s === null) return null;
   const v = s.trim().toLowerCase();
-  if (v === "auto") return "auto";
+  if (v === "auto" || v === "window") return v;
   const m = /^(\d{3,4})x(\d{3,4})$/.exec(v);
   if (!m) return null;
   const w = Number(m[1]);
@@ -124,44 +131,52 @@ export function storeCentredHud(on: boolean): boolean {
   }
 }
 
-/**
- * Game pixels per device pixel side for "auto": a whole number, so that one
- * game pixel is a square of device pixels (no blur, no uneven columns).
- * devicePixelRatio 1 and 2 give 1 and 2 (the game's pixels are the page's CSS
- * pixels); 1.25 (Windows' 125 %) gives 1, the game then runs at the display's
- * real pixels, as the original does on that monitor; 1.5 gives 2.
- */
-export function autoScale(dpr: number): number {
-  return Math.max(1, Math.round(dpr));
-}
-
-/** "auto": the browser window's size in game pixels (autoScale), at least 800 x 600. */
-export function autoScreenSize(): { w: number; h: number } {
+/** The browser window's size in device pixels (what "auto" and "window" fill). */
+export function windowSize(): { w: number; h: number } {
   const dpr = window.devicePixelRatio || 1;
-  const k = autoScale(dpr);
-  const w = Math.floor((window.innerWidth * dpr) / k);
-  const h = Math.floor((window.innerHeight * dpr) / k);
-  return { w: Math.min(MAX_SIDE, Math.max(MIN_SCREEN.w, w)), h: Math.min(MAX_SIDE, Math.max(MIN_SCREEN.h, h)) };
+  return { w: Math.round(window.innerWidth * dpr), h: Math.round(window.innerHeight * dpr) };
 }
 
-/** The game's screen size for this start. */
-export function screenSize(choice: ResolutionChoice = readResolution()): { w: number; h: number } {
-  if (choice === "auto") return autoScreenSize();
+/** The screen size a choice asks for (device pixels): a fixed size, or the window's. */
+export function outputSize(choice: ResolutionChoice = readResolution()): { w: number; h: number } {
+  if (choice === "auto" || choice === "window") return windowSize();
   const [w, h] = choice.split("x").map(Number) as [number, number];
   return { w, h };
 }
 
 /**
- * The centred HUD's band (a port option): on a screen wider than 16:9 the
- * control panel, the view control gadget and the picture-in-picture are
- * placed in a centred 16:9 band (at least 1024 wide) instead of the screen's
- * full width; the lot view still fills the screen. Off, or on a screen no
- * wider than that, the band is the whole width, as in the original.
+ * The size the game runs at for a screen of `out` pixels: the screen divided
+ * by the scale at which 1024 x 768 just fits in it, so that the zoom and the
+ * panels look as at 1024 x 768 (a 16:9 screen gives 1365 x 768, 32:9 gives
+ * 2731 x 768, 5:4 gives 1024 x 819). A fixed size no larger than 1024 x 768
+ * in either direction (the original's modes, 800 x 600) runs at its own size;
+ * a window smaller than that (`fill`) is filled the same way, the game shrunk
+ * to it.
  */
-export function hudBand(width: number, height: number, centred: boolean): { left: number; right: number } {
-  if (!centred) return { left: 0, right: width };
-  const w = Math.max(DEFAULT_SCREEN.w, Math.trunc((height * 16) / 9));
-  if (w >= width) return { left: 0, right: width };
-  const left = (width - w) >> 1;
-  return { left, right: left + w };
+export function gameSize(out: { w: number; h: number }, fill = false): { w: number; h: number } {
+  const s = Math.min(out.w / DEFAULT_SCREEN.w, out.h / DEFAULT_SCREEN.h);
+  if (s <= 0) return { ...DEFAULT_SCREEN };
+  if (s <= 1 && !fill) {
+    return { w: Math.min(MAX_SIDE, Math.max(MIN_SCREEN.w, out.w)), h: Math.min(MAX_SIDE, Math.max(MIN_SCREEN.h, out.h)) };
+  }
+  return { w: Math.min(MAX_SIDE, Math.max(DEFAULT_SCREEN.w, Math.round(out.w / s))), h: Math.min(MAX_SIDE, Math.max(DEFAULT_SCREEN.h, Math.round(out.h / s))) };
+}
+
+/** The game's screen size for this start (or, with "window", for the window's size now). */
+export function screenSize(choice: ResolutionChoice = readResolution()): { w: number; h: number } {
+  return gameSize(outputSize(choice), choice === "auto" || choice === "window");
+}
+
+/**
+ * The centred HUD's band (a port option): on a screen wider than 1024 the
+ * control panel, the view control gadget and the picture-in-picture are
+ * placed in a centred band 1024 wide, the 1024 x 768 interface (its Live
+ * pages take their 1024 layouts, game/context.ts hudLayoutWidth), instead
+ * of the screen's full width; the lot view still fills the screen. Off, the
+ * band is the whole width, as in the original.
+ */
+export function hudBand(width: number, _height: number, centred: boolean): { left: number; right: number } {
+  if (!centred || width <= DEFAULT_SCREEN.w) return { left: 0, right: width };
+  const left = (width - DEFAULT_SCREEN.w) >> 1;
+  return { left, right: left + DEFAULT_SCREEN.w };
 }

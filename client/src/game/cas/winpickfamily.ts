@@ -528,6 +528,9 @@ class PickFamilyList extends TSWin implements TTPositionSource {
 }
 
 export class WinPickFamily extends TSWinGenDlg {
+  /** Made for one screen size: a live screen resize waits until it is gone (ui/screenresize.ts). */
+  readonly holdsScreenSize = true;
+
   private owner: PickFamilyOwner | null = null;
   private bkg: ImageBitmap | null = null;
   private offX = 0;

@@ -218,7 +218,7 @@ export class HouseViewer {
     readonly comp: Compositor,
     readonly floors: FloorGraphicsMgr,
     /** View rectangle (HouseViewer+0x28): the 3D viewport, width x (height - 100); its height follows setViewportHeight. */
-    readonly viewW: number,
+    public viewW: number,
     public viewH: number,
   ) {
     this.zbuf = new ZBufferLookup(viewW, viewH);
@@ -249,6 +249,25 @@ export class HouseViewer {
     if (h === this.viewH) return;
     this.viewH = h;
     this.comp.resize(this.viewW, h);
+    this.target = HouseViewer.terrainTarget(this.comp);
+    this.dirty = true;
+  }
+
+  /**
+   * The port's screen resize ("window" resolution, game/main.ts): the viewport
+   * takes the new size as SetViewportHeight does (the depth lookups keep the
+   * projection they were made with); the view keeps its centre.
+   */
+  setViewportSize(w: number, h: number): void {
+    if (w === this.viewW && h === this.viewH) return;
+    const x = this.originX + ((w - this.viewW) >> 1);
+    const y = this.originY + ((h - this.viewH) >> 1);
+    this.viewW = w;
+    this.viewH = h;
+    this.comp.resize(w, h);
+    // (not a player's scroll: the tutorial's scroll event does not count it)
+    this.setOffsets(x, y);
+    HouseViewer.setOffsetsCount--;
     this.target = HouseViewer.terrainTarget(this.comp);
     this.dirty = true;
   }

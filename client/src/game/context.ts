@@ -27,6 +27,16 @@ export interface GameContext {
 }
 
 /**
+ * The screen width the control panel's pages choose their layout by (the
+ * original's GetScreenWidth tests: the wide Live pages at exactly 1024, the
+ * roof panel's small layout at 800): the screen's, or with the port's
+ * centred HUD the band's, which is the 1024 x 768 interface.
+ */
+export function hudLayoutWidth(ctx: GameContext): number {
+  return ctx.hud ? ctx.hud.right - ctx.hud.left : ctx.width;
+}
+
+/**
  * cSimsApp entry points used by the options and camera panels. Every hook is
  * optional: a panel does nothing (beyond its own UI) when one is missing.
  */

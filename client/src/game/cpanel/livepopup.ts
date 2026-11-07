@@ -33,7 +33,7 @@
  * SetObject and SetBitmap reset the special scale to 0.
  */
 
-import type { GameContext } from "../context.js";
+import { hudLayoutWidth, type GameContext } from "../context.js";
 import { ObjectFolder } from "../world/objectfolder.js";
 import type { ObjSelector } from "../world/objselector.js";
 import { ObjectIcon } from "./buy/objecticon.js";
@@ -327,7 +327,7 @@ export class WinLivePopup extends TSWin {
         // The right pane is centered over the part above that band in a double-byte UI,
         // the left one over the part above the 1024-wide panel's 50 px band.
         if (i === 1 && DOUBLE_BYTE_UI) target -= 0x32;
-        else if (i === 0 && this.ctx.width === 0x400) target -= 0x32;
+        else if (i === 0 && hudLayoutWidth(this.ctx) === 0x400) target -= 0x32;
         const ph = r.bottom - r.top;
         if (ph < target) {
           let d = Math.trunc((target - ph) / 2) - r.top;

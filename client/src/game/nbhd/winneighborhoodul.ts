@@ -36,6 +36,7 @@ import type { FfnFont } from "../res/ffn.js";
 import { UI_LANGUAGE } from "../res/uires.js";
 import { BTN_TOGGLE, TSWinBtn } from "../ui/btn.js";
 import { winMgr } from "../ui/winmgr.js";
+import { shiftChildren } from "../ui/screenresize.js";
 import { Gfx, TSWin, WF_ENABLED } from "../ui/tswin.js";
 import { doInternetUpdate, exportFamilyHTML } from "./exporthtml.js";
 import { getOptionsMgr } from "../optionsmgr.js";
@@ -289,6 +290,9 @@ export class WinNeighborhoodUL extends TSWin implements LotBtnOwner {
   /** +0x130 / +0x134: the map's offset in the window. */
   private offX = 0;
   private offY = 0;
+  /** The map's size (offX / offY centre it; screenResized). */
+  private mapW = 0;
+  private mapH = 0;
   private waveBtn: TSWinBtn | null = null;
   private readonly buttons: TSWinBtn[] = [];
   /** +0x138: house number -> lot button, ordered by house number. */
@@ -377,6 +381,8 @@ export class WinNeighborhoodUL extends TSWin implements LotBtnOwner {
     const h = this.getH();
     this.offX = background.width < w ? (w - background.width) >> 1 : 0;
     this.offY = background.height < h ? (h - background.height) >> 1 : 0;
+    this.mapW = background.width;
+    this.mapH = background.height;
     this.currentBox = await res.image("kNghCurrent");
 
     const map = new TSWinBtn(0, background, 1);
@@ -1663,9 +1669,22 @@ export class WinNeighborhoodUL extends TSWin implements LotBtnOwner {
     super.pump(now);
   }
 
+  /** The port's live screen resize (ui/screenresize.ts): the map and what lies on it stay centred. */
+  screenResized(): void {
+    const x = this.mapW < this.getW() ? (this.getW() - this.mapW) >> 1 : 0;
+    const y = this.mapH < this.getH() ? (this.getH() - this.mapH) >> 1 : 0;
+    shiftChildren(this, x - this.offX, y - this.offY);
+    this.offX = x;
+    this.offY = y;
+  }
+
   /** cWinNeighborhoodUL::TSPaint: the large backdrop and the wave clock. */
   override tsPaint(g: Gfx): void {
-    if (this.largeMask) g.blit(this.largeMask, 0, 0);
+    // The backdrop's frame is drawn around the 800 x 600 map in the middle of the
+    // image (this install's widescreen kLargeMask is 5120 x 1440 with a 1024 x 768
+    // frame at its centre): centred on the screen, it frames the centred map at any
+    // screen size (the original draws it from (0, 0), where only its own size lines up).
+    if (this.largeMask) g.blit(this.largeMask, (this.getW() - this.largeMask.width) >> 1, (this.getH() - this.largeMask.height) >> 1);
     const now = performance.now();
     if (now - this.lastWaveMs >= WAVE_STEP_MS) {
       this.lastWaveMs = now;

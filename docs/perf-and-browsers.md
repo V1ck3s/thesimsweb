@@ -519,6 +519,12 @@ Left:
 
 ## Screen sizes (2026-11-07)
 
+**Update (same day): the game now runs at `gameSize` (about 768 high) and the canvas is scaled up**
+(see ui-coverage.md "Screen size"), so a large resolution draws about as much as 1024 x 768. Headed
+Chrome on a busier host, same probe: 1024 x 768 19.6 fps (render 26.0 ms), 3840 x 2160 (1365 x 768)
+render 24.2 ms, 5120 x 1440 (2731 x 768) 17.8 fps (render 29.3 ms). The table below is the earlier
+native-pixel rendering.
+
 The screen size is now a setting (`engine/display.ts`, see docs/decomp/ui-coverage.md "Screen
 size"). Measured on House01 of a throwaway copy of UserData, Live, speed 3, 15 s, mouse over the
 lot, with `perf.mjs` taking the viewport and `?res=` (fps / frame mean / screen plot mean /

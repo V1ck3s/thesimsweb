@@ -154,6 +154,9 @@ export interface DesignFamilyTarget {
 }
 
 export class WinDesignFamily extends TSWinGenDlg {
+  /** Made for one screen size: a live screen resize waits until it is gone (ui/screenresize.ts). */
+  readonly holdsScreenSize = true;
+
   private target: DesignFamilyTarget | null = null;
   private bkg: ImageBitmap | null = null;
   private template: ImageBitmap | null = null;

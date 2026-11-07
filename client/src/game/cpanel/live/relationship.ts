@@ -26,7 +26,7 @@
  * Not ported: right-click centering the view on the Sim (cXObject::CenterHouseViewOnMe).
  */
 
-import type { GameContext } from "../../context.js";
+import { hudLayoutWidth, type GameContext } from "../../context.js";
 import type { PersonInfo } from "../../cpstate.js";
 import { WinDeltaMeter } from "./deltameter.js";
 import { ALIGN_CENTER, type FfnFont } from "../../res/ffn.js";
@@ -352,7 +352,7 @@ export class RelationshipsPanel extends TSWin {
 
   constructor(readonly ctx: GameContext) {
     super();
-    this.perPage = ctx.width === 1024 ? 10 : 5;
+    this.perPage = hudLayoutWidth(ctx) === 1024 ? 10 : 5;
   }
 
   override async init(): Promise<boolean> {
@@ -362,7 +362,7 @@ export class RelationshipsPanel extends TSWin {
     // 1024 x 768, moved to (300, 50); (0, 0, 280, 150) moved to (300, 0) in a
     // double-byte UI (lbl_105BC4EC / lbl_105BC4E4).
     const top = DOUBLE_BYTE_UI ? 0 : 50;
-    this.setArea(0, top, 280 + (ctx.width === 1024 ? 0xe0 : 0), 150);
+    this.setArea(0, top, 280 + (hudLayoutWidth(ctx) === 1024 ? 0xe0 : 0), 150);
     this.moveTo(300, top);
     this.smallFont = await ctx.fonts.acquire(6);
 

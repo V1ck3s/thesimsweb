@@ -33,7 +33,7 @@
 
 import { assetFetch, fetchManifest } from "../../../engine/assets.js";
 import { WallState } from "../../cpstate.js";
-import type { GameContext } from "../../context.js";
+import { hudLayoutWidth, type GameContext } from "../../context.js";
 import { decodeImage } from "../../res/bmp.js";
 import { BTN_TOGGLE, TSWinBtn } from "../../ui/btn.js";
 import { TSWin } from "../../ui/tswin.js";
@@ -212,7 +212,7 @@ export class WinRoofPanel extends TSWin {
       let x: number;
       let y: number;
       if (i === Btn.Next) {
-        if (ctx.width === SMALL_VIEW_W) {
+        if (hudLayoutWidth(ctx) === SMALL_VIEW_W) {
           [x, y] = stringPosToPoint(next());
           k++;
           x -= 3;
@@ -266,8 +266,10 @@ export class WinRoofPanel extends TSWin {
     const template = await this.ctx.res.image("kRoofPatternTemplate").catch(() => null);
     if (!template) return;
     const kept: string[] = [];
-    for (const path of this.patterns) {
-      const tex = await loadTexture(path);
+    // (read together; the buttons are made in the directory's order)
+    const textures = await Promise.all(this.patterns.map((path) => loadTexture(path)));
+    for (const [i, path] of this.patterns.entries()) {
+      const tex = textures[i];
       if (!tex) continue;
       const c = new OffscreenCanvas(template.width, template.height);
       const g = c.getContext("2d")!;

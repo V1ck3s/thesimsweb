@@ -1366,6 +1366,24 @@ export class WinTown extends TSWin implements LotBtnOwner {
     }
   }
 
+  /** The port's live screen resize (ui/screenresize.ts): the map and what lies on it stay centred. */
+  screenResized(): void {
+    const bg = this.background;
+    if (!bg) return;
+    const x = bg.width < this.getW() ? (this.getW() - bg.width) >> 1 : 0;
+    const y = bg.height < this.getH() ? (this.getH() - bg.height) >> 1 : 0;
+    // The water layer is full screen, drawn at offX / offY.
+    const water = this.waterLayer;
+    for (const c of this.children) if (c !== water) c.moveTo(c.area.left + x - this.offX, c.area.top + y - this.offY);
+    this.offX = x;
+    this.offY = y;
+    if (water) {
+      water.setArea(0, 0, this.getW(), this.getH());
+      water.ox = x;
+      water.oy = y;
+    }
+  }
+
   /** cWinDowntown::TSOnKeyDown: Escape leaves bulldoze mode (cWinMagicland: and Move In mode). */
   override tsOnKeyDown(key: string): boolean {
     if (key === "Escape") {
@@ -1425,7 +1443,11 @@ export class WinTown extends TSWin implements LotBtnOwner {
   }
 
   override tsPaint(g: Gfx): void {
-    if (this.largeMask) g.blit(this.largeMask, 0, 0);
+    // The backdrop's frame is drawn around the 800 x 600 map in the middle of the
+    // image (this install's widescreen kLargeMask is 5120 x 1440 with a 1024 x 768
+    // frame at its centre): centred on the screen, it frames the centred map at any
+    // screen size (the original draws it from (0, 0), where only its own size lines up).
+    if (this.largeMask) g.blit(this.largeMask, (this.getW() - this.largeMask.width) >> 1, (this.getH() - this.largeMask.height) >> 1);
   }
 
   /**

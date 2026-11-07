@@ -141,6 +141,9 @@ export interface DesignCharacterTarget {
 }
 
 export class WinDesignCharacter extends TSWinGenDlg implements PersonalityOwner {
+  /** Made for one screen size: a live screen resize waits until it is gone (ui/screenresize.ts). */
+  readonly holdsScreenSize = true;
+
   /** +0x11c */
   pointsLeft = TOTAL_POINTS;
   /** +0x1a0: the family's last name (the biography caption). */

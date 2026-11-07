@@ -225,6 +225,8 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
     // cAnimDeviceSub::NewWorld sizes the 3D viewport to (width, height - 100)
     // (the whole height with the port's centred HUD: the view shows beside the panel).
     const viewW = this.ctx.width;
+    this.pipRight = this.ctx.hud?.right ?? viewW;
+    this.hudLeft = this.ctx.hud?.left ?? 0;
     const viewH = this.hudBeside() ? this.ctx.height : this.ctx.height - 100;
     const comp = new Compositor(viewW, viewH);
     const v = new HouseViewer(world, comp, floors, viewW, viewH);
@@ -2040,6 +2042,37 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
     this.viewer?.setLevel(level);
   }
 
+  /** The right edge the picture-in-picture is placed against (ctx.hud), as of the last layout. */
+  private pipRight = 0;
+  /** The HUD's left edge (ctx.hud), as of the last layout. */
+  private hudLeft = 0;
+
+  /**
+   * The port's live screen resize (ui/screenresize.ts): the 3D viewport takes
+   * the new size (keeping what the control panel takes off its height), the
+   * tutorial icon stays top-right and the picture-in-picture against the
+   * HUD's right edge. The control panel is made again by the game
+   * (game/main.ts Game.resizeScreen).
+   */
+  screenResized(oldW: number, oldH: number): void {
+    const w = this.getW();
+    const h = this.getH();
+    const v = this.viewer;
+    if (v) v.setViewportSize(w, this.hudBeside() ? h : v.viewH + h - oldH);
+    const left = this.ctx.hud?.left ?? 0;
+    const right = this.ctx.hud?.right ?? w;
+    const oldLeft = this.hudLeft;
+    const oldRight = this.pipRight;
+    this.hudLeft = left;
+    this.pipRight = right;
+    for (const c of this.children) {
+      if (c === this.tutorialIcon) c.moveTo(c.area.left + w - oldW, c.area.top);
+      else if (c instanceof WinPictureInPicture) c.moveTo(c.area.left + right - oldRight, c.area.top + h - oldH);
+      // The control panel and the view control (until the panel is made again): with the HUD's left edge and the bottom.
+      else if (c.area.bottom === oldH) c.moveTo(c.area.left + left - oldLeft, c.area.top + h - oldH);
+    }
+  }
+
   /**
    * The port's centred HUD (engine/display.ts hudBand) leaves the lot view
    * visible left and right of the control panel: the viewport then always
@@ -2195,8 +2228,8 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
       this.frameStale = true;
     } else {
       // Frames repainted without a render reuse one copy (one readback per rendered frame).
-      if (this.frameStale || !this.frame) {
-        this.frame ??= new OffscreenCanvas(v.comp.width, v.comp.height);
+      if (this.frameStale || !this.frame || this.frame.width !== v.comp.width || this.frame.height !== v.comp.height) {
+        if (this.frame?.width !== v.comp.width || this.frame.height !== v.comp.height) this.frame = new OffscreenCanvas(v.comp.width, v.comp.height);
         this.frame.getContext("2d")!.drawImage(v.comp.canvas, 0, 0);
         this.frameStale = false;
       }

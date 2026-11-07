@@ -26,7 +26,7 @@
  * other = type 8.
  */
 
-import type { GameContext } from "../../context.js";
+import { hudLayoutWidth, type GameContext } from "../../context.js";
 import type { SimInventory } from "../../data/neighborhood.js";
 import { ALIGN_CENTER, type FfnFont } from "../../res/ffn.js";
 import { decodeImage } from "../../res/bmp.js";
@@ -178,7 +178,7 @@ export class GiftsPanel extends TSWin {
     readonly client: WinLivePopupClient,
   ) {
     super();
-    this.perPage = (ctx.width === 1024 ? 10 : 6) - 1;
+    this.perPage = (hudLayoutWidth(ctx) === 1024 ? 10 : 6) - 1;
   }
 
   /** cWinPeople::BuildGiftPanel, then cWinPeople::InitInventorySorts. */
@@ -188,7 +188,7 @@ export class GiftsPanel extends TSWin {
     // The subpanel rect (0, 50, 280, 150), 224 px wider at 1024 x 768, moved to (300, 50);
     // (0, 0, 280, 150) moved to (300, 0) in a double-byte UI (lbl_105BC4EC / lbl_105BC4E4).
     const top = DOUBLE_BYTE_UI ? 0 : 50;
-    this.setArea(0, top, 280 + (ctx.width === 1024 ? 0xe0 : 0), 150);
+    this.setArea(0, top, 280 + (hudLayoutWidth(ctx) === 1024 ? 0xe0 : 0), 150);
     this.moveTo(300, top);
 
     // Title: STR# 0x8d entry 0 in lbl_105BA2E8[6] at (5, 0) (lbl_105BC4D8; (10, 5), lbl_105BC4DC,
