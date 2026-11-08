@@ -8,7 +8,7 @@
  * table) or by event code (Event, a switch on the kSndob... and k... codes).
  */
 
-import { listDir, readGameFile, readLooseFile } from "./audiosys.js";
+import { addDownloadFar, listDir, readGameFile, readLooseFile } from "./audiosys.js";
 import { getAudioInfo } from "./audioinfo.js";
 import { FreshPlayer, FreshTimer } from "./fresh.js";
 import { checkHit, parseHot, parseHsm, type HitCode, type MappedEvent } from "./hitdata.js";
@@ -337,6 +337,23 @@ export class BoxX {
     const scores = AMBIENCE_SCORES.map(([dir, file]) => readGameFile(dir + file));
     for (const p of scores) p.catch(() => {}); // (FreshPlayer.init handles a failure)
     for (const d of dataDirs) this.loadDataDirectory(await d);
+    // ObjectFolder::GetDownloadDirectories -> cSoundPlayer::AddDownloadDirectory ->
+    // cBoxX::LoadPluginDataDirectory: each Downloads\<object> folder's .hot / .hit / .hsm.
+    const downloads = (await listDir("Downloads").catch(() => ({ dirs: [] as string[] }))).dirs;
+    const downloadData = downloads.map(async (dir) => {
+      const name = dir.slice(dir.lastIndexOf("/") + 1).toLowerCase();
+      const far = (await listDir(dir)).files.find((f) => f.toLowerCase().endsWith(`/${name}.far`));
+      if (far) addDownloadFar(dir, far);
+      return readDataDirectory(dir);
+    });
+    for (const d of downloadData) d.catch(() => {});
+    for (const d of downloadData) {
+      const triples = await d.catch((e: unknown) => {
+        console.warn("[boxx] download sound data", e);
+        return null;
+      });
+      if (triples) this.loadDataDirectory(triples);
+    }
     for (const r of receiverDefs(usVersion)) {
       const n = await initReceiver(this.hm, r.dir, r.hitList);
       if (n > 0) this.loaded.receivers[r.dir] = n;

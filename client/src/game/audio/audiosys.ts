@@ -92,6 +92,16 @@ const FARS: Array<[prefix: string, far: string]> = [
   ["expansionpack\\", "ExpansionPack/ExpansionPack.far"],
 ];
 
+/**
+ * cSoundPlayer::AddDownloadDirectory: a download folder's sounds
+ * ("Downloads\\<object>\\x.xa" in its .hot) are in its "<object>.far".
+ * `far` is the archive's path from the game root.
+ */
+export function addDownloadFar(dir: string, far: string): void {
+  const prefix = `${dir.replace(/\//g, "\\").toLowerCase()}\\`;
+  if (!FARS.some(([p]) => p === prefix)) FARS.push([prefix, far]);
+}
+
 let manifest: Promise<Manifest> | null = null;
 let looseFiles: Promise<Map<string, string>> | null = null;
 

@@ -282,7 +282,10 @@ reg 0x13 = a2, 0x14 = a3, and UpdateAmbienceLoop passes (0, 0, 0) — same as or
   to kSndobPlay (4316), kSequenceTrackHitList, kTurnOnTv, kSetMusicMode,
   kSetAmbienceMode, kSndobCancelNote (19), kKillAll (20), kPlayPiano (43) and the
   numbers 18, 23, 30, 44..51, 101..105, 1907: none to 4..10. Only a third-party
-  .hot could reach them, so they stay unported.
+  .hot could reach them, so they stay unported. The Downloads\<object> folders are
+  loaded after the fixed ones (ObjectFolder::GetDownloadDirectories ->
+  cSoundPlayer::AddDownloadDirectory; their samples are in <object>.far), and
+  kSequenceTrackHitList (53) is ChainPatch(GlobalHitList(a4)->Choose()) on the track.
 - CheckPriority's voice limits per SPL and the debug events are not implemented.
 - Expansion flags (+0x66) are assumed all set; neighborhood music uses
   `Music\Modes\Nhood` (French build) unless `initialize(options, true)`.
