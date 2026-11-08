@@ -713,7 +713,6 @@ export class SimModule {
     const g = this.res.glob;
     const nb = this.nbhd?.neighbors.find((n) => (n.guid | 0) === (p.obj.selector.guid | 0));
     if (nb) p.loadPersistentData(nb);
-    p.happyCurves = p.isChild ? this.happyCurvesChild : this.happyCurves;
     // cXPerson::PostLoad: MotiveEffects curves from OBJD +0x66 (private file), else Global.iff 0x1f7 (child) / 0x1f5.
     const own = p.obj.selector.objd.i16(0x66);
     const strings = own !== 0 ? loadStringSet(p.obj.selector.res, own) : g ? loadStringSet(g, p.isChild ? 0x1f7 : 0x1f5) : null;

@@ -199,8 +199,6 @@ export class PersonSim extends SimObject {
   readonly motiveIncs: MotiveInc[] = [];
   /** cXPerson +0x810: the tick Motives::Sim last ran. */
   lastMotiveTick = 0;
-  /** The happiness weight curves (global). */
-  happyCurves: readonly MotiveCurve[] = [];
   /** +0x820 queue (head first), +0xa08 current action, +0xa44 last action. */
   readonly queue: Interaction[] = [];
   currentAction: Interaction | null = null;
@@ -244,6 +242,11 @@ export class PersonSim extends SimObject {
       pd.set(rec.personData);
       m.set(rec.motives, 0);
       m.set(rec.motives2, 16);
+    } else {
+      // Motives::Init: all 0 but energy (and its previous value) 70 and motive 7 -40.
+      m[5] = 70;
+      m[0x15] = 70;
+      m[7] = -40;
     }
     this.person = { personData: pd, motives: m };
     // cXPerson::ReconStream: the saved ObjectRecords (object id, stack size, action flag).
@@ -341,7 +344,7 @@ export class PersonSim extends SimObject {
         this.lastMotiveTick = tick;
         if (this.pd[PDX.motivesStatic] === 0 && this.obj.hidden === 0) {
           motivesSim(m, this.pd, this.module.sim.globals[0]!);
-          calcHappy(m, this.happyCurves);
+          calcHappy(m, this.isChild ? this.module.happyCurvesChild : this.module.happyCurves);
         }
       }
       // SAnimator::Tick (vtable +0x58) on every tick the person ran.
