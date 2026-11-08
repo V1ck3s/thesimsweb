@@ -1790,6 +1790,7 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
       for (const c of this.children) if (c instanceof WinViewControl) c.simulatorSuspended(on);
     };
     WinViewControl.simulatorGlobal32 = () => sim.globals[32]!;
+    this.ctx.state.simGlobal = (i) => sim.globals[i] ?? 0;
     WinBudgetDlg.source = {
       prepareForBudgetWindow: async () => {
         const viewer = this.viewer;
@@ -1882,6 +1883,7 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
     this.buyTool?.cancel();
     this.actionIcons.clear();
     if (this.ctx.state.viewer === this) this.ctx.state.viewer = null;
+    this.ctx.state.simGlobal = null;
     if (this.tutorialIcon) setTutorialIcon(null);
     setTrackingDispatch(null);
     setTrackedObject(null);

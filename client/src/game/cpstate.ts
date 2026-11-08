@@ -341,6 +341,23 @@ export class CPState {
     const enteringLive = this.mode !== Mode.Live && mode === Mode.Live;
     this.mode = mode;
     if (enteringLive) for (const hook of enterLiveModeHooks) hook();
+    if (mode === Mode.Buy) {
+      // CPState::SetMode(1): on a lot of global 0x20 = 1 the catalog sort follows the
+      // house number (global 10) and zoning; otherwise Function. The books view, no item.
+      const g = this.simGlobal;
+      const house = g ? g(10) : 0;
+      let sort = CatalogSort.Function;
+      if (g && g(32) === 1) {
+        if (house > 0x14 && house < 0x1f) sort = CatalogSort.Downtown;
+        else if (house > 0x27 && house < 0x32) sort = CatalogSort.Vacation;
+        else if (this.zoningType === 2 && !(house > 0x5c && house < 99)) sort = CatalogSort.Community;
+        else if (house > 0x50 && house < 0x5a) sort = CatalogSort.Studiotown;
+        else if (house > 0x5c && house < 99) sort = CatalogSort.Magictown;
+      }
+      this.shopSort = sort;
+      this.shopSortState = CatalogSortState.Books;
+      this.updateShopItem();
+    }
     // CPState::SetMode marks everything but two bits dirty.
     this.touch(0xfff7ffbf);
   }
@@ -649,6 +666,9 @@ export class CPState {
   }
 
   // --- buy mode shop (CPState+0x8c..0x1db) -----------------------------------
+
+  /** The lot's simulator globals (cSimulator::GetGlobal), set by the lot view; null without a lot. */
+  simGlobal: ((index: number) => number) | null = null;
 
   /** CPState::ShoppingState (+0x8c); 3 once an item is picked (ShopSetCatalogItem). */
   shopState = 3;
