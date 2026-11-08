@@ -15,6 +15,7 @@
  * (cXPerson::TryElement), which are not ported in this phase.
  */
 
+import { isDynamic, removeFromDynamic } from "./dynamic.js";
 import { Transforms } from "./transforms.js";
 import { type FarEntryInfo, readFarManifest } from "../../engine/assets.js";
 import { ResFile } from "../world/iffres.js";
@@ -1167,8 +1168,8 @@ export class SimModule {
   addToKillQueue(id: number, flag: number): void {
     const o = this.getObject(id);
     if (!o) return;
-    // A multi-tile part queues its lead (cXMTObject: the +0x190 lead of a static object).
-    const lead = o.obj.selector.objd.masterId !== 0 && o.obj.mtLeadId !== 0 ? (this.getObject(o.obj.mtLeadId) ?? o) : o;
+    // A multi-tile part queues its lead (cXMTObject: the +0x190 lead of a static object; a dynamic one is queued itself).
+    const lead = o.obj.selector.objd.masterId !== 0 && o.obj.mtLeadId !== 0 && !isDynamic(o) ? (this.getObject(o.obj.mtLeadId) ?? o) : o;
     if (this.killQueue.some((k) => k.id === lead.id || k.id === id)) return;
     // Pickup(1) is left to KillObject's world part. Bit 0x1000: kept records (see SimObject.keepRecordObjects).
     lead.keepRecordObjects = flag === 0;
@@ -1183,7 +1184,10 @@ export class SimModule {
     while (this.killQueue.length) {
       const { id } = this.killQueue.shift()!;
       const o = this.getObject(id);
-      if (o) this.killObject(o);
+      if (!o) continue;
+      // PostSim: a dynamic multi-tile part leaves its chain first (cXMTObject::RemoveFromDynamic).
+      if (isDynamic(o)) removeFromDynamic(this, o);
+      this.killObject(o);
     }
   }
 

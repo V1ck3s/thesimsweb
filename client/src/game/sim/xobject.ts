@@ -27,6 +27,7 @@ import { getTreeClass, getBaseID, loadStringSet, loadUIStringSet } from "./behav
 import { EP, ObjFnTable } from "./objfntable.js";
 import type { MakeCharacterResult, SimModule } from "./simmodule.js";
 import { tryLotChangeCall } from "./lotcalls.js";
+import { isDynamic, mergeInPlace, removeFromDynamic } from "./dynamic.js";
 import { PRIM_CONTINUE, PRIM_FALSE, PRIM_TRUE, PRIM_WAIT, TreeSim, simThrow, treeSimGlobals } from "./treesim.js";
 import type { ParamSource, StackElem } from "./treestack.js";
 import { DIR_VEC, rotateOffset, tileObjects, wallBlockFlagsAtTile } from "./routing.js";
@@ -290,6 +291,8 @@ export class SimObject extends TreeSim {
     const parts = this.module.list.filter((x) => x === this || (x.obj.mtLeadId === this.id && x.id !== this.id));
     for (const x of parts) x.resetData();
     for (const x of parts) x.finishReset(tick);
+    // cXMTObject::Reset ends with MergeInPlace when there is an entry 8 tree.
+    if (isDynamic(this)) mergeInPlace(this.module, this);
   }
 
   /** One multi-tile part alone: its data reset and its Init (a part created at run time). */
@@ -2539,6 +2542,9 @@ export class SimObject extends TreeSim {
       else for (let i = 0; i < 4 && x.dir !== (stack.dir & 6); i++) hooks.turn(x, 1);
       this.module.dirty(o);
     }
+    // A dynamic multi-tile object (the flood) goes to the tile's center (the FTilePt's low bits := 8).
+    const dynamic = isDynamic(o);
+    if (dynamic) pos = { fx: (pos.fx & ~15) | 8, fy: (pos.fy & ~15) | 8 };
     if (place) {
       if (!hooks.canPlace(x, pos, level, container, slot)) {
         this.module.removeObject(x);
@@ -2546,6 +2552,7 @@ export class SimObject extends TreeSim {
         return PRIM_FALSE;
       }
       hooks.place(x, pos, level, container, slot);
+      if (dynamic) mergeInPlace(this.module, o);
       // A neighbor's person (flag 4) whose person data 0x20 is set runs its
       // "init visitor" tree at once (RunOneTickTree, the person as stack object).
       if (flags & 4 && o.person && o.person.personData[0x20] !== 0) {
@@ -2699,6 +2706,7 @@ export class SimObject extends TreeSim {
       return placeAt({ fx: r.obj.fx, fy: r.obj.fy }, r.obj.level);
     }
     if (mode === 1) {
+      if (isDynamic(target)) removeFromDynamic(this.module, target);
       hooks.pickup(x);
       this.module.dirty(target);
       return PRIM_TRUE;

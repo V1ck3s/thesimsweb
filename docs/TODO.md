@@ -65,8 +65,6 @@ BHAV livrés.
 
 - **Appel générique 40, animal → adulte** (Neighborhood::AnyoneToAdult → ChangeSimBaseType,
   `sim/transforms.ts`) : la demande échoue (état 3). L'appel 39 (enfant → adulte) est porté.
-- **Objets multi-cases dynamiques, point d'entrée 8** (cXMTObject::MergeInPlace /
-  UpdateDynAdjacency) : seulement flood.iff (flaques), graphisme selon les voisines.
 - Constats de l'audit classés « faible, non vérifiés » : pas encore repris un par un.
 
 ## 3. Son
