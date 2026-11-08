@@ -55,7 +55,7 @@
  */
 
 import { getLiveNeighborhood, setLiveNeighborhood } from "../data/nbhdstore.js";
-import type { Neighbor } from "../data/neighborhood.js";
+import { removeNeighbor as removeNeighborData, type Neighbor } from "../data/neighborhood.js";
 import type { PersonSim } from "../sim/person.js";
 import type { WorldHooks } from "../sim/simmodule.js";
 import { G, Simulator } from "../sim/simulator.js";
@@ -286,8 +286,9 @@ export class CasLot {
   /** Neighborhood::RemoveNeighbor in the simulator's Neighborhood. */
   removeNeighbor(guid: number): void {
     const n = this.sim.module.nbhd;
-    if (n) n.neighbors = n.neighbors.filter((x) => (x.guid | 0) !== (guid | 0));
+    if (n) removeNeighborData(n, guid);
   }
+
 
   /** The body strings changed (EditPerson's ResetInstanceSuits on the instance: SAnimator::ResetSuits). */
   resetInstanceSuits(guid: number, bodyStrings: readonly string[]): void {

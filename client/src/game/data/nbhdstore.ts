@@ -23,7 +23,7 @@ import { createCharacterFile, createCharacterFileFrom, deleteCharacterFile, GUID
 import { serializeFamilyHistory } from "./familyhistory.js";
 import { deleteGameFile, writeGameFile } from "./files.js";
 import { buildIff, decodeStrSet, parseIff, stringSetBaseResave, stringSetMultiSave, stringSetMultiSaveLocal, type IffChunk } from "./iff.js";
-import { PD, type Neighbor, type NeighborhoodData } from "./neighborhood.js";
+import { PD, removeNeighbor as removeNeighborData, type Neighbor, type NeighborhoodData } from "./neighborhood.js";
 import { ReconReader, ReconWriter } from "./recon.js";
 import { friendshipThreshold } from "../sim/floatconstants.js";
 
@@ -482,7 +482,12 @@ export class NeighborhoodStore {
     const n = this.neighborByGuid(guid);
     if (!n) return false;
     if (this.families.some((f) => f.memberGuids.includes(guid >>> 0))) return false;
-    // RemoveNeighbor: free the slot and drop the relationships to it.
+    // RemoveNeighbor: its inventory loses every token of types 0..9
+    // (GetInventoryByNeighbourID, RemoveAllTokensOfType), then the slot is
+    // freed and the relationships to it dropped (RelMatrix::RemoveArray).
+    this.clearInventoryTokens(n.id);
+    // The lot's Neighborhood is the same one in the original: takeLive must not bring it back.
+    if (liveNeighborhood?.data.dir === this.dir) removeNeighborData(liveNeighborhood.data, guid);
     this.nbrs.entries[n.id - 1] = null;
     for (const e of this.nbrs.entries) {
       if (!e) continue;
@@ -889,6 +894,30 @@ export class NeighborhoodStore {
       if (id !== undefined) sum += this.findToken(id, 7, 0x99e81bec);
     }
     return (sum << 16) >> 16;
+  }
+
+  /** RemoveAllTokensOfType(0..9) on the neighbor's first inventory record. */
+  private clearInventoryTokens(neighborId: number): void {
+    const records = parseInventoryRecords(this.ngbh().inventory ?? new Uint8Array(4));
+    const i = records.findIndex((r) => r !== null && new DataView(r.buffer, r.byteOffset, r.byteLength).getInt16(0, true) === neighborId);
+    const r = i >= 0 ? records[i] : null;
+    if (!r) return;
+    const v = new DataView(r.buffer, r.byteOffset, r.byteLength);
+    const n = v.getInt32(2, true);
+    const kept: Uint8Array[] = [];
+    for (let k = 0; k < n; k++) {
+      const p = 6 + k * 10;
+      const type = v.getInt32(p, true);
+      if (type < 0 || type > 9) kept.push(r.subarray(p, p + 10));
+    }
+    if (kept.length === n) return;
+    const out = new Uint8Array(6 + kept.length * 10);
+    out.set(r.subarray(0, 2));
+    new DataView(out.buffer).setInt32(2, kept.length, true);
+    kept.forEach((t, k) => out.set(t, 6 + k * 10));
+    records[i] = out;
+    this.ngbh().inventory = serializeInventoryRecords(records);
+    this.touchNgbh();
   }
 
   /**

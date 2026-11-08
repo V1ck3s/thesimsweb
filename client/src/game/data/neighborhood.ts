@@ -380,6 +380,21 @@ export function familyInHouse(n: NeighborhoodData, houseNumber: number): Family 
   return n.families.find((f) => f.houseNumber === houseNumber || (f.vacationLot ?? 0) === houseNumber);
 }
 
+/**
+ * Neighborhood::RemoveNeighbor on the in-memory neighborhood: the neighbor's
+ * inventory loses its tokens of types 0..9 (GetInventoryByNeighbourID,
+ * RemoveAllTokensOfType), the neighbor goes, and the others drop their
+ * relationship to it (RelMatrix::RemoveArray).
+ */
+export function removeNeighbor(n: NeighborhoodData, guid: number): void {
+  const dead = n.neighbors.find((x) => (x.guid | 0) === (guid | 0));
+  if (!dead) return;
+  const inv = n.inventories.find((x) => x.neighborId === dead.id);
+  if (inv) inv.tokens = inv.tokens.filter((t) => t.type < 0 || t.type > 9);
+  n.neighbors = n.neighbors.filter((x) => x !== dead);
+  for (const x of n.neighbors) x.relationships = x.relationships.filter((r) => r.other !== dead.id);
+}
+
 export function neighborByGuid(n: NeighborhoodData, guid: number): Neighbor | undefined {
   return n.neighbors.find((x) => x.guid === guid);
 }
