@@ -1881,16 +1881,37 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
   }
 
   /**
-   * cXObject::CenterHouseViewOnMe (not smooth): CPState::SetSelectedPerson
-   * centers the view on the selected sim when the lot opens. The head-height
-   * adjustment of the person branch (ScrollToCenter) is not ported.
+   * cXObject::CenterHouseViewOnMe: nothing for a hidden object or one in no
+   * room; the view centers on the object's average location
+   * (GetAverageLocation), a person on the viewed level a half head height
+   * above its feet (ScrollToCenter), anything else with ScrollToTile; then
+   * the roof is turned off (GViewer::SetDrawRoof(0)).
    */
-  /** cXObject::CenterHouseViewOnMe for any object in the world. */
   centerOnObject(o: PlacedObject, smooth = false): void {
     const v = this.viewer;
-    if (!v || o.tileX < 0) return;
-    const [fx, fy] = RotatableWorld.rotateCoords(o.fx, o.fy, v.world.rotation, 0x400);
-    v.scrollToTile(fx, fy, o.level, smooth);
+    if (!v || o.hidden !== 0 || o.objectData[29]! < 0) return;
+    const lead = o.mtLeadId || o.objectId;
+    let n = 0;
+    let sx = 0;
+    let sy = 0;
+    for (const p of this.lotObjects?.objects.values() ?? []) {
+      if ((p.mtLeadId || p.objectId) !== lead) continue;
+      sx += p.fx;
+      sy += p.fy;
+      n++;
+    }
+    const ax = n ? Math.trunc(sx / n) : o.fx;
+    const ay = n ? Math.trunc(sy / n) : o.fy;
+    const [fx, fy] = RotatableWorld.rotateCoords(ax, ay, v.world.rotation, 0x400);
+    if (o.isPerson && o.level === v.level) {
+      const s = v.scale;
+      const head = Math.trunc((1 << (s + 1)) * Math.fround(Math.fround(1 / 3) * 6) * Math.fround(2 * Math.sqrt(6)));
+      const p = v.tileToPointF(fx, fy, o.level, s);
+      v.scrollToCenter(p.h, p.v - Math.trunc(head / 2), smooth);
+    } else {
+      v.scrollToTile(fx, fy, o.level, smooth);
+    }
+    this.setDrawRoofOff();
   }
 
   /**
@@ -2051,11 +2072,8 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
     const v = this.viewer;
     const objs = this.lotObjects?.objects;
     if (!v || !objs) return;
-    const people = [...objs.values()].filter((o) => o.isPerson && o.hidden === 0);
-    const o = people.find((p) => p.guid === guid) ?? people[0];
-    if (!o) return;
-    const [fx, fy] = RotatableWorld.rotateCoords(o.fx, o.fy, v.world.rotation, 0x400);
-    v.scrollToTile(fx, fy, o.level, smooth);
+    const o = [...objs.values()].find((p) => p.isPerson && p.guid === guid);
+    if (o) this.centerOnObject(o, smooth);
   }
 
   // --- HouseViewerHooks ---------------------------------------------------------
