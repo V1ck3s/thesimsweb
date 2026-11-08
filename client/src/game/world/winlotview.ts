@@ -325,6 +325,7 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
       v.setOffsets(0, 0);
     }
     this.viewer = v;
+    v.onLevelFromWorld = (level) => this.ctx.state.setLevelFromWorld(level);
     if (this.wallManager) this.initCutaway(v, this.wallManager);
     if (this.lotObjects) await this.initBuyTool(v, this.lotObjects);
     // Neighborhood::LoadHouse: ObjectModule::PostLoad (Load / Init trees) runs in the built

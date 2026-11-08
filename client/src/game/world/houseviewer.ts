@@ -664,7 +664,11 @@ export class HouseViewer {
 
   /** HouseViewer::ScrollToTile(FTilePt, level, smooth=false): center a fixed-point view position. */
   scrollToTile(fx: number, fy: number, level: number, smooth: boolean, now = performance.now()): void {
-    if (level !== this.level) this.setLevel(level);
+    if (level !== this.level) {
+      this.setLevel(level);
+      // CPState::SetLevel(level, 1): the level buttons follow.
+      this.onLevelFromWorld?.(level);
+    }
     const p = this.tileToPointF(fx, fy, this.level);
     const tx = this.originX - (p.h - Math.trunc(this.viewW / 2));
     const ty = this.originY - (p.v - Math.trunc(this.viewH / 2));
@@ -691,8 +695,9 @@ export class HouseViewer {
 
   /** HouseViewer::AsyncScroll: smooth scroll by (dx, dy), clamped like SetOffsets. */
   asyncScroll(dx: number, dy: number, now = performance.now()): void {
-    const fromX = this.scroll ? this.scroll.toX : this.originX;
-    const fromY = this.scroll ? this.scroll.toY : this.originY;
+    // From where the running scroll is now (XSmoothScroller::GetX / GetY), not its end.
+    const fromX = this.originX;
+    const fromY = this.originY;
     const m = this.getOffsetsMinMax();
     const x = (Math.min(Math.max(fromX + dx, m.minX), m.maxX) + 1) & ~3;
     const y = Math.min(Math.max(fromY + dy, m.minY), m.maxY);
@@ -761,6 +766,9 @@ export class HouseViewer {
     this.dirty = true;
     this.cutawayCtl?.onRotation();
   }
+
+  /** ScrollToTile's CPState::SetLevel(level, 1) (set by the lot view). */
+  onLevelFromWorld: ((level: number) => void) | null = null;
 
   /** HouseViewer::SetLevel. */
   setLevel(level: number): void {

@@ -509,6 +509,12 @@ export class CPState {
     this.viewer?.setLevel(this.level);
   }
 
+  /** CPState::SetLevel(level, 1) from HouseViewer::ScrollToTile: the view already shows it, only the buttons follow. */
+  setLevelFromWorld(level: number): void {
+    this.level = level || 1;
+    this.touch(DIRTY_LEVEL);
+  }
+
   getWallState(): WallState {
     return this.wallState;
   }
