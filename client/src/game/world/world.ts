@@ -155,6 +155,26 @@ function widenWalls(old: Array2D): Array2D {
 }
 
 export class FixedWorld {
+  /**
+   * cFixedWorld::GrowGrass(amount): every inner tile whose grass is below its
+   * target grass, with a diagonal neighbor (lbl_105BA078 entries 4..7)
+   * already at its target, grows by amount * 4, up to the target.
+   */
+  growGrass(amount: number): void {
+    const g = this.grass;
+    const t = this.targetGrass;
+    const atTarget = (x: number, y: number): boolean => g.s8(x, y) === t.s8(x, y);
+    for (let y = 1; y < this.size - 1; y++) {
+      for (let x = 1; x < this.size - 1; x++) {
+        const cur = g.s8(x, y);
+        const target = t.s8(x, y);
+        if (cur >= target) continue;
+        if (!DIRS.slice(4, 8).some(([dx, dy]) => atTarget(x + dx, y + dy))) continue;
+        g.data[g.offset(x, y)] = Math.min(cur + amount * 4, target) & 0xff;
+      }
+    }
+  }
+
   /** Lot size in tiles (cFixedWorld+0x10). */
   size = ARRAY_SIZE;
   alt = new Array2D(4);

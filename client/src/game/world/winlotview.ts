@@ -1852,6 +1852,12 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
     // SetCurrentHour: cTerrain::SetColor, then GlobalDispatch(0xdd).
     this.terrain?.setColor(houseNumberOfPath(this.housePath), phase);
     this.terrain?.setLatitudeByTimeOfDay(phase);
+    // GlobalDispatch(0xf8, 5) -> cFixedWorld::DoCommand: with simulator global 36 set,
+    // GrowGrass(5), then 0x86 (the terrain recolored) and 0x83 (redraw).
+    if (this.sim && this.sim.globals[36] !== 0) {
+      this.viewer.world.fixed.growGrass(5);
+      this.terrain?.markDirty();
+    }
     this.viewer.dirty = true;
   }
 
