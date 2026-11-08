@@ -21,7 +21,7 @@ import { enterLiveModeHooks } from "../cpstate.js";
 import { LoopMode, Practice } from "../sims/practice.js";
 import type { Skeleton } from "../sims/skeleton.js";
 import { type Skill, skillClock } from "../sims/skill.js";
-import { VBAnimMgr } from "../sims/vbanimmgr.js";
+import { SkillReadError, VBAnimMgr } from "../sims/vbanimmgr.js";
 
 /** Animator::GetMilsPerTick. */
 export const MILS_PER_TICK = 42;
@@ -147,8 +147,12 @@ export function requestSkill(name: string): Skill | null | undefined {
           return m;
         });
         mgr ??= await mgrPromise;
-        const s = await mgr.findSkill(k).catch(() => null);
-        skills.set(k, s);
+        // A skill whose files could not be read (the network) is not taken as missing: missing, the
+        // person would play the "missing animation" in its place for the rest of the session (a sim
+        // left sitting in a sofa whose sit / stand skills did not arrive); it is asked for again.
+        const s = await mgr.findSkill(k).catch((e: unknown) => (e instanceof SkillReadError ? undefined : null));
+        if (s === undefined) pending.delete(k);
+        else skills.set(k, s);
       })(),
     );
   }

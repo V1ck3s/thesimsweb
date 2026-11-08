@@ -192,7 +192,7 @@ export class SAnimator {
 
   /** Animator::StartSkill by name. */
   async startSkill(name: string, loop: LoopMode = LoopMode.Loop): Promise<boolean> {
-    const skill = await this.vitaboy.mgr.findSkill(name);
+    const skill = await this.vitaboy.mgr.findSkill(name).catch(() => null);
     if (!skill) {
       console.warn(`missing skill ${name}`);
       return false;

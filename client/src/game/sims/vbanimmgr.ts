@@ -72,6 +72,13 @@ function ext(name: string): string {
 let instance: Promise<VBAnimMgr> | null = null;
 
 /**
+ * findSkill could not read a file of the skill (a slow or dropped
+ * connection): unlike a skill the game does not have, it is read again on
+ * the next request.
+ */
+export class SkillReadError extends Error {}
+
+/**
  * lbl_105BA0E4: how long (ms) a skill no practice uses stays loaded before
  * Skill::CanUnload lets it go. Globs::Globs sets 160000 when the machine has
  * 128 MB of memory or more (80000 below; any machine today).
@@ -276,13 +283,22 @@ export class VBAnimMgr {
     return this.suits.get(k) ?? null;
   }
 
-  /** VBAnimMgr::FindSkill, with its keyframes loaded (Skill::Load). */
+  /**
+   * VBAnimMgr::FindSkill, with its keyframes loaded (Skill::Load): null when
+   * the game has no such skill; rejects with SkillReadError when a file could
+   * not be read (the loads that failed are dropped, see `cached`).
+   */
   async findSkill(name: string): Promise<Skill | null> {
     const k = name.toLowerCase();
-    if (!this.skills.has(k)) await this.loadCmx(this.skillIndex.get(k) ?? `${k}.cmx`);
+    if (!this.skills.has(k)) {
+      const file = (this.skillIndex.get(k) ?? `${k}.cmx`).toLowerCase();
+      if (!(await this.loadCmx(file)) && !this.cmxCache.has(file)) throw new SkillReadError(`${file}: not read`);
+    }
     const s = this.skills.get(k);
     if (!s) return null;
-    return (await this.loadSkillData(s)) ? s : null;
+    if (await this.loadSkillData(s)) return s;
+    if (!this.skillData.has(s)) throw new SkillReadError(`${s.animationName}: not read`);
+    return null;
   }
 
   /**
