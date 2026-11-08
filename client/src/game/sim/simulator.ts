@@ -616,6 +616,13 @@ export class Simulator {
         this.globals[G.stop] = 0;
         break;
       }
+      // ExecuteTransforms, then the SaveGame a transform asked for (+0xe0).
+      const tr = this.module.transforms;
+      tr.execute();
+      if (tr.saveRequested) {
+        tr.saveRequested = false;
+        this.module.characterHooks?.saveGame?.();
+      }
     }
     if (n === MAX_PULSES) this.accumulated = 0;
     return n;

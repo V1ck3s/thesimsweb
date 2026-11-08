@@ -32,7 +32,7 @@ import { bodyStringsOf, readCharacterFile } from "../data/character.js";
 import { NeighborhoodStore } from "../data/nbhdstore.js";
 import type { UIRes } from "../res/uires.js";
 import { loadStringSet } from "../sim/behavior.js";
-import type { CharacterHooks, MakeCharacterRequest, MakeCharacterResult } from "../sim/simmodule.js";
+import type { CharacterHooks, DesignedPerson, MakeCharacterRequest, MakeCharacterResult } from "../sim/simmodule.js";
 import type { Simulator } from "../sim/simulator.js";
 import { ObjectFolder } from "../world/objectfolder.js";
 import { templateChunks } from "./imports.js";
@@ -42,8 +42,27 @@ const STR_COLORS = 0x2000;
 /** The simulation error for a missing colour. */
 const ERR_NO_COLOR = 0x3b;
 
-export function characterHooks(nbhdDir: string, sim: Simulator, res?: UIRes): CharacterHooks {
-  return { makeNewCharacter: (req) => makeNewCharacter(nbhdDir, sim, req, res) };
+export function characterHooks(nbhdDir: string, sim: Simulator, res: UIRes | undefined, saveGame: () => void): CharacterHooks {
+  return {
+    makeNewCharacter: (req) => makeNewCharacter(nbhdDir, sim, req, res),
+    saveDesignedPerson: (p) => saveDesignedPerson(nbhdDir, p, res),
+    saveGame,
+  };
+}
+
+/**
+ * Neighborhood::ChildToAdult's EndDesignAPerson(save) and the family's flag 8
+ * (sim/transforms.ts): the body strings, name and portraits go into the
+ * character file, the person data into the neighbor.
+ */
+async function saveDesignedPerson(dir: string, d: DesignedPerson, res?: UIRes): Promise<void> {
+  const store = await NeighborhoodStore.open(dir);
+  const fileName = d.fileKey.split(/[\\/|]/).pop() ?? "";
+  const p: CasPerson = { guid: d.guid >>> 0, fileName, firstName: d.name, bio: d.bio, bodyStrings: d.bodyStrings, personData: d.personData, face: null, edit: null };
+  p.edit = await EditPerson.begin(d.bodyStrings, d.personData);
+  await new CasSession(store, res).endDesignAPerson(p, true, false, false);
+  store.clearMemberFamilyFlags(d.guid, 8);
+  await store.save();
 }
 
 async function makeNewCharacter(dir: string, sim: Simulator, req: MakeCharacterRequest, res?: UIRes): Promise<MakeCharacterResult> {

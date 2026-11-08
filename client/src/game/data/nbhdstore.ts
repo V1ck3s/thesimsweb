@@ -611,6 +611,14 @@ export class NeighborhoodStore {
     }
   }
 
+  /** Family +0x138 &= ~`mask` for the family `guid` belongs to (get_family_from_selector_guid). */
+  clearMemberFamilyFlags(guid: number, mask: number): void {
+    const f = this.families.find((x) => x.memberGuids.includes(guid >>> 0));
+    if (!f || !(f.flags & mask)) return;
+    f.flags &= ~mask;
+    f.dirty = true;
+  }
+
   /** Family +0x118 (budget) and +0x138 (flags) set as given (Neighborhood::SaveHouse). */
   setFamilyBudgetAndFlags(familyId: number, budget: number, flags: number): void {
     const f = this.familyRaw(familyId);

@@ -458,7 +458,7 @@ class Game {
         view.sim,
       );
       view.sim.module.dialogHooks = objectDialogHooks(ctx, view.sim, view);
-      view.sim.module.characterHooks = characterHooks(this.nbhdDir, view.sim, ctx.res);
+      view.sim.module.characterHooks = characterHooks(this.nbhdDir, view.sim, ctx.res, () => void saveGame(ctx, this.lotView, this.nbhdDir));
     }
     await applyLoadGameLocation(ctx, view, this.nbhd, house, arrival);
     state.houseNumber = house;

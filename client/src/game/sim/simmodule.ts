@@ -15,6 +15,7 @@
  * (cXPerson::TryElement), which are not ported in this phase.
  */
 
+import { Transforms } from "./transforms.js";
 import { type FarEntryInfo, readFarManifest } from "../../engine/assets.js";
 import { ResFile } from "../world/iffres.js";
 import type { XObject } from "../world/objects.js";
@@ -178,9 +179,24 @@ export interface MakeCharacterResult {
   error?: number;
 }
 
+/** A person redesigned in the lot (Neighborhood::ChildToAdult's EndDesignAPerson(save)). */
+export interface DesignedPerson {
+  guid: number;
+  /** The character file (ObjSelector.fileKey). */
+  fileKey: string;
+  name: string;
+  bio: string;
+  bodyStrings: string[];
+  personData: Int16Array;
+}
+
 /** See SimModule.characterHooks. */
 export interface CharacterHooks {
   makeNewCharacter(req: MakeCharacterRequest): Promise<MakeCharacterResult>;
+  /** The character file, person data and portraits of a person redesigned in the lot. */
+  saveDesignedPerson(p: DesignedPerson): Promise<void>;
+  /** cSimsApp::SaveGame, asked by a transform (cSimulator +0xe0). */
+  saveGame?(): void;
 }
 
 /** One recorded side effect the port does not perform (sounds, dialogs, UI). */
@@ -592,6 +608,8 @@ export class SimModule {
    */
   characterHooks: CharacterHooks | null = null;
   readonly characterJobs = new Map<number, { result: MakeCharacterResult | null }>();
+  /** cSimulator +0x1a4: the transform requests of generic sim calls 39 / 40. */
+  readonly transforms = new Transforms(this);
   characterJobSerial = 0;
 
   /** +0x64: the queued object dialogs (EnqueueObjectDialog). */

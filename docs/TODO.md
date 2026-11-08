@@ -63,9 +63,8 @@ Interface / triches
 Trouvés par l'audit complet ; les arbres du jeu qui les utilisent ont été cherchés dans tous les
 BHAV livrés.
 
-- **Appels génériques 39 et 40, transformations** (cSimulator::RequestTransform /
-  ExecuteTransforms, Neighborhood::ChildToAdult / AnyoneToAdult) : CharmsKid « Grow Me »,
-  SocialsMagic « Kid to Adult » et « Pet to Adult ».
+- **Appel générique 40, animal → adulte** (Neighborhood::AnyoneToAdult → ChangeSimBaseType,
+  `sim/transforms.ts`) : la demande échoue (état 3). L'appel 39 (enfant → adulte) est porté.
 - **Appel générique 32, la famille rejoint le terrain communautaire** : NeighborhoodPhonePlugin
   « Go To Community ».
 - **Rotation de la tête** (SAnimator::UpdateHeadDirection / AdjustHead / UnadjustHead,

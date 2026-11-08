@@ -1307,6 +1307,23 @@ export class SimObject extends TreeSim {
         m.dirty(other);
         return PRIM_TRUE;
       }
+      case 39:
+      case 40: {
+        // cSimulator::RequestTransform {me, temp 0, 0, mode 0 (39, ChildToAdult) / 1 (40,
+        // AnyoneToAdult)}, then wait for RetrieveDoneTransform: temp 0 := a, temp 1 := b on
+        // success (state 2), else 0 (sim/transforms.ts).
+        const tr = m.transforms;
+        if (elem.state === 0) {
+          tr.request({ id: this.id, a: this.temps[0]!, b: 0, mode: call === 39 ? 0 : 1 });
+          elem.state = 1;
+          return PRIM_WAIT;
+        }
+        const done = tr.retrieveDone(this.id);
+        if (!done) return PRIM_WAIT;
+        this.temps[0] = done.a;
+        this.temps[1] = done.state === 2 ? done.b : 0;
+        return PRIM_TRUE;
+      }
       case 5: {
         // Neighborhood::GetFamily(temp 0) (false without it); cSimulator::Spend(expense 2,
         // -Family::GetNetWorth): the lot's funds get the family's budget + lot value.
