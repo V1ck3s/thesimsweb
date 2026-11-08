@@ -436,8 +436,9 @@ not caught in TickAllObjects (none in the original either).
   not taken as contained (fixed error 11 "blocked by plant").
 - Results (2–3 min each, House01 / 05 / 07): FindPath ~0.3–0.4 ms average,
   ~6 ms max; no error 7 / 11, no tree errors. Remaining failures are game
-  results: r13 (person in the way at an easel / bookshelf), and on House01
-  ConstructGoals r8 (a computer goal blocked by a dining chair).
+  results: r13 (person in the way at an easel / bookshelf). (The House01
+  ConstructGoals r8, a computer goal blocked by its chair, was a port bug, fixed
+  2026-11-08: see playtest U65.)
 
 ### Walk animation (`sim/personanim.ts`)
 
@@ -758,7 +759,7 @@ not caught in TickAllObjects (none in the original either).
 
 1. ParseUIString's other tokens ($FamilyAssets, $Object, $NameLocal,
    $TimeLocal, ...) and the non-menu primitive 50 (rename the current action).
-2. ConstructGoals r8 on House01 (chair-direction goal blocked by a chair).
+2. (done 2026-11-08) ConstructGoals r8 on House01: the chair goal's position is the ring point, not the chair.
 3. Arrival by car on move-in; smooth CenterHouseViewOnMe.
 4. Tutorial (10), Set To Next 11 on Windows, inventories saved to NGBH.
 

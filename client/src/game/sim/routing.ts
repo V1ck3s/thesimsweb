@@ -646,6 +646,10 @@ export class XRoute {
       for (; lo <= ring && !stop; ring--) {
         const last = -ring - (nextAllowed ? 1 : 0);
         for (let i = ring; i <= last; i++) {
+          // The goal's position is the ring point (sp+0x70, transformed before the probes): a chair
+          // found next to it is reached from there (InitRoute runs its sit tree), the offset point
+          // only serves the chair probe, the distance and the starting point bonus.
+          const at = transformToWorldCoords(base.fx, base.fy, slot.x + i * res, slot.y + ring * res, gdir);
           // The point, then (chairs allowed) the 8 tiles around it looking for a chair facing the object.
           for (let n = -1; n < 9; n++) {
             let lx = Math.trunc(slot.x + i * res);
@@ -692,7 +696,7 @@ export class XRoute {
             if (openSide) score += 25;
             const w = transformToWorldCoords(base.fx, base.fy, lx, ly, gdir);
             if (w.fx === this.startFx && w.fy === this.startFy) score += 20;
-            const r = this.evalTileForGoal(w.fx, w.fy, gdir);
+            const r = this.evalTileForGoal(at.fx, at.fy, gdir);
             if (r === 1) objectInWay = true;
             else if (r === 2) wallInWay = true;
             else if (r === 3) {
@@ -701,7 +705,7 @@ export class XRoute {
             } else if (r === 4) altitudes = true;
             else if (r === 5) personInWay = true;
             if (r === 6) {
-              this.goals.push({ fy: w.fy, fx: w.fx, score, chair, dirFlags });
+              this.goals.push({ fy: at.fy, fx: at.fx, score, chair, dirFlags });
               if (this.maxScore < score) this.maxScore = score;
               break;
             }
