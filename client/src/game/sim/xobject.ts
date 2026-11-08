@@ -1288,7 +1288,7 @@ export class SimObject extends TreeSim {
       case 10:
       case 11:
         // ObjectModule::DisableBuyAndBuild / EnableBuyAndBuild(this).
-        m.buyBuildDisabledBy = call === 10 ? this.id : 0;
+        m.setBuyAndBuildDisabled(this.id, call === 10);
         m.record(this, call === 10 ? "disableBuyAndBuild" : "enableBuyAndBuild", this.id);
         return PRIM_TRUE;
       case 12: {

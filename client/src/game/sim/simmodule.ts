@@ -279,8 +279,42 @@ export class SimModule {
   onDeselect: ((o: SimObject) => void) | null = null;
   /** Neighborhood +0x16c zoning: house number -> 1 residential / 2 community (UserData LotZoning.iff STR# 1). */
   readonly zoning = new Map<number, number>();
-  /** ObjectModule::DisableBuyAndBuild: the object that disabled buy and build modes (0 = enabled). */
-  buyBuildDisabledBy = 0;
+  /**
+   * ObjectModule +0x38: the objects that disabled Buy and Build
+   * (DisableBuyAndBuild adds one entry, EnableBuyAndBuild erases one of that
+   * object, RemoveObject all of them). Saved with the module (ObjM v > 0x33):
+   * the lot view shares the loaded ObjectModule's vector here.
+   */
+  buyBuildDisablers: number[] = [];
+
+  /** Disable (true) or EnableBuyAndBuild (false) for `id`. */
+  setBuyAndBuildDisabled(id: number, disabled: boolean): void {
+    const was = this.buyBuildDisablers.length > 0;
+    if (disabled) this.buyBuildDisablers.push(id);
+    else {
+      const i = this.buyBuildDisablers.indexOf(id);
+      if (i >= 0) this.buyBuildDisablers.splice(i, 1);
+    }
+    if (was !== this.buyBuildDisablers.length > 0) this.buyAndBuildChanged();
+  }
+
+  /** ObjectModule::RemoveObject: every Buy and Build lock of object `id` goes. */
+  private liftBuyBuildLocks(id: number): void {
+    if (!this.buyBuildDisablers.includes(id)) return;
+    for (let k = this.buyBuildDisablers.length - 1; k >= 0; k--) if (this.buyBuildDisablers[k] === id) this.buyBuildDisablers.splice(k, 1);
+    if (this.buyBuildDisablers.length === 0) this.buyAndBuildChanged();
+  }
+
+  /**
+   * GlobalDispatch(0x108) -> cSimsApp::DoCommand(0x106): CPState 0x1000000,
+   * UpdateCPStateFromWorld sets IsBuyAndBuildDisabled from the vector.
+   */
+  buyAndBuildChanged(): void {
+    const st = this.sim.state;
+    if (!st) return;
+    st.buyAndBuildDisabled = this.buyBuildDisablers.length > 0;
+    st.setDirty(0x1000000);
+  }
   /**
    * cXObject::TryUserEvent's outside world: cOptionsMgr::GetLivePIP and
    * GViewer::DoPictureInPicture (`window` false: cDDDSimsView centers the lot
@@ -632,8 +666,9 @@ export class SimModule {
     // KillOutOfWorldObject: the people using it let go (cXPerson::Cleanup(obj)).
     this.cleanupPeople(o);
     o.killed = true;
-    // ObjectModule::RemoveObject: the object's dialogs are aborted.
+    // ObjectModule::RemoveObject: the object's dialogs are aborted, its Buy and Build locks lifted.
     for (const d of this.dialogs) if (d.obj === o) d.abort();
+    this.liftBuyBuildLocks(o.id);
     this.objects[x.objectId - 1] = null;
     const i = this.list.indexOf(o);
     if (i >= 0) this.list.splice(i, 1);
@@ -1102,6 +1137,7 @@ export class SimModule {
     }
     for (const x of group) {
       for (const d of this.dialogs) if (d.obj === x) d.abort();
+      this.liftBuyBuildLocks(x.id);
       if (this.objects[x.id - 1] === x) this.objects[x.id - 1] = null;
       const li = this.list.indexOf(x);
       if (li >= 0) this.list.splice(li, 1);

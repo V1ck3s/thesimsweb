@@ -1642,6 +1642,9 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
       // The simulation works on the viewer's fixed world (the router reads its rooms, walls and tile objects).
       if (fixed) sim.world = fixed;
       sim.state = this.ctx.state;
+      // ObjectModule +0x38 (the objects that disabled Buy and Build) as loaded, saved from the same vector.
+      sim.module.buyBuildDisablers = lot.module.trailerIds;
+      sim.module.buyAndBuildChanged();
       // The panels read the relationships the simulation writes (and the people met during play).
       if (sim.module.nbhd) shareSimulationNeighborhood(this.ctx.state, sim.module.nbhd, sim.module.neighborNames);
       // LoadGame dirties the whole CPState: the clock comes from the loaded globals.
