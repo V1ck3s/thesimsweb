@@ -29,7 +29,7 @@ function gameWithQuery(): Plugin {
 }
 
 /** Files of public/ the service worker precaches with the bundles. */
-const PUBLIC_SHELL = ["/manifest.webmanifest", "/webpages-compat.js", "/icons/icon.svg", "/icons/icon-192.png", "/icons/icon-512.png"];
+const PUBLIC_SHELL = ["/manifest.webmanifest", "/webpages-compat.js", "/gamefiles-reference.json", "/icons/icon.svg", "/icons/icon-192.png", "/icons/icon-512.png"];
 
 /**
  * Builds the service worker (src/sw/sw.ts) to /sw.js, with the list of the

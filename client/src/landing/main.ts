@@ -32,6 +32,7 @@ import {
 import {
   gameFilesStatus,
   hasFolderPicker,
+  localGameIndex,
   hasRememberedFolder,
   importGameFiles,
   isGameFilesLocal,
@@ -44,6 +45,7 @@ import {
   sourceFromInput,
   type SourceFile,
 } from "../engine/gamefiles.js";
+import { checkGameFiles, groupByFolder, loadGameReference, type GameCheck } from "../engine/gamecheck.js";
 import { formatBytes, type Key, LOCALES, localeTag, setLocale, t } from "./strings.js";
 
 const $ = <T extends HTMLElement>(id: string): T => {
@@ -202,6 +204,79 @@ async function refreshGameFiles(): Promise<void> {
   resume.hidden = busy || st.state !== "partial" || !(await hasRememberedFolder());
   remove.hidden = st.state === "none";
   setPlayable(st.state === "complete");
+  if (st.state === "complete") await refreshGameCheck();
+  else showGameCheck(null);
+}
+
+// --- Installation check --------------------------------------------------------------
+
+/** The installation check's result in the game files panel (null: nothing to check yet). */
+function showGameCheck(check: GameCheck | null, error?: string): void {
+  const state = $("gamecheck-state");
+  const size = $("gamecheck-size");
+  const details = $<HTMLDetailsElement>("gamecheck-details");
+  size.hidden = true;
+  details.hidden = true;
+  if (error !== undefined) {
+    show(state, () => t("gcFailed", { error }));
+    state.className = "warn";
+    return;
+  }
+  if (!check) {
+    show(state, () => "–");
+    state.className = "";
+    return;
+  }
+  const game = check.missingGame.length;
+  const content = check.missingContent.length;
+  show(state, () => {
+    if (!game && !content) return t("gcOk", { n: check.total });
+    const parts: string[] = [];
+    if (game) parts.push(t("gcMissingGame", { n: game }));
+    if (content) parts.push(t("gcMissingContent", { n: content }));
+    return parts.join(" ");
+  });
+  state.className = game ? "err" : content ? "warn" : "ok";
+  if (check.otherSize.length) {
+    size.hidden = false;
+    show(size, () => t("gcOtherSize", { n: check.otherSize.length, source: check.source }));
+  }
+  if (game || content) {
+    const list = $("gamecheck-list");
+    list.replaceChildren();
+    const groups = [...groupByFolder(check.missingGame), ...groupByFolder(check.missingContent)];
+    for (const g of groups.slice(0, 80)) {
+      const li = document.createElement("li");
+      const code = document.createElement("code");
+      code.textContent = `${g.folder || "."}/`;
+      const names = g.names.slice(0, 6).join(", ") + (g.count > 6 ? ", …" : "");
+      li.append(code, ` (${g.count.toLocaleString(localeTag())}) ${names}`);
+      list.append(li);
+    }
+    if (groups.length > 80) list.append(Object.assign(document.createElement("li"), { textContent: "…" }));
+    details.hidden = false;
+  }
+}
+
+/** Compares the game folder (the server's, or the one imported into this browser) with the reference. */
+async function refreshGameCheck(): Promise<void> {
+  show($("gamecheck-state"), () => t("gcChecking"));
+  try {
+    const ref = await loadGameReference();
+    let files: Array<{ path: string; size: number }>;
+    if (localGame) {
+      files = (await localGameIndex()) ?? [];
+    } else {
+      const r = await fetch("/api/manifest", { cache: "no-store" });
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      files = ((await r.json()) as { files: Array<{ path: string; size: number }> }).files;
+    }
+    // Paths relative to the install folder (the server and the import keep it under Sims/).
+    const inGame = files.filter((f) => /^Sims\//i.test(f.path)).map((f) => ({ path: f.path.slice(5), size: f.size }));
+    showGameCheck(checkGameFiles(inGame, ref));
+  } catch (e) {
+    showGameCheck(null, (e as Error).message);
+  }
 }
 
 /** Reads the selected folder, checks it and copies it into this browser. */
@@ -478,6 +553,12 @@ async function main(): Promise<void> {
   mode = await getSaveMode();
   localGame = await isGameFilesLocal();
   if (localGame) initGameFiles();
+  else {
+    // The server's game folder: only its installation check is shown.
+    $("gamefiles").hidden = false;
+    for (const el of document.querySelectorAll<HTMLElement>("#gamefiles .local-only")) el.hidden = true;
+    void refreshGameCheck();
+  }
   show($("lead"), () => t(localGame ? "leadLocal" : "lead"));
   show($("saves-mode"), () => t(mode === "client" ? "savesClient" : "savesServer") + (online ? "" : ` ${t("savesOffline")}`));
   setBusy(false);

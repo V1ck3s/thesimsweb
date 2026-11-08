@@ -41,6 +41,14 @@ const en = {
     "The game's screen size. Every resolution keeps the look of the original's 1024 × 768: the same zoom and panel sizes, scaled to the screen; wider screens show more of the neighborhood and the lot. “Fit the window, following its size” adapts live while you play; “when the game starts” keeps the size the window had then. The centred interface (not in the original) keeps the control panel in a band in the middle of wider screens. Other changes apply at the next start of the game (reload its tab).",
 
   gamefilesH: "Game files",
+  installH: "Installation",
+  gcChecking: "Checking the game files…",
+  gcOk: { one: "Complete: the {n} file of the game is here.", other: "Complete: all {n} files of the game are here." },
+  gcMissingGame: { one: "{n} game file is missing: the game may not start or may lack parts.", other: "{n} game files are missing: the game may not start or may lack parts." },
+  gcMissingContent: { one: "{n} skin, music or sound file is missing (the game runs, with less).", other: "{n} skin, music or sound files are missing (the game runs, with less)." },
+  gcOtherSize: { one: "{n} file has another size than in the reference install ({source}): another language or version, or a damaged copy.", other: "{n} files have another size than in the reference install ({source}): another language or version, or a damaged copy." },
+  gcDetails: "The missing files",
+  gcFailed: "could not be checked ({error})",
   gamefilesHelp:
     "This server does not provide the game. Import your own copy of The Sims (Complete Collection): select its install folder, the one that holds {GameData}, {ExpansionShared}, {UserData}… The files the game reads (about 3.2 GB) are copied into this browser; nothing is sent to the server.",
   inBrowser: "In this browser",
@@ -161,6 +169,14 @@ const fr: Table = {
   displayHelp:
     "La taille de l'écran du jeu. Chaque résolution garde l'aspect du 1024 × 768 de l'original : même zoom et même taille des panneaux, mis à l'échelle de l'écran ; les écrans plus larges montrent davantage du quartier et du terrain. « Adapter à la fenêtre, en suivant sa taille » s'ajuste en direct pendant la partie ; « au lancement du jeu » garde la taille qu'avait la fenêtre à ce moment. L'interface centrée (absente de l'original) garde le panneau de contrôle dans une bande au milieu des écrans plus larges. Les autres changements s'appliquent au prochain lancement du jeu (rechargez son onglet).",
   gamefilesH: "Fichiers du jeu",
+  installH: "Installation",
+  gcChecking: "Vérification des fichiers du jeu…",
+  gcOk: { one: "Complète : le fichier du jeu est présent.", other: "Complète : les {n} fichiers du jeu sont présents." },
+  gcMissingGame: { one: "{n} fichier du jeu manque : le jeu risque de ne pas démarrer ou d'être incomplet.", other: "{n} fichiers du jeu manquent : le jeu risque de ne pas démarrer ou d'être incomplet." },
+  gcMissingContent: { one: "{n} fichier de peau, de musique ou de son manque (le jeu fonctionne, avec moins).", other: "{n} fichiers de peaux, de musique ou de sons manquent (le jeu fonctionne, avec moins)." },
+  gcOtherSize: { one: "{n} fichier n'a pas la même taille que dans l'installation de référence ({source}) : autre langue ou version, ou copie abîmée.", other: "{n} fichiers n'ont pas la même taille que dans l'installation de référence ({source}) : autre langue ou version, ou copie abîmée." },
+  gcDetails: "Les fichiers manquants",
+  gcFailed: "vérification impossible ({error})",
   gamefilesHelp:
     "Ce serveur ne fournit pas le jeu. Importez votre propre copie des Sims (Complete Collection) : sélectionnez son dossier d'installation, celui qui contient {GameData}, {ExpansionShared}, {UserData}… Les fichiers que lit le jeu (environ 3,2 Go) sont copiés dans ce navigateur ; rien n'est envoyé au serveur.",
   inBrowser: "Dans ce navigateur",
@@ -260,6 +276,14 @@ const de: Table = {
   displayHelp:
     "Die Bildschirmgröße des Spiels. Jede Auflösung behält das Aussehen der 1024 × 768 des Originals: gleicher Zoom und gleiche Größe der Leisten, auf den Bildschirm skaliert; breitere Bildschirme zeigen mehr von der Nachbarschaft und vom Grundstück. „An das Fenster anpassen und seiner Größe folgen“ passt sich während des Spiels live an; „beim Spielstart“ behält die Größe, die das Fenster damals hatte. Die zentrierte Oberfläche (nicht im Original) hält die Steuerleiste in einem Streifen in der Mitte breiterer Bildschirme. Andere Änderungen gelten ab dem nächsten Spielstart (Tab neu laden).",
   gamefilesH: "Spieldateien",
+  installH: "Installation",
+  gcChecking: "Spieldateien werden geprüft…",
+  gcOk: { one: "Vollständig: die Spieldatei ist vorhanden.", other: "Vollständig: alle {n} Spieldateien sind vorhanden." },
+  gcMissingGame: { one: "{n} Spieldatei fehlt: das Spiel startet eventuell nicht oder ist unvollständig.", other: "{n} Spieldateien fehlen: das Spiel startet eventuell nicht oder ist unvollständig." },
+  gcMissingContent: { one: "{n} Skin-, Musik- oder Sounddatei fehlt (das Spiel läuft, mit weniger).", other: "{n} Skin-, Musik- oder Sounddateien fehlen (das Spiel läuft, mit weniger)." },
+  gcOtherSize: { one: "{n} Datei hat eine andere Größe als in der Referenzinstallation ({source}): andere Sprache oder Version, oder eine beschädigte Kopie.", other: "{n} Dateien haben eine andere Größe als in der Referenzinstallation ({source}): andere Sprache oder Version, oder eine beschädigte Kopie." },
+  gcDetails: "Die fehlenden Dateien",
+  gcFailed: "Prüfung nicht möglich ({error})",
   gamefilesHelp:
     "Dieser Server stellt das Spiel nicht bereit. Importiere deine eigene Kopie von Die Sims (Complete Collection): Wähle ihren Installationsordner, den mit {GameData}, {ExpansionShared}, {UserData}… Die Dateien, die das Spiel liest (etwa 3,2 GB), werden in diesen Browser kopiert; nichts wird an den Server gesendet.",
   inBrowser: "In diesem Browser",
@@ -359,6 +383,14 @@ const it: Table = {
   displayHelp:
     "Le dimensioni dello schermo del gioco. Ogni risoluzione mantiene l'aspetto del 1024 × 768 dell'originale: stesso zoom e stesse dimensioni dei pannelli, scalati allo schermo; gli schermi più larghi mostrano una parte maggiore del vicinato e del lotto. “Adatta alla finestra, seguendone le dimensioni” si adegua in tempo reale mentre giochi; “all'avvio del gioco” mantiene le dimensioni che la finestra aveva in quel momento. L'interfaccia centrata (non presente nell'originale) tiene il pannello di controllo in una fascia al centro degli schermi più larghi. Le altre modifiche valgono dal prossimo avvio del gioco (ricarica la sua scheda).",
   gamefilesH: "File del gioco",
+  installH: "Installazione",
+  gcChecking: "Verifica dei file del gioco…",
+  gcOk: { one: "Completa: il file del gioco è presente.", other: "Completa: tutti i {n} file del gioco sono presenti." },
+  gcMissingGame: { one: "Manca {n} file del gioco: il gioco potrebbe non avviarsi o essere incompleto.", other: "Mancano {n} file del gioco: il gioco potrebbe non avviarsi o essere incompleto." },
+  gcMissingContent: { one: "Manca {n} file di skin, musica o suono (il gioco funziona, con meno).", other: "Mancano {n} file di skin, musica o suoni (il gioco funziona, con meno)." },
+  gcOtherSize: { one: "{n} file ha una dimensione diversa dall'installazione di riferimento ({source}): altra lingua o versione, o copia danneggiata.", other: "{n} file hanno una dimensione diversa dall'installazione di riferimento ({source}): altra lingua o versione, o copia danneggiata." },
+  gcDetails: "I file mancanti",
+  gcFailed: "verifica impossibile ({error})",
   gamefilesHelp:
     "Questo server non fornisce il gioco. Importa la tua copia di The Sims (Complete Collection): seleziona la sua cartella di installazione, quella che contiene {GameData}, {ExpansionShared}, {UserData}… I file letti dal gioco (circa 3,2 GB) vengono copiati in questo browser; nulla viene inviato al server.",
   inBrowser: "In questo browser",
@@ -458,6 +490,14 @@ const es: Table = {
   displayHelp:
     "El tamaño de la pantalla del juego. Cada resolución conserva el aspecto de los 1024 × 768 del original: el mismo zoom y el mismo tamaño de los paneles, escalados a la pantalla; las pantallas más anchas muestran más del barrio y del solar. «Ajustar a la ventana, siguiendo su tamaño» se adapta en directo mientras juegas; «al iniciar el juego» conserva el tamaño que tenía la ventana en ese momento. La interfaz centrada (no está en el original) mantiene el panel de control en una franja en el centro de las pantallas más anchas. Los demás cambios se aplican la próxima vez que se inicie el juego (recarga su pestaña).",
   gamefilesH: "Archivos del juego",
+  installH: "Instalación",
+  gcChecking: "Comprobando los archivos del juego…",
+  gcOk: { one: "Completa: el archivo del juego está presente.", other: "Completa: los {n} archivos del juego están presentes." },
+  gcMissingGame: { one: "Falta {n} archivo del juego: puede que el juego no arranque o esté incompleto.", other: "Faltan {n} archivos del juego: puede que el juego no arranque o esté incompleto." },
+  gcMissingContent: { one: "Falta {n} archivo de aspecto, música o sonido (el juego funciona, con menos).", other: "Faltan {n} archivos de aspectos, música o sonidos (el juego funciona, con menos)." },
+  gcOtherSize: { one: "{n} archivo tiene otro tamaño que en la instalación de referencia ({source}): otro idioma o versión, o una copia dañada.", other: "{n} archivos tienen otro tamaño que en la instalación de referencia ({source}): otro idioma o versión, o una copia dañada." },
+  gcDetails: "Los archivos que faltan",
+  gcFailed: "no se pudo comprobar ({error})",
   gamefilesHelp:
     "Este servidor no proporciona el juego. Importa tu propia copia de Los Sims (Complete Collection): selecciona su carpeta de instalación, la que contiene {GameData}, {ExpansionShared}, {UserData}… Los archivos que lee el juego (unos 3,2 GB) se copian en este navegador; no se envía nada al servidor.",
   inBrowser: "En este navegador",
@@ -557,6 +597,14 @@ const nl: Table = {
   displayHelp:
     "De schermgrootte van het spel. Elke resolutie behoudt het uiterlijk van de 1024 × 768 van het origineel: dezelfde zoom en dezelfde paneelgrootte, geschaald naar het scherm; bredere schermen tonen meer van de buurt en de kavel. „Aan het venster aanpassen en de grootte volgen” past zich live aan terwijl je speelt; „bij de start van het spel” houdt de grootte die het venster toen had. De gecentreerde interface (niet in het origineel) houdt het bedieningspaneel in een strook in het midden van bredere schermen. Andere wijzigingen gelden vanaf de volgende start van het spel (herlaad het tabblad).",
   gamefilesH: "Spelbestanden",
+  installH: "Installatie",
+  gcChecking: "Spelbestanden controleren…",
+  gcOk: { one: "Volledig: het spelbestand is aanwezig.", other: "Volledig: alle {n} spelbestanden zijn aanwezig." },
+  gcMissingGame: { one: "{n} spelbestand ontbreekt: het spel start misschien niet of is onvolledig.", other: "{n} spelbestanden ontbreken: het spel start misschien niet of is onvolledig." },
+  gcMissingContent: { one: "{n} skin-, muziek- of geluidsbestand ontbreekt (het spel werkt, met minder).", other: "{n} skin-, muziek- of geluidsbestanden ontbreken (het spel werkt, met minder)." },
+  gcOtherSize: { one: "{n} bestand heeft een andere grootte dan in de referentie-installatie ({source}): andere taal of versie, of een beschadigde kopie.", other: "{n} bestanden hebben een andere grootte dan in de referentie-installatie ({source}): andere taal of versie, of een beschadigde kopie." },
+  gcDetails: "De ontbrekende bestanden",
+  gcFailed: "controle niet mogelijk ({error})",
   gamefilesHelp:
     "Deze server levert het spel niet. Importeer je eigen exemplaar van De Sims (Complete Collection): kies de installatiemap, die met {GameData}, {ExpansionShared}, {UserData}… De bestanden die het spel leest (ongeveer 3,2 GB) worden naar deze browser gekopieerd; er wordt niets naar de server gestuurd.",
   inBrowser: "In deze browser",
@@ -656,6 +704,14 @@ const da: Table = {
   displayHelp:
     "Spillets skærmstørrelse. Hver opløsning bevarer udseendet fra originalens 1024 × 768: samme zoom og samme panelstørrelse, skaleret til skærmen; bredere skærme viser mere af nabolaget og grunden. „Tilpas til vinduet og følg dets størrelse“ tilpasser sig løbende, mens du spiller; „når spillet starter“ beholder den størrelse, vinduet havde da. Den centrerede brugerflade (ikke i originalen) holder kontrolpanelet i et bånd midt på bredere skærme. Andre ændringer gælder fra næste gang spillet startes (genindlæs dets fane).",
   gamefilesH: "Spilfiler",
+  installH: "Installation",
+  gcChecking: "Kontrollerer spilfilerne…",
+  gcOk: { one: "Komplet: spilfilen er til stede.", other: "Komplet: alle {n} spilfiler er til stede." },
+  gcMissingGame: { one: "{n} spilfil mangler: spillet starter måske ikke eller er ufuldstændigt.", other: "{n} spilfiler mangler: spillet starter måske ikke eller er ufuldstændigt." },
+  gcMissingContent: { one: "{n} skin-, musik- eller lydfil mangler (spillet kører, med mindre).", other: "{n} skin-, musik- eller lydfiler mangler (spillet kører, med mindre)." },
+  gcOtherSize: { one: "{n} fil har en anden størrelse end i referenceinstallationen ({source}): andet sprog eller version, eller en beskadiget kopi.", other: "{n} filer har en anden størrelse end i referenceinstallationen ({source}): andet sprog eller version, eller en beskadiget kopi." },
+  gcDetails: "De manglende filer",
+  gcFailed: "kunne ikke kontrolleres ({error})",
   gamefilesHelp:
     "Denne server leverer ikke spillet. Importér din egen kopi af The Sims (Complete Collection): vælg dens installationsmappe, den der indeholder {GameData}, {ExpansionShared}, {UserData}… De filer, spillet læser (ca. 3,2 GB), kopieres til denne browser; intet sendes til serveren.",
   inBrowser: "I denne browser",
@@ -755,6 +811,14 @@ const sv: Table = {
   displayHelp:
     "Spelets skärmstorlek. Varje upplösning behåller utseendet från originalets 1024 × 768: samma zoom och samma panelstorlek, skalade till skärmen; bredare skärmar visar mer av grannskapet och tomten. ”Anpassa till fönstret och följ dess storlek” anpassar sig direkt medan du spelar; ”när spelet startar” behåller den storlek fönstret hade då. Det centrerade gränssnittet (finns inte i originalet) håller kontrollpanelen i ett band mitt på bredare skärmar. Andra ändringar gäller från nästa gång spelet startas (läs om dess flik).",
   gamefilesH: "Spelfiler",
+  installH: "Installation",
+  gcChecking: "Kontrollerar spelfilerna…",
+  gcOk: { one: "Komplett: spelfilen finns.", other: "Komplett: alla {n} spelfiler finns." },
+  gcMissingGame: { one: "{n} spelfil saknas: spelet kanske inte startar eller är ofullständigt.", other: "{n} spelfiler saknas: spelet kanske inte startar eller är ofullständigt." },
+  gcMissingContent: { one: "{n} skin-, musik- eller ljudfil saknas (spelet fungerar, med mindre).", other: "{n} skin-, musik- eller ljudfiler saknas (spelet fungerar, med mindre)." },
+  gcOtherSize: { one: "{n} fil har en annan storlek än i referensinstallationen ({source}): annat språk eller version, eller en skadad kopia.", other: "{n} filer har en annan storlek än i referensinstallationen ({source}): annat språk eller version, eller en skadad kopia." },
+  gcDetails: "De saknade filerna",
+  gcFailed: "kunde inte kontrolleras ({error})",
   gamefilesHelp:
     "Den här servern tillhandahåller inte spelet. Importera din egen kopia av The Sims (Complete Collection): välj dess installationsmapp, den som innehåller {GameData}, {ExpansionShared}, {UserData}… Filerna som spelet läser (cirka 3,2 GB) kopieras till den här webbläsaren; ingenting skickas till servern.",
   inBrowser: "I den här webbläsaren",
@@ -854,6 +918,14 @@ const no: Table = {
   displayHelp:
     "Spillets skjermstørrelse. Hver oppløsning beholder utseendet til originalens 1024 × 768: samme zoom og samme panelstørrelse, skalert til skjermen; bredere skjermer viser mer av nabolaget og tomten. «Tilpass til vinduet og følg størrelsen» tilpasser seg fortløpende mens du spiller; «når spillet starter» beholder størrelsen vinduet hadde da. Det sentrerte grensesnittet (ikke i originalen) holder kontrollpanelet i et belte midt på bredere skjermer. Andre endringer gjelder fra neste gang spillet startes (last inn fanen på nytt).",
   gamefilesH: "Spillfiler",
+  installH: "Installasjon",
+  gcChecking: "Kontrollerer spillfilene…",
+  gcOk: { one: "Komplett: spillfilen finnes.", other: "Komplett: alle {n} spillfiler finnes." },
+  gcMissingGame: { one: "{n} spillfil mangler: spillet starter kanskje ikke eller er ufullstendig.", other: "{n} spillfiler mangler: spillet starter kanskje ikke eller er ufullstendig." },
+  gcMissingContent: { one: "{n} skin-, musikk- eller lydfil mangler (spillet kjører, med mindre).", other: "{n} skin-, musikk- eller lydfiler mangler (spillet kjører, med mindre)." },
+  gcOtherSize: { one: "{n} fil har en annen størrelse enn i referanseinstallasjonen ({source}): annet språk eller versjon, eller en skadet kopi.", other: "{n} filer har en annen størrelse enn i referanseinstallasjonen ({source}): annet språk eller versjon, eller en skadet kopi." },
+  gcDetails: "De manglende filene",
+  gcFailed: "kunne ikke kontrolleres ({error})",
   gamefilesHelp:
     "Denne serveren leverer ikke spillet. Importer din egen kopi av The Sims (Complete Collection): velg installasjonsmappen, den som inneholder {GameData}, {ExpansionShared}, {UserData}… Filene spillet leser (ca. 3,2 GB) kopieres til denne nettleseren; ingenting sendes til serveren.",
   inBrowser: "I denne nettleseren",
@@ -953,6 +1025,14 @@ const fi: Table = {
   displayHelp:
     "Pelin näytön koko. Jokainen tarkkuus säilyttää alkuperäisen 1024 × 768 -tilan ilmeen: sama zoomaus ja paneelien koko, skaalattuna näytölle; leveämmät näytöt näyttävät enemmän naapurustoa ja tonttia. ”Sovita ikkunaan ja seuraa sen kokoa” mukautuu reaaliajassa pelatessa; ”pelin käynnistyessä” säilyttää ikkunan silloisen koon. Keskitetty käyttöliittymä (ei alkuperäisessä) pitää ohjauspaneelin kaistaleessa leveämpien näyttöjen keskellä. Muut muutokset tulevat voimaan, kun peli seuraavan kerran käynnistetään (lataa sen välilehti uudelleen).",
   gamefilesH: "Pelitiedostot",
+  installH: "Asennus",
+  gcChecking: "Tarkistetaan pelitiedostoja…",
+  gcOk: { one: "Täydellinen: pelitiedosto on paikallaan.", other: "Täydellinen: kaikki {n} pelitiedostoa ovat paikallaan." },
+  gcMissingGame: { one: "{n} pelitiedosto puuttuu: peli ei ehkä käynnisty tai on puutteellinen.", other: "{n} pelitiedostoa puuttuu: peli ei ehkä käynnisty tai on puutteellinen." },
+  gcMissingContent: { one: "{n} ulkoasu-, musiikki- tai äänitiedosto puuttuu (peli toimii, vähemmällä).", other: "{n} ulkoasu-, musiikki- tai äänitiedostoa puuttuu (peli toimii, vähemmällä)." },
+  gcOtherSize: { one: "{n} tiedosto on eri kokoinen kuin viiteasennuksessa ({source}): eri kieli tai versio, tai vioittunut kopio.", other: "{n} tiedostoa on eri kokoisia kuin viiteasennuksessa ({source}): eri kieli tai versio, tai vioittunut kopio." },
+  gcDetails: "Puuttuvat tiedostot",
+  gcFailed: "tarkistus ei onnistunut ({error})",
   gamefilesHelp:
     "Tämä palvelin ei tarjoa peliä. Tuo oma kopiosi The Simsistä (Complete Collection): valitse sen asennuskansio, se jossa ovat {GameData}, {ExpansionShared}, {UserData}… Pelin lukemat tiedostot (noin 3,2 Gt) kopioidaan tähän selaimeen; palvelimelle ei lähetetä mitään.",
   inBrowser: "Tässä selaimessa",
@@ -1052,6 +1132,14 @@ const pt: Table = {
   displayHelp:
     "O tamanho da tela do jogo. Cada resolução mantém o visual dos 1024 × 768 do original: o mesmo zoom e o mesmo tamanho dos painéis, ampliados para a tela; telas mais largas mostram mais da vizinhança e do terreno. “Ajustar à janela, acompanhando o tamanho dela” se adapta ao vivo enquanto você joga; “quando o jogo começa” mantém o tamanho que a janela tinha naquele momento. A interface centralizada (não existe no original) mantém o painel de controle em uma faixa no meio das telas mais largas. As outras mudanças valem a partir da próxima vez que o jogo for iniciado (recarregue a aba dele).",
   gamefilesH: "Arquivos do jogo",
+  installH: "Instalação",
+  gcChecking: "Verificando os arquivos do jogo…",
+  gcOk: { one: "Completa: o arquivo do jogo está presente.", other: "Completa: todos os {n} arquivos do jogo estão presentes." },
+  gcMissingGame: { one: "Falta {n} arquivo do jogo: o jogo pode não iniciar ou ficar incompleto.", other: "Faltam {n} arquivos do jogo: o jogo pode não iniciar ou ficar incompleto." },
+  gcMissingContent: { one: "Falta {n} arquivo de visual, música ou som (o jogo funciona, com menos).", other: "Faltam {n} arquivos de visuais, música ou sons (o jogo funciona, com menos)." },
+  gcOtherSize: { one: "{n} arquivo tem outro tamanho que na instalação de referência ({source}): outro idioma ou versão, ou uma cópia danificada.", other: "{n} arquivos têm outro tamanho que na instalação de referência ({source}): outro idioma ou versão, ou uma cópia danificada." },
+  gcDetails: "Os arquivos que faltam",
+  gcFailed: "não foi possível verificar ({error})",
   gamefilesHelp:
     "Este servidor não fornece o jogo. Importe a sua própria cópia de The Sims (Complete Collection): selecione a pasta de instalação, a que contém {GameData}, {ExpansionShared}, {UserData}… Os arquivos que o jogo lê (cerca de 3,2 GB) são copiados para este navegador; nada é enviado ao servidor.",
   inBrowser: "Neste navegador",
@@ -1151,6 +1239,14 @@ const ja: Table = {
   displayHelp:
     "ゲームの画面サイズです。どの解像度でもオリジナルの 1024 × 768 の見た目を保ちます。ズームやパネルの大きさは同じまま、画面に合わせて拡大されます。横長の画面ほど、近所や区画が左右に広く見えます。「ウィンドウに合わせる（常に追従）」はプレイ中もリアルタイムに合わせます。「ゲーム起動時」はその時点のウィンドウサイズを保ちます。中央配置のインターフェイス（オリジナルにはない機能）は、横長の画面でコントロールパネルを中央の帯に収めます。その他の変更は次回のゲーム起動時に反映されます（ゲームのタブを再読み込みしてください）。",
   gamefilesH: "ゲームファイル",
+  installH: "インストール",
+  gcChecking: "ゲームファイルを確認しています…",
+  gcOk: "完全です：ゲームの {n} 個のファイルがすべてあります。",
+  gcMissingGame: "ゲームファイルが {n} 個ありません：ゲームが起動しないか、一部が欠ける可能性があります。",
+  gcMissingContent: "スキン・音楽・サウンドのファイルが {n} 個ありません（ゲームは動きますが、内容が減ります）。",
+  gcOtherSize: "{n} 個のファイルのサイズが基準のインストール（{source}）と異なります：別の言語やバージョン、または破損したコピーです。",
+  gcDetails: "足りないファイル",
+  gcFailed: "確認できませんでした（{error}）",
   gamefilesHelp:
     "このサーバーはゲームを提供していません。お手持ちのザ・シムズ（Complete Collection）を取り込んでください。{GameData}、{ExpansionShared}、{UserData} などが入っているインストールフォルダを選択します。ゲームが読み込むファイル（約 3.2 GB）はこのブラウザにコピーされ、サーバーには何も送信されません。",
   inBrowser: "このブラウザ内",
@@ -1250,6 +1346,14 @@ const pl: Table = {
   displayHelp:
     "Rozmiar ekranu gry. Każda rozdzielczość zachowuje wygląd oryginalnego 1024 × 768: ten sam zoom i ten sam rozmiar paneli, przeskalowane do ekranu; szersze ekrany pokazują więcej otoczenia i parceli. „Dopasuj do okna i podążaj za jego rozmiarem” dostosowuje się na bieżąco podczas gry; „przy uruchomieniu gry” zachowuje rozmiar, jaki okno miało w tamtej chwili. Wyśrodkowany interfejs (nieobecny w oryginale) trzyma panel sterowania w pasie pośrodku szerszych ekranów. Pozostałe zmiany obowiązują od następnego uruchomienia gry (odśwież jej kartę).",
   gamefilesH: "Pliki gry",
+  installH: "Instalacja",
+  gcChecking: "Sprawdzanie plików gry…",
+  gcOk: { one: "Kompletna: plik gry jest na miejscu.", other: "Kompletna: wszystkie pliki gry ({n}) są na miejscu." },
+  gcMissingGame: { one: "Brakuje {n} pliku gry: gra może się nie uruchomić lub być niekompletna.", other: "Brakuje plików gry: {n}. Gra może się nie uruchomić lub być niekompletna." },
+  gcMissingContent: { one: "Brakuje {n} pliku skórki, muzyki lub dźwięku (gra działa, z mniejszą zawartością).", other: "Brakuje plików skórek, muzyki lub dźwięków: {n} (gra działa, z mniejszą zawartością)." },
+  gcOtherSize: { one: "{n} plik ma inny rozmiar niż w instalacji wzorcowej ({source}): inny język lub wersja albo uszkodzona kopia.", other: "Pliki o innym rozmiarze niż w instalacji wzorcowej ({source}): {n}. Inny język lub wersja albo uszkodzona kopia." },
+  gcDetails: "Brakujące pliki",
+  gcFailed: "nie można sprawdzić ({error})",
   gamefilesHelp:
     "Ten serwer nie udostępnia gry. Zaimportuj własną kopię The Sims (Complete Collection): wybierz jej folder instalacyjny, ten z {GameData}, {ExpansionShared}, {UserData}… Pliki odczytywane przez grę (około 3,2 GB) są kopiowane do tej przeglądarki; nic nie jest wysyłane na serwer.",
   inBrowser: "W tej przeglądarce",
@@ -1372,6 +1476,14 @@ const zhCN: Table = {
   displayHelp:
     "游戏的屏幕尺寸。每种分辨率都保持原版 1024 × 768 的外观：相同的缩放和面板大小，按屏幕放大；更宽的屏幕能显示更多的街区和地块。“适应窗口，并随窗口大小变化”会在游戏中实时调整；“游戏启动时”则保持当时的窗口大小。居中界面（原版没有）会把控制面板放在宽屏中间的一条区域内。其他更改将在下次启动游戏时生效（重新加载游戏的标签页）。",
   gamefilesH: "游戏文件",
+  installH: "安装",
+  gcChecking: "正在检查游戏文件…",
+  gcOk: "完整：游戏的全部 {n} 个文件都在。",
+  gcMissingGame: "缺少 {n} 个游戏文件：游戏可能无法启动或内容不全。",
+  gcMissingContent: "缺少 {n} 个外观、音乐或声音文件（游戏可以运行，但内容较少）。",
+  gcOtherSize: "{n} 个文件的大小与参考安装（{source}）不同：语言或版本不同，或副本已损坏。",
+  gcDetails: "缺少的文件",
+  gcFailed: "无法检查（{error}）",
   gamefilesHelp:
     "本服务器不提供游戏。请导入你自己的《模拟人生》（Complete Collection）：选择它的安装文件夹，即包含 {GameData}、{ExpansionShared}、{UserData}… 的文件夹。游戏读取的文件（约 3.2 GB）会被复制到此浏览器中，不会向服务器发送任何内容。",
   inBrowser: "此浏览器中",
@@ -1467,6 +1579,14 @@ const zhTW: Table = {
   displayHelp:
     "遊戲的螢幕大小。每種解析度都保留原版 1024 × 768 的外觀：相同的縮放與面板大小，依螢幕放大；較寬的螢幕能顯示更多社區與地段。「符合視窗，並隨視窗大小變化」會在遊戲中即時調整；「遊戲啟動時」則保留當時的視窗大小。置中介面（原版沒有）會把控制面板放在寬螢幕中間的一條區域內。其他變更會在下次啟動遊戲時生效（重新載入遊戲的分頁）。",
   gamefilesH: "遊戲檔案",
+  installH: "安裝",
+  gcChecking: "正在檢查遊戲檔案…",
+  gcOk: "完整：遊戲的全部 {n} 個檔案都在。",
+  gcMissingGame: "缺少 {n} 個遊戲檔案：遊戲可能無法啟動或內容不全。",
+  gcMissingContent: "缺少 {n} 個外觀、音樂或聲音檔案（遊戲可以執行，但內容較少）。",
+  gcOtherSize: "{n} 個檔案的大小與參考安裝（{source}）不同：語言或版本不同，或副本已損壞。",
+  gcDetails: "缺少的檔案",
+  gcFailed: "無法檢查（{error}）",
   gamefilesHelp:
     "本伺服器不提供遊戲。請匯入你自己的《模擬市民》（Complete Collection）：選擇它的安裝資料夾，也就是包含 {GameData}、{ExpansionShared}、{UserData}… 的資料夾。遊戲讀取的檔案（約 3.2 GB）會複製到此瀏覽器，不會傳送任何內容到伺服器。",
   inBrowser: "此瀏覽器中",
@@ -1564,6 +1684,14 @@ const th: Table = {
   displayHelp:
     "ขนาดหน้าจอของเกม ทุกความละเอียดยังคงหน้าตาแบบ 1024 × 768 ของต้นฉบับ คือการซูมและขนาดแผงเท่าเดิม แต่ขยายให้เต็มจอ จอที่กว้างกว่าจะเห็นแถบที่อยู่อาศัยและที่ดินได้มากขึ้น “พอดีกับหน้าต่าง และปรับตามขนาดหน้าต่าง” จะปรับทันทีขณะเล่น ส่วน “ตอนเริ่มเกม” จะใช้ขนาดของหน้าต่างในตอนนั้น ส่วนควบคุมแบบจัดกลาง (ไม่มีในต้นฉบับ) จะวางแผงควบคุมไว้ในแถบกลางจอที่กว้างกว่า การเปลี่ยนแปลงอื่นจะมีผลเมื่อเริ่มเกมครั้งถัดไป (โหลดแท็บของเกมใหม่)",
   gamefilesH: "ไฟล์เกม",
+  installH: "การติดตั้ง",
+  gcChecking: "กำลังตรวจสอบไฟล์เกม…",
+  gcOk: "ครบถ้วน: มีไฟล์ของเกมครบทั้ง {n} ไฟล์",
+  gcMissingGame: "ไฟล์เกมหายไป {n} ไฟล์: เกมอาจเปิดไม่ได้หรือขาดบางส่วน",
+  gcMissingContent: "ไฟล์สกิน เพลง หรือเสียงหายไป {n} ไฟล์ (เกมยังเล่นได้ แต่มีเนื้อหาน้อยลง)",
+  gcOtherSize: "{n} ไฟล์มีขนาดต่างจากการติดตั้งอ้างอิง ({source}): ภาษาหรือเวอร์ชันอื่น หรือสำเนาที่เสียหาย",
+  gcDetails: "ไฟล์ที่หายไป",
+  gcFailed: "ตรวจสอบไม่ได้ ({error})",
   gamefilesHelp:
     "เซิร์ฟเวอร์นี้ไม่ได้ให้บริการตัวเกม นำเข้าเดอะซิมส์ (Complete Collection) ชุดของคุณเอง โดยเลือกโฟลเดอร์ที่ติดตั้งเกม ซึ่งมี {GameData}, {ExpansionShared}, {UserData}… อยู่ ไฟล์ที่เกมอ่าน (ประมาณ 3.2 GB) จะถูกคัดลอกมาไว้ในเบราว์เซอร์นี้ โดยไม่มีการส่งข้อมูลใดไปยังเซิร์ฟเวอร์",
   inBrowser: "ในเบราว์เซอร์นี้",
@@ -1662,6 +1790,14 @@ const ko: Table = {
   displayHelp:
     "게임의 화면 크기입니다. 어떤 해상도에서도 원작 1024 × 768의 모습을 유지합니다. 확대 정도와 패널 크기는 그대로이고 화면에 맞게 확대됩니다. 화면이 넓을수록 이웃과 부지가 더 많이 보입니다. “창에 맞춤, 창 크기 변화에 따라감”은 플레이 중에도 실시간으로 맞춰지고, “게임 시작 시”는 그때의 창 크기를 유지합니다. 가운데 정렬 인터페이스(원작에는 없음)는 넓은 화면에서 컨트롤 패널을 가운데 띠 안에 둡니다. 그 밖의 변경은 다음에 게임을 시작할 때 적용됩니다(게임 탭을 새로 고침).",
   gamefilesH: "게임 파일",
+  installH: "설치",
+  gcChecking: "게임 파일을 확인하는 중…",
+  gcOk: "완전함: 게임 파일 {n}개가 모두 있습니다.",
+  gcMissingGame: "게임 파일 {n}개가 없습니다: 게임이 시작되지 않거나 일부가 빠질 수 있습니다.",
+  gcMissingContent: "스킨, 음악 또는 소리 파일 {n}개가 없습니다(게임은 실행되지만 내용이 줄어듭니다).",
+  gcOtherSize: "파일 {n}개의 크기가 기준 설치({source})와 다릅니다: 다른 언어나 버전, 또는 손상된 사본입니다.",
+  gcDetails: "없는 파일",
+  gcFailed: "확인할 수 없음({error})",
   gamefilesHelp:
     "이 서버는 게임을 제공하지 않습니다. 본인 소유의 심즈(Complete Collection)를 가져오세요. {GameData}, {ExpansionShared}, {UserData} 등이 들어 있는 설치 폴더를 선택하면 됩니다. 게임이 읽는 파일(약 3.2 GB)은 이 브라우저에 복사되며, 서버로는 아무것도 전송되지 않습니다.",
   inBrowser: "이 브라우저에",

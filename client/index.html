@@ -294,6 +294,16 @@
       .ok { color: var(--ok); }
       .warn { color: var(--warn); }
       .err { color: var(--err); }
+      #gamecheck-details { margin-top: 10px; }
+      #gamecheck-details summary { cursor: pointer; font-weight: 600; }
+      #gamecheck-list {
+        margin: 8px 0 0;
+        padding-left: 1.2em;
+        max-height: 260px;
+        overflow: auto;
+        font-size: 14px;
+        overflow-wrap: anywhere;
+      }
 
       dl {
         display: grid;
@@ -435,20 +445,27 @@
 
         <section class="panel wide" id="gamefiles" hidden>
           <h2 data-i18n="gamefilesH">Game files</h2>
-          <p class="muted" id="gamefiles-help"></p>
+          <p class="muted local-only" id="gamefiles-help"></p>
           <dl>
-            <dt data-i18n="inBrowser">In this browser</dt>
-            <dd id="gamefiles-state">–</dd>
+            <dt class="local-only" data-i18n="inBrowser">In this browser</dt>
+            <dd class="local-only" id="gamefiles-state">–</dd>
+            <dt data-i18n="installH">Installation</dt>
+            <dd id="gamecheck-state">–</dd>
           </dl>
-          <progress id="gamefiles-progress" max="1" value="0" hidden></progress>
-          <div class="row">
+          <p class="muted note" id="gamecheck-size" hidden></p>
+          <details id="gamecheck-details" hidden>
+            <summary data-i18n="gcDetails">Missing files</summary>
+            <ul id="gamecheck-list"></ul>
+          </details>
+          <progress class="local-only" id="gamefiles-progress" max="1" value="0" hidden></progress>
+          <div class="row local-only">
             <button type="button" id="gamefiles-select" disabled>Select the game folder…</button>
             <button type="button" id="gamefiles-resume" data-i18n="gfResume" hidden>Resume</button>
             <button type="button" id="gamefiles-stop" data-i18n="gfStop" hidden>Stop</button>
             <button type="button" id="gamefiles-remove" data-i18n="gfRemove" hidden>Remove the game files</button>
             <input type="file" id="gamefiles-input" webkitdirectory multiple hidden />
           </div>
-          <p class="status" id="gamefiles-status" role="status"></p>
+          <p class="status local-only" id="gamefiles-status" role="status"></p>
         </section>
 
         <section class="panel">
