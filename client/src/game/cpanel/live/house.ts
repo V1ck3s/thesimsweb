@@ -64,8 +64,8 @@ const BTN_POS: readonly Pt[] = !DOUBLE_BYTE_UI
 const BAR_POS: readonly Pt[] = (DOUBLE_BYTE_UI ? [0x11, 0x2a, 0x43, 0x5c, 0x75] : [6, 24, 42, 60, 79]).map((y): Pt => [157, y]);
 const TITLE_POS = DOUBLE_BYTE_UI ? { x: 0xd, y: 8 } : { x: 5, y: 0 };
 
-/** HouseStats::GetSquareFeet is converted when the language is metric (float 0x3DBE5DF3). */
-const SQUARE_METERS_PER_FOOT = 0.09295263141393661;
+/** HouseStats::GetSquareFeet is converted when the language is metric (float 0x3DBE43F3). */
+const SQUARE_METERS_PER_FOOT = 0.09290304034948349;
 const UNKNOWN = "**Unknown**";
 
 export class WinSubpanelHouse extends TSWin {
@@ -173,7 +173,7 @@ export class WinSubpanelHouse extends TSWin {
   /** The four info lines (cWinSubpanelHouse::TSPaint, items 5..8). */
   private updateCaptions(stats: HouseStats): void {
     const lines = [
-      format(this.formats[0], Math.trunc(0.5 + SQUARE_METERS_PER_FOOT * stats.squareFeet)),
+      format(this.formats[0], Math.trunc(0.5 + Math.fround(Math.fround(SQUARE_METERS_PER_FOOT) * stats.squareFeet))),
       format(this.formats[1], stats.numBedrooms),
       format(this.formats[2], stats.numBathrooms),
       stats.lotSize >= 0 && stats.lotSize <= 2

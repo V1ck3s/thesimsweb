@@ -927,7 +927,7 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
       present.add(info.guid | 0);
       const ps = sim.module.persons.find((x) => x.obj === obj);
       if (ps && this.people && (await this.people.addPerson(nbhdDir, obj))) {
-        this.people.bindSim(obj, (sk) => ps.animator.attach(sk), () => ps.renderDir ?? ps.obj.dir, () => ps.animator.followPos);
+        this.people.bindSim(obj, (sk) => ps.animator.attach(sk), () => ps.renderDir ?? ps.obj.dir, () => ps.animator.followPos, () => ps.pd);
       }
     }
     v.dirty = true;
@@ -993,7 +993,7 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
     this.dressing.add(obj);
     try {
       if (await people.addPerson(this.housePath.split("/")[0] ?? "UserData", obj)) {
-        people.bindSim(obj, (sk) => ps.animator.attach(sk), () => ps.renderDir ?? ps.obj.dir, () => ps.animator.followPos);
+        people.bindSim(obj, (sk) => ps.animator.attach(sk), () => ps.renderDir ?? ps.obj.dir, () => ps.animator.followPos, () => ps.pd);
         if (this.viewer) this.viewer.dirty = true;
       }
     } finally {
@@ -1754,6 +1754,7 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
           (sk) => ps.animator.attach(sk),
           () => ps.renderDir ?? ps.obj.dir,
           () => ps.animator.followPos,
+          () => ps.pd,
         );
       }
     } catch (e) {

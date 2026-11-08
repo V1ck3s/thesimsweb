@@ -28,6 +28,25 @@ export interface LotPerson {
   simDir?: () => number;
   /** Set when the simulation drives the person: the walk engine's position while it moves it (SAnimator +0x80/+0x84), null otherwise. */
   simPos?: () => { fx: number; fy: number } | null;
+  /** Set when the simulation drives the person: its person data. */
+  simData?: () => Int16Array;
+}
+
+/**
+ * HouseViewer::Render3DObject's test: a person on the viewed level or below
+ * is drawn on the lot's inner tiles only; one on the level above is drawn
+ * while its person data 40 is set (on the stairs).
+ */
+function drawable(p: LotPerson, viewer: HouseViewer): boolean {
+  const o = p.obj;
+  if (o.fx < 0 || o.fy < 0 || o.hidden !== 0) return false;
+  if (o.level <= viewer.level) {
+    const n = viewer.world.size;
+    const tx = o.fx >> 4;
+    const ty = o.fy >> 4;
+    if (tx >= 1 && ty >= 1 && tx < n - 1 && ty < n - 1) return true;
+  }
+  return o.level === viewer.level + 1 && (p.simData?.()[40] ?? 0) !== 0;
 }
 
 /** Where a person is drawn: the walk engine's grid position while it moves, else the object's. */
@@ -143,13 +162,14 @@ export class LotPeople {
    * `attach` receives the VitaBoy skeleton (the sim's SAnimator poses it),
    * and `dir` gives the facing to draw. False when `obj` has no animator.
    */
-  bindSim(obj: PlacedObject, attach: (skeleton: Skeleton) => void, dir: () => number, pos?: () => { fx: number; fy: number } | null): boolean {
+  bindSim(obj: PlacedObject, attach: (skeleton: Skeleton) => void, dir: () => number, pos?: () => { fx: number; fy: number } | null, data?: () => Int16Array): boolean {
     const p = this.people.find((x) => x.obj === obj);
     if (!p) return false;
     p.anim.vitaboy.practices.length = 0;
     attach(p.anim.vitaboy.skeleton);
     p.simDir = dir;
     if (pos) p.simPos = pos;
+    if (data) p.simData = data;
     return true;
   }
 
@@ -249,7 +269,7 @@ export class LotPeople {
       // Out of the world (in a car, at work, not arrived yet): not drawn. Neither is a hidden
       // person (+0x8e): HouseViewer::DoStaticToDynamicObjectTransitions lists only the 3D
       // objects with +0x8e == 0 for HouseViewer::Render3DObject.
-      if (obj.level > viewer.level || obj.fx < 0 || obj.fy < 0 || obj.hidden !== 0) continue;
+      if (!drawable(person, viewer)) continue;
       const at = drawPos(person);
       // HouseViewer::Render3DObject: RoomManager::GetRoomAmbientLight at the person's view position.
       const [vx, vy] = RotatableWorld.rotateCoords(Math.round(at.fx), Math.round(at.fy), viewer.world.rotation, 0x400);
@@ -292,7 +312,7 @@ export class LotPeople {
   /** Where draw() puts a person (null: not drawn), at `level` (the drawing level, or 1 for the RenderLoc frame). */
   private placementOf(person: LotPerson, viewer: HouseViewer, level: number): SimPlacement | null {
     const { obj, simDir } = person;
-    if (obj.level > viewer.level || obj.fx < 0 || obj.fy < 0 || obj.hidden !== 0) return null;
+    if (!drawable(person, viewer)) return null;
     const at = drawPos(person);
     return {
       x: at.fx / 16,
