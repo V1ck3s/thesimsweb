@@ -206,7 +206,9 @@ export class Renderer {
     if (!tex) return;
     const zb = rp.zbuf;
     const base = rp.depth + zb.verticalAt(rp.scale, rp.depthRow - rp.depthRow + (8 << rp.scale));
-    if (!rp.hilite) {
+    // `flags & 4` (the DGRP item's luminous bit): RenderParam::SetLuminous(1), so
+    // GetAmbientLightLevel gives the max level for this sprite.
+    if (!rp.hilite && (flags & 4) === 0) {
       comp.drawZSprite(tex, x, y, (flags & 1) !== 0, base, rp.zLookupIndex);
       return;
     }

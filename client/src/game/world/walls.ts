@@ -548,6 +548,7 @@ export class Vertex {
       if (ec.slot === 0 || ec.slot === 3) cutStyle = (seg.flags >> 2) & 1;
       else if (ec.slot === 1 || ec.slot === 2) cutStyle = (seg.flags >> 1) & 1;
     }
+    viewer.comp.ambient = viewer.ambientAtTile(this.x, this.y, this.level);
     const saved = { ...clip };
     const w = ec.width << (s - 1);
     const lo = ec.right ? top.h - 1 : top.h - w;
@@ -1290,8 +1291,11 @@ export class WallManager implements WallDrawer {
       mgr: this,
     };
     for (const w of this.walls[level - 1] ?? []) w.draw(ctx);
+    // Vertex::Draw: the tops at the light of room 0 (RoomManager::GetRoom(0)); the end cap
+    // sets its own (the room of its wall, approximated by the vertex tile).
+    const tops = viewer.roomZeroAmbient();
     for (const v of this.vertices[level - 1] ?? []) {
-      comp.ambient = viewer.ambientAtTile(v.x, v.y, level);
+      comp.ambient = tops;
       v.draw(ctx);
     }
     comp.ambient = 1;

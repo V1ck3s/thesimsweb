@@ -113,7 +113,8 @@ export class WallGraphicsMgr {
     this.defaultCost = this.pluginStrings[0] ? atoi(this.pluginStrings[0]) : 0;
     for (let p = 0; p < 0x100; p++) {
       if (p === 0x1f) p = 0xf8;
-      const label = res.find("SPR#", p + 0x600)?.label ?? "";
+      // The colour label ("HRRGGBB") is on SPR# id p, not on the pattern sprites.
+      const label = res.find("SPR#", p)?.label ?? "";
       const costStr = this.paperStrings[(p - 1) * 3];
       this.patterns.set(p, {
         plugin: 0,

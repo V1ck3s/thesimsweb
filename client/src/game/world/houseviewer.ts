@@ -198,6 +198,8 @@ export class HouseViewer {
     getLightEntry?(x: number, y: number, level: number): readonly number[];
     /** Room::GetAmbientLight of a room id. */
     roomAmbient?(id: number): number;
+    /** RoomManager::GetRoom(id): null when the room does not exist. */
+    roomInfo?(id: number): { ambient: number } | null;
     /** RoomManager::ResolveDiagonal (world tile): the two rooms of a diagonal tile and their sides. */
     resolveDiagonal?(x: number, y: number, level: number): { room1: number; side1: number; room2: number; side2: number };
   } | null = null;
@@ -327,6 +329,16 @@ export class HouseViewer {
     const h = this.originX + (8 << s) * (x - y);
     const v = this.originY + (4 << s) * (x + y) - (level - 1) * lp - (a << (s + 1));
     return { left: h - (8 << s) - 1, top: v - lp, right: h + (8 << s) - 1, bottom: v + (8 << s) };
+  }
+
+  /**
+   * Vertex::Draw's light for the wall tops: Room::GetAmbientLight of room id
+   * 0 (RoomManager::GetRoom(0)), clamped; full light without it.
+   */
+  roomZeroAmbient(): number {
+    const l = this.lighting;
+    if (!l?.roomInfo?.(0)) return 1;
+    return l.clampAmbient(l.roomInfo(0)!.ambient);
   }
 
   /**
