@@ -678,6 +678,8 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
     this.wallManager?.rebuildFromMap(level);
     if (this.rooms) {
       computeRooms(v.world.fixed, this.rooms, level);
+      // House::DoCommand: ObjectModule::UpdateRooms (rooms of the objects, "room changed" trees).
+      this.sim?.module.updateRooms(level);
       this.rooms.computeCutaway(v, level);
       this.cutaway?.onRoomsChanged();
       this.syncSecondLevel(this.ctx.state);

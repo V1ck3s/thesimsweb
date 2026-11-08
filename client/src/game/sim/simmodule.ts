@@ -40,7 +40,7 @@ import { friendshipThreshold, loadFloatConstants, setFriendshipThreshold } from 
 import { setMotiveConstants } from "./motives.js";
 import { autonomyConstants, type AutonomyConstants } from "./person.js";
 import { readSlotChunk } from "../world/slots.js";
-import { routingSlotFrom, type RoutingSlot } from "./routing.js";
+import { resolveRoomID, routingSlotFrom, type RoutingSlot } from "./routing.js";
 
 const GLOBAL_FAR = "GameData/Global/Global.far";
 
@@ -296,6 +296,35 @@ export class SimModule {
       if (i >= 0) this.buyBuildDisablers.splice(i, 1);
     }
     if (was !== this.buyBuildDisablers.length > 0) this.buyAndBuildChanged();
+  }
+
+  /**
+   * ObjectModule::UpdateRooms(level) (House::DoCommand, after the rooms were
+   * computed; 0: every level): an object at level 0 is put on level 1; the
+   * objects of that level get their room (object data 29) resolved, people
+   * their current room (cXPerson::UpdateCurrentRoom); then each of them with
+   * a "room changed" tree (entry 7, the doors) runs it.
+   */
+  updateRooms(level: number): void {
+    const fixed = this.sim.world;
+    if (!fixed) return;
+    for (const o of [...this.list]) {
+      const x = o.obj;
+      if (x.level === 0) x.level = 1;
+      if (level !== 0 && x.level !== level) continue;
+      x.objectData[29] = resolveRoomID(fixed, x.fx, x.fy, x.level);
+      if (o instanceof PersonSim) o.updateCurrentRoom();
+    }
+    for (const o of [...this.list]) {
+      if (o.killed || (level !== 0 && o.obj.level !== level)) continue;
+      const tree = o.fnTable.getTreeID(7);
+      if (tree === 0) continue;
+      try {
+        o.runCheckTree(o.behavior, 0, tree, null);
+      } catch (e) {
+        console.warn("[rooms] room changed tree failed", o.obj.selector.name, e);
+      }
+    }
   }
 
   /** ObjectModule::RemoveObject: every Buy and Build lock of object `id` goes. */
