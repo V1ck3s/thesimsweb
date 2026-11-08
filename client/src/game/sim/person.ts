@@ -104,6 +104,12 @@ export interface MenuItem {
   entry: TreeTableEntry;
   name: string;
   args: Int16Array | null;
+  /**
+   * A join (Interaction(person, other), type 1): the clicked person `actor`
+   * is asked to join the menu's person, on `target` (the object of that
+   * person's current action) with interaction flags `flags`.
+   */
+  join?: { actor: PersonSim; target: SimObject; flags: number };
 }
 
 /** lbl_1059A1E0: TTAB motive personality index -> (person data, inverted). */
@@ -1979,7 +1985,7 @@ export class PersonSim extends SimObject {
    * with the object as stack object (parameter 0 = 1: autonomous). The
    * person's temps are restored afterwards.
    */
-  testInteraction(target: SimObject, e: TreeTableEntry, auto: boolean, wantAds = false): boolean {
+  testInteraction(target: SimObject, e: TreeTableEntry, auto: boolean, wantAds = false, joinVar: number | null = null): boolean {
     const pd = this.pd;
     // The person's object data 50 (+0xae) is cleared first; a check tree that
     // sets it hides the entry from the pie menu (interaction flag 0x10).
@@ -2013,7 +2019,7 @@ export class PersonSim extends SimObject {
         ads[i]!.set([mo.personality, mo.min, mo.delta]);
       }
     }
-    const r = this.runTestTree(target, e, auto);
+    const r = this.runTestTree(target, e, auto, joinVar);
     // another room (object data 29): the room advertisement's delta is -min
     if (wantAds && target.obj.objectData[29] !== this.obj.objectData[29]) {
       const a13 = this.module.sim.currentAd[13];
@@ -2022,15 +2028,19 @@ export class PersonSim extends SimObject {
     return r;
   }
 
-  /** The check tree part of ObjTestSim::TestInteraction. */
-  private runTestTree(target: SimObject, e: TreeTableEntry, auto: boolean): boolean {
+  /**
+   * The check tree part of ObjTestSim::TestInteraction: parameter 0 is 1 when
+   * autonomous; for a join (interaction type 1) parameter 1 is 1 and
+   * parameter 2 the interaction's stack var 2 (`joinVar`).
+   */
+  private runTestTree(target: SimObject, e: TreeTableEntry, auto: boolean, joinVar: number | null = null): boolean {
     if (e.checkTree === 0) return true;
     // ObjTestSim runs the check tree on its own stack: an error there only
     // fails the test. Here it runs above the person's stack, unwound on error.
     const saved = new Int16Array(this.temps.subarray(0, 8));
     const depth = this.getStackSize();
     try {
-      return this.runCheckTree(target.behavior, target.id, e.checkTree, { src: [auto ? 1 : 0, 0, 0, 0], at: 0 });
+      return this.runCheckTree(target.behavior, target.id, e.checkTree, { src: [auto ? 1 : 0, joinVar === null ? 0 : 1, joinVar ?? 0, 0], at: 0 });
     } catch (err) {
       while (this.getStackSize() > depth) {
         this.stack.pop();
@@ -2108,6 +2118,17 @@ export class PersonSim extends SimObject {
         const att = attenuation(e, k, visitor);
         const score = (1 / (dist * att + 1)) * (ad - cur);
         if (score >= minScore) scored.push({ o, e, score });
+      }
+      // ObjTestSim::AppendInteractionsForAuto's last block: a person whose current
+      // action is joinable (TTAB flag 2) offers to join it (Interaction(me, o), type 1).
+      const join = o.person && o !== this ? (o as PersonSim).joinOffer() : null;
+      if (join && this.testInteraction(join.target, join.entry, true, true, 0)) {
+        const ad = this.interactionScore(join.entry, m.sim.currentAd);
+        if (ad !== 0) {
+          const att = attenuation(join.entry, k, visitor);
+          const score = (1 / (this.distanceTo(join.target) * att + 1)) * (ad - cur);
+          if (score >= minScore) scored.push({ o: join.target, e: join.entry, score });
+        }
       }
     }
     scored.sort((a, b) => b.score - a.score);
@@ -2305,10 +2326,43 @@ export class PersonSim extends SimObject {
         // an entry whose check tree made items of its own is not added itself
         if (this.testInteraction(target, e, false) && items.length === n && !this.hiddenFromMenu()) items.push({ entry: e, name: e.name, args: null });
       }
+      // The join block: when my current action is joinable, a clicked person may be
+      // asked to join it (Interaction(clicked person, me), stack var 2 = my id,
+      // tested with the interaction type 1).
+      const join = target.person && target !== this ? this.joinOffer() : null;
+      if (join) {
+        const other = target as PersonSim;
+        m.menuInProgress = { items, entry: join.entry };
+        const n = items.length;
+        if (other.testInteraction(join.target, join.entry, false, false, this.id) && items.length === n && !other.hiddenFromMenu()) {
+          items.push({ entry: join.entry, name: join.entry.name, args: new Int16Array([0, 0, this.id, 0]), join: { actor: other, target: join.target, flags: join.flags } });
+        }
+      }
     } finally {
       m.menuInProgress = null;
     }
     return items;
+  }
+
+  /**
+   * Interaction::Interaction(person, this): joining this person's current
+   * action, when its TTAB entry is joinable (flag 2): the action's object (its
+   * interaction leader for a multi-tile one) and the entry at that entry's
+   * joining index; null when there is none. The interaction keeps the
+   * action's flags but 2 and 4.
+   */
+  joinOffer(): { target: SimObject; entry: TreeTableEntry; flags: number } | null {
+    const m = this.module;
+    const a = this.currentAction;
+    const src = a ? m.getObject(a.target) : null;
+    if (!a || !src) return null;
+    const cur = m.treeTableOf(src.obj.selector)?.entries.find((x) => x.stringIndex === a.ttabIndex);
+    if (!cur || !(cur.flags & 2)) return null;
+    const target = src.obj.selector.objd.i16(0x14) !== 0 ? src.getInteractionLeader() : src;
+    const entries = m.treeTableOf(target.obj.selector)?.entries ?? [];
+    const own = entries.find((x) => x.stringIndex === a.ttabIndex);
+    const entry = own ? entries.find((x) => x.stringIndex === own.joiningIndex) : undefined;
+    return entry ? { target, entry, flags: a.flags & ~6 } : null;
   }
 
   /**
@@ -2334,7 +2388,7 @@ export class PersonSim extends SimObject {
    * pet commands for a person who is not a pet). AppendInteractionsForMenu
    * only keeps entries with flag 8 (test passed) and without 0x10.
    */
-  private hiddenFromMenu(): boolean {
+  hiddenFromMenu(): boolean {
     return this.obj.objectData[50] !== 0;
   }
 

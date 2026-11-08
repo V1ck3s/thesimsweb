@@ -1222,8 +1222,11 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
         }
         this.pieTarget = { objectId: t.id, personId: p.id };
         const ok = await this.doMenu(p, entries, this.area.left + x, this.area.top + y, (e) => {
-          const action = p.makeInteraction(t, e.entry, 50, e);
-          const done = p.addAction(action);
+          // A join is pushed on the clicked person, on the object of my action.
+          const actor = e.join?.actor ?? p;
+          const action = actor.makeInteraction(e.join?.target ?? t, e.entry, 50, e);
+          if (e.join) action.flags = e.join.flags;
+          const done = actor.addAction(action);
           // cObjPickerTool::MenuItemSelected -> cDDDSimsView::StartUserAction at the cursor.
           if (done) {
             const c = winMgr.cursorPosition();
