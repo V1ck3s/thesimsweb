@@ -270,7 +270,7 @@ export class SimModule {
     flashPersonPanelButton?(guid: number, on: boolean): void;
     flashRelButton?(guid: number, on: boolean): void;
     /** Generic sim call 0: Neighborhood::TutorialCompleted(0)'s neighborhood side (NGBH +0x12a / +0x12c). */
-    tutorialCompleted?(): void;
+    tutorialCompleted?(n: number): void;
   } | null = null;
   /** Called when an object's look changed (cXObject::Dirty) or it was killed. */
   onDirty: ((o: SimObject) => void) | null = null;

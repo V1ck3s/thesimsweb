@@ -22,10 +22,6 @@ sous `client/src/game/`).
 ## 2. Fonctionnalités manquantes (visibles en jeu)
 
 Live
-- **Generic sim call 13** : non porté (`sim/xobject.ts`, branche par défaut), appelé 3 fois au
-  chargement du lot 63 d'Animaux & Cie (UserData copié du jeu). La table de sauts de
-  cXObject::TryGenericSimCall n'est pas reconstruite dans le décompilé Mac : retrouver la cible
-  (Windows ou table lbl_105BBAC0).
 - **Popups des besoins des animaux** : portés, non vérifiés. Page célébrité : niveaux 0 et
   0x11..0x13 non vérifiés.
 - **PIP** : composition BoboVision exacte (table AlphaBlend_565_P5, ~0,7 ms par image) ; coût de la

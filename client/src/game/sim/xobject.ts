@@ -1216,7 +1216,7 @@ export class SimObject extends TreeSim {
    * true; calls >= 0x2c (and 7, 22) are error 0x2a. Ported: 2 (the stack
    * object becomes the current action's icon), 10/11 (buy and build
    * disabled/enabled: recorded), 12 (the stack object's depth towards the
-   * camera), 0 (Neighborhood::TutorialCompleted), 14 (global 0x1f := temp 0), 15 (person data 0x48 := temp 0),
+   * camera), 0 / 8 / 9 (Neighborhood::TutorialCompleted 0 / 1 / 2), 13 (ObjectModule::CleanupPeople of the stack object), 14 (global 0x1f := temp 0), 15 (person data 0x48 := temp 0),
    * 26 (the current family or the house's first person), 28 (lot zoning
    * into temp 0), 18..23 (the lot change's arrival, sim/lotcalls.ts), 24
    * (set suit), 43 (Family::LoadSpellsForFamily), 6 (neighbor leaves the family), 4 (neighbor joins the lot's family). Others are logged and
@@ -1227,11 +1227,16 @@ export class SimObject extends TreeSim {
     if (call < 0 || call >= 0x2c || call === 7 || call === 22) simThrow(0x2a);
     switch (call) {
       case 0:
-        // Neighborhood::TutorialCompleted(0): the tutorial lot's global 26
-        // cleared in the simulator, the neighborhood's tutorial lot forgotten.
-        m.sim.globals[26] = 0;
-        m.tutorialHooks?.tutorialCompleted?.();
+      case 8:
+      case 9: {
+        // Neighborhood::TutorialCompleted(0 / 1 / 2): the neighborhood's
+        // tutorial stage becomes n + 1; stage 0 also clears the tutorial
+        // lot's global 26 in the simulator.
+        const n = call === 0 ? 0 : call - 7;
+        if (n === 0) m.sim.globals[26] = 0;
+        m.tutorialHooks?.tutorialCompleted?.(n);
         return PRIM_TRUE;
+      }
       case 2: {
         // The stack object (error 0xa) becomes my current action's icon (person only, error 0x1c).
         const o = this.obj_(elem.stackObj);
@@ -1373,6 +1378,14 @@ export class SimObject extends TreeSim {
         // Family::LoadSpellsForFamily on the current family.
         m.loadSpellsForFamily();
         return PRIM_TRUE;
+      case 13:
+        // ObjectModule::CleanupPeople of the stack object (error 0xa).
+      {
+        const o = this.obj_(elem.stackObj);
+        if (!o) simThrow(XERR.noObject);
+        m.cleanupPeople(o);
+        return PRIM_TRUE;
+      }
       case 24:
         return this.trySetSuitCall();
       case 28: {

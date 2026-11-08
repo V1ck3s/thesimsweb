@@ -1671,9 +1671,9 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
         flashButtonByImageID: (id, on) => void tutFlashButtonByImageID(this.ctx, id, on),
         flashPersonPanelButton: (guid, on) => void tutFlashWindow(this.ctx, findPersonPanelButton(winMgr.main, guid), on),
         flashRelButton: (guid, on) => void tutFlashWindow(this.ctx, findRelButton(winMgr.main, guid), on),
-        tutorialCompleted: () => {
+        tutorialCompleted: (n) => {
           const dir = this.ctx.hooks?.neighborhoodDir?.();
-          if (dir) void tutorialCompleted(dir, 0);
+          if (dir) void tutorialCompleted(dir, n);
         },
       };
       this.sim = sim;
