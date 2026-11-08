@@ -370,8 +370,14 @@ function hasBlankCell(bytes: Uint8Array, cells: number): boolean {
   return false;
 }
 
+/**
+ * Neighborhood::GetFamilyInHouse: house 0 is family 0 (+0x10c); any other
+ * house is the first family living there (+0x110) or staying there on
+ * vacation (+0x13c).
+ */
 export function familyInHouse(n: NeighborhoodData, houseNumber: number): Family | undefined {
-  return n.families.find((f) => f.houseNumber === houseNumber);
+  if (houseNumber === 0) return n.families.find((f) => f.familyNumber === 0);
+  return n.families.find((f) => f.houseNumber === houseNumber || (f.vacationLot ?? 0) === houseNumber);
 }
 
 export function neighborByGuid(n: NeighborhoodData, guid: number): Neighbor | undefined {

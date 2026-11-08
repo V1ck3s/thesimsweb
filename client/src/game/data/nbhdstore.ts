@@ -833,6 +833,20 @@ export class NeighborhoodStore {
     return this.families.find((f) => f.id === id)?.unk13c ?? 0;
   }
 
+  /**
+   * Neighborhood::RemoveFromVacation's family side: the family living in or
+   * staying at `house` (+0x110 or +0x13c) gets its vacation lot (+0x13c)
+   * and its +0x138 bit 3 cleared. Returns its id, or -1 when there is none.
+   */
+  removeFromVacation(house: number): number {
+    const f = house === 0 ? this.families.find((x) => x.id === 0) : this.families.find((x) => x.houseNumber === house || x.unk13c === house);
+    if (!f) return -1;
+    f.unk13c = 0;
+    f.flags &= ~8;
+    f.dirty = true;
+    return f.id;
+  }
+
   /** Family +0x13c := `house` (cSimsApp::LoadGame on a family trip; 0 back home). */
   setFamilyVacationLot(id: number, house: number): void {
     const f = this.familyRaw(id);

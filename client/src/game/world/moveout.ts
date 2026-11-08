@@ -262,6 +262,21 @@ function setSavedLevel(bytes: Uint8Array, level: number): Uint8Array {
  * (the caller then puts the family back, as MoveOut does).
  */
 export async function moveOutHouse(ctx: GameContext, store: NeighborhoodStore, house: number, bulldoze: boolean): Promise<boolean> {
+  return evictHouse(ctx, store, house, bulldoze, false);
+}
+
+/**
+ * Neighborhood::RemoveFromVacation's house file part (the family side,
+ * NeighborhoodStore.removeFromVacation, has run): as MoveOut's, except that
+ * global 9 (the house family) is zeroed after LoadHouse, every person not
+ * held by another is killed after "evict lot", the evicted objects are only
+ * killed on a bulldoze, and the funds are left as they are.
+ */
+export async function removeFromVacationHouse(ctx: GameContext, store: NeighborhoodStore, house: number, bulldoze: boolean): Promise<boolean> {
+  return evictHouse(ctx, store, house, bulldoze, true);
+}
+
+async function evictHouse(ctx: GameContext, store: NeighborhoodStore, house: number, bulldoze: boolean, vacation: boolean): Promise<boolean> {
   const path = housePathOf(store.dir, house);
   let lot: HeadlessLot;
   try {
@@ -275,10 +290,17 @@ export async function moveOutHouse(ctx: GameContext, store: NeighborhoodStore, h
   // LoadHouse: the Tutorial object, then (the count of EXPi resources > 0) "import lot".
   await makeTutorialObject(lot.placement, lot.folder, sim.module, store.dir).catch((e: unknown) => console.warn("[moveout] tutorial object", e));
   if (parseIff(lot.house.data).some((c) => c.type === "EXPi")) broadcastMessage(lot, IMPORT_LOT, 0);
+  if (vacation) sim.globals[9] = 0; // global 9: the house family
   broadcastMessage(lot, EVICT_LOT, 0);
-  killEvictedObjects(lot, bulldoze);
+  if (vacation) {
+    // OBJD type 2 (a person) and held by nothing.
+    for (const obj of moduleOrder(lot.module)) {
+      if (lot.module.objects.get(obj.objectId) === obj && !containerOf(lot, obj) && obj.isPerson) kill(lot, obj);
+    }
+  }
+  if (!vacation || bulldoze) killEvictedObjects(lot, bulldoze);
   if (bulldoze) bulldozeTiles(fixed);
-  sim.setFunds(0);
+  if (!vacation) sim.setFunds(0);
   sim.globals[26] = 0;
   sim.globals[G.daysRunning] = 0;
   computeRooms(fixed, new RoomManager(fixed));

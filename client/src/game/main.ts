@@ -45,7 +45,7 @@ import { WinMgr } from "./ui/winmgr.js";
 import { ObjectFolder } from "./world/objectfolder.js";
 import { WinLotView } from "./world/winlotview.js";
 import { doSave, isLotDirty, markLotClean, saveGame } from "./world/savegame.js";
-import { moveOutHouse } from "./world/moveout.js";
+import { moveOutHouse, removeFromVacationHouse } from "./world/moveout.js";
 import { installCheatConsole } from "./ui/cheat.js";
 import { firstRunTutorial, resetTutorial } from "./nbhd/tutorial.js";
 
@@ -336,6 +336,7 @@ class Game {
       },
       onUnported: (what) => console.log(`not ported: ${what}`),
       onMoveOutHouse: (house, bulldoze, store) => moveOutHouse(ctx, store, house, bulldoze),
+      onRemoveFromVacation: (house, bulldoze, store) => removeFromVacationHouse(ctx, store, house, bulldoze),
       // cWinMagicland::MoveInModeLotHandler: LoadGame(house, family) under the frozen screen.
       onMoveIn: (house, family, value) =>
         whileFrozen(mgr, true, async () => {

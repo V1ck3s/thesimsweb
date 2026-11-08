@@ -398,6 +398,8 @@ export interface TownCallbacks {
   onUnported(what: string): void;
   /** The house file side of Neighborhood::MoveOut (bulldoze), as on the neighborhood screen. */
   onMoveOutHouse?(house: number, bulldoze: boolean, store: NeighborhoodStore): Promise<boolean>;
+  /** The house file side of Neighborhood::RemoveFromVacation (the family sent home, the lot optionally bulldozed). */
+  onRemoveFromVacation?(house: number, bulldoze: boolean, store: NeighborhoodStore): Promise<boolean>;
   /**
    * cWinMagicland::MoveInModeLotHandler: cSimsApp::LoadGame(house, family),
    * the family moving into the lot; resolves whether the lot loaded (the
@@ -917,6 +919,19 @@ export class WinTown extends TSWin implements LotBtnOwner {
     const lot = this.lots.get(house);
     if (!lot?.info) return;
     let target = house;
+    // cWinVacation's picker: cWinLotBtn::IsLotOccupied (a family living or
+    // staying there) shows a picture dialog (kDialogVILogo, STR# 132 entries
+    // 20 / 21, OK) instead of picking the lot.
+    if (this.town === Town.Vacation && !this.mainScreen && lot.info.familyNumber !== -1) {
+      const dlg = new WinPictureDialog(this.ctx);
+      dlg.setTitle(this.ctx.strings.get("UIText", STR_MOVE_IN, 20));
+      dlg.addText(this.ctx.strings.get("UIText", STR_MOVE_IN, 21));
+      dlg.addButton(TSWinMsgBox.getButtonLabel(this.ctx, IDOK), IDOK);
+      const logo = await this.ctx.res.image("kDialogVILogo").catch(() => null);
+      if (logo) dlg.setImage(logo);
+      await dlg.run();
+      return;
+    }
     if (this.town === Town.Magictown && house <= 0x5c) {
       if (!this.mainScreen || lot.info.familyNumber === -1) {
         // cWinPictureDialog with kNghNoOneLivesHereIcon, the title and text of
@@ -1311,24 +1326,35 @@ export class WinTown extends TSWin implements LotBtnOwner {
 
   /**
    * cWinDowntown::EvictModeLotHandler: no house -> cancel sound, STR# 132
-   * entries 5 / 4, bulldoze sound again; a house -> yes / no STR# 131
-   * entries 1 / 0, "UI_Nhood_bdoze_demolish", the wait cursor around
-   * EvictFamily(house, bulldoze), failure STR# 131 entries 11 / 10, then
-   * ReloadThumbnail.
+   * entries 5 / 4, bulldoze sound again; a house -> yes / no "Bulldoze
+   * Lot?" (the town's string table puts STR# 131 entries 15 / 14 in slots
+   * 1 / 0; Magic Town's keeps entries 1 / 0), "UI_Nhood_bdoze_demolish", the
+   * wait cursor around EvictFamily(house, bulldoze), failure STR# 131
+   * entries 11 / 10, then ReloadThumbnail. cWinVacation's: no house only
+   * plays the two sounds; a family staying on the lot (GetFamilyInHouse
+   * finds it by +0x13c) asks STR# 131 entries 18 / 19 (sent home), then,
+   * on a lot with a house, the bulldoze question, plays
+   * "UI_Nhood_bdoze_demolish" (bulldoze) or "UI_Nhood_bdoze_evict", and
+   * calls Neighborhood::RemoveFromVacation(house, bulldoze).
    */
   private async evictModeLotHandler(house: number): Promise<void> {
     const lot = this.lots.get(house);
     const info = lot?.info;
     if (!lot || !info) return;
     const str = (set: number, i: number): string => this.ctx.strings.get("UIText", set, i);
-    if (info.familyNumber !== -1) return;
+    const vacation = this.town === Town.Vacation;
+    const [askText, askTitle] = this.town === Town.Magictown ? [1, 0] : [15, 14];
+    if (info.familyNumber !== -1) {
+      if (vacation) await this.sendVacationersHome(lot, house, info.hasHouse, str(STR_BULLDOZE, askText), str(STR_BULLDOZE, askTitle));
+      return;
+    }
     if (!info.hasHouse) {
       soundPlayer.playBySource("UI_Nhood_bdoze_cancel", -4);
-      await TSWinMsgBox.show(this.ctx, str(STR_MOVE_IN, 5), str(STR_MOVE_IN, 4));
+      if (!vacation) await TSWinMsgBox.show(this.ctx, str(STR_MOVE_IN, 5), str(STR_MOVE_IN, 4));
       soundPlayer.playBySource("UI_Nhood_bdoze", -4);
       return;
     }
-    if ((await TSWinMsgBox.show(this.ctx, str(STR_BULLDOZE, 1), str(STR_BULLDOZE, 0), MB_YESNO)) !== IDYES) return;
+    if ((await TSWinMsgBox.show(this.ctx, str(STR_BULLDOZE, askText), str(STR_BULLDOZE, askTitle), MB_YESNO)) !== IDYES) return;
     soundPlayer.playBySource("UI_Nhood_bdoze_demolish", -4);
     winMgr.setGlobalCursor(getCursor(3));
     let ok = false;
@@ -1346,6 +1372,35 @@ export class WinTown extends TSWin implements LotBtnOwner {
       return;
     }
     await lot.reloadThumbnail();
+  }
+
+  /**
+   * cWinVacation::EvictModeLotHandler's family branch: send the family home
+   * (STR# 131 entries 18 / 19), bulldozing the lot when it has a house and
+   * the player says so; the thumbnail is reloaded whatever the outcome,
+   * failure shows STR# 131 entries 11 / 10.
+   */
+  private async sendVacationersHome(lot: { reloadThumbnail(): Promise<void> }, house: number, hasHouse: boolean, askText: string, askTitle: string): Promise<void> {
+    const str = (i: number): string => this.ctx.strings.get("UIText", STR_BULLDOZE, i);
+    if ((await TSWinMsgBox.show(this.ctx, str(18), str(19), MB_YESNO)) !== IDYES) return;
+    const bulldoze = hasHouse && (await TSWinMsgBox.show(this.ctx, askText, askTitle, MB_YESNO)) === IDYES;
+    soundPlayer.playBySource(bulldoze ? "UI_Nhood_bdoze_demolish" : "UI_Nhood_bdoze_evict", -4);
+    winMgr.setGlobalCursor(getCursor(3));
+    let ok = false;
+    try {
+      const store = await NeighborhoodStore.open(this.nb.dir);
+      if (store.removeFromVacation(house) !== -1) {
+        // RemoveFromVacation saves the neighborhood before the house file work.
+        await store.save();
+        ok = this.callbacks.onRemoveFromVacation ? await this.callbacks.onRemoveFromVacation(house, bulldoze, store) : false;
+        if (ok) await store.save();
+        else if (!this.callbacks.onRemoveFromVacation) this.callbacks.onUnported(`Neighborhood::RemoveFromVacation house file side (house ${house})`);
+      }
+    } finally {
+      await lot.reloadThumbnail();
+      winMgr.setGlobalCursor(null);
+    }
+    if (!ok) await TSWinMsgBox.show(this.ctx, str(11), str(10));
   }
 
   /** RegularModeBtnHandler(logo): one cWinCredits at a time over the hidden screen. */
