@@ -223,9 +223,12 @@ export abstract class TreeSim {
   /**
    * TreeSim::RunCheckTree: runs `treeId` to completion right now on a frame
    * above the current stack (a sentinel frame with no tree marks the
-   * bottom). Returns the tree's result; primitives must not wait.
+   * bottom). Returns the tree's result; primitives must not wait. Nothing
+   * runs (false) while a tree error is pending (+0x24, cleared by Reset):
+   * cXObject::HandleError's Cleanup does not run the object's Cleanup tree.
    */
   runCheckTree(beh: Behavior | null, stackObj: number, treeId: number, params: ParamSource | null): boolean {
+    if (this.errorCode !== 0) return false;
     this.stack.push({ rawTree: 0xffff, node: 0, stackObj: 0, numLocals: 0, numParams: 0, state: 1, behavior: null }, null);
     if (!this.gosub(beh, params, treeId)) {
       this.stack.pop();
