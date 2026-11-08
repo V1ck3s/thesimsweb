@@ -602,7 +602,7 @@ export class Placement {
         if (isPerson) {
           rectTest = personMayCollide(otherFlags);
         } else if (other.isPerson) {
-          rectTest = ((this.hooks.personData?.(other)?.[68] ?? 0) & 1) !== 1 && !personMayCollide(myFlags);
+          rectTest = ((this.hooks.personData?.(other)?.[68] ?? 0) & 1) !== 1 && personMayCollide(myFlags);
         } else {
           const otherZero = (otherFlags & FL_ZERO_EXTENT) !== 0;
           if (!zero && !otherZero) {
