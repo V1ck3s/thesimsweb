@@ -1271,6 +1271,25 @@ export class SimObject extends TreeSim {
         if ((nb.personData?.[0x3d] ?? 0) !== 0 && !m.removeFromFamily(nb)) return PRIM_FALSE;
         return m.addToFamily(nb, fam) ? PRIM_TRUE : PRIM_FALSE;
       }
+      case 5: {
+        // Neighborhood::GetFamily(temp 0) (false without it); cSimulator::Spend(expense 2,
+        // -Family::GetNetWorth): the lot's funds get the family's budget + lot value.
+        const id = this.temps[0]!;
+        const fam = m.nbhd?.families.find((f) => f.chunkId === id);
+        if (!fam) return PRIM_FALSE;
+        m.sim.spend(2, -((fam.budget + fam.netWorth) | 0));
+        return PRIM_TRUE;
+      }
+      case 33: {
+        // As call 4, into the family of temp 0 (Neighborhood::GetFamily, false without it).
+        const nb = m.findNeighborByID(elem.stackObj);
+        if (!nb) simThrow(0x37);
+        const id = this.temps[0]!;
+        const fam = m.nbhd?.families.find((f) => f.chunkId === id);
+        if (!fam) return PRIM_FALSE;
+        if ((nb.personData?.[0x3d] ?? 0) !== 0 && !m.removeFromFamily(nb)) return PRIM_FALSE;
+        return m.addToFamily(nb, fam) ? PRIM_TRUE : PRIM_FALSE;
+      }
       case 6: {
         // The stack object names a neighbor (Neighborhood::FindNeighborByID, error 0x37
         // without one), then the app refreshes its current tool (app +0x48, vtable +0x20)
@@ -2120,6 +2139,9 @@ export class SimObject extends TreeSim {
       const nb = m.findNeighborByID(id);
       if (!nb) return null;
       if (vars) vars[0] = id;
+      // Neighborhood::GetNeighborSelector: the dialog's picture (SetParams mode 0).
+      const sel = this.obj.selector.folder.selectorByGUID?.(nb.guid >>> 0) ?? null;
+      if (out && sel) out.selector = sel;
       const st = m.sim.state;
       const info = st ? [...st.family, ...st.neighbors].find((q) => q.neighborId === id) : undefined;
       return info?.firstName ?? m.neighborNames.get(id) ?? nb.name;
