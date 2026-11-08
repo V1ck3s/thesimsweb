@@ -73,8 +73,9 @@
         height: 70px;
         border-radius: 70px;
         background: rgba(255, 255, 255, 0.85);
-        filter: blur(1px);
         animation: drift 90s linear infinite;
+        /* Its own layer, moved by the compositor: no repaint, no filter to redo each frame (phones). */
+        will-change: translate;
       }
       .cloud::before, .cloud::after {
         content: "";
@@ -157,8 +158,24 @@
         width: 64px;
         height: 110px;
         margin: -96px auto 4px;
-        filter: drop-shadow(0 0 14px rgba(130, 255, 100, 0.65)) drop-shadow(0 6px 6px rgba(0, 40, 0, 0.35));
+        position: relative;
         animation: bob 3.2s ease-in-out infinite;
+        will-change: transform;
+      }
+      /*
+       * The plumbob's glow: a still gradient behind it. (A drop-shadow filter on
+       * the turning plumbob was redrawn every frame, which phones felt.)
+       */
+      .hero::before {
+        content: "";
+        position: absolute;
+        left: 50%;
+        top: -84px;
+        width: 96px;
+        height: 150px;
+        margin-left: -48px;
+        background: radial-gradient(closest-side, rgba(130, 255, 100, 0.55), rgba(130, 255, 100, 0.2) 60%, rgba(130, 255, 100, 0));
+        pointer-events: none;
       }
       @keyframes bob {
         0%, 100% { transform: translateY(0) rotateY(0deg); }

@@ -258,6 +258,20 @@ function showGameCheck(check: GameCheck | null, error?: string): void {
   }
 }
 
+/** Calls `fn` once `el` first shows on screen (at once without IntersectionObserver). */
+function whenVisible(el: HTMLElement, fn: () => void): void {
+  if (!("IntersectionObserver" in window)) {
+    fn();
+    return;
+  }
+  const io = new IntersectionObserver((entries) => {
+    if (!entries.some((e) => e.isIntersecting)) return;
+    io.disconnect();
+    fn();
+  });
+  io.observe(el);
+}
+
 /** Compares the game folder (the server's, or the one imported into this browser) with the reference. */
 async function refreshGameCheck(): Promise<void> {
   show($("gamecheck-state"), () => t("gcChecking"));
@@ -557,7 +571,9 @@ async function main(): Promise<void> {
     // The server's game folder: only its installation check is shown.
     $("gamefiles").hidden = false;
     for (const el of document.querySelectorAll<HTMLElement>("#gamefiles .local-only")) el.hidden = true;
-    void refreshGameCheck();
+    // The check downloads the server's file list (about 1 MB): only once the
+    // panel comes into view (on a phone, far down the page).
+    whenVisible($("gamefiles"), () => void refreshGameCheck());
   }
   show($("lead"), () => t(localGame ? "leadLocal" : "lead"));
   show($("saves-mode"), () => t(mode === "client" ? "savesClient" : "savesServer") + (online ? "" : ` ${t("savesOffline")}`));
