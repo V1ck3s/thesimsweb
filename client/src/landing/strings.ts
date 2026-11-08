@@ -36,7 +36,7 @@ const en = {
   centredHud: "Keep the interface centred on very wide screens",
   fullscreen: "Fullscreen",
   fullscreenHelp:
-    "The game asks the browser for real fullscreen at your first click, so the browser's bar no longer slides in when the mouse reaches the top of the screen (unlike F11).",
+    "The game asks the browser for real fullscreen at your first click, so the browser's bar no longer slides in when the mouse reaches the top of the screen (unlike F11). In the game, Alt+Enter switches fullscreen on or off.",
   displayHelp:
     "The game's screen size. Every resolution keeps the look of the original's 1024 × 768: the same zoom and panel sizes, scaled to the screen; wider screens show more of the neighborhood and the lot. “Fit the window, following its size” adapts live while you play; “when the game starts” keeps the size the window had then. The centred interface (not in the original) keeps the control panel in a band in the middle of wider screens. Other changes apply at the next start of the game (reload its tab).",
 
@@ -165,7 +165,7 @@ const fr: Table = {
   centredHud: "Garder l'interface centrée sur les écrans très larges",
   fullscreen: "Plein écran",
   fullscreenHelp:
-    "Au premier clic, le jeu demande au navigateur un vrai plein écran : la barre du navigateur ne réapparaît plus quand la souris atteint le haut de l'écran (contrairement à F11).",
+    "Au premier clic, le jeu demande au navigateur un vrai plein écran : la barre du navigateur ne réapparaît plus quand la souris atteint le haut de l'écran (contrairement à F11). En jeu, Alt+Entrée active ou quitte le plein écran.",
   displayHelp:
     "La taille de l'écran du jeu. Chaque résolution garde l'aspect du 1024 × 768 de l'original : même zoom et même taille des panneaux, mis à l'échelle de l'écran ; les écrans plus larges montrent davantage du quartier et du terrain. « Adapter à la fenêtre, en suivant sa taille » s'ajuste en direct pendant la partie ; « au lancement du jeu » garde la taille qu'avait la fenêtre à ce moment. L'interface centrée (absente de l'original) garde le panneau de contrôle dans une bande au milieu des écrans plus larges. Les autres changements s'appliquent au prochain lancement du jeu (rechargez son onglet).",
   gamefilesH: "Fichiers du jeu",
@@ -272,7 +272,7 @@ const de: Table = {
   centredHud: "Benutzeroberfläche auf sehr breiten Bildschirmen zentriert halten",
   fullscreen: "Vollbild",
   fullscreenHelp:
-    "Beim ersten Klick fordert das Spiel beim Browser echtes Vollbild an, sodass die Browserleiste nicht mehr einfährt, wenn die Maus den oberen Bildschirmrand erreicht (anders als bei F11).",
+    "Beim ersten Klick fordert das Spiel beim Browser echtes Vollbild an, sodass die Browserleiste nicht mehr einfährt, wenn die Maus den oberen Bildschirmrand erreicht (anders als bei F11). Im Spiel schaltet Alt+Eingabe den Vollbildmodus ein oder aus.",
   displayHelp:
     "Die Bildschirmgröße des Spiels. Jede Auflösung behält das Aussehen der 1024 × 768 des Originals: gleicher Zoom und gleiche Größe der Leisten, auf den Bildschirm skaliert; breitere Bildschirme zeigen mehr von der Nachbarschaft und vom Grundstück. „An das Fenster anpassen und seiner Größe folgen“ passt sich während des Spiels live an; „beim Spielstart“ behält die Größe, die das Fenster damals hatte. Die zentrierte Oberfläche (nicht im Original) hält die Steuerleiste in einem Streifen in der Mitte breiterer Bildschirme. Andere Änderungen gelten ab dem nächsten Spielstart (Tab neu laden).",
   gamefilesH: "Spieldateien",
@@ -379,7 +379,7 @@ const it: Table = {
   centredHud: "Mantieni l'interfaccia centrata sugli schermi molto larghi",
   fullscreen: "Schermo intero",
   fullscreenHelp:
-    "Al primo clic il gioco chiede al browser un vero schermo intero, così la barra del browser non scende più quando il mouse raggiunge il bordo superiore dello schermo (a differenza di F11).",
+    "Al primo clic il gioco chiede al browser un vero schermo intero, così la barra del browser non scende più quando il mouse raggiunge il bordo superiore dello schermo (a differenza di F11). Nel gioco, Alt+Invio attiva o disattiva lo schermo intero.",
   displayHelp:
     "Le dimensioni dello schermo del gioco. Ogni risoluzione mantiene l'aspetto del 1024 × 768 dell'originale: stesso zoom e stesse dimensioni dei pannelli, scalati allo schermo; gli schermi più larghi mostrano una parte maggiore del vicinato e del lotto. “Adatta alla finestra, seguendone le dimensioni” si adegua in tempo reale mentre giochi; “all'avvio del gioco” mantiene le dimensioni che la finestra aveva in quel momento. L'interfaccia centrata (non presente nell'originale) tiene il pannello di controllo in una fascia al centro degli schermi più larghi. Le altre modifiche valgono dal prossimo avvio del gioco (ricarica la sua scheda).",
   gamefilesH: "File del gioco",
@@ -486,7 +486,7 @@ const es: Table = {
   centredHud: "Mantener la interfaz centrada en pantallas muy anchas",
   fullscreen: "Pantalla completa",
   fullscreenHelp:
-    "Con el primer clic, el juego pide al navegador una pantalla completa real, así la barra del navegador ya no aparece cuando el ratón llega al borde superior de la pantalla (a diferencia de F11).",
+    "Con el primer clic, el juego pide al navegador una pantalla completa real, así la barra del navegador ya no aparece cuando el ratón llega al borde superior de la pantalla (a diferencia de F11). En el juego, Alt+Intro activa o desactiva la pantalla completa.",
   displayHelp:
     "El tamaño de la pantalla del juego. Cada resolución conserva el aspecto de los 1024 × 768 del original: el mismo zoom y el mismo tamaño de los paneles, escalados a la pantalla; las pantallas más anchas muestran más del barrio y del solar. «Ajustar a la ventana, siguiendo su tamaño» se adapta en directo mientras juegas; «al iniciar el juego» conserva el tamaño que tenía la ventana en ese momento. La interfaz centrada (no está en el original) mantiene el panel de control en una franja en el centro de las pantallas más anchas. Los demás cambios se aplican la próxima vez que se inicie el juego (recarga su pestaña).",
   gamefilesH: "Archivos del juego",
@@ -593,7 +593,7 @@ const nl: Table = {
   centredHud: "De interface gecentreerd houden op zeer brede schermen",
   fullscreen: "Volledig scherm",
   fullscreenHelp:
-    "Bij je eerste klik vraagt het spel de browser om echt volledig scherm, zodat de browserbalk niet meer inschuift wanneer de muis de bovenkant van het scherm bereikt (anders dan met F11).",
+    "Bij je eerste klik vraagt het spel de browser om echt volledig scherm, zodat de browserbalk niet meer inschuift wanneer de muis de bovenkant van het scherm bereikt (anders dan met F11). In het spel zet Alt+Enter volledig scherm aan of uit.",
   displayHelp:
     "De schermgrootte van het spel. Elke resolutie behoudt het uiterlijk van de 1024 × 768 van het origineel: dezelfde zoom en dezelfde paneelgrootte, geschaald naar het scherm; bredere schermen tonen meer van de buurt en de kavel. „Aan het venster aanpassen en de grootte volgen” past zich live aan terwijl je speelt; „bij de start van het spel” houdt de grootte die het venster toen had. De gecentreerde interface (niet in het origineel) houdt het bedieningspaneel in een strook in het midden van bredere schermen. Andere wijzigingen gelden vanaf de volgende start van het spel (herlaad het tabblad).",
   gamefilesH: "Spelbestanden",
@@ -700,7 +700,7 @@ const da: Table = {
   centredHud: "Hold brugerfladen centreret på meget brede skærme",
   fullscreen: "Fuld skærm",
   fullscreenHelp:
-    "Ved dit første klik beder spillet browseren om ægte fuld skærm, så browserens bjælke ikke længere glider ind, når musen når toppen af skærmen (i modsætning til F11).",
+    "Ved dit første klik beder spillet browseren om ægte fuld skærm, så browserens bjælke ikke længere glider ind, når musen når toppen af skærmen (i modsætning til F11). I spillet slår Alt+Enter fuld skærm til eller fra.",
   displayHelp:
     "Spillets skærmstørrelse. Hver opløsning bevarer udseendet fra originalens 1024 × 768: samme zoom og samme panelstørrelse, skaleret til skærmen; bredere skærme viser mere af nabolaget og grunden. „Tilpas til vinduet og følg dets størrelse“ tilpasser sig løbende, mens du spiller; „når spillet starter“ beholder den størrelse, vinduet havde da. Den centrerede brugerflade (ikke i originalen) holder kontrolpanelet i et bånd midt på bredere skærme. Andre ændringer gælder fra næste gang spillet startes (genindlæs dets fane).",
   gamefilesH: "Spilfiler",
@@ -807,7 +807,7 @@ const sv: Table = {
   centredHud: "Håll gränssnittet centrerat på mycket breda skärmar",
   fullscreen: "Helskärm",
   fullscreenHelp:
-    "Vid ditt första klick ber spelet webbläsaren om riktig helskärm, så att webbläsarens fält inte längre glider fram när musen når skärmens överkant (till skillnad från F11).",
+    "Vid ditt första klick ber spelet webbläsaren om riktig helskärm, så att webbläsarens fält inte längre glider fram när musen når skärmens överkant (till skillnad från F11). I spelet slår Alt+Enter på eller av helskärm.",
   displayHelp:
     "Spelets skärmstorlek. Varje upplösning behåller utseendet från originalets 1024 × 768: samma zoom och samma panelstorlek, skalade till skärmen; bredare skärmar visar mer av grannskapet och tomten. ”Anpassa till fönstret och följ dess storlek” anpassar sig direkt medan du spelar; ”när spelet startar” behåller den storlek fönstret hade då. Det centrerade gränssnittet (finns inte i originalet) håller kontrollpanelen i ett band mitt på bredare skärmar. Andra ändringar gäller från nästa gång spelet startas (läs om dess flik).",
   gamefilesH: "Spelfiler",
@@ -914,7 +914,7 @@ const no: Table = {
   centredHud: "Hold grensesnittet sentrert på svært brede skjermer",
   fullscreen: "Fullskjerm",
   fullscreenHelp:
-    "Ved første klikk ber spillet nettleseren om ekte fullskjerm, slik at nettleserlinjen ikke lenger glir inn når musen når toppen av skjermen (i motsetning til F11).",
+    "Ved første klikk ber spillet nettleseren om ekte fullskjerm, slik at nettleserlinjen ikke lenger glir inn når musen når toppen av skjermen (i motsetning til F11). I spillet slår Alt+Enter fullskjerm på eller av.",
   displayHelp:
     "Spillets skjermstørrelse. Hver oppløsning beholder utseendet til originalens 1024 × 768: samme zoom og samme panelstørrelse, skalert til skjermen; bredere skjermer viser mer av nabolaget og tomten. «Tilpass til vinduet og følg størrelsen» tilpasser seg fortløpende mens du spiller; «når spillet starter» beholder størrelsen vinduet hadde da. Det sentrerte grensesnittet (ikke i originalen) holder kontrollpanelet i et belte midt på bredere skjermer. Andre endringer gjelder fra neste gang spillet startes (last inn fanen på nytt).",
   gamefilesH: "Spillfiler",
@@ -1021,7 +1021,7 @@ const fi: Table = {
   centredHud: "Pidä käyttöliittymä keskitettynä hyvin leveillä näytöillä",
   fullscreen: "Koko näyttö",
   fullscreenHelp:
-    "Ensimmäisellä napsautuksella peli pyytää selaimelta todellista koko näytön tilaa, joten selaimen palkki ei enää liu'u esiin, kun hiiri osuu näytön yläreunaan (toisin kuin F11:llä).",
+    "Ensimmäisellä napsautuksella peli pyytää selaimelta todellista koko näytön tilaa, joten selaimen palkki ei enää liu'u esiin, kun hiiri osuu näytön yläreunaan (toisin kuin F11:llä). Pelissä Alt+Enter kytkee koko näytön päälle tai pois.",
   displayHelp:
     "Pelin näytön koko. Jokainen tarkkuus säilyttää alkuperäisen 1024 × 768 -tilan ilmeen: sama zoomaus ja paneelien koko, skaalattuna näytölle; leveämmät näytöt näyttävät enemmän naapurustoa ja tonttia. ”Sovita ikkunaan ja seuraa sen kokoa” mukautuu reaaliajassa pelatessa; ”pelin käynnistyessä” säilyttää ikkunan silloisen koon. Keskitetty käyttöliittymä (ei alkuperäisessä) pitää ohjauspaneelin kaistaleessa leveämpien näyttöjen keskellä. Muut muutokset tulevat voimaan, kun peli seuraavan kerran käynnistetään (lataa sen välilehti uudelleen).",
   gamefilesH: "Pelitiedostot",
@@ -1128,7 +1128,7 @@ const pt: Table = {
   centredHud: "Manter a interface centralizada em telas muito largas",
   fullscreen: "Tela cheia",
   fullscreenHelp:
-    "No primeiro clique, o jogo pede ao navegador uma tela cheia de verdade, assim a barra do navegador não aparece mais quando o mouse chega ao topo da tela (ao contrário do F11).",
+    "No primeiro clique, o jogo pede ao navegador uma tela cheia de verdade, assim a barra do navegador não aparece mais quando o mouse chega ao topo da tela (ao contrário do F11). No jogo, Alt+Enter liga ou desliga a tela cheia.",
   displayHelp:
     "O tamanho da tela do jogo. Cada resolução mantém o visual dos 1024 × 768 do original: o mesmo zoom e o mesmo tamanho dos painéis, ampliados para a tela; telas mais largas mostram mais da vizinhança e do terreno. “Ajustar à janela, acompanhando o tamanho dela” se adapta ao vivo enquanto você joga; “quando o jogo começa” mantém o tamanho que a janela tinha naquele momento. A interface centralizada (não existe no original) mantém o painel de controle em uma faixa no meio das telas mais largas. As outras mudanças valem a partir da próxima vez que o jogo for iniciado (recarregue a aba dele).",
   gamefilesH: "Arquivos do jogo",
@@ -1235,7 +1235,7 @@ const ja: Table = {
   centredHud: "超ワイド画面ではインターフェイスを中央に配置する",
   fullscreen: "フルスクリーン",
   fullscreenHelp:
-    "最初のクリックでゲームがブラウザに本当のフルスクリーンを要求します。F11 と違い、マウスを画面上端に動かしてもブラウザのバーが出てきません。",
+    "最初のクリックでゲームがブラウザに本当のフルスクリーンを要求します。F11 と違い、マウスを画面上端に動かしてもブラウザのバーが出てきません。ゲーム中は Alt+Enter でフルスクリーンの切り替えができます。",
   displayHelp:
     "ゲームの画面サイズです。どの解像度でもオリジナルの 1024 × 768 の見た目を保ちます。ズームやパネルの大きさは同じまま、画面に合わせて拡大されます。横長の画面ほど、近所や区画が左右に広く見えます。「ウィンドウに合わせる（常に追従）」はプレイ中もリアルタイムに合わせます。「ゲーム起動時」はその時点のウィンドウサイズを保ちます。中央配置のインターフェイス（オリジナルにはない機能）は、横長の画面でコントロールパネルを中央の帯に収めます。その他の変更は次回のゲーム起動時に反映されます（ゲームのタブを再読み込みしてください）。",
   gamefilesH: "ゲームファイル",
@@ -1342,7 +1342,7 @@ const pl: Table = {
   centredHud: "Utrzymuj interfejs na środku bardzo szerokich ekranów",
   fullscreen: "Pełny ekran",
   fullscreenHelp:
-    "Przy pierwszym kliknięciu gra prosi przeglądarkę o prawdziwy pełny ekran, więc pasek przeglądarki nie wysuwa się już, gdy mysz dotknie górnej krawędzi ekranu (w przeciwieństwie do F11).",
+    "Przy pierwszym kliknięciu gra prosi przeglądarkę o prawdziwy pełny ekran, więc pasek przeglądarki nie wysuwa się już, gdy mysz dotknie górnej krawędzi ekranu (w przeciwieństwie do F11). W grze Alt+Enter włącza lub wyłącza pełny ekran.",
   displayHelp:
     "Rozmiar ekranu gry. Każda rozdzielczość zachowuje wygląd oryginalnego 1024 × 768: ten sam zoom i ten sam rozmiar paneli, przeskalowane do ekranu; szersze ekrany pokazują więcej otoczenia i parceli. „Dopasuj do okna i podążaj za jego rozmiarem” dostosowuje się na bieżąco podczas gry; „przy uruchomieniu gry” zachowuje rozmiar, jaki okno miało w tamtej chwili. Wyśrodkowany interfejs (nieobecny w oryginale) trzyma panel sterowania w pasie pośrodku szerszych ekranów. Pozostałe zmiany obowiązują od następnego uruchomienia gry (odśwież jej kartę).",
   gamefilesH: "Pliki gry",
@@ -1472,7 +1472,7 @@ const zhCN: Table = {
   resOriginal: "{w} × {h}（原版游戏的默认分辨率）",
   centredHud: "在超宽屏幕上让界面居中",
   fullscreen: "全屏",
-  fullscreenHelp: "首次点击时，游戏会请求浏览器进入真正的全屏，这样鼠标移到屏幕顶部时浏览器栏不会再滑出（与 F11 不同）。",
+  fullscreenHelp: "首次点击时，游戏会请求浏览器进入真正的全屏，这样鼠标移到屏幕顶部时浏览器栏不会再滑出（与 F11 不同）。游戏中按 Alt+Enter 可进入或退出全屏。",
   displayHelp:
     "游戏的屏幕尺寸。每种分辨率都保持原版 1024 × 768 的外观：相同的缩放和面板大小，按屏幕放大；更宽的屏幕能显示更多的街区和地块。“适应窗口，并随窗口大小变化”会在游戏中实时调整；“游戏启动时”则保持当时的窗口大小。居中界面（原版没有）会把控制面板放在宽屏中间的一条区域内。其他更改将在下次启动游戏时生效（重新加载游戏的标签页）。",
   gamefilesH: "游戏文件",
@@ -1575,7 +1575,7 @@ const zhTW: Table = {
   resOriginal: "{w} × {h}（原版遊戲的預設解析度）",
   centredHud: "在超寬螢幕上讓介面置中",
   fullscreen: "全螢幕",
-  fullscreenHelp: "第一次點擊時，遊戲會要求瀏覽器進入真正的全螢幕，滑鼠移到螢幕頂端時瀏覽器列就不會再滑出（與 F11 不同）。",
+  fullscreenHelp: "第一次點擊時，遊戲會要求瀏覽器進入真正的全螢幕，滑鼠移到螢幕頂端時瀏覽器列就不會再滑出（與 F11 不同）。遊戲中按 Alt+Enter 可進入或離開全螢幕。",
   displayHelp:
     "遊戲的螢幕大小。每種解析度都保留原版 1024 × 768 的外觀：相同的縮放與面板大小，依螢幕放大；較寬的螢幕能顯示更多社區與地段。「符合視窗，並隨視窗大小變化」會在遊戲中即時調整；「遊戲啟動時」則保留當時的視窗大小。置中介面（原版沒有）會把控制面板放在寬螢幕中間的一條區域內。其他變更會在下次啟動遊戲時生效（重新載入遊戲的分頁）。",
   gamefilesH: "遊戲檔案",
@@ -1680,7 +1680,7 @@ const th: Table = {
   centredHud: "จัดส่วนควบคุมไว้ตรงกลางบนจอที่กว้างมาก",
   fullscreen: "เต็มจอ",
   fullscreenHelp:
-    "เมื่อคลิกครั้งแรก เกมจะขอให้เบราว์เซอร์แสดงผลเต็มจอจริง แถบของเบราว์เซอร์จึงไม่เลื่อนลงมาเมื่อเมาส์ไปถึงขอบบนของจอ (ต่างจาก F11)",
+    "เมื่อคลิกครั้งแรก เกมจะขอให้เบราว์เซอร์แสดงผลเต็มจอจริง แถบของเบราว์เซอร์จึงไม่เลื่อนลงมาเมื่อเมาส์ไปถึงขอบบนของจอ (ต่างจาก F11) ในเกม กด Alt+Enter เพื่อเปิดหรือปิดโหมดเต็มจอ",
   displayHelp:
     "ขนาดหน้าจอของเกม ทุกความละเอียดยังคงหน้าตาแบบ 1024 × 768 ของต้นฉบับ คือการซูมและขนาดแผงเท่าเดิม แต่ขยายให้เต็มจอ จอที่กว้างกว่าจะเห็นแถบที่อยู่อาศัยและที่ดินได้มากขึ้น “พอดีกับหน้าต่าง และปรับตามขนาดหน้าต่าง” จะปรับทันทีขณะเล่น ส่วน “ตอนเริ่มเกม” จะใช้ขนาดของหน้าต่างในตอนนั้น ส่วนควบคุมแบบจัดกลาง (ไม่มีในต้นฉบับ) จะวางแผงควบคุมไว้ในแถบกลางจอที่กว้างกว่า การเปลี่ยนแปลงอื่นจะมีผลเมื่อเริ่มเกมครั้งถัดไป (โหลดแท็บของเกมใหม่)",
   gamefilesH: "ไฟล์เกม",
@@ -1786,7 +1786,7 @@ const ko: Table = {
   centredHud: "매우 넓은 화면에서 인터페이스를 가운데에 유지",
   fullscreen: "전체 화면",
   fullscreenHelp:
-    "첫 클릭 때 게임이 브라우저에 실제 전체 화면을 요청하므로, F11과 달리 마우스가 화면 위쪽 끝에 닿아도 브라우저 막대가 내려오지 않습니다.",
+    "첫 클릭 때 게임이 브라우저에 실제 전체 화면을 요청하므로, F11과 달리 마우스가 화면 위쪽 끝에 닿아도 브라우저 막대가 내려오지 않습니다. 게임 중에는 Alt+Enter로 전체 화면을 켜거나 끌 수 있습니다.",
   displayHelp:
     "게임의 화면 크기입니다. 어떤 해상도에서도 원작 1024 × 768의 모습을 유지합니다. 확대 정도와 패널 크기는 그대로이고 화면에 맞게 확대됩니다. 화면이 넓을수록 이웃과 부지가 더 많이 보입니다. “창에 맞춤, 창 크기 변화에 따라감”은 플레이 중에도 실시간으로 맞춰지고, “게임 시작 시”는 그때의 창 크기를 유지합니다. 가운데 정렬 인터페이스(원작에는 없음)는 넓은 화면에서 컨트롤 패널을 가운데 띠 안에 둡니다. 그 밖의 변경은 다음에 게임을 시작할 때 적용됩니다(게임 탭을 새로 고침).",
   gamefilesH: "게임 파일",

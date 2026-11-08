@@ -51,9 +51,9 @@ proxy avec mot de passe et HTTPS, ou sur un réseau privé.
 - le mode de sauvegarde de l'instance, le nombre de fichiers sauvegardés, **Export saves** et
   **Import saves…** (§ 4) ;
 - l'état du stockage du navigateur (persistant ou non, place occupée) et du mode hors ligne (§ 6) ;
-- la section **Display** : la résolution du jeu et l'interface centrée (ci-dessous).
+- la section **Display** : la résolution du jeu, l'interface centrée et le plein écran (ci-dessous).
 
-### Résolution et interface centrée
+### Résolution, interface centrée et plein écran
 
 Le jeu original dessine un pixel de jeu par pixel d'écran : dans un grand mode (l'astuce
 « widescreen » de `Sims.exe`), le quartier et le terrain paraissent tout petits et les panneaux
@@ -76,8 +76,15 @@ si bien qu'une grande résolution coûte à peu près autant qu'un 1024 × 768.
   désactivée par défaut) : le panneau de contrôle, la commande de vue (le disque en bas à gauche) et
   l'incrustation sont placés dans une bande centrée de 1024 de large, exactement l'interface du
   1024 × 768 (avec ses pages Vie larges) ; le terrain occupe tout l'écran, y compris à côté du panneau.
+- **Fullscreen** (option du portage, désactivée par défaut) : au premier clic, le jeu demande au
+  navigateur un vrai plein écran (la barre du navigateur ne réapparaît pas en haut de l'écran,
+  contrairement à F11), et le redemande au clic suivant si on l'a quitté.
+- **Alt+Entrée**, en jeu, active ou quitte le plein écran à tout moment (raccourci du portage) et
+  garde ce choix comme l'option ci-dessus : après l'avoir quitté ainsi, le jeu ne le redemande plus
+  au clic suivant. Dans Chrome, maintenir Échap le quitte aussi.
 - Les choix autres que « following its size » s'appliquent au prochain lancement (recharger l'onglet
-  du jeu). Dans l'URL : `?res=1920x1080`, `?res=auto` ou `?res=window`, `?hud=centred` ou `?hud=full`.
+  du jeu). Dans l'URL : `?res=1920x1080`, `?res=auto` ou `?res=window`, `?hud=centred` ou `?hud=full`,
+  `?fullscreen=1` ou `?fullscreen=0`.
 
 Les adresses directes du jeu restent valables : `/game.html`, et `/` suivi d'une query string
 (`/?house=1` entre directement dans la maison 1, `/?nbhd=UserData2` choisit le quartier). Un

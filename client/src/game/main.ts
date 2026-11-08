@@ -12,7 +12,7 @@ import { installImeComposition } from "./ui/imecomposition.js";
 import { modeMusicEvent, soundPlayer, UI_SOURCE } from "./audio/index.js";
 import { installLotAudio } from "./audio/lotaudio.js";
 import { resetSaveFileCache } from "../engine/assets.js";
-import { hudBand, readCentredHud, readFullscreen, readResolution, screenSize } from "../engine/display.js";
+import { hudBand, readCentredHud, readFullscreen, readResolution, screenSize, storeFullscreen } from "../engine/display.js";
 import { holdsScreenSize, resizeTopLevel } from "./ui/screenresize.js";
 import { getSaveMode, requestPersistentStorage } from "../engine/saves.js";
 import { isGameFilesLocal, localGameIndex } from "../engine/gamefiles.js";
@@ -448,19 +448,66 @@ class Game {
  * In fullscreen the browser's bar does not slide in at the top of the screen
  * as it does with F11. Chrome also lets the game keep Escape (Keyboard Lock:
  * holding Escape leaves fullscreen).
+ *
+ * Alt+Enter (a port shortcut, not in the original, which ran fullscreen
+ * only) switches fullscreen on or off at any time and keeps the choice as
+ * the option: leaving with it stops the page from asking again at the next
+ * click. The key does not reach the game.
  */
 function installFullscreen(): void {
+  type KeyboardLock = { lock?(keys?: string[]): Promise<void>; unlock?(): void };
+  const keyboard = (navigator as Navigator & { keyboard?: KeyboardLock }).keyboard;
+  let wanted = readFullscreen();
+  let enterHeld = false;
   const enter = (): void => {
     if (document.fullscreenElement || !document.fullscreenEnabled) return;
     document.documentElement
       .requestFullscreen({ navigationUI: "hide" })
-      .then(() => (navigator as Navigator & { keyboard?: { lock?(keys?: string[]): Promise<void> } }).keyboard?.lock?.(["Escape"]))
+      .then(() => keyboard?.lock?.(["Escape"]))
       .catch(() => {
         // (refused: asked again at the next click)
       });
   };
-  window.addEventListener("pointerdown", enter, true);
-  window.addEventListener("keydown", enter, true);
+  const leave = (): void => {
+    keyboard?.unlock?.();
+    if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
+  };
+  window.addEventListener(
+    "pointerdown",
+    () => {
+      if (wanted) enter();
+    },
+    true,
+  );
+  window.addEventListener(
+    "keydown",
+    (e) => {
+      if (e.key === "Enter" && e.altKey && !e.ctrlKey && !e.metaKey && !e.shiftKey) {
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        enterHeld = true;
+        if (e.repeat) return;
+        wanted = !document.fullscreenElement;
+        storeFullscreen(wanted);
+        if (wanted) enter();
+        else leave();
+        return;
+      }
+      if (wanted) enter();
+    },
+    true,
+  );
+  // (its key up stays out of the game too)
+  window.addEventListener(
+    "keyup",
+    (e) => {
+      if (e.key !== "Enter" || !enterHeld) return;
+      enterHeld = false;
+      e.preventDefault();
+      e.stopImmediatePropagation();
+    },
+    true,
+  );
 }
 
 async function boot(): Promise<void> {
@@ -471,7 +518,7 @@ async function boot(): Promise<void> {
     return;
   }
   const mgr = new WinMgr(document.getElementById("screen")!, SCREEN_W, SCREEN_H);
-  if (readFullscreen()) installFullscreen();
+  installFullscreen();
   const ctx = await createContext();
   // Saves kept in this browser (SAVES=client): ask the browser not to evict them.
   if ((await getSaveMode()) === "client") void requestPersistentStorage();
