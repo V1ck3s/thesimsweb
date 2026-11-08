@@ -19,6 +19,14 @@ ln -s "/chemin/vers/Les Sims" server/assets/Sims   # le dossier d'installation d
 pnpm start                                         # construit ce qui manque, puis sert le jeu
 ```
 
+Vérifier l'installation du jeu : `pnpm check-game` (le dossier lié dans `server/assets/Sims`), ou
+`pnpm check-game "/chemin/vers/Les Sims"`. La commande compare le dossier à la liste des fichiers
+d'une installation complète (Complete Collection, `client/public/gamefiles-reference.json` : chemins
+et tailles seulement) et dit ce qui manque, dossier par dossier (`--all` : tout lister). Code de
+sortie 1 s'il manque des fichiers du jeu ; il manque des peaux, musiques ou sons : 0 (le jeu
+tourne, avec moins) ; une taille différente (autre langue ou version, ou copie abîmée) est signalée
+sans erreur. La page d'accueil fait la même vérification (section « Fichiers du jeu »).
+
 Ouvrir <http://127.0.0.1:3000/>. Options : `pnpm start --port 4000` (ou `PORT=4000`),
 `HOST=0.0.0.0 pnpm start` pour le réseau local, `SAVES=client pnpm start` pour garder les
 sauvegardes dans le navigateur (voir § 3), `GAME_FILES=client pnpm start` pour que chaque joueur
@@ -36,8 +44,10 @@ proxy avec mot de passe et HTTPS, ou sur un réseau privé.
 `/` ouvre une page d'accueil (en anglais, hors du jeu) :
 
 - **Play** lance le jeu (`/game.html`) ;
-- sur une instance en mode `GAME_FILES=client`, la section **Game files** : import du dossier du
-  jeu dans le navigateur (§ 3 bis) ; **Play** n'est actif qu'une fois l'import terminé ;
+- la section **Game files** : la vérification de l'installation (fichiers manquants, par
+  dossier, et tailles différentes de l'installation de référence) ; sur une instance en mode
+  `GAME_FILES=client`, l'import du dossier du jeu dans le navigateur (§ 3 bis), vérifié une fois
+  importé ; **Play** n'est actif qu'une fois l'import terminé ;
 - le mode de sauvegarde de l'instance, le nombre de fichiers sauvegardés, **Export saves** et
   **Import saves…** (§ 4) ;
 - l'état du stockage du navigateur (persistant ou non, place occupée) et du mode hors ligne (§ 6) ;
@@ -206,6 +216,9 @@ Limites :
 - Le reste (fonctions du jeu manquantes, bugs connus) : [`TODO.md`](./TODO.md).
 
 ## 8. Dépannage
+
+- **Le jeu ne démarre pas, ou il manque des objets, des sons, des quartiers** : `pnpm check-game`
+  (ou la section « Fichiers du jeu » de la page d'accueil) dit quels fichiers manquent.
 
 - **Le jeu ne démarre plus après une mise à jour** : recharger la page (Ctrl+F5) ; au besoin,
   outils de développement → Application → Service workers → « Unregister », puis recharger.
