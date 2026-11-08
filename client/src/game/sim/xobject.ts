@@ -37,6 +37,7 @@ import { balloonSpriteCount, balloonSpriteID, iconSpriteID } from "../world/ball
 import { tickSpriteSlot } from "../world/slots.js";
 import { EditPerson } from "../cas/editperson.js";
 import { addToken, findToken, removeAllTokensOfType, removeToken, removeTokenByIndex, setToNextToken } from "./inventory.js";
+import { roomOutside } from "./spacepartition.js";
 
 /** Object data indexes (Behavior.iff STR# 141; index = (offset - 0x4a) / 2). */
 const OD = {
@@ -2349,8 +2350,10 @@ export class SimObject extends TreeSim {
    * Operands: function (jump table lbl_10601BE8: the object data holding
    * each object's score and the entry point it must have), data / scope of
    * a reference object (flag 8: distances are taken from it, error 0x17
-   * when missing), flags (byte 6: 1 outside, 2 inside, 4 same room; the
-   * room tests are not ported and pass). Every object not locked out
+   * when missing), flags (byte 6, the first set one counts: 1 outside, the
+   * object's room (object data 29) is 0xfffb, unknown or outside; 2 inside,
+   * not 0xfffb nor outside; 4 same room as the reference object, else me).
+   * Every object not locked out
    * (object data 25) nor flagged 0x200 with that entry point's action tree
    * scores its object data (50 for function 8 and the type test of
    * function 15), its check tree (run on me with it as the stack object)
@@ -2379,11 +2382,26 @@ export class SimObject extends TreeSim {
       from = o;
     }
     const my = this.obj.objectData;
+    const refRoom = from.obj.objectData[29]! & 0xffff;
+    const outside = new Map<number, boolean | null>();
+    const isOutside = (room: number): boolean | null => {
+      let r = outside.get(room);
+      if (r === undefined) outside.set(room, (r = roomOutside(this.module, room)));
+      return r;
+    };
     let best: SimObject | null = null;
     let bestScore = 0;
     for (const o of [...this.module.list]) {
       const d = o.obj.objectData;
       if (d[OD.keepAwake]! > 0 || d[8]! & 0x200) continue;
+      const room = d[29]! & 0xffff;
+      if (flags & 1) {
+        if (room !== 0xfffb && isOutside(room) === false) continue;
+      } else if (flags & 2) {
+        if (room === 0xfffb || isOutside(room) === true) continue;
+      } else if (flags & 4) {
+        if (room !== refRoom) continue;
+      }
       if (fn === 15) {
         if (d[OD.category] !== 4) continue;
         my[66] = 50;

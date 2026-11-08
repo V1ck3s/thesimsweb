@@ -901,11 +901,20 @@ export function buildRoomPartition(module: SimModule, room: number, withPaths = 
 
 /** Room::IsOutside: the outside flag (0x04) of the room's first tile. */
 export function roomIsOutside(module: SimModule, room: number): boolean {
+  return roomOutside(module, room) === true;
+}
+
+/**
+ * RoomManager::GetRoom then Room::IsOutside: null when no tile holds `room`
+ * (no Room), else the outside flag (0x04) of its first tile.
+ */
+export function roomOutside(module: SimModule, room: number): boolean | null {
   const fixed = module.sim.world!;
   const level = roomLevel(room);
-  const rooms = fixed.rooms[level - 1]!;
+  const rooms = fixed.rooms[level - 1];
+  if (!rooms) return null;
   for (let x = 0; x < fixed.size; x++) for (let y = 0; y < fixed.size; y++) if (rooms.u16(x, y) === room) return (fixed.flags[level - 1]!.u8(x, y) & 4) !== 0;
-  return false;
+  return null;
 }
 
 /**
