@@ -36,6 +36,7 @@ import { UIRes } from "./res/uires.js";
 import { whileFrozen } from "./screens/frozen.js";
 import { G } from "./sim/simulator.js";
 import { TSWinSplashScreen } from "./screens/splash.js";
+import { preloadGameFiles } from "./preload.js";
 import { playIntroMovie } from "./screens/intro.js";
 import { loadCursors } from "./ui/cursor.js";
 import { DefaultTTWindow } from "./ui/ttwindow.js";
@@ -509,7 +510,11 @@ async function boot(): Promise<void> {
   // "ocns": the object folder scan (ObjectFolder::ScanForNewFiles) runs under
   // the splash screen; the first run indexes every object file (cached after).
   splash.setSplashMessage("ocns");
-  await ObjectFolder.get("UserData");
+  const folder = await ObjectFolder.get("UserData");
+  // Not in the original: the files nearly every session reads, downloaded
+  // now (once; the browser keeps them) with a progress bar (game/preload.ts).
+  await preloadGameFiles(folder, (done) => splash.setProgress(done));
+  splash.setProgress(null);
   const game = new Game(ctx, mgr);
   // The "window" resolution: the game follows the window's size (Game.resizeScreen),
   // once the resizing has settled.

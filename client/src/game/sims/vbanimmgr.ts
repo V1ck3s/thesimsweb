@@ -151,43 +151,70 @@ export class VBAnimMgr {
     return m;
   }
 
+  /**
+   * Where the files whose (lower-case) name passes `keep` are: a FAR entry
+   * ("Sims/..." archive) or a loose file ("Sims/..." path). For the
+   * preloader (game/preload.ts).
+   */
+  fileSources(keep: (name: string) => boolean): Array<{ far: string; entry: string } | { path: string }> {
+    const out: Array<{ far: string; entry: string } | { path: string }> = [];
+    for (const [n, src] of this.files) if (keep(n)) out.push(src);
+    return out;
+  }
+
+  /** The file `name`; null when no site has it. Rejects when it could not be read (the network). */
   async readFile(name: string): Promise<Uint8Array | null> {
     const src = this.files.get(name.toLowerCase());
     if (!src) return null;
     if ("far" in src) return readFarEntry(src.far, src.entry);
-    return readAssetFile(src.path).catch(() => null);
+    return readAssetFile(src.path);
+  }
+
+  /**
+   * `load` kept in `cache` under `key`, except a load that failed to read
+   * its files (a slow or dropped connection): it answers null this time and
+   * is dropped, so the next request reads again instead of keeping the sim
+   * without a mesh or texture for the rest of the page's life.
+   */
+  private cached<T>(cache: Map<string, Promise<T | null>>, key: string, load: () => Promise<T | null>): Promise<T | null> {
+    let p = cache.get(key);
+    if (!p) {
+      const loading = load();
+      p = loading.catch((e: unknown) => {
+        if (cache.get(key) === p) cache.delete(key);
+        console.warn(`${key}: not read`, e);
+        return null;
+      });
+      cache.set(key, p);
+    }
+    return p;
   }
 
   /** VBAnimMgr::LoadAnimation: "x.cmx" -> binary "x.cmx.bcf" if present, else the text file. */
   private loadCmx(file: string): Promise<AnimFile | null> {
     const key = file.toLowerCase();
-    let p = this.cmxCache.get(key);
-    if (!p) {
-      p = (async () => {
-        let a: AnimFile | null = null;
-        const bin = await this.readFile(`${key}.bcf`);
-        if (bin) a = loadAnimationFromFile(bin);
-        else {
-          const txt = await this.readFile(key);
-          if (txt) a = loadAnimationFromStream(txt);
-        }
-        if (!a) return null;
-        for (const s of a.skeletons) if (!this.skeletons.has(s.name.toLowerCase())) this.skeletons.set(s.name.toLowerCase(), s);
-        for (const s of a.suits) {
-          if (this.suits.has(s.name)) continue;
-          this.suits.set(s.name, s);
-          this.suitFile.set(s, key);
-        }
-        for (const s of a.skills) {
-          if (this.skills.has(s.name.toLowerCase())) continue;
-          this.skills.set(s.name.toLowerCase(), s);
-          this.skillFile.set(s, key);
-        }
-        return a;
-      })();
-      this.cmxCache.set(key, p);
-    }
-    return p;
+    return this.cached(this.cmxCache, key, async () => {
+      let a: AnimFile | null = null;
+      const bin = await this.readFile(`${key}.bcf`);
+      if (bin) a = loadAnimationFromFile(bin);
+      else {
+        const txt = await this.readFile(key);
+        if (txt) a = loadAnimationFromStream(txt);
+      }
+      if (!a) return null;
+      for (const s of a.skeletons) if (!this.skeletons.has(s.name.toLowerCase())) this.skeletons.set(s.name.toLowerCase(), s);
+      for (const s of a.suits) {
+        if (this.suits.has(s.name)) continue;
+        this.suits.set(s.name, s);
+        this.suitFile.set(s, key);
+      }
+      for (const s of a.skills) {
+        if (this.skills.has(s.name.toLowerCase())) continue;
+        this.skills.set(s.name.toLowerCase(), s);
+        this.skillFile.set(s, key);
+      }
+      return a;
+    });
   }
 
   /**
@@ -343,7 +370,12 @@ export class VBAnimMgr {
         }
         console.warn(`Missing CFP file: ${s.animationName}`);
         return false;
-      })();
+      })().catch((e: unknown) => {
+        // Not read (the network): the next use reads again.
+        if (this.skillData.get(s) === p) this.skillData.delete(s);
+        console.warn(`${s.animationName}: not read`, e);
+        return false;
+      });
       this.skillData.set(s, p);
     }
     return p;
@@ -352,34 +384,24 @@ export class VBAnimMgr {
   /** VBAnimMgr::LoadDeformableMesh. */
   loadDeformableMesh(name: string): Promise<DeformableMesh | null> {
     const k = name.toLowerCase();
-    let p = this.meshCache.get(k);
-    if (!p) {
-      p = (async () => {
-        const bmf = await this.readFile(`${k}.bmf`);
-        if (bmf) return DeformableMesh.read(bmf);
-        const skn = await this.readFile(`${k}.skn`);
-        return skn ? DeformableMesh.scan(skn) : null;
-      })();
-      this.meshCache.set(k, p);
-    }
-    return p;
+    return this.cached(this.meshCache, k, async () => {
+      const bmf = await this.readFile(`${k}.bmf`);
+      if (bmf) return DeformableMesh.read(bmf);
+      const skn = await this.readFile(`${k}.skn`);
+      return skn ? DeformableMesh.scan(skn) : null;
+    });
   }
 
   /** Texture bitmap by name (".bmp"). */
   loadTexture(name: string): Promise<RgbaImage | null> {
     const k = name.toLowerCase();
-    let p = this.textureCache.get(k);
-    if (!p) {
-      p = (async () => {
-        const b = await this.readFile(`${k}.bmp`);
-        if (!b) {
-          console.warn(`missing texture ${name}`);
-          return null;
-        }
-        return decodeBmp(b);
-      })();
-      this.textureCache.set(k, p);
-    }
-    return p;
+    return this.cached(this.textureCache, k, async () => {
+      const b = await this.readFile(`${k}.bmp`);
+      if (!b) {
+        console.warn(`missing texture ${name}`);
+        return null;
+      }
+      return decodeBmp(b);
+    });
   }
 }

@@ -97,7 +97,7 @@ export function fetchManifest(): Promise<Manifest> {
         if (!files) throw new Error("the game files are not imported in this browser");
         m = { version: 1, assetsRoot: ASSETS_BASE, files: files.map((f) => ({ path: f.path, size: f.size, kind: kindOf(f.path) })) };
       } else {
-        const res = await fetch("/api/manifest", { cache: "no-store" });
+        const res = await fetchRetry("/api/manifest", { cache: "no-store" });
         if (!res.ok) throw new Error(`manifest ${res.status}`);
         m = (await res.json()) as Manifest;
       }
@@ -187,7 +187,7 @@ function saveFile(path: string): Promise<SaveFile | null> {
       const original = await localGameRead(path);
       return original ? { bytes: original } : null;
     }
-    const res = await fetch(assetUrl(path), { cache: "no-store" });
+    const res = await fetchRetry(assetUrl(path), { cache: "no-store" });
     if (res.status === 404) return null;
     if (!res.ok) throw new Error(`${path}: ${res.status}`);
     return { bytes: new Uint8Array(await res.arrayBuffer()) };
@@ -253,7 +253,7 @@ export async function assetFetch(path: string, init?: RequestInit): Promise<Resp
     // The read failed (not kept): this request gets the server's answer itself.
   }
   if (await isGameFilesLocal()) return localFetch(path, init);
-  return fetch(assetUrl(path), init);
+  return fetchRetry(assetUrl(path), init);
 }
 
 /** assetFetch answered from the imported game files (GET and HEAD, with or without a Range header). */
@@ -269,6 +269,33 @@ async function localFetch(path: string, init?: RequestInit): Promise<Response> {
   const end = range[2] ? Math.min(Number(range[2]) + 1, size) : size;
   if (start >= size) return new Response(null, { status: 416 });
   return new Response(head ? null : await localGameRange(path, start, end), { status: 206, headers: { "content-length": String(end - start) } });
+}
+
+/** Waits before each new attempt of a failed request (ms): about 30 s in all. */
+const RETRY_DELAYS_MS = [500, 1500, 3000, 6000, 8000, 10000];
+
+/** A status worth asking again: the server or a proxy on the way was busy or cut off. */
+function transientStatus(status: number): boolean {
+  return status === 408 || status === 429 || status === 502 || status === 503 || status === 504;
+}
+
+/**
+ * `fetch`, asked again when the request did not get through (a network error:
+ * a slow or dropped mobile connection) or got a transient status (408, 429,
+ * 502..504), up to RETRY_DELAYS_MS. Any other answer (a 404, a 416) is
+ * returned as is; the last error or answer once the attempts are spent.
+ */
+export async function fetchRetry(url: string, init?: RequestInit): Promise<Response> {
+  for (let attempt = 0; ; attempt++) {
+    const delay = RETRY_DELAYS_MS[attempt];
+    try {
+      const res = await fetch(url, init);
+      if (!transientStatus(res.status) || delay === undefined) return res;
+    } catch (e) {
+      if (delay === undefined || init?.signal?.aborted) throw e;
+    }
+    await new Promise((r) => setTimeout(r, delay));
+  }
 }
 
 function assetUrl(path: string): string {
@@ -339,7 +366,7 @@ export function readAssetFile(path: string): Promise<Uint8Array> {
       }).catch(() => null);
       if (data?.length === size) return data;
     }
-    const res = await fetch(assetUrl(path));
+    const res = await fetchRetry(assetUrl(path));
     if (!res.ok) throw new Error(`${path}: ${res.status}`);
     const data = new Uint8Array(await res.arrayBuffer());
     if (data.length <= PERSIST_MAX_BYTES) void idbPutIffFile(path, data.slice());
@@ -361,7 +388,7 @@ async function fetchRange(path: string, start: number, endInclusive: number): Pr
   const url = `${ASSETS_BASE}${path}`;
   // Not through the HTTP cache: the bytes are kept in IndexedDB, and Chrome
   // serializes cached requests to one URL (a FAR archive), which stalled cold loads.
-  const res = await fetch(url, {
+  const res = await fetchRetry(url, {
     headers: { Range: `bytes=${start}-${endInclusive}` },
     cache: "no-store",
   });
@@ -481,7 +508,7 @@ export async function readFarManifest(farPath: string): Promise<FarEntryInfo[]> 
       else {
         if (known !== null) totalSize = known;
         else {
-          const headRes = await fetch(`${ASSETS_BASE}${farPath}`, { method: "HEAD" });
+          const headRes = await fetchRetry(`${ASSETS_BASE}${farPath}`, { method: "HEAD" });
           if (!headRes.ok) throw new Error(`HEAD ${farPath}: ${headRes.status}`);
           totalSize = Number(headRes.headers.get("content-length") ?? "0");
         }
@@ -722,7 +749,7 @@ export class RangeBatcher {
   private async send(batch: PendingRange[]): Promise<void> {
     if (RangeBatcher.endpoint !== false) {
       try {
-        const res = await fetch("/api/ranges", {
+        const res = await fetchRetry("/api/ranges", {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify({ ranges: batch.map((r) => [r.path, r.start, r.end]) }),
@@ -766,7 +793,7 @@ export class RangeBatcher {
         if (RangeBatcher.singleSlots > 0) RangeBatcher.singleSlots--;
         else await new Promise<void>((go) => RangeBatcher.singleWaiters.push(go));
         try {
-          const res = await fetch(`${ASSETS_BASE}${r.path}`, { headers: { Range: `bytes=${r.start}-${r.end - 1}` }, cache: "no-store" });
+          const res = await fetchRetry(`${ASSETS_BASE}${r.path}`, { headers: { Range: `bytes=${r.start}-${r.end - 1}` }, cache: "no-store" });
           if (res.status !== 206 && res.status !== 200) throw new Error(`${r.path} ${r.start}-${r.end}: ${res.status}`);
           const b = new Uint8Array(await res.arrayBuffer());
           // A server ignoring Range answers 200 with the whole file.

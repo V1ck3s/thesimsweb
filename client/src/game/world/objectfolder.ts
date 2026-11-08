@@ -617,6 +617,24 @@ export class ObjectFolder implements SelectorFolder {
     return keys.at(-1) ?? 0;
   }
 
+  /**
+   * The files every lot load opens, whatever the lot: those of the sim
+   * objects (simObjectGUIDs, ObjectModule::UpdateSimObjects), of the
+   * placeholders and of the key token. Keys as in the index: "<far>|<entry>"
+   * or a loose path, relative to the game folder. For the preloader
+   * (game/preload.ts).
+   */
+  everyLotFiles(): string[] {
+    const guids = [...this.simObjectGUIDs(), GUID_STANDARD_PLACEHOLDER, GUID_PERSON_PLACEHOLDER, GUID_DOG_PLACEHOLDER, GUID_CAT_PLACEHOLDER, this.keyGUID()];
+    const out = new Set<string>();
+    for (const g of guids) {
+      const entry = this.byGuid.get(g >>> 0);
+      const file = entry ? (this.index.files[entry[0]] ?? this.addedFiles[entry[0] - this.index.files.length]) : undefined;
+      if (file) out.add(file[0]);
+    }
+    return [...out];
+  }
+
   /** Synchronous lookup of an already opened selector. */
   selectorByGUID(guid: number): ObjSelector | null {
     return this.selectors.get(guid >>> 0) ?? null;

@@ -341,6 +341,21 @@ export async function idbPutPortraits(key: string, bitmaps: Array<[number, Uint8
   await queuePut(STORE_PORTRAITS, key, bitmaps);
 }
 
+/**
+ * The keys of the FAR entries ("farPath|entry", entry lower-cased) and of the
+ * whole files (game paths) kept in the cache, without their bytes: what the
+ * preloader (engine/preload.ts) does not need to download. Empty sets when
+ * IndexedDB is unavailable.
+ */
+export async function idbCachedKeys(): Promise<{ entries: Set<string>; files: Set<string> }> {
+  const [entries, files] = await Promise.all([
+    withStore<IDBValidKey[]>(STORE_FAR_ENTRY, "readonly", (s) => s.getAllKeys()),
+    withStore<IDBValidKey[]>(STORE_IFF_FILE, "readonly", (s) => s.getAllKeys()),
+  ]);
+  const strings = (keys: IDBValidKey[] | null): Set<string> => new Set((keys ?? []).filter((k): k is string => typeof k === "string"));
+  return { entries: strings(entries), files: strings(files) };
+}
+
 export async function idbStats(): Promise<{ manifests: number; entries: number; iffs: number }> {
   const counts = await Promise.all([
     withStore<number>(STORE_FAR_MANIFEST, "readonly", (s) => s.count()),
