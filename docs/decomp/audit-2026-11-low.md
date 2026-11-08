@@ -6,188 +6,80 @@ vérificateur n'a relus. Ils sont listés ici tels que l'audit les a écrits : c
 contre le décompilé avant d'être corrigé (certains peuvent être faux). Les numéros sont ceux de la
 liste de l'audit. Un constat corrigé est retiré d'ici et noté dans le journal.
 
+Première partie (#0 à #52) vérifiée le 2026-11-08 : les écarts réels sont corrigés et retirés, avec
+#57 (doublon de #30). Ceux qui restent de cette partie portent une ligne « vérifié » : écart voulu,
+incertain, ou réel mais laissé de côté (raison donnée).
+
 ## vm-core
 
-- **#0** TickAllObjects does not handle an error in the same tick the object's Simulate raised it
-  - Original : cSimulator::TickAllObjects 0x10130570: after the object's Simulate (vtable +0x1c) returns true, it calls `TreeSim::GetError(obj)`. If the code is non-zero it calls `cXObject::HandleError(obj)` and `return false`. The cursor stays on that object and the tick …
-  - Port : client/src/game/sim/simulator.ts:704-728 (tickAllObjects) only tests `o.getError()` before simulating, under the sim flag 4 test. After `if (!o.simulate()) return false;` there is no error check. The …
-- **#1** TTAB versions below 6 are not loaded (TreeTableEntry::DoOldStream is missing)
-  - Original : TreeTableEntry::DoStream 0x1014c310 sends version < 6 to DoOldStream 0x1014be00 (versions 0 to 5, each with its own layout: motive deltas computed as value - min, float attenuation, joining index from v5). TreeTable::DoStream 0x1014c7b0 also sets the string …
-  - Port : client/src/game/sim/treetable.ts:68 (`if (t.version < 6) return null;`, comment 'DoOldStream is not ported').
 - **#2** BCON user overrides are never applied (Behavior::GetConstants with the override flag)
   - Original : Behavior::GetConstants 0x10036f90: when the BCON flag bit 0x8000 is set and the caller passes true, it uses ObjResFile::GetOverride(id) in place of the file's constants. cTreeConstants::Load 0x10146610 does the same.
   - Port : client/src/game/sim/behavior.ts:getConstants, whose comment says the user override is not ported.
+  - vérifié 2026-11-08 : écart voulu. L'override vient d'un tableur de réglage lu par ObjectFolder, absent des données du jeu (toujours vide).
 
 ## xobject-expr
 
-- **#3** Flag test/set/clear with flag number 0 uses 1<<31 instead of PowerPC slw semantics (result 0)
-  - Original : TryExpression ops 8/9/10 (0x100e6d0c, 0x100e6c2c, 0x100e6c9c): after the unsigned check `(uint)(short)rhs <= 0x10` (error 0xd), the mask is `slw(1, rhs-1)`. With rhs==0 the shift count is -1, so the low 6 bits are 63, and PPC slw by 32 or more gives 0. The …
-  - Port : client/src/game/sim/xobject.ts:~720-745 (cases 8, 9, 10): `1 << ((rhs - 1) & 31)` gives 0x80000000 for rhs==0. Set and clear are harmless because the Int16Array store drops bit 31. The test (op 8) …
 - **#4** Writing person data 0x44 / 0x4a / 0x54 does not dirty head thumbnails (ObjSelector::SetHeadTextureDirty + CPState 0x20000000)
   - Original : InterpValue scopes 18/19/30/31 when the address is requested (0x100e4f14, 0x100e55a8, 0x100e50e4, 0x100e52dc): for person data 68, 74 and 84 (jump table 0x10601744 → sub_100e4fe8) it calls ObjSelector::SetHeadTextureDirty(this->selector, 1) (0x100f9ad0 → …
   - Port : client/src/game/sim/xobject.ts personData() (~line 648): only data 0x4d and 0x51 trigger follow-ups. 68, 74 and 84 are written with no thumbnail or CPState refresh. Nothing like 'dirty thumbnails' or …
+  - vérifié 2026-11-08 : incertain. Le port n'a pas de cache de vignettes indexé sur ces champs ; effet visible probablement nul.
 - **#5** Scope 38 (neighbor's OBJD) does not raise error 0x37 when the neighbor has no selector, and returns 0 when its object file is not loaded
   - Original : InterpValue scope 38 (0x100e64a4): FindNeighborByID(stackObj) → error 0x37 if missing; data range [0,0x6c) → error 0x23; then `if (neighbor+8 == NULL) error 0x37`; it reads halfword[data] from the selector's OBJD (+0x60).
   - Port : client/src/game/sim/xobject.ts:~625 (case 38): `m.worldHooks?.selector(nb.guid)` returns 0 when the selector is undefined. The comment notes that async loading makes this 0 meanwhile.
+  - vérifié 2026-11-08 : écart voulu. Les erreurs 0x37 / 0x23 sont levées ; seul le 0 pendant le chargement asynchrone du fichier objet diffère (commenté dans le code).
 - **#6** Behavior::GetConstants override (flag 0x8000 BCON → ObjResFile::GetOverride) not applied for scope 26
   - Original : InterpValue scope 26 (0x100e4a94) calls Behavior::GetConstants(id, true) (0x10036f90). If the BCON's first short has bit 0x8000 set and an ObjResFile BCONOverride exists (filled by ObjectFolder from a tuning spreadsheet, SetOverride 0x100f6810), the override …
   - Port : client/src/game/sim/behavior.ts:311-317 getConstants(): 'The user override of flagged BCONs is not ported', always the file's constants. xobject.ts:557 case 26 reads them.
+  - vérifié 2026-11-08 : écart voulu, même cause que #2.
 
 ## xobject-prims-a
 
-- **#7** Generic sim call 42 (SetSelected) and 37 (person check) are missing
-  - Original : Entry 42 (0x100eb1f4): if temps[0] != 0, the object with that id (if it is a person) -> PersonFinder::SetSelected(GetHandle(person)). Entry 37 (0x100eaf68): the stack object must be a person (error 0x1c), nothing else.
-  - Port : client/src/game/sim/xobject.ts:1404 default branch (true, no selection, no 0x1c error).
-- **#8** TryCallFunctionalTree drops flag bit 0 (GosubObjectTree's action flag) and StackJustPopped lacks the matching restore
-  - Original : cXObject::TryCallFunctionalTree 100eb300: vtable +0x3c GosubObjectTree(this, obj, 0, treeId, flags & 1). For a person (cXPerson::GosubObjectTree 101002f0) a set flag stores it in the ObjectRecord and sets +0xa14 = the object (the interaction's icon person). …
-  - Port : client/src/game/sim/xobject.ts:1194-1210 passes no flag (`void flags`). person.ts:441 has the `action` parameter but nothing ever passes true. person.ts:455 stackJustPopped has no +0xa14 restore loop.
-- **#9** Find Best Object For Function 8 on a non-person continues instead of returning false
-  - Original : cXObject::TryFindFunctionalObject case 8 (lbl_100EB5E8, 0x100eb5e8): dyn-cast this to cXPerson. If it is null, or person data 0x41 > 1, return false (jump to 0x100eb630).
-  - Port : client/src/game/sim/xobject.ts:2369 `if (fn === 8 && this.person) {...}`: a non-person falls through and searches.
-- **#10** TrySnap sets object data 52 = 2 whenever bounds are skipped, not only on error 1
-  - Original : cXObject::TrySnap(StackElem...) 100e3990 tail: object data 52 (+0xb2) = 2 only when the placement error global (lbl_105BA1A8) equals 1 (out of bounds) and the move-out-of-way answer did not set 1.
-  - Port : client/src/game/sim/xobject.ts:2739 `else if (!checkBounds || e.code === 1 || out-of-range)`: with slot flag 0x800 any canPlace failure writes 2.
-- **#11** Generic sim call 2 tests the priority instead of the interaction's unique id
-  - Original : TryGenericSimCall entry 2 (0x100e9528): `if (*(person+0xa3c) != 0) *(person+0xa14) = stackObj`. +0xa3c is Interaction[13], the unique id set by SetCurrentAction / SetUniqueID, not the priority.
-  - Port : client/src/game/sim/xobject.ts:1234-1245 `me.currentAction.priority !== 0`.
 - **#12** Neighborhood::Save after call 19 / 20 is not done
   - Original : TryGenericSimCall entries 19 / 20 (0x100ea1dc / 0x100ea320): after RemoveTokenByIndex(idx, 1) the neighborhood file is saved (Neighborhood::Save).
   - Port : client/src/game/sim/lotcalls.ts:93-95 and the file header: the token removal is kept in memory only.
+  - vérifié 2026-11-08 : écart voulu, documenté en tête de sim/lotcalls.ts (les inventaires restent en mémoire).
 
 ## xobject-prims-b
 
-- **#13** Change Action String never renames the current interaction outside a pie menu
-  - Original : cXObject::TryMakeActionString 100ef5e0. When ObjTestSim::IsMenuInProgress is false and global lbl_105BA314 is non-zero (cleared only inside RunOneTickTree) and `this` is a person: Interaction::SetName(person+0xa08, parsed string), renaming the current action.
-  - Port : client/src/game/sim/xobject.ts:1947-1953: with no menu it only calls m.record(this, "actionString", strId) and returns true. Docblock: 'not ported: recorded only'.
-- **#14** Find Location For modes 5 and default do not call ForceLocation after placing
-  - Original : cXObject::TryFindGoodLocation 100f1050. In the mode 5 and default branches, after the vtable +0x60 Place it calls vtable +0x7c (cXObject/cXPerson::ForceLocation: snaps animator grid and targets to the new position and direction). Modes 3 and 4 do not.
-  - Port : client/src/game/sim/xobject.ts:2429-2473 (tryFindGoodLocation): placeAt() only does canPlace / place / dirty. No animator.forceLocation or moved(). TryBurn (line 2586) and trySnap (moved()) do it.
 - **#16** Person created by Create New Object Instance never gets a neighbor (LoadInterestData / AddNewNeighbor)
   - Original : cXObject::TryCreateObject 100eca90 tail 100ed0e4: for a person object calls Neighborhood::LoadInterestData 100abbf0: finds the neighbor with the same selector; if none, AddNewNeighbor and store the id in person +0x5ca (person data 0x1f); else copies the …
   - Port : client/src/game/sim/xobject.ts:2218-2335 does not. SimModule.initPerson (sim/simmodule.ts:649-657) only loads a neighbor that already matches the GUID; otherwise person data 0x1f stays 0. …
-- **#17** Set To Next edge cases: unknown GUID, current object not on the tile, single-part multi-tile object
-  - Original : cXObject::TrySetToNext 100eb9b0 jump-table targets. Kind 4 (ec1f4): GetSelectorByGUID null returns false and leaves the variable unchanged. Kind 8 (ebcc0): the variable's object not found on its tile returns false, else next with wrap. Kind 3 (ebb4c): next …
-  - Port : client/src/game/sim/xobject.ts:2864-2870 (kind 4) writes 0 into the variable for a GUID without instances. Lines 2959-2968 (kind 8) return here[0] when the current object is not in the tile list. …
-- **#18** Create New Object Instance with an invalid placement mode places at me instead of failing
-  - Original : cXObject::TryCreateObject 100eca90: mode >= 15 or negative skips the jump table, leaves the target tile at (0, 0), and the bounds check (tile < 1) returns false.
-  - Port : client/src/game/sim/xobject.ts:2285-2289 `default: at(me)` creates at my position.
+  - vérifié 2026-11-08 : réel. Demande la persistance d'AddNewNeighbor, à faire avec le reste de la gestion des voisins.
 
 ## xobject-dialog-text
 
-- **#20** Missing-string default and '!' description prefix of AssignString are not reproduced
-  - Original : AssignString (100c4c90): the destination starts as "*" when the entry's description begins with '!' (param_5 = 1), else "". An empty or missing entry with default pointer 0 appends "Missing string!!!". ObjectDialog::SetParams passes default 0 for the message …
-  - Port : client/src/game/sim/objectdialog.ts:107-111: assign(index, fallback) returns "" for the message and ignores descriptions.
-- **#21** Add Action String outside a pie menu does not rename the current interaction
-  - Original : cXObject::TryMakeActionString (100ef5e0): when ObjTestSim::IsMenuInProgress is false and the flag lbl_105BA314 is set (TreeSim, true during normal object execution, cleared inside check trees), it calls Interaction::SetName(person data +0xa08, parsed string).
-  - Port : client/src/game/sim/xobject.ts:1947-1953: `if (!menu) { m.record(...); return PRIM_TRUE }` (documented in docs/decomp/sim-port.md:761 as not ported).
 - **#22** Dialog operand flag bit 0 (result ignored) with kinds 5/7/8/0xb/0xd makes a generic dialog, not the town window
   - Original : ObjectModule::EnqueueObjectDialog(cXObject*, StackElem*, DialogParam*) (100da970) dispatches on kind: 5 cWinDowntown, 8 cWinNeighborhoodUL/VC, 7 cWinVacation, 0xb cWinStudiotown, 0xd cWinMagicland, otherwise ObjectDialog. TryDialog calls it for these kinds …
   - Port : client/src/game/sim/xobject.ts:1704-1707: `if (op[7] & 1) { m.enqueueObjectDialog(this, elem, op); return PRIM_TRUE }` before looking at the kind. simmodule.ts:529 always builds an ObjectDialog.
-- **#23** UI strings of object files are always decoded as cp1252
-  - Original : StringSetBase / CTGString use the game language's code page (the Mac and Windows builds localise the text).
-  - Port : client/src/game/sim/behavior.ts:182-243 (loadUIStringSet / parseStringSet use decodeCp1252) and world/objselector.ts:214-231 (getCatalogName / getCatalogDescription via cp1252). res/strings.ts …
-
-## xobject-place
-
-- **#24** TestAndPlace: HasWater is tested at level 1 whatever the placement level
-  - Original : TestAndPlace 0x100BF440 calls cFixedWorld::HasWater(tile with level = the placement level). cFixedWorld::HasWater 0x10159D40 returns 0 unless the level is 1. The floating-object scan (flag 0x1000) uses the same tile and level.
-  - Port : world/tools/placement.ts:~468: `this.world.hasWater(x, y, 1)` and `this.tileObjects(x, y, 1)`, with the level hard-coded to 1.
-- **#25** routing.ts obstacleAtLocation walks the whole tile hierarchy, not only the slot-0 chain
-  - Original : cXObject::GetObstacleAtLocation 0x100C0A00 starts at the tile's head object and follows only slot 0 (the next object on the tile, +0x138 slot0 +0x10) until it finds an object whose person-allow value is 0. It never descends into container slots.
-  - Port : sim/routing.ts:~352 `obstacleAtLocation` iterates `tileObjects`, which is a depth-first walk of all slots including contained objects. The placement-side copy (world/tools/placement.ts:211) is …
-- **#26** Turn recomputes the footprint rect, but never calls UpdateChairFacing / UpdateWallAdjacency
-  - Original : cXObject::Turn 0x100BD270: direction += notches*n & 7, then SetRenderLayer, then UpdateChairFacing twice if the object has a sit tree, then UpdateWallAdjacency. It does NOT call ComputeRect, so +0x100..+0x10c stays stale until the next SetLocation.
-  - Port : world/tools/placement.ts:~378-385 turn(): sets the direction and `obj.rect = this.computeRect(obj, obj)`. It has no chair or adjacency update (see the findings above).
-- **#27** HierSetSite with placing=0 and a container returns early
-  - Original : cXObject::HierSetSite 0x100C02A0: with placing == 0 it first calls HierSever, then CONTINUES. If site.container != 0 it writes the object into the container's slot, sets the slot hier number and the parent id, and sets the level. TestAndPlace's removal branch …
-  - Port : world/tools/placement.ts:314 hierSetSite: `if (!site.placing) { this.hierSever(obj); return; }`.
+  - vérifié 2026-11-08 : réel, mais aucun objet du jeu (tous les FAR et IFF) n'emploie le bit 0 avec ces genres : laissé tel quel.
 
 ## xobject-lifecycle
 
-- **#28** Reset does not rebuild the slot hierarchy number (+0x66) as HierSetSite does
-  - Original : cXObject::Reset 100c1790 -> HierSetSite 100c02a0: after the data block is zeroed, +0x66 (object data 14, slot index in the parent) is set to the parent's slot index when the object has a parent. It is set to 0xffff when the object is in the world with no …
-  - Port : sim/xobject.ts:324-361 resetData(): fills objectData with 0 and keeps containerId, slotNumber and parentId but not OD.slotHierNumber (14).
-- **#29** cXObject::Cleanup does not clear the tutorial object
-  - Original : cXObject::Cleanup 100c1240 ends with `if (ObjectModule::GetTutorialObject() == this) SetTutorialObject(0)` for both branches.
-  - Port : sim/xobject.ts:244-259 cleanup() has no such step. Only killObject (simmodule.ts:1092) clears it.
-- **#30** cXPortal::GetOtherSide ignores the OBJD +0x8a == 1 case
-  - Original : cXPortal::GetOtherSide 10113c00: when OBJD+0x8a == 1, the other side is the part (starting from the lead) whose OBJD +0x10 equals this part's. Otherwise it is the next sibling (+0x18c), or the lead.
-  - Port : sim/portals.ts:~70 getOtherSide: always the next portal-tree part of the chain in list order. The comment says the +0x8a==1 matching 'is reduced to the chain order'.
-- **#31** Portal route marks are not connected to the saved portal values
-  - Original : cXPortal::ReconStream 10113a70 saves and loads the live float vector (+0x1ac) of per-route marks.
-  - Port : sim/portals.ts keeps marks in a private WeakMap `dists`. world/objects.ts:372-390 and housesave.ts:~540 read and write XObject.portalValues. Nothing copies one to the other.
-- **#32** DoIconic rounds the sprite Z offset by truncation instead of +0.5
-  - Original : cXObject::DoIconic 100c57b0: for an item with z != 0, y -= (int)(z * (float)(1 << (scale+1)) + 0.5f) (lbl_105BB9EC[0] = 0.5, read from mac.bin).
-  - Port : cpanel/buy/objecticon.ts:~182 layout(): y -= Math.trunc(it.z * (1 << (scale + 1))).
 - **#33** UpdateComeSeeMeObjects and GetAgeInMinutes have no port
   - Original : UpdateComeSeeMeObjects 100577c0 runs when CPState enters Live mode (CPState.c:1761). For type-4 in-world lead objects in certain zone ids it uses cXObject::GetAgeInMinutes 100bb1d0 == 0 and GetComeSeeMe to create a 'comeandsee' out-of-world object and set the …
   - Port : cpstate.ts:16 mentions the hook but registers nothing. No getAgeInMinutes exists. ui/cheat.ts only removes the 'comeandsee' objects.
+  - vérifié 2026-11-08 : réel. Fonction entière à porter (objets « come and see me » à l'entrée en mode Vivre).
 
 ## xperson-actions
 
 - **#34** Current action and queue are not restored on load, and the saved tail is stale
   - Original : cXPerson::ReconStream with Interaction::DoStream (Mac 0x10093670): current (+0xa08), last (+0xa44) and the queue (+0x820, up to 8 interactions) are written from live state and rebuilt on load.
   - Port : client/src/game/world/housesave.ts:607-613 writePerson writes `t?.current / last / queue` (the tail read when the lot was loaded), not the live PersonSim. client/src/game/sim/person.ts:243-245 …
-- **#35** Find Best Action's gosub failure returns false instead of the error result
-  - Original : cXPerson::TryGosubFoundAction (Mac 0x10106f30): when GosubObjectTree fails it returns 0xffffffff (-1). TreeSim step turns -1 into 'return 2' (no transition). A missing object or tree table gives 0 (false).
-  - Port : client/src/game/sim/person.ts:2156 `if (!this.gosubObjectTree(...)) return PRIM_FALSE;`. PRIM_ERROR = -1 exists in sim/treesim.ts:51 and is handled there.
-- **#36** Type 7 objects are not excluded from autonomy for non-pet sims
-  - Original : ObjTestSim::AppendInteractionsForAuto (Mac 0x100fca70) first condition: `objd.type (+0x12) != 7 || (pd 0x41 & 2) || (pd 0x41 & 4)`. Sim-object controllers (OBJD type 7) never offer autonomous interactions to humans.
-  - Port : client/src/game/sim/person.ts:2078-2095: no objectType === 7 test in the object loop. distanceTo (person.ts:2128) also lacks CalcShortDistance's type-7 rule (distance 0).
-- **#37** Visiting pet restriction on residential lots missing
-  - Original : AppendInteractionsForAuto (Mac 0x100fca70), final test: the entry is skipped when zoning==1 && person is a visitor (pd32 != 0) && pet (dog or cat bit) && pd34 == 0 && the object's room (od 29) != 0.
-  - Port : client/src/game/sim/person.ts:2056-2121 has no such test.
-- **#38** Hidden objects are skipped by autonomy, which the original does not do
-  - Original : TryFindBestAction loop (Mac 0x101009d0): filters are objd+0xe, sim flag 0x80000, build type, self (non-pet), od25 < 1, the vacation bathroom rule and the tick filter. There is no test of the hidden flag (od 34).
-  - Port : client/src/game/sim/person.ts:2086 `|| o.obj.hidden !== 0` also skips hidden objects and sims.
+  - vérifié 2026-11-08 : écart voulu, documenté dans docs/decomp/save-port.md (la file d'actions relue n'est pas rechargée).
 
 ## xperson-motives
 
-- **#39** No cXPerson::Initialize / Reset interest randomisation in the sim
-  - Original : cXPerson::Initialize (10108e40) calls RandomizeAllInterests (101087c0) when person data 46..53 are all < 11. cXPerson::Reset (10108a80) does the same after LoadPersistentData if they are still all < 11. Persons with no saved interests get random ones.
-  - Port : The port has no Initialize override and nothing in Reset calls randomizeAllInterests. data/character.ts:264 randomizeAllInterests is used only by cas/personfinder.ts:158, when a character is created …
 - **#40** GViewer::SetHeadFee (floating fee / magic-coin / ticket text over the head) is not ported
   - Original : cXPerson::Simulate (10103160): if person data 1 (+0x58e) != 0, it calls GViewer::SetHeadFee (101b5e30) and clears it. SetHeadFee draws DrawHeadMagicTokens, DrawHeadTickets (and plays a sound) or DrawHeadText, depending on ranges of the value.
   - Port : sim/person.ts:323-324 comment: head text and head fee not ported. pd[1] is never consumed or cleared in simulate().
-- **#41** cXPerson::Simulate VitaBoy scale from person data 85 not applied
-  - Original : cXPerson::Simulate (10103160): every 10 ticks, while the object is visible (+0x8e == 0), it computes scale = pd[85] (+0x636) / 100. If the scale is in the open range between the two doubles lbl_105BBB74+0x28 and +0x30, it calls VitaBoy::SetScale on the …
-  - Port : No consumer of pd[85] in sim/person.ts or sims/. simulate() skips this block.
-- **#42** Curve sets reloaded before the Init tree, and not at all on the 0x7ae path of Reset
-  - Original : cXPerson::Reset (10108a80): the MotiveEffects curve set is reloaded (0x1f7 / 0x1f5 by age, or OBJD+0x66) at the very end, after cXObject::Reset (Init tree) and in both the 0x7ae and normal branches.
-  - Port : sim/person.ts:430-433: initPerson runs before super.reset and again after it only when pd[25] !== 0x7ae.
-- **#43** Person placeholder objects are not queued for death in PostLoad
-  - Original : cXPerson::PostLoad (10108520): if the object's selector (+0x11c) is the person, dog or cat placeholder (ObjectFolder::Get*Placeholder), it calls ObjectModule::CleanupPeople, Cleanup(0) and ObjectModule::AddToKillQueue(id, 1).
-  - Port : sim/simulator.ts:344 handles o.obj.isPlaceholder with cleanupPeople plus cleanup only (cXObject::PostLoad part). No kill-queue entry for person placeholders.
-- **#44** Saved person dressing, accessories, practices and animator state are written back from the loaded record, not the live Sim
-  - Original : cXPerson::ReconStream (10102dd0) calls SAnimator::ReconStream (vtable +0x8c). It writes the current dressing, accessories (job hat and so on), practices and animation state.
-  - Port : world/housesave.ts:581-598 writePerson writes r?.dressing, r?.accessories, r?.practices and r?.animState from the stale personRecord. PersonSim's constructor does not read accessories back.
+  - vérifié 2026-11-08 : en partie corrigé. Person data 1 est remis à 0 après chaque tick (comme l'original) ; le texte flottant au-dessus de la tête n'est pas dessiné.
 
 ## xperson-route
 
-- **#45** State 7 failure does not turn result 0 into 1
-  - Original : State 7 / 8 handler (asm 10105d04-10105d38): for state 7, return false, and if route result (+0x88) == 0 then result = 1; person data 62 (+0x608) = result. State 7 is reached directly with result 0 from state 1 (target not routable, object data 8 & 8 clear), …
-  - Port : person.ts finishRoute (~1516-1544): pd[PDX.routeResult] = route.result with no 0 -> 1 fix. Only state 16 does it (person.ts:1456).
-- **#46** TryReach returns true when the reach info is missing in state 0 (transfer 0)
-  - Original : TryReach (10103640) state 0: when TryGetReachInfo fails the return value is 0 (false) unconditionally. The (param_3[1] == 0) ? true : false rule applies only to a failed StartReachAnimation and to failures in state 1.
-  - Port : person.ts:896-898: `if (!info) return transfer === 0 ? PRIM_TRUE : PRIM_FALSE`.
-- **#47** InitRoute does not reset the goals for results 1 and 3, and skips the room check
-  - Original : InitRoute (10103f40): everything that is not result 2 (0, 1 and 3) ends with XRoute::ResetGoals. FindPath is only tried when RoomManager::GetRoom(person's room, object data 29) is non-null.
-  - Port : person.ts initRoute (~1612-1614): `if (r === 0) route.resetGoals()` only. There is no room-exists check before route.findPath().
-- **#48** A new route's failure-tree flag is cleared against the top route, not the first route
-  - Original : TryGotoRoutingSlot(StackElem, RoutingSlot) (10105870): the check uses XRoute::GetRoutingSlot(*(param_1+0xaa8)), the FIRST (outermost) route of the stack. If its slot lacks flag 0x4000, the new route's 0x4000 is cleared.
-  - Port : person.ts:1238-1239 uses this.route, the top (last) route.
-- **#49** end_route sound is played only when a walk arrives, not when it is blocked or interrupted
-  - Original : States 9, 10 and 11 (asm 101064d8 / 10106450 / 101064a4) all call cSoundPlayer::PlayBySource with string +0x14d once EndFollow succeeds. State 10 then goes to state 6, state 11 to state 7. Only state 15 (and 20) stay silent.
-  - Port : person.ts:~1394: `if (state === 9) m.record(this, 'sound', 'end_route')`.
-- **#50** MoveOutOfWay(route, path) with a zero delta still creates the helper; the original returns false
-  - Original : MoveOutOfWay (10104710): when the exit point equals the entry point (both deltas 0) the code skips the slot build and returns 0. The helper object has already been made and placed, so the original leaks it, and no interaction is pushed.
-  - Port : person.ts:1752-1754: d = 0 when dx = dy = 0 and the code goes on, building the slot and pushing the interaction.
-- **#51** State 8 (arrival): CanPlace / Place / ForceLocation conditions differ
-  - Original : States 7 / 8 (asm 10105af4-10105cc8): CanPlace at the current position is always called. On failure, result = 1 and state 7, only if person data 0 (sitting) == 0. On success the person is re-Placed with vtable 0x90 (cXPerson::Place, which runs …
-  - Port : person.ts:1519-1540: CanPlace only when sitting === 0 and parentId === 0. No Place call. Direction is skipped when the last two points are equal. Direction and animator.forceLocation run even if a …
 - **#52** TryChangeLots does not set the current family to family 0 when going home
   - Original : TryChangeLots (10107120), house == -1 branch: `**(app+0x10) = Neighborhood::GetFamily(nbhd, 0)` before the family lookup. This sets the app's current family to family 0, the downtown family.
   - Port : transit.ts tryChangeLots (~285-296) only reads store.family(familyId). No current-family pointer is changed.
+  - vérifié 2026-11-08 : incertain. Le pointeur de famille courante est bien écrit par l'original, mais le port ne l'utilise pas de la même façon.
 
 ## routing
 
@@ -206,9 +98,6 @@ liste de l'audit. Un constat corrigé est retiré d'ici et noté dans le journal
 - **#56** BeginningPortalTree numbers the new mark against portals in the portal's room, not the person's room
   - Original : cXPortal::BeginningPortalTree 10112b20. The loop that computes the next mark compares `*(short*)(param_2+0x84) == *(short*)(portal_q+0x84)`, where param_2 is the person. Only portals in the PERSON's room that already hold a mark 1001..1100 raise the new mark …
   - Port : client/src/game/sim/portals.ts:206 `if (room(q) !== room(portal)) continue;` compares against the portal's own room.
-- **#57** GetOtherSide: the OBJD +0x8a == 1 branch (pair matching by OBJD +0x10) is not ported
-  - Original : cXPortal::GetOtherSide 10113c00. When OBJD +0x8a of the portal is 1, it walks the multi-tile chain (next +0x18c, wrapping to the lead +400) and returns the first other part whose OBJD +0x10 equals this part's +0x10 (and that has a portal tree 15). Otherwise …
-  - Port : client/src/game/sim/portals.ts:73-88 reduces both cases to 'next portal-with-tree part in chain order'. The comment at line 74 says so.
 - **#58** Room ambient light and score are NaN instead of 0 / -100 when a room's half-area is 0
   - Original : Room::ComputeRoom 1011d940. With half = area/2 = 0 (a room of one diagonal half tile, +0x38 == 1), `window/100/half` is 0/0 = NaN in float. `if (fVar2 < fVar1)` is false and the NaN is kept. The test `if (0.01 <= d) {...} else d = 0.0` then falls into the …
   - Port : client/src/game/world/lighting.ts:466-470 `Math.min(k, NaN)` is NaN, and `d < 0.01` / `d > 0.99` are both false, so l.ambient stays NaN. roomAmbient() hands NaN to the renderer and to roomInfo. …

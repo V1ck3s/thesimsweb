@@ -15,6 +15,7 @@
  * (cXPerson::TryElement), which are not ported in this phase.
  */
 
+import { needsInterests, randomizeAllInterests } from "../data/character.js";
 import { isDynamic, removeFromDynamic } from "./dynamic.js";
 import { Transforms } from "./transforms.js";
 import { type FarEntryInfo, readFarManifest } from "../../engine/assets.js";
@@ -326,6 +327,8 @@ export class SimModule {
   onKill: ((o: SimObject) => void) | null = null;
   /** KillOutOfWorldObject's deselection of the selected person (OnSelectionChange, GlobalDispatch(0xe4, 0)). */
   onDeselect: ((o: SimObject) => void) | null = null;
+  /** Generic sim call 42: PersonFinder::SetSelected(GetHandle(person)) (the family member with its GUID). */
+  onSelectPerson: ((o: SimObject) => void) | null = null;
   /** Neighborhood +0x16c zoning: house number -> 1 residential / 2 community (UserData LotZoning.iff STR# 1). */
   readonly zoning = new Map<number, number>();
   /**
@@ -794,14 +797,28 @@ export class SimModule {
       this.happyCurves = curvesFromStrings(loadStringSet(g, 0x1f6) ?? [], HAPPY_CURVE_MOTIVES);
       this.happyCurvesChild = curvesFromStrings(loadStringSet(g, 0x1f8) ?? [], HAPPY_CURVE_MOTIVES);
     }
-    for (const p of this.persons) this.initPerson(p);
+    for (const p of this.persons) {
+      this.initPerson(p);
+      // cXPerson::Initialize: RandomizeAllInterests when person data 46..53 are all below 11.
+      if (needsInterests(p.pd)) randomizeAllInterests(p.pd);
+    }
   }
 
   /** Neighborhood::LoadPersistentData + the motive curve sets of one person. */
   initPerson(p: PersonSim): void {
-    const g = this.res.glob;
+    this.loadPersonPersistent(p);
+    this.initPersonCurves(p);
+  }
+
+  /** Neighborhood::LoadPersistentData(person): the neighbor's persistent data into the person. */
+  loadPersonPersistent(p: PersonSim): void {
     const nb = this.nbhd?.neighbors.find((n) => (n.guid | 0) === (p.obj.selector.guid | 0));
     if (nb) p.loadPersistentData(nb);
+  }
+
+  /** The motive curve sets of one person (cXPerson::PostLoad, the end of cXPerson::Reset). */
+  initPersonCurves(p: PersonSim): void {
+    const g = this.res.glob;
     // cXPerson::PostLoad: MotiveEffects curves from OBJD +0x66 (private file), else Global.iff 0x1f7 (child) / 0x1f5.
     const own = p.obj.selector.objd.i16(0x66);
     const strings = own !== 0 ? loadStringSet(p.obj.selector.res, own) : g ? loadStringSet(g, p.isChild ? 0x1f7 : 0x1f5) : null;
@@ -1099,6 +1116,8 @@ export class SimModule {
     const head = this.getObject(lead);
     const parts = this.list.filter((x) => x.obj.mtLeadId === lead && x.id !== lead);
     if (head) parts.unshift(head);
+    // A lead without parts has neither +0x18c nor +0x190.
+    if (parts.length < 2) return null;
     const i = parts.indexOf(o);
     return parts[(i + 1) % parts.length] ?? null;
   }

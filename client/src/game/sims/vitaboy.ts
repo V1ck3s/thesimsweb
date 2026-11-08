@@ -41,6 +41,11 @@ export class VitaBoy {
    * rectangle.
    */
   censor: { mask: number; dressing: Dressing } | null = null;
+  /**
+   * VitaBoy +0x60 (SetScale): a uniform scale applied before the root
+   * transform (AnimationTick: Skeleton::SetTransform(scale * root)).
+   */
+  scale = 1;
   /** Bumped whenever the deformed vertices change (renderers re-upload). */
   version = 0;
 

@@ -117,7 +117,8 @@ export class ObjectDialog {
     const set = file ? loadUIStringSet(file, 0x12d) : null;
     const def = (n: number): string => hooks?.uiString(DLG_STRINGS, n) ?? "";
     const assign = (index: number, fallback: string): string => (index >= 1 ? set?.[index - 1] : undefined) || fallback;
-    this.message = assign(op[2]!, "");
+    // AssignString with no default: "Missing string!!!" (lbl_105BB9B8 + 0x26).
+    this.message = assign(op[2]!, "Missing string!!!");
     this.title = assign(op[6]!, sel.getCatalogName());
     if (this.type === 2) {
       this.buttons[2] = assign(op[0]!, def(2));

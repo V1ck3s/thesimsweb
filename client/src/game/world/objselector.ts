@@ -23,8 +23,10 @@ import { DrawGroup } from "./drawgroup.js";
 import type { ResFile } from "./iffres.js";
 import { loadSlots, readSlotChunk, type ObjectSlot, type SpriteSlot } from "./slots.js";
 import { loadUIStringSet } from "../sim/behavior.js";
+import { gameTextDecoder } from "../res/codepage.js";
 
-const cp1252 = new TextDecoder("windows-1252");
+/** The game's code page (res/codepage.ts). */
+const cp1252 = gameTextDecoder;
 
 /** OBJD object types (+0x12, Behavior.iff STR# 246). */
 export const OBJ_TYPE_PERSON = 2;

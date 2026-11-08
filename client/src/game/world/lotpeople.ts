@@ -212,6 +212,7 @@ export class LotPeople {
       if (look) void p.anim.updateOutfitAndHands(look);
       // SAnimator::UpdatePose / Render: UpdateCensorDressing.
       p.anim.updateCensorDressing(look?.pd[PD_CENSOR] ?? 0);
+      p.anim.vitaboy.scale = look?.scale ?? 1;
       p.anim.update(nowMs);
     }
   }

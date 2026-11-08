@@ -586,7 +586,8 @@ function writePerson(w: ReconOut, rec: PersonRecord | null, live: PersonSim | nu
     w.reconString(d[0]);
     w.reconString(d[1]);
   }
-  const acc = r?.accessories ?? [];
+  // The live accessory dressing records (SAnimator +0x26c).
+  const acc: Array<[string, string]> = live ? [...live.animator.accessories] : (r?.accessories ?? []);
   w.recon32(acc.length);
   for (const [a, b] of acc) {
     w.reconString(a);

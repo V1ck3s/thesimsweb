@@ -393,6 +393,8 @@ export class PersonAnimator {
    * lot renderer here) dress everything again (sims/sanimator.ts).
    */
   suitsVersion = 0;
+  /** VitaBoy::SetScale (VitaBoy +0x60): the uniform scale cXPerson::Simulate sets from person data 85. */
+  bodyScale = 1;
 
   /**
    * SAnimator::ResetSuits (Mac 0x103585a0): UndressSuits (suitsVersion),

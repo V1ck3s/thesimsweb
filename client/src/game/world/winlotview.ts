@@ -1683,6 +1683,11 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
       sim.module.onDeselect = (): void => {
         this.plumbBobs?.setSelectedPerson(null);
       };
+      sim.module.onSelectPerson = (o): void => {
+        const st = this.ctx.state;
+        const k = st.family.findIndex((f) => f.guid !== undefined && (f.guid | 0) === (o.obj.selector.guid | 0));
+        if (k >= 0) st.setSelectedPerson(k);
+      };
       // Prim 34 (UI Effect): Tut_FlashButtonByImageID, Tut_FlashPersonPanelButton, Tut_FlashRelButton.
       sim.module.tutorialHooks = {
         flashButtonByImageID: (id, on) => void tutFlashButtonByImageID(this.ctx, id, on),

@@ -314,11 +314,10 @@ export class Placement {
 
   /** cXObject::HierSetSite (`site.slot` is the raw objectSlots index). */
   hierSetSite(obj: XObject, site: PlacementSpec): void {
-    if (!site.placing) {
-      this.hierSever(obj);
-      return;
-    }
+    if (!site.placing) this.hierSever(obj);
     if (!site.container) {
+      // Not placing and no container: severed only.
+      if (!site.placing) return;
       this.setTileObjectId(tileOf(site.fx), tileOf(site.fy), site.level, obj.objectId);
       Placement.setOd(obj, OD.slotHierNumber, -1);
       Placement.setOd(obj, OD.parentId, 0);
@@ -543,14 +542,14 @@ export class Placement {
       this.error = level === this.viewerLevel() ? 0x12 : 0x29;
       return false;
     }
-    if (!this.world.hasWater(x, y, 1)) {
+    if (!this.world.hasWater(x, y, level)) {
       if (pf & PF.requireWater) {
         this.error = 0x2f;
         return false;
       }
     } else if (!(pf & PF.onWater)) {
       let floats = false;
-      for (const o of this.tileObjects(x, y, 1)) if (Placement.uod(o, OD.flags) & 0x1000) floats = true;
+      for (const o of this.tileObjects(x, y, level)) if (Placement.uod(o, OD.flags) & 0x1000) floats = true;
       if (!floats) {
         this.error = 0x1d;
         return false;

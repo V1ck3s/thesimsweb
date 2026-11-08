@@ -70,19 +70,37 @@ export function findAvailRouteID(module: SimModule): number {
 }
 
 /**
- * cXPortal::GetOtherSide: the next part of the portal's multi-tile object
- * that is a portal with a portal tree (0 when none). (The OBJD +0x8a == 1
- * case, which matches parts by OBJD +0x10, is reduced to the chain order.)
+ * cXPortal::GetOtherSide (Mac 10113c00): from this part, the next part of the
+ * multi-tile chain (+0x18c, then the lead +0x190); when this portal's OBJD
+ * +0x8a is 1, the first part from the lead, other than the current one, of
+ * the current one's OBJD +0x10 group (none when the walk comes back to the
+ * lead). That part must be a portal other than this one; without a portal
+ * tree the walk goes on from it.
  */
 export function getOtherSide(module: SimModule, p: SimObject): SimObject | null {
-  const lead = p.obj.mtLeadId || p.id;
-  const chain = module.list.filter((o) => (o.obj.mtLeadId || o.id) === lead);
-  const i = chain.indexOf(p);
-  if (i < 0 || chain.length < 2) return null;
-  for (let k = 1; k < chain.length; k++) {
-    const o = chain[(i + k) % chain.length]!;
-    if (o === p) return null;
-    if (o.obj.kind === "portal" && o.fnTable.getTreeID(EP.portal) !== 0) return o;
+  const leadId = p.obj.mtLeadId || p.id;
+  const chain = module.list.filter((o) => (o.obj.mtLeadId || o.id) === leadId);
+  if (chain.length < 2 || !chain.includes(p)) return null;
+  const lead = chain.find((o) => o.id === leadId) ?? chain[0]!;
+  const ordered = [lead, ...chain.filter((o) => o !== lead)];
+  const next = (o: SimObject): SimObject | null => ordered[ordered.indexOf(o) + 1] ?? null;
+  const byGroup = p.obj.selector.objd.i16(0x8a) === 1;
+  const group = (o: SimObject): number => o.obj.selector.objd.i16(0x10);
+  let cur = p;
+  for (let guard = 0; guard < ordered.length; guard++) {
+    let o: SimObject | null;
+    if (byGroup) {
+      o = lead;
+      while (o === cur || group(o) !== group(cur)) {
+        o = next(o);
+        if (!o) return null;
+      }
+    } else {
+      o = next(cur) ?? lead;
+    }
+    if (o === p || o.obj.kind !== "portal") return null;
+    if (o.fnTable.getTreeID(EP.portal) !== 0) return o;
+    cur = o;
   }
   return null;
 }

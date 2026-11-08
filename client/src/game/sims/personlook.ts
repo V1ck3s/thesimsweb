@@ -26,6 +26,8 @@ export interface PersonLook {
   readonly suitsVersion?: number;
   /** OBJD +0xcc of the person's object (bit 8: UpdateOutfitAndHands' body-string-per-outfit branch). */
   readonly objdFlags?: number;
+  /** VitaBoy::SetScale's uniform scale (cXPerson::Simulate, person data 85 / 100). */
+  readonly scale?: number;
 }
 
 /** The person each lot object stands for (set by the simulation's cXPerson), read by the lot renderer. */

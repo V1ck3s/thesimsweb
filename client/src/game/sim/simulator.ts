@@ -353,6 +353,9 @@ export class Simulator {
         const init = changed || empty ? o.fnTable.getTreeID(EP.init) : 0;
         if (init !== 0) o.runCheckTree(o.behavior, 0, init, null);
       }
+      // cXPerson::PostLoad: a person, dog or cat placeholder (its type is not installed)
+      // is cleaned up and queued for death.
+      if (o.isPerson && o.obj.isPlaceholder) m.addToKillQueue(o.id, 1);
     } catch (e) {
       const code = (e as { code?: number }).code;
       if (code === undefined) throw e;
@@ -740,6 +743,11 @@ export class Simulator {
       const idle = (f << 16) >> 16;
       if (idle < 1) {
         if (!o.simulate()) return false;
+        // TickAllObjects: an error this very Simulate raised is handled now; the cursor stays here.
+        if (o.getError() !== 0) {
+          o.handleError();
+          return false;
+        }
       } else {
         m.setIdleCounter(id, idle - 1);
       }

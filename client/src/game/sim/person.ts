@@ -13,13 +13,14 @@
  *   44 Animate (SAnimator::TryAnimate), 45 Go To Routing Slot, 47 Reach.
  */
 
+import { needsInterests, randomizeAllInterests } from "../data/character.js";
 import type { Neighbor } from "../data/neighborhood.js";
 import type { XObject } from "../world/objects.js";
 import type { BehaviorTree } from "./behavior.js";
 import { simLog } from "./simlog.js";
 import { applyMotiveIncs, calcHappy, MOTIVE, motivesSim, type MotiveCurve, type MotiveInc } from "./motives.js";
 import type { SimModule } from "./simmodule.js";
-import { PRIM_FALSE, PRIM_TRUE, PRIM_WAIT, simThrow, SimError } from "./treesim.js";
+import { PRIM_ERROR, PRIM_FALSE, PRIM_TRUE, PRIM_WAIT, simThrow, SimError } from "./treesim.js";
 import type { ParamSource, StackElem } from "./treestack.js";
 import { SimObject, XERR } from "./xobject.js";
 import { loadStringSet } from "./behavior.js";
@@ -28,7 +29,7 @@ import { PersonAnimator, requestSkill } from "./personanim.js";
 import { handleAnimSound } from "./animsound.js";
 import type { Skill } from "../sims/skill.js";
 import { PRIM_CONTINUE } from "./treesim.js";
-import { allowDirection, DIR_VEC, dirOf, FACE_ANY, FACE_AWAY, FACE_TOWARDS, newRoutingSlot, ROUTE, RSF, setTileDistances, updateRoomIDs, XRoute, type PathPt, type RoutingSlot } from "./routing.js";
+import { allowDirection, calcShortDistance, DIR_VEC, dirOf, FACE_ANY, FACE_AWAY, FACE_TOWARDS, newRoutingSlot, ROUTE, RSF, setTileDistances, updateRoomIDs, XRoute, type PathPt, type RoutingSlot } from "./routing.js";
 import { beginningPortalTree, failedPortalTree, findBestPortal, initPortalRoute, isPortalInUse } from "./portals.js";
 import { EP } from "./objfntable.js";
 import { RotatableWorld } from "../world/world.js";
@@ -287,11 +288,14 @@ export class PersonSim extends SimObject {
       },
     });
     // What the lot renderer dresses (SAnimator::UpdateOutfitAndHands from SAnimator::Render).
+    // SAnimator::ReconStream: the saved accessory dressing records (suit, texture).
+    for (const [suit, tex] of rec?.accessories ?? []) this.animator.accessories.set(suit.toLowerCase(), tex);
     const personData = (): Int16Array => this.pd;
     const animator = this.animator;
     personLooks.set(obj, {
       get pd() { return personData(); },
       get suitsVersion() { return animator.suitsVersion; },
+      get scale() { return animator.bodyScale; },
       objdFlags: obj.selector.objd.i16(0xcc),
       accessories: this.animator.accessories,
       job: (child) => this.jobSuit(child),
@@ -336,13 +340,19 @@ export class PersonSim extends SimObject {
    * cXPerson::Simulate: cXObject::Simulate, then (when the tick ran) the
    * motive decay every 60 ticks, the animator, the current room
    * (UpdateCurrentRoom) and the room motive, the motive increments every
-   * tick, and every 10 ticks a layout tick for the house. Head text and
-   * the head fee: not ported.
+   * tick, every 10 ticks a layout tick for the house, and the head fee
+   * cleared (its overhead text and the head text are not drawn).
    */
   override simulate(): boolean {
     const a = this.animator;
     const drawn = { ...(a.followPos ?? { fx: this.obj.fx, fy: this.obj.fy }), dir: this.renderDir ?? this.obj.dir };
     const r = super.simulate();
+    // Every 10 ticks a shown person takes the scale person data 85 / 100 when it is
+    // within (0.4, 10) (VitaBoy::SetScale); outside it the scale stays.
+    if (this.obj.hidden === 0 && this.module.sim.tickCount % 10 === 0) {
+      const s = Math.fround(this.pd[85]! / 100);
+      if (s > 0.4 && s < 10) a.bodyScale = s;
+    }
     if (r) {
       a.settleLoadHold(drawn);
       const tick = this.module.sim.tickCount;
@@ -365,6 +375,13 @@ export class PersonSim extends SimObject {
       // counted as routing while the person has a route.
       if (tick % 10 === 0 && this.pd[PDX.personType] === 0 && this.obj.hidden === 0 && m[MOTIVE.sleepState]! >= 0) {
         this.module.sim.addLayoutTick(this.routes.length > 0);
+      }
+      // Person data 1 is the head fee (GViewer::SetHeadFee: magic tokens below -20000,
+      // tickets below -10000, else simoleons over the head), shown once then cleared.
+      // The port records it; the overhead text is not drawn.
+      if (this.pd[1] !== 0) {
+        this.module.record(this, "headFee", this.pd[1]!);
+        this.pd[1] = 0;
       }
       // SimLog::SimTickCompleted ("sim_log begin").
       simLog.simTickCompleted(this);
@@ -428,7 +445,8 @@ export class PersonSim extends SimObject {
    * and 35 kept), the animator stopped, persistent data from the neighbor,
    * cXObject::Reset (Main restarts, Init runs), persistent data again
    * (unless data 25 holds the 0x7ae marker, then cleared), visitors on a
-   * non-residential lot become type 1, and the motive curve sets.
+   * non-residential lot become type 1, random interests when it has none,
+   * and the motive curve sets.
    */
   override reset(tick: boolean): void {
     const pd = this.pd;
@@ -443,11 +461,14 @@ export class PersonSim extends SimObject {
     this.currentAction = null;
     this.objectRecords.length = 0;
     this.routes.length = 0;
-    this.module.initPerson(this);
+    this.module.loadPersonPersistent(this);
     super.reset(tick);
     if (pd[25] === 0x7ae) pd[25] = 0;
-    else this.module.initPerson(this);
+    else this.module.loadPersonPersistent(this);
     if (this.module.getZoningType(this.module.sim.globals[10]!) !== 1 && pd[32] !== 2) pd[32] = 1;
+    // Interests (person data 46..53) all below 11 after the persistent load: RandomizeAllInterests.
+    if (needsInterests(pd)) randomizeAllInterests(pd);
+    this.module.initPersonCurves(this);
   }
 
   /**
@@ -456,6 +477,8 @@ export class PersonSim extends SimObject {
    */
   override gosubObjectTree(other: SimObject, params: ParamSource | null, treeId: number, action = false): boolean {
     if (!super.gosubObjectTree(other, params, treeId)) return false;
+    // +0xa14: the current action's object.
+    if (action && this.currentAction) this.currentAction.icon = other.id;
     this.objectRecords.push({ id: other.id, depth: this.getStackSize(), action });
     other.obj.objectData[62] = other.obj.objectData[62]! + 1;
     prefetchSkills(other);
@@ -472,12 +495,21 @@ export class PersonSim extends SimObject {
     const n = this.getStackSize();
     const top = this.objectRecords[this.objectRecords.length - 1];
     if (!top) return;
-    if (n === top.depth - 1 || n < top.depth) {
+    if (n < top.depth) {
+      // Exactly one frame below the record: +0xa14 comes back from the flagged records (the last one wins).
+      if (n === top.depth - 1 && this.currentAction) for (const r of this.objectRecords) if (r.action) this.currentAction.icon = r.id;
       const o = this.module.getObject(top.id);
       if (o) o.obj.objectData[62] = o.obj.objectData[62]! - 1;
       this.objectRecords.pop();
     }
     if (this.objectRecords.length === 0) this.setCurrentAction(null);
+  }
+
+  /** TryMakeActionString outside a menu: Interaction::SetName on the current action. */
+  protected override renameCurrentAction(name: string): void {
+    if (!this.currentAction) return;
+    this.currentAction.name = name;
+    this.module.onQueueChanged?.(this);
   }
 
   /** cXPerson +0x114 bit 0x800: Cleanup is running (it does not reenter). */
@@ -918,7 +950,7 @@ export class PersonSim extends SimObject {
     const state = elem.state;
     if (state === 0) {
       const info = this.getReachInfo(elem, mode, slotParam);
-      if (!info) return transfer === 0 ? PRIM_TRUE : PRIM_FALSE;
+      if (!info) return PRIM_FALSE;
       const started = this.startReachAnimation(info.height);
       if (started === undefined) return PRIM_WAIT;
       if (!started) return transfer === 0 ? PRIM_TRUE : PRIM_FALSE;
@@ -1255,8 +1287,9 @@ export class PersonSim extends SimObject {
       if (gone || !slot) return PRIM_FALSE;
       const r = new XRoute(this.module, this, target, slot);
       if ((this.pd[68]! & 1) === 1) r.slot.flags |= RSF.ignoreRooms;
-      const top = this.route;
-      if (top && !(top.slot.flags & RSF.failureTrees)) r.slot.flags &= ~RSF.failureTrees;
+      // Tested against the first (outermost) route of the stack (+0xaa8, the vector's begin).
+      const first = this.routes[0];
+      if (first && !(first.slot.flags & RSF.failureTrees)) r.slot.flags &= ~RSF.failureTrees;
       this.routes.push(r);
       state = 1;
     }
@@ -1431,7 +1464,7 @@ export class PersonSim extends SimObject {
         case 15:
         case 20:
           if (!this.animator.isFollowing() || this.animator.endFollow()) {
-            if (state === 9) m.record(this, "sound", "end_route");
+            if (state === 9 || state === 10 || state === 11) m.record(this, "sound", "end_route");
             state = state === 9 ? 8 : state === 10 ? 6 : state === 11 ? 7 : state === 15 ? 1 : 19;
             break;
           }
@@ -1552,12 +1585,14 @@ export class PersonSim extends SimObject {
       }
       if (success) {
         const n = route.path.length;
+        // With 2+ path points and object data 9 clear: the direction of the last
+        // segment (dirOf(0, 0) = 3 for equal points), then ForceLocation.
         if (n >= 2 && !me.objectData[9]) {
           const a = route.path[n - 2]!;
           const b = route.path[n - 1]!;
-          if (a.fx !== b.fx || a.fy !== b.fy) me.objectData[1] = dirOf(b.fx - a.fx, b.fy - a.fy);
+          me.objectData[1] = dirOf(b.fx - a.fx, b.fy - a.fy);
+          this.forceLocation();
         }
-        this.forceLocation();
         this.renderDir = null;
         route.result = 0;
       }
@@ -1624,7 +1659,8 @@ export class PersonSim extends SimObject {
     }
     if (r === 2 && route.path.length < 2) r = 0;
     if (r !== 2) {
-      if (r === 0) route.resetGoals();
+      // Every result but 2 ends with XRoute::ResetGoals.
+      route.resetGoals();
       return r;
     }
     const path = route.path;
@@ -1656,10 +1692,8 @@ export class PersonSim extends SimObject {
       fx = end.fx + vx * 16;
       fy = end.fy + vy * 16;
     }
-    if (fx === end.fx && fy === end.fy) {
-      route.resetGoals();
-      return 0;
-    }
+    // The facing point on the last point: 0, the goals kept.
+    if (fx === end.fx && fy === end.fy) return 0;
     path.push({ fx, fy });
     return 2;
   }
@@ -1786,7 +1820,9 @@ export class PersonSim extends SimObject {
     const s = newRoutingSlot();
     const dx = lx - ex;
     const dy = ly - ey;
-    const d = dx === 0 && dy === 0 ? 0 : dirOf(dx, dy);
+    // Entry point = exit point: false, the placed helper left behind (as the original does).
+    if (dx === 0 && dy === 0) return false;
+    const d = dirOf(dx, dy);
     allowDirection(s, (d + 2) & 7);
     allowDirection(s, (d + 6) & 7);
     s.flags |= RSF.anyRotation;
@@ -2130,8 +2166,11 @@ export class PersonSim extends SimObject {
         if (buildType === 4 || buildType === 5) continue;
       }
       // The person itself only for pets (person data 0x41 >= 2).
-      if ((o === this && this.pd[0x41]! < 2) || o.obj.hidden !== 0) continue;
+      if (o === this && this.pd[0x41]! < 2) continue;
       if (o.obj.objectData[25]! >= 1) continue;
+      // ObjTestSim::AppendInteractionsForAuto: an OBJD type 7 object offers nothing
+      // to a human (person data 0x41 pet bits 2 / 4 clear).
+      if (o.obj.selector.objd.objectType === 7 && (this.pd[0x41]! & 6) === 0) continue;
       if (skipBathrooms && this.isInsideBathroomObject(o)) continue;
       const dist = this.distanceTo(o);
       if (filter === 1 ? dist > 7 : filter === 2 ? (o.id & 1) !== 0 : filter === 3 && (o.id & 1) === 0) continue;
@@ -2140,6 +2179,9 @@ export class PersonSim extends SimObject {
       for (let i = tt.entries.length - 1; i >= 0; i--) {
         const e = tt.entries[i]!;
         if (e.autonomyThreshold <= 0 || e.autonomyThreshold > autonomy || e.flags & 0x80) continue;
+        // AppendInteractionsForAuto's last test: on a residential lot, a visiting pet
+        // (person data 34 clear) leaves the objects with object data 29 (+0x84) set alone.
+        if (zoning === 1 && visitor && (this.pd[0x41]! & 6) !== 0 && this.pd[34] === 0 && o.obj.objectData[29] !== 0) continue;
         if (!this.testInteraction(o, e, true, true)) continue;
         const ad = this.interactionScore(e, m.sim.currentAd);
         if (ad === 0) continue;
@@ -2190,10 +2232,7 @@ export class PersonSim extends SimObject {
 
   /** cXObject::CalcShortDistance in tiles. */
   private distanceTo(o: SimObject): number {
-    const dx = (o.obj.fx - this.obj.fx) / 16;
-    const dy = (o.obj.fy - this.obj.fy) / 16;
-    const dl = (o.obj.level - this.obj.level) * 20;
-    return Math.sqrt(dx * dx + dy * dy + dl * dl);
+    return calcShortDistance(this.obj, o.obj);
   }
 
   /**
@@ -2211,7 +2250,8 @@ export class PersonSim extends SimObject {
     const idx = this.obj.objectData[20]!;
     const e = tt.entries.find((x) => x.stringIndex === idx);
     if (!e) simThrow(0x16);
-    if (!this.gosubObjectTree(o, { src: [0, 0, 0, 0], at: 0 }, e.actionTree)) return PRIM_FALSE;
+    // The gosub failing is an error (-1), unlike a missing object or tree table.
+    if (!this.gosubObjectTree(o, { src: [0, 0, 0, 0], at: 0 }, e.actionTree)) return PRIM_ERROR;
     // Interaction(person, object, entry, priority 2): autonomous.
     this.setCurrentAction(this.makeInteraction(o, e, 2));
     this.module.record(this, "action", `${o.obj.selector.name}: ${e.name}`);

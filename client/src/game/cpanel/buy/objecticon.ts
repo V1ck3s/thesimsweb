@@ -187,7 +187,7 @@ export class ObjectIcon {
         const b = this.renderer.getShapeBounds(it.spr, it.frame);
         if (b.width <= 0 || b.height <= 0) continue;
         let y = oy + it.y - b.height;
-        if (it.z !== 0) y -= Math.trunc(it.z * (1 << (scale + 1)));
+        if (it.z !== 0) y -= Math.trunc(it.z * (1 << (scale + 1)) + 0.5);
         out.push({ part: k, item: it, x: ox + it.x, y, w: b.width, h: b.height });
       }
     }

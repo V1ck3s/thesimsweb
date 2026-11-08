@@ -21,7 +21,7 @@ import type { SkeletonBinding } from "./deformablemesh.js";
 import { VERTEX_FLOATS } from "./deformablemesh.js";
 import { engageLights, loadStdLights, type U3DLight } from "./lighting.js";
 import type { VitaBoy } from "./vitaboy.js";
-import type { Mat4, Vec3 } from "./math3d.js";
+import { mat4Mul, type Mat4, type Vec3 } from "./math3d.js";
 
 const VS = `#version 300 es
 in vec3 aPos;
@@ -157,7 +157,8 @@ export class SimRenderer {
     gl.enable(gl.CULL_FACE);
     gl.frontFace(gl.CW);
     gl.cullFace(gl.BACK);
-    gl.uniformMatrix4fv(this.u["uModel"]!, false, model);
+    const s = vb.scale;
+    gl.uniformMatrix4fv(this.u["uModel"]!, false, s === 1 ? model : mat4Mul(new Float32Array([s, 0, 0, 0, 0, s, 0, 0, 0, 0, s, 0, 0, 0, 0, 1]), model));
     gl.uniformMatrix4fv(this.u["uViewProj"]!, false, cam.viewProjection);
     gl.uniform2f(this.u["uPixelFix"]!, 1 / view.width, -1 / view.height);
     gl.uniform3fv(this.u["uLightDir"]!, own ? own.direction : rig!.direction);

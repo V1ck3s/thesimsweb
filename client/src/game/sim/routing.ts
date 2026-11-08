@@ -357,7 +357,14 @@ export function passable(flags: number): boolean {
 export function obstacleAtLocation(module: SimModule, fx: number, fy: number, level: number): SimObject | null {
   const x = ((fx >> 4) << 24) >> 24;
   const y = ((fy >> 4) << 24) >> 24;
-  for (const o of tileObjects(module, x, y, level)) if (!passable(o.obj.flags)) return o;
+  const fixed = module.sim.world;
+  if (!fixed || x < 0 || y < 0 || x >= fixed.size || y >= fixed.size || level < 1 || level > 2) return null;
+  // The tile object, then slot 0 down (the stack), never the other slots.
+  let o = module.getObject(fixed.objects[level - 1]!.s16(x, y));
+  for (let guard = 0; o && guard < 256; guard++) {
+    if (!passable(o.obj.flags)) return o;
+    o = module.getObject(o.obj.objectSlots[0]?.containedId ?? 0);
+  }
   return null;
 }
 

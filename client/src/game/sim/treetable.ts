@@ -52,6 +52,45 @@ export class TreeTableEntry {
   name = "";
 }
 
+/** TreeTable::TreeTable(0x10): the motive count of an old version's entries. */
+const OLD_MOTIVES = 16;
+
+/**
+ * TreeTableEntry::DoOldStream (Mac 1014be00), versions 0..5: the entry starts
+ * with 16 zeroed motives (min 0), attenuation code 3, autonomy 0x32, joining
+ * -1; each motive value read sets delta = value - min.
+ */
+function readOldEntry(buf: ReconBuffer, version: number, e: TreeTableEntry): void {
+  for (let k = 0; k < OLD_MOTIVES; k++) e.motives.push({ personality: 0, min: 0, delta: 0 });
+  const set = (k: number, v: number): void => {
+    const m = e.motives[k];
+    if (m) m.delta = v - m.min;
+  };
+  e.actionTree = buf.recon16();
+  if (version === 0 || version === 1) {
+    if (version === 1) e.checkTree = buf.recon16();
+    const n = buf.recon16();
+    for (let i = 0; i < n; i++) {
+      const k = buf.recon16();
+      set(k, buf.recon16());
+    }
+    return;
+  }
+  e.checkTree = buf.recon16();
+  const n = buf.recon16();
+  if (version === 3) e.flags = buf.recon16();
+  if (version >= 4) {
+    e.flags = buf.recon32();
+    e.stringIndex = buf.recon32();
+  }
+  e.attenuationCode = 0;
+  e.attenuationValue = buf.reconFloat();
+  if (version === 2) buf.recon16();
+  if (version >= 4) e.autonomyThreshold = buf.recon32();
+  if (version === 5) e.joiningIndex = buf.recon32();
+  for (let i = 0; i < n; i++) set(i, buf.recon16());
+}
+
 export class TreeTable {
   /** +0xc */
   entries: TreeTableEntry[] = [];
@@ -66,25 +105,28 @@ export class TreeTable {
     const count = buf.recon16();
     t.version = buf.recon16();
     if (t.version > 8 && buf.reconBool()) buf.enableCompression();
-    // TreeTableEntry::DoOldStream (versions < 6) is not ported.
-    if (t.version < 6) return null;
     for (let i = 0; i < count; i++) {
       const e = new TreeTableEntry();
-      e.actionTree = buf.recon16();
-      e.checkTree = buf.recon16();
-      const n = buf.recon32();
-      e.flags = buf.recon32();
-      e.stringIndex = buf.recon32();
-      e.attenuationCode = buf.recon32();
-      e.attenuationValue = buf.reconFloat();
-      e.autonomyThreshold = buf.recon32();
-      e.joiningIndex = buf.recon32();
-      for (let k = 0; k < n; k++) {
-        const min = buf.recon16();
-        const delta = buf.recon16();
-        const personality = buf.recon16();
-        e.motives.push({ personality, min, delta });
+      if (t.version < 6) {
+        readOldEntry(buf, t.version, e);
+      } else {
+        e.actionTree = buf.recon16();
+        e.checkTree = buf.recon16();
+        const n = buf.recon32();
+        e.flags = buf.recon32();
+        e.stringIndex = buf.recon32();
+        e.attenuationCode = buf.recon32();
+        e.attenuationValue = buf.reconFloat();
+        e.autonomyThreshold = buf.recon32();
+        e.joiningIndex = buf.recon32();
+        for (let k = 0; k < n; k++) {
+          const min = buf.recon16();
+          const delta = buf.recon16();
+          const personality = buf.recon16();
+          e.motives.push({ personality, min, delta });
+        }
       }
+      if (t.version < 4) e.stringIndex = i;
       if (t.version === 7) e.name = buf.reconString();
       t.entries.push(e);
     }

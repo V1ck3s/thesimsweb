@@ -62,9 +62,10 @@ Interface / triches
 
 Les écarts confirmés par l'audit complet sont tous traités (journal de `PLAN.md`, 2026-11-08).
 
-- **134 constats « faibles, non vérifiés »** de l'audit : listés dans
-  [`docs/decomp/audit-2026-11-low.md`](decomp/audit-2026-11-low.md), à confirmer un par un contre le
-  décompilé avant correction.
+- **Constats « faibles »** de l'audit : listés dans
+  [`docs/decomp/audit-2026-11-low.md`](decomp/audit-2026-11-low.md). Partie #0 à #52 vérifiée et
+  corrigée (restent #16, #33, le texte de #40, et les écarts voulus ou incertains annotés) ; #53 à
+  #136 à confirmer un par un contre le décompilé avant correction.
 
 ## 3. Son
 

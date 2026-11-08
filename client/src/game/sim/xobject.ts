@@ -362,8 +362,16 @@ export class SimObject extends TreeSim {
     k(OD.slotCount);
     k(OD.containerId);
     k(OD.slotNumber);
-    // HierSetSite restores the slot hierarchy site (parent object).
+    // HierSetSite restores the slot hierarchy site: with a parent, its slot
+    // (+0x66 kept); in the world (tile 1..size-2) without one, -1; else 0.
     k(WOD.parentId);
+    if (keep[WOD.parentId]! !== 0) k(OD.slotHierNumber);
+    else {
+      const world = this.module.sim.world;
+      const x = this.obj.tileX;
+      const y = this.obj.tileY;
+      if (world && x >= 1 && y >= 1 && x < world.size - 1 && y < world.size - 1) d[OD.slotHierNumber] = -1;
+    }
     d[OD.objectId] = this.id;
     d[OD.typeAttrGuid] = this.obj.selector.objd.i16(0x62);
     this.obj.attributes.fill(0);
@@ -374,7 +382,8 @@ export class SimObject extends TreeSim {
   }
 
   /** cXObject::GosubObjectTree: pushes a tree of `other` (stack object = other) on this stack. */
-  gosubObjectTree(other: SimObject, params: ParamSource | null, treeId: number): boolean {
+  gosubObjectTree(other: SimObject, params: ParamSource | null, treeId: number, action = false): boolean {
+    void action; // cXPerson's: the current action's object (+0xa14)
     this.module.clearIdleStatus(this.id);
     if (!this.gosub(other.behavior, params, treeId)) return false;
     this.getCurElem()!.stackObj = other.id;
@@ -732,18 +741,18 @@ export class SimObject extends TreeSim {
         break;
       case 8:
         if ((rhs & 0xffff) > 0x10) simThrow(XERR.flagRange);
-        result = lhs & (1 << ((rhs - 1) & 31)) ? 1 : 0;
+        result = lhs & (rhs === 0 ? 0 : 1 << (rhs - 1)) ? 1 : 0;
         break;
       case 9:
         if ((rhs & 0xffff) > 0x10) simThrow(XERR.flagRange);
         if (!ref) noRef();
-        ref.a[ref.i] = ref.a[ref.i]! | (1 << ((rhs - 1) & 31));
+        ref.a[ref.i] = ref.a[ref.i]! | (rhs === 0 ? 0 : 1 << (rhs - 1));
         result = 1;
         break;
       case 10:
         if ((rhs & 0xffff) > 0x10) simThrow(XERR.flagRange);
         if (!ref) noRef();
-        ref.a[ref.i] = ref.a[ref.i]! & ~(1 << ((rhs - 1) & 31));
+        ref.a[ref.i] = ref.a[ref.i]! & ~(rhs === 0 ? 0 : 1 << (rhs - 1));
         result = 1;
         break;
       case 11:
@@ -1217,9 +1226,8 @@ export class SimObject extends TreeSim {
     }
     const tree = o.fnTable.getTreeID(ep);
     if (tree === 0) return PRIM_FALSE;
-    // Bit 0 of the flags is GosubObjectTree's last argument (unused by cXObject's).
-    void flags;
-    return this.gosubObjectTree(o, null, tree) ? PRIM_CONTINUE : PRIM_FALSE;
+    // Bit 0 of the flags is GosubObjectTree's last argument (cXPerson: the current action's object).
+    return this.gosubObjectTree(o, null, tree, (flags & 1) !== 0) ? PRIM_CONTINUE : PRIM_FALSE;
   }
 
   /** cXObject::TryBudget. */
@@ -1255,7 +1263,8 @@ export class SimObject extends TreeSim {
         if (!o) simThrow(XERR.noObject);
         const me = m.persons.find((x) => x === (this as SimObject));
         if (!me) simThrow(XERR.notPerson);
-        if (me.currentAction && me.currentAction.priority !== 0) {
+        // +0xa3c, the current action's unique id: set for every current action with an object (SetCurrentAction -> SetUniqueID).
+        if (me.currentAction && me.currentAction.target !== 0) {
           me.currentAction.icon = o.id;
           m.onQueueChanged?.(me);
         }
@@ -1505,6 +1514,17 @@ export class SimObject extends TreeSim {
         // cSimsApp::RemoveTaxiDialog / cXPerson::TryChangeLots (nbhd/transit.ts).
         if (m.transitHooks) return m.transitHooks.genericSimCall(this, call);
         return m.unportedPrim(1, `generic sim call ${call}`, PRIM_TRUE);
+      case 37:
+        // The stack object must be a person (error 0x1c).
+        if (!this.obj_(elem.stackObj)?.person) simThrow(XERR.notPerson);
+        return PRIM_TRUE;
+      case 42: {
+        // Temp 0, when a person: PersonFinder::SetSelected(GetHandle(person)).
+        const id = this.temps[0]!;
+        const p = id !== 0 ? this.obj_(id) : null;
+        if (p?.person) m.onSelectPerson?.(p);
+        return PRIM_TRUE;
+      }
       default:
         return m.unportedPrim(1, `generic sim call ${call}`, PRIM_TRUE);
     }
@@ -2147,14 +2167,16 @@ export class SimObject extends TreeSim {
   protected tryMakeActionString(elem: StackElem, strId: number, index: number): number {
     const m = this.module;
     const menu = m.menuInProgress;
-    if (!menu) {
-      m.record(this, "actionString", strId);
-      return PRIM_TRUE;
-    }
     const file = elem.behavior?.priv;
     const text = (file && index >= 1 ? loadUIStringSet(file, strId)?.[index - 1] : undefined) ?? "";
     const vars = new Int16Array(4);
     const name = this.parseUIString(text, elem, vars);
+    if (!menu) {
+      // Outside a menu and outside RunOneTickTree (lbl_105BA314): Interaction::SetName on my current action (+0xa08).
+      if (treeSimGlobals.notInCheckTree) this.renameCurrentAction(name);
+      m.record(this, "actionString", strId);
+      return PRIM_TRUE;
+    }
     if (vars[0] === 0) vars[0] = elem.stackObj;
     menu.items.push({ entry: menu.entry, name, args: vars });
     return PRIM_TRUE;
@@ -2510,8 +2532,8 @@ export class SimObject extends TreeSim {
         break;
       }
       default:
-        at(me);
-        break;
+        // Beyond the jump table (mode < 0 or >= 15) the target tile stays (0, 0): out of bounds, false.
+        return PRIM_FALSE;
     }
     const tx = ((pos.fx >> 4) << 24) >> 24;
     const ty = ((pos.fy >> 4) << 24) >> 24;
@@ -2599,7 +2621,9 @@ export class SimObject extends TreeSim {
     const f = fn >= 0 && fn < FNS.length ? FNS[fn] : null;
     if (!f) return PRIM_FALSE;
     // Function 8 (lbl_100EB5E8): people only (pets fail).
-    if (fn === 8 && this.person) {
+    if (fn === 8) {
+      // A non-person caller fails (cXPerson cast).
+      if (!this.person) return PRIM_FALSE;
       const g = this.person.personData[0x41]! | 0;
       const x = g ^ 1;
       if ((x >> 1) - (x & g) < 0) return PRIM_FALSE;
@@ -3050,6 +3074,11 @@ export class SimObject extends TreeSim {
     return PRIM_TRUE;
   }
 
+  /** TryMakeActionString outside a menu: Interaction::SetName on the current action (people only). */
+  protected renameCurrentAction(name: string): void {
+    void name;
+  }
+
   /** TrySnap's flag 2: has `other` (a person in the way) been asked to move? People override it. */
   protected askToMoveOutOfWay(other: SimObject): boolean {
     void other;
@@ -3165,7 +3194,12 @@ export class SimObject extends TreeSim {
       }
       case 4: {
         // object of type (GUID)
-        found = nextIn(m.getInstances(v.getUint32(p, true)));
+        const guid = v.getUint32(p, true);
+        // ObjectFolder::GetSelectorByGUID null: false, the variable left alone.
+        const sel = m.worldHooks?.selector(guid);
+        if (sel === undefined && m.worldHooks) return PRIM_WAIT;
+        if (sel === null) return PRIM_FALSE;
+        found = nextIn(m.getInstances(guid));
         ref.a[ref.i] = found;
         return found !== 0 ? PRIM_TRUE : PRIM_FALSE;
       }
@@ -3264,6 +3298,8 @@ export class SimObject extends TreeSim {
         if (!o || o.obj.tileX < 0) return PRIM_FALSE;
         const here = m.list.filter((x) => x.obj.tileX === o.obj.tileX && x.obj.tileY === o.obj.tileY && x.obj.level === o.obj.level);
         const i = here.indexOf(o);
+        // The object iterator never meets the variable's object: false.
+        if (i < 0) return PRIM_FALSE;
         const n = here[i + 1] ?? here[0]!;
         ref.a[ref.i] = n.id;
         return PRIM_TRUE;
