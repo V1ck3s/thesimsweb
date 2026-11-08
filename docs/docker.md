@@ -21,6 +21,17 @@ navigateur.
 
 Mise à jour après un `git pull` : `docker compose up -d --build` (les sauvegardes restent).
 
+### Image construite par GitHub (sans les sources sur le serveur)
+
+Le workflow `.github/workflows/docker.yml` construit l'image à chaque push sur `main` et la publie
+sur `ghcr.io/v1ck3s/thesimsweb` (tags `main`, `latest`, `sha-<commit>`, et `x.y.z` pour un tag
+`vx.y.z`). Le paquet est privé comme le dépôt : le serveur s'authentifie une fois avec
+`docker login ghcr.io` (un token GitHub avec `read:packages`).
+
+Sur le serveur, il suffit alors d'un `docker-compose.yml` qui remplace `build: .` par
+`image: ghcr.io/v1ck3s/thesimsweb:main` (mêmes variables, mêmes volumes), d'un `.env` et du dossier
+du jeu. Mise à jour : `docker compose pull && docker compose up -d`.
+
 ## Sauvegardes : deux modes (`THESIMSWEB_SAVES`, variable `SAVES` du serveur)
 
 - **`server`** (par défaut) : une instance = un joueur. Une seule série de sauvegardes, sur le
