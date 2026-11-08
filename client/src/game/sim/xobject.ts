@@ -1219,7 +1219,7 @@ export class SimObject extends TreeSim {
    * camera), 0 / 8 / 9 (Neighborhood::TutorialCompleted 0 / 1 / 2), 13 (ObjectModule::CleanupPeople of the stack object), 14 (global 0x1f := temp 0), 15 (person data 0x48 := temp 0),
    * 26 (the current family or the house's first person), 28 (lot zoning
    * into temp 0), 18..23 (the lot change's arrival, sim/lotcalls.ts), 24
-   * (set suit), 43 (Family::LoadSpellsForFamily), 6 (neighbor leaves the family), 4 (neighbor joins the lot's family). Others are logged and
+   * (set suit), 16 / 29 / 30 / 31 (suit cycle, set, get, count), 43 (Family::LoadSpellsForFamily), 6 (neighbor leaves the family), 4 (neighbor joins the lot's family). Others are logged and
    * return true.
    */
   protected tryGenericSimCall(elem: StackElem, call: number): number {
@@ -1388,6 +1388,12 @@ export class SimObject extends TreeSim {
       }
       case 24:
         return this.trySetSuitCall();
+      case 16:
+        return this.suitCall(16, this);
+      case 29:
+      case 30:
+      case 31:
+        return this.suitCall(call, this.obj_(elem.stackObj));
       case 28: {
         // Zoning of house temp 0: 90-92 -> 0, 93-98 -> 1, else
         // Neighborhood::GetZoningType (house 0 -> 1; listed house -> its
@@ -1767,26 +1773,55 @@ export class SimObject extends TreeSim {
    * before.
    */
   private trySetSuitCall(): number {
+    return this.suitCall(24, this);
+  }
+
+  /**
+   * The suit calls of TryGenericSimCall, through an EditPerson begun on a
+   * person (error 0x1c otherwise): 16 cycles my body suit, 24 sets my suit
+   * temps[1] of type temps[0] (returning the old one in temps[1]), 29 the
+   * same on the stack person (types 0..4), 30 gives the stack person's suit
+   * of type temps[0] (-1 for another type) and 31 its count of available
+   * suits (-1 likewise; nothing kept, End(false)). Then
+   * SetHeadTextureDirty / the portraits and CPState 0x20000000.
+   */
+  private suitCall(call: 16 | 24 | 29 | 30 | 31, target: SimObject | null): number {
     const m = this.module;
-    if (!this.person) simThrow(XERR.notPerson);
-    const sel = this.obj.selector;
+    const person = target?.person;
+    if (!target || !person) simThrow(XERR.notPerson);
+    const sel = target.obj.selector;
     const guid = sel.guid | 0;
     const strings = m.bodyStringEdits.get(guid) ?? loadStringSet(sel.res, sel.objd.i16(0x26)) ?? [];
-    const ep = EditPerson.beginLoaded(strings, this.person.personData);
-    if (!ep) return m.unportedPrim(1, "generic sim call 24 (suit catalog not loaded)", PRIM_TRUE);
-    const kind = (["body", "formal", "swimwear", "lingerie", "winter", "fashion"] as const)[this.temps[0]!];
-    const index = this.temps[1]!;
-    let old: number | null = null;
-    if (kind && index >= 0 && index < ep.countAvailable(kind)) {
-      old = ep.getOutfitSuit(kind);
-      ep.setOutfitSuit(kind, index, false);
+    const ep = EditPerson.beginLoaded(strings, person.personData);
+    if (!ep) return m.unportedPrim(1, `generic sim call ${call} (suit catalog not loaded)`, PRIM_TRUE);
+    const kinds = ["body", "formal", "swimwear", "lingerie", "winter", "fashion"] as const;
+    const kind = call === 24 ? kinds[this.temps[0]!] : call === 16 ? "body" : this.temps[0]! >= 0 && this.temps[0]! <= 4 ? kinds[this.temps[0]!] : undefined;
+    let save = true;
+    let out: number | null = null;
+    if (call === 16) {
+      const n = ep.countAvailable("body");
+      if (n !== 0) ep.setOutfitSuit("body", (ep.getOutfitSuit("body") + 1) % n, false);
+      save = n !== 0;
+    } else if (call === 30) {
+      out = kind ? ep.getOutfitSuit(kind) : -1;
+    } else if (call === 31) {
+      out = kind ? ep.countAvailable(kind) : -1;
+      save = false;
+    } else {
+      const index = this.temps[1]!;
+      if (kind && index >= 0 && index < ep.countAvailable(kind)) {
+        out = ep.getOutfitSuit(kind);
+        ep.setOutfitSuit(kind, index, false);
+      }
     }
-    ep.end(true);
-    const edited = ep.bodyStrings();
-    m.bodyStringEdits.set(guid, edited);
-    m.worldHooks?.bodyStringsChanged?.(this.obj, edited);
+    ep.end(save);
+    if (save) {
+      const edited = ep.bodyStrings();
+      m.bodyStringEdits.set(guid, edited);
+      m.worldHooks?.bodyStringsChanged?.(target.obj, edited);
+    }
     m.record(this, "portraitsDirty", guid);
-    if (old !== null) this.temps[1] = old;
+    if (out !== null) this.temps[1] = out;
     return PRIM_TRUE;
   }
 
