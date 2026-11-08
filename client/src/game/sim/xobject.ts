@@ -2168,13 +2168,22 @@ export class SimObject extends TreeSim {
   }
 
   /** PersonFinder::GetFullName of the neighbor `neighborId` (null when unknown). */
+  /**
+   * PersonFinder::GetFullName: the catalog name, then a space and the name
+   * of the family (Neighborhood::GetFamily) of person data 0x3d, read from
+   * the person on the lot or else from the neighbor's persistent data.
+   */
   private neighborFullName(neighborId: number): string | null {
-    const nb = this.module.findNeighborByID(neighborId);
+    const m = this.module;
+    const nb = m.findNeighborByID(neighborId);
     if (!nb) return null;
-    const st = this.module.sim.state;
+    const st = m.sim.state;
     const info = st ? [...st.family, ...st.neighbors].find((q) => q.neighborId === neighborId) : undefined;
-    const name = this.module.neighborNames.get(neighborId) ?? nb.name;
-    return info ? [info.firstName, info.lastName].filter(Boolean).join(" ") || name : name;
+    const name = info?.firstName ?? m.neighborNames.get(neighborId) ?? nb.name;
+    const live = m.persons.find((p) => !p.killed && (p.obj.selector.guid | 0) === (nb.guid | 0));
+    const familyNumber = live?.person?.personData[0x3d] ?? nb.personData?.[0x3d] ?? 0;
+    const fam = m.nbhd?.families.find((f) => f.chunkId === familyNumber);
+    return fam ? `${name} ${fam.name}` : name;
   }
 
   /**
