@@ -547,6 +547,34 @@ function installFullscreen(): void {
   );
 }
 
+/**
+ * cSimsApp::ActivateApp: the window losing the focus (blur, or the tab
+ * hidden) pauses the live game unless "sim in background" is on, keeping
+ * whether it was paused (+0xcc) to restore when it comes back; scrolling
+ * stops both ways. (+0xcd: only real changes count.)
+ */
+function installActivateApp(ctx: GameContext, game: Game): void {
+  let active = true;
+  let wasPaused = false;
+  const set = (on: boolean): void => {
+    if (on === active) return;
+    active = on;
+    const st = ctx.state;
+    if (st.getMode() === Mode.Live && !getOptionsMgr().getSimInBackground()) {
+      if (!on) {
+        wasPaused = st.isPaused();
+        st.pause(true);
+      } else {
+        st.pause(wasPaused);
+      }
+    }
+    game.lotView?.activateApp(on);
+  };
+  window.addEventListener("blur", () => set(false));
+  window.addEventListener("focus", () => set(true));
+  document.addEventListener("visibilitychange", () => set(document.visibilityState === "visible" && document.hasFocus()));
+}
+
 async function boot(): Promise<void> {
   // GAME_FILES=client: the game files come from this browser's import (engine/gamefiles.ts);
   // without one, back to the landing page, which imports them.
@@ -600,6 +628,7 @@ async function boot(): Promise<void> {
   await preloadGameFiles(folder, (done) => splash.setProgress(done));
   splash.setProgress(null);
   const game = new Game(ctx, mgr);
+  installActivateApp(ctx, game);
   // The "window" resolution: the game follows the window's size (Game.resizeScreen),
   // once the resizing has settled.
   if (readResolution() === "window") {

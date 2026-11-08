@@ -2438,6 +2438,12 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
     return this.viewer !== null;
   }
 
+  /** cSimsApp::ActivateApp's view part: scrolling stops; on activation the world is redrawn. */
+  activateApp(active: boolean): void {
+    this.edge?.stop();
+    if (active && this.viewer) this.viewer.dirty = true;
+  }
+
   /** cObjPickerTool +0x2e: the hilited object, and whether the selected person has interactions on it (hilite 1 / 8). */
   private liveHilite = 0;
   private liveHiliteAvail = false;
