@@ -27,7 +27,7 @@
 
 import { CasSession, type CasPerson } from "../cas/personfinder.js";
 import type { PersonColor } from "../cas/editperson.js";
-import { EditPerson } from "../cas/editperson.js";
+import { EditPerson, PERSON_AGE_ADULT } from "../cas/editperson.js";
 import { bodyStringsOf, readCharacterFile } from "../data/character.js";
 import { NeighborhoodStore } from "../data/nbhdstore.js";
 import type { UIRes } from "../res/uires.js";
@@ -47,7 +47,68 @@ export function characterHooks(nbhdDir: string, sim: Simulator, res: UIRes | und
     makeNewCharacter: (req) => makeNewCharacter(nbhdDir, sim, req, res),
     saveDesignedPerson: (p) => saveDesignedPerson(nbhdDir, p, res),
     saveGame,
+    changeSimBaseType: (req) => changeSimBaseTypeToAdult(nbhdDir, sim, req, res),
   };
+}
+
+/** ChangeSimBaseType's skins by person data 60 (lbl_105BA09C / 94 / 98). */
+const SKIN_BY_PD: Record<number, PersonColor> = { 1: "lgt", 2: "drk", 3: "med" };
+
+/**
+ * Neighborhood::ChangeSimBaseType(neighbor, person, 0x1b), its neighborhood
+ * and file part (the sim part is sim/transforms.ts): the person's persistent
+ * data into its neighbor, the family's flag 8 cleared, the person template
+ * copied to a new character file with the same GUID (the old file deleted),
+ * then the design steps on it (gender, skin, adult, random body and head
+ * suits, SetupNewHDSkins, the old name and description,
+ * EndDesignAPerson(save)) and the old persistent data back with the skin,
+ * gender, age 0x1b and no job. The neighborhood is saved.
+ */
+async function changeSimBaseTypeToAdult(dir: string, sim: Simulator, req: { guid: number; personData: Int16Array; name: string; bio: string }, res?: UIRes): Promise<boolean> {
+  const store = await NeighborhoodStore.open(dir);
+  const guid = req.guid >>> 0;
+  store.savePersistentData(guid, req.personData);
+  const old = store.getPersonData(guid).slice();
+  const gender = (old[65] ?? 0) & 1;
+  let skin = old[60] ?? 0;
+  if (skin < 1 || skin > 3) skin = 1 + Math.floor(Math.random() * 3);
+  store.clearMemberFamilyFlags(guid, 8);
+  const template = await templateChunks(dir, 0);
+  if (!template) return false;
+  const c = await store.changeCharacterFile(guid, template);
+  if (!c) return false;
+  await (await ObjectFolder.get(dir)).newFileAdded(`${dir}/Characters/${c.fileName}`, 1);
+  const chunks = await readCharacterFile(dir, c.fileName);
+  const p: CasPerson = { guid, fileName: c.fileName, firstName: req.name, bio: req.bio, bodyStrings: bodyStringsOf(chunks), personData: new Int16Array(256), face: null, edit: null };
+  const edit = await EditPerson.begin(p.bodyStrings, p.personData);
+  p.edit = edit;
+  edit.setGender(gender);
+  const color = SKIN_BY_PD[skin];
+  if (color) edit.setColor(color);
+  edit.setAge(PERSON_AGE_ADULT);
+  const bodies = edit.countAvailableBodySuits();
+  const heads = edit.countAvailableHeadSuits();
+  if (bodies > 0) edit.setBodySuit(Math.floor(Math.random() * bodies));
+  if (heads > 0) edit.setHeadSuit(Math.floor(Math.random() * heads));
+  edit.setupNewHDSkins();
+  await new CasSession(store, res).endDesignAPerson(p, true, false, false);
+  const pd = old.slice();
+  pd[60] = skin;
+  pd[65] = gender;
+  pd[58] = 0x1b;
+  pd[0x38] = 0;
+  pd[0x39] = 0;
+  store.savePersistentData(guid, pd);
+  await store.save();
+  // The simulator's Neighborhood: the same neighbor (relationships kept) names the new file.
+  const live = sim.module.nbhd?.neighbors.find((n) => n.guid >>> 0 === guid);
+  const nd = store.neighborData(guid);
+  if (live && nd) {
+    live.name = nd.name;
+    live.personData = nd.personData;
+    if (nd.version !== undefined) live.version = nd.version;
+  }
+  return true;
 }
 
 /**

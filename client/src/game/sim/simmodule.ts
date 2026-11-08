@@ -198,6 +198,8 @@ export interface CharacterHooks {
   saveDesignedPerson(p: DesignedPerson): Promise<void>;
   /** cSimsApp::SaveGame, asked by a transform (cSimulator +0xe0). */
   saveGame?(): void;
+  /** Neighborhood::ChangeSimBaseType(neighbor, person, 0x1b)'s neighborhood and file part (sim/transforms.ts); true when done. */
+  changeSimBaseType?(req: { guid: number; personData: Int16Array; name: string; bio: string }): Promise<boolean>;
 }
 
 /** One recorded side effect the port does not perform (sounds, dialogs, UI). */

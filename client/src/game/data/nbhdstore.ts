@@ -611,6 +611,41 @@ export class NeighborhoodStore {
     }
   }
 
+  /**
+   * The file part of Neighborhood::ChangeSimBaseType: the template's
+   * character file is made at the first free Characters/User%05d.iff with
+   * the old character's GUID (StubObject::CreateNew, then the OBJD GUID set
+   * and ChangedDef), the old file is deleted and the neighbor (same id and
+   * relationships) now names the new file, with fresh person data
+   * (Neighbor::Neighbor). Null without that neighbor.
+   */
+  async changeCharacterFile(guid: number, template: readonly IffChunk[]): Promise<{ fileName: string; shortName: string } | null> {
+    const n = this.neighborByGuid(guid);
+    if (!n) return null;
+    const prefix = `sims/${this.dir}/characters/`.toLowerCase();
+    const taken = new Set(
+      (await fetchManifest()).files.map((f) => f.path.toLowerCase()).filter((p) => p.startsWith(prefix)).map((p) => p.slice(prefix.length)),
+    );
+    let base = "";
+    while (this.nextUserFile < 32000) {
+      const candidate = `User${String(this.nextUserFile).padStart(5, "0")}`;
+      this.nextUserFile++;
+      if (!taken.has(`${candidate}.iff`.toLowerCase())) {
+        base = candidate;
+        break;
+      }
+    }
+    if (this.nextUserFile > 31999) this.nextUserFile = 0;
+    if (!base) return null;
+    const fileName = `${base}.iff`;
+    await createCharacterFileFrom(this.dir, fileName, base, template, undefined, guid);
+    await deleteCharacterFile(this.dir, characterFileName(n.name));
+    n.name = base.toLowerCase();
+    n.personData = new Int16Array(256);
+    n.pdVersion = 0;
+    return { fileName, shortName: n.name };
+  }
+
   /** Family +0x138 &= ~`mask` for the family `guid` belongs to (get_family_from_selector_guid). */
   clearMemberFamilyFlags(guid: number, mask: number): void {
     const f = this.families.find((x) => x.memberGuids.includes(guid >>> 0));

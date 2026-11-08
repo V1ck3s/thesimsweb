@@ -87,9 +87,11 @@ export async function createCharacterFileFrom(
   baseName: string,
   template: readonly IffChunk[],
   objectType?: number,
+  /** Neighborhood::ChangeSimBaseType: the new file takes the old character's GUID (then ChangedDef). */
+  keepGuid?: number,
 ): Promise<{ guid: number; bytes: Uint8Array }> {
   // timeGetTime() << 16 ^ rand()
-  const guid = (((Math.trunc(performance.now()) << 16) ^ rand()) >>> 0) || 1;
+  const guid = keepGuid !== undefined ? keepGuid >>> 0 : (((Math.trunc(performance.now()) << 16) ^ rand()) >>> 0) || 1;
   // StubObject::SetPrefix("User%05d" + " ")
   const prefix = `${baseName} `;
   const chunks = template.map((c): IffChunk => {

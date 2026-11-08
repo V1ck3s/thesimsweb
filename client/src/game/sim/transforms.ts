@@ -24,10 +24,18 @@
  * selected person is unselected first (the port's selection follows the
  * control panel, which picks the next one).
  *
- * Neighborhood::AnyoneToAdult (call 40) goes through ChangeSimBaseType: a
- * new character file from the person template takes the old GUID
- * (ObjectFolder::HotSwapSelectorGuid) and the old file and selector go. Not
- * ported: the request fails (state 3).
+ * Neighborhood::AnyoneToAdult (Mac 1009e610, call 40, the "Pet to Adult"
+ * spell) goes through ChangeSimBaseType(neighbor, person, 0x1b) (Mac
+ * 1009d4b0): the person's persistent data goes into its neighbor, every
+ * object of its GUID is killed, a new character file from the person
+ * template takes the old GUID (ObjectFolder::HotSwapSelectorGuid) and the
+ * old file goes; the new person keeps the gender (person data 65 & 1), the
+ * skin (person data 60, a random one outside 1..3), the name, description,
+ * relationships and persistent data, is an adult (age 0x1b) with random
+ * suits and no job (0x38 / 0x39), and is made again where the old one was
+ * (MakeNewOutOfWorldObject, LoadInterestData, TrySnap): a := 0, b := its id.
+ * The file work being asynchronous here, the request stays pending (not
+ * aged) until it is done.
  */
 
 import { EditPerson, PERSON_AGE_ADULT, type PersonColor } from "../cas/editperson.js";
@@ -41,6 +49,8 @@ export interface TransformInfo {
   mode: number;
   state: number;
   age: number;
+  /** AnyoneToAdult's asynchronous part (the port's). */
+  job?: { done: boolean | null; guid: number; at: { fx: number; fy: number }; level: number; dir: number; placed: boolean };
 }
 
 /** ChildToAdult's skins by person data 60 (lbl_105BA09C / 98 / 94). */
@@ -86,7 +96,9 @@ export class Transforms {
       }
     }
     for (let i = 0; i < this.list.length; ) {
-      if (++this.list[i]!.age < 100) i++;
+      const t = this.list[i]!;
+      if (t.state === 0 && t.job) i++;
+      else if (++t.age < 100) i++;
       else this.list.splice(i, 1);
     }
   }
@@ -151,10 +163,55 @@ export class Transforms {
     return true;
   }
 
-  /** Neighborhood::AnyoneToAdult: ChangeSimBaseType is not ported (false). */
-  private anyoneToAdult(t: TransformInfo): boolean {
-    void t;
-    this.module.unportedPrim(1, "generic sim call 40 (ChangeSimBaseType)", 0);
-    return false;
+  /** Neighborhood::AnyoneToAdult: see the file comment; null while the file work runs. */
+  private anyoneToAdult(t: TransformInfo): boolean | null {
+    const m = this.module;
+    const job = t.job;
+    if (job) {
+      if (job.done === null) return null;
+      if (!job.done) return false;
+      // MakeNewOutOfWorldObject of the new selector (which may still be opening).
+      const hooks = m.worldHooks;
+      const sel = hooks?.selector(job.guid);
+      if (sel === undefined) return null;
+      const x = sel && hooks ? hooks.make(sel) : null;
+      if (!x || !hooks) return false;
+      const o = m.addObject(x, true);
+      if (job.placed && hooks.canPlace(x, job.at, job.level, null, 0)) {
+        hooks.place(x, job.at, job.level, null, 0);
+        x.objectData[1] = job.dir;
+        o.forceLocation();
+      }
+      m.dirty(o);
+      t.a = 0;
+      t.b = o.id;
+      return true;
+    }
+    const p = m.persons.find((x) => !x.killed && x.id === t.a);
+    if (!p) return false;
+    const sel = p.obj.selector;
+    const guid = sel.guid >>> 0;
+    const hooks = m.characterHooks;
+    if (!m.findNeighborByGUID(guid) || !hooks?.changeSimBaseType) return false;
+    m.savePersistentData(p);
+    const me = p.obj;
+    const placed = me.tileX >= 0 && me.tileY >= 0;
+    const pending: NonNullable<TransformInfo["job"]> = { done: null, guid, at: { fx: me.fx, fy: me.fy }, level: me.level, dir: me.objectData[1]!, placed };
+    t.job = pending;
+    const request = { guid, personData: p.pd.slice(), name: sel.getCatalogName(), bio: sel.getCatalogDescription() };
+    for (const x of m.list.filter((o) => !o.killed && o.obj.selector.guid >>> 0 === guid)) {
+      m.setSimFlag(x.id, 1, false);
+      m.killObject(x);
+    }
+    void hooks
+      .changeSimBaseType(request)
+      .then((ok) => {
+        pending.done = ok;
+      })
+      .catch((e: unknown) => {
+        console.warn("[sim] ChangeSimBaseType", e);
+        pending.done = false;
+      });
+    return null;
   }
 }
