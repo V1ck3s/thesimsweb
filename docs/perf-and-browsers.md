@@ -575,3 +575,36 @@ not with that table.
   (`screens/frozen.ts`) would then have to read both layers. Not done.
 - SwiftShader rasterizes GL on the CPU: its frame time grows with the pixel count (4.5 fps at
   5120 x 1440). Use it for screenshots, not for timings of large sizes.
+
+## Slow connections and phones (2026-11-08)
+
+Measured on the deployed instance (headless Chrome, a fresh profile each time, recorded with
+`scripts/record-reads.mjs`):
+
+| Cold load | Downloaded |
+|---|---|
+| Start-up to the neighborhood | 42 MB |
+| First lot (House01 / House05 / House03) | 273 / 168 / ~100 MB, of which ~180 MB is common to all three |
+| Create-a-Sim | a few MB, then each body or head browsed |
+
+Every lot load reads the same object files whatever the lot (people, cars, NPCs, the magic wagon,
+doors, windows, stairs, beds…), plus every wall and floor plugin. On a slow connection this made
+the first lot take minutes, and Create-a-Sim showed sims without their meshes or textures.
+
+- **Preload** (`client/src/game/preload.ts`): under the splash screen, with a progress bar, the
+  files common to the recorded lot loads (`client/src/game/preload-lots.json`, written by
+  `scripts/preload-list.mjs` from recordings), the object files `ObjectFolder.everyLotFiles`
+  names, every wall and floor plugin, and the sims' bodies and heads (meshes, textures, suits:
+  names starting with `b` / `c` / `xskin-b` / `xskin-c`). The first run downloads about 340 MB.
+  The cache's keys are read once (`idbCachedKeys`), so later starts skip the step. After it, a lot
+  not among the recorded ones (House02) downloads 29 MB instead of 200+.
+- **Retries** (`fetchRetry`, `engine/assets.ts`): asset requests are asked again on a network
+  error or a 408 / 429 / 502..504, about 30 s in all. VBAnimMgr no longer keeps a failed read: a
+  mesh, texture, suit or animation that could not be downloaded is read again the next time
+  instead of leaving the sim invisible for the rest of the page's life.
+- **Landing page on phones**: the clouds lost their `filter: blur()` and the turning plumbob its
+  two `drop-shadow()` filters, which the GPU redid every frame. The glow is now a still gradient
+  behind it. The installation check downloads the server's file list (890 KB) only once its panel
+  scrolls into view. Main-thread style work at idle (emulated phone, CPU / 6) went from 337 to
+  199 ms per 4 s; the GPU cost cannot be measured here (SwiftShader).
+
