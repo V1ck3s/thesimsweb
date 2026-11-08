@@ -8,6 +8,7 @@
  * instead (each exports `mount(ctx, mgr)`).
  */
 
+import { characterHooks } from "./nbhd/makecharacter.js";
 import { installImeComposition } from "./ui/imecomposition.js";
 import { modeMusicEvent, soundPlayer, UI_SOURCE } from "./audio/index.js";
 import { installLotAudio } from "./audio/lotaudio.js";
@@ -457,6 +458,7 @@ class Game {
         view.sim,
       );
       view.sim.module.dialogHooks = objectDialogHooks(ctx, view.sim, view);
+      view.sim.module.characterHooks = characterHooks(this.nbhdDir, view.sim, ctx.res);
     }
     await applyLoadGameLocation(ctx, view, this.nbhd, house, arrival);
     state.houseNumber = house;

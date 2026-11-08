@@ -57,7 +57,7 @@ no decompiled code is in the repo.
 | 15 | Breakpoint | ported (error 0x3e) |
 | 16 | Find location for | logged, false |
 | 18 | Kill object | ported (kill queue; view hides it) |
-| 19 | Make new character | logged, false |
+| 19 | Make new character | ported (TryMakeNewCharacter): waits for the file and EditPerson work (nbhd/makecharacter.ts) |
 | 20 | Call functional tree | ported (person-only function 8 logged) |
 | 21 | Show string | recorded |
 | 23 | Play sound | recorded |

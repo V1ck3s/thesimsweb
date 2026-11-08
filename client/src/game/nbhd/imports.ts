@@ -260,7 +260,7 @@ export async function getImportInfoForFile(path: string): Promise<ImportInfo | n
 const CHARACTER_TEMPLATES = [0x7fd96b54, 0x4a70df92, 0x7bea0977] as const;
 
 /** The resources of a template object, in map order (StubObject::CreateNew copies them). */
-async function templateChunks(nbhdDir: string, kind: number): Promise<IffChunk[] | null> {
+export async function templateChunks(nbhdDir: string, kind: number): Promise<IffChunk[] | null> {
   const folder = await ObjectFolder.get(nbhdDir);
   const sel = await folder.getSelectorByGUID(CHARACTER_TEMPLATES[kind] ?? CHARACTER_TEMPLATES[0]);
   if (!sel) return null;

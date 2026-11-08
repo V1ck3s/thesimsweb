@@ -153,6 +153,36 @@ export interface TransitHooks {
   genericSimCall(o: SimObject, call: number): number;
 }
 
+/**
+ * cXObject::TryMakeNewCharacter's request: Neighborhood::AddNewCharacter of
+ * `type` (0 person, 1 dog, 2 cat), then the EditPerson steps on the new
+ * character (see nbhd/makecharacter.ts). `color` is the entry of the new
+ * character's semi-global STR# 0x2000, `head` / `body` the
+ * GetNextRandomNumber draws, `petBody` the module's +0x104 (the coat picked
+ * in cWinPetSelectDlg, -1 for none), `name` lbl_105BA210 or its default.
+ */
+export interface MakeCharacterRequest {
+  type: number;
+  colorIndex: number;
+  age: number;
+  gender: number;
+  head: number;
+  body: number;
+  petBody: number;
+  name: string;
+}
+
+/** The new neighbor's id, 0 when it failed; `error` a simulation error to throw (0x3b: no such colour). */
+export interface MakeCharacterResult {
+  neighborId: number;
+  error?: number;
+}
+
+/** See SimModule.characterHooks. */
+export interface CharacterHooks {
+  makeNewCharacter(req: MakeCharacterRequest): Promise<MakeCharacterResult>;
+}
+
 /** One recorded side effect the port does not perform (sounds, dialogs, UI). */
 export interface SimEvent {
   tick: number;
@@ -554,6 +584,15 @@ export class SimModule {
 
   /** Lot changes (town pickers, taxi splash, TryChangeLots), set by the game. */
   transitHooks: TransitHooks | null = null;
+
+  /**
+   * Primitive 19 (Make New Character), set by the game: the character file,
+   * the neighbor and its EditPerson steps are asynchronous here, so the
+   * primitive waits for them (`characterJobs`, keyed by the frame's state).
+   */
+  characterHooks: CharacterHooks | null = null;
+  readonly characterJobs = new Map<number, { result: MakeCharacterResult | null }>();
+  characterJobSerial = 0;
 
   /** +0x64: the queued object dialogs (EnqueueObjectDialog). */
   readonly dialogs: ObjectDialog[] = [];

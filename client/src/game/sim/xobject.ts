@@ -25,7 +25,7 @@ import type { Neighbor } from "../data/neighborhood.js";
 import type { BehaviorTree } from "./behavior.js";
 import { getTreeClass, getBaseID, loadStringSet, loadUIStringSet } from "./behavior.js";
 import { EP, ObjFnTable } from "./objfntable.js";
-import type { SimModule } from "./simmodule.js";
+import type { MakeCharacterResult, SimModule } from "./simmodule.js";
 import { tryLotChangeCall } from "./lotcalls.js";
 import { PRIM_CONTINUE, PRIM_FALSE, PRIM_TRUE, PRIM_WAIT, TreeSim, simThrow, treeSimGlobals } from "./treesim.js";
 import type { ParamSource, StackElem } from "./treestack.js";
@@ -40,6 +40,7 @@ import { addToken, findToken, removeAllTokensOfType, removeToken, removeTokenByI
 import { roomOutside } from "./spacepartition.js";
 import { makeTimeString } from "../res/langutil.js";
 import { UI_LANGUAGE } from "../res/uires.js";
+import { DLG_STRINGS } from "./objectdialog.js";
 
 /** Object data indexes (Behavior.iff STR# 141; index = (offset - 0x4a) / 2). */
 const OD = {
@@ -858,8 +859,8 @@ export class SimObject extends TreeSim {
         return this.tryFindGoodLocation(elem, u8(0), u8(1), u8(2));
       case 18:
         return this.tryKillObject(elem, s16(0), u8(2));
-      case 19: // Make New Character
-        return this.module.unportedPrim(op, "make new character", PRIM_FALSE);
+      case 19:
+        return this.tryMakeNewCharacter(elem, u8(0), u8(1), u8(2), u8(3), op);
       case 20:
         return this.tryCallFunctionalTree(elem, s16(0), s16(2));
       case 21: // Show String: a string of the private file sent to the UI (GlobalDispatch 0xeb); recorded only.
@@ -1850,6 +1851,73 @@ export class SimObject extends TreeSim {
     m.record(this, "portraitsDirty", guid);
     if (out !== null) this.temps[1] = out;
     return PRIM_TRUE;
+  }
+
+  /**
+   * cXObject::TryMakeNewCharacter (Mac 100f1690): locals[op0] is the colour
+   * (entry + 1 of the new character's semi-global STR# 0x2000, error 0x3b
+   * when empty), locals[op1] the age (clamped to 0; under 18 a child),
+   * locals[op2] the gender (non-zero: female; for pets the second gender),
+   * op3 the character type (0 person, 1 dog, 2 cat; pets are adults). A
+   * person needs a head and a body suit, drawn with GetNextRandomNumber; a
+   * pet takes the module's +0x104 coat (cWinPetSelectDlg) or a random one,
+   * and +0x104 goes back to -1. The name is lbl_105BA210 (the last text
+   * entry), or ObjectDialog::GetString(5) without one. On success the stack
+   * object is the new neighbor's id (true); a failed character is deleted
+   * (false). The Mac code's copy-the-creator branch (age < 0) is dead: the
+   * age is clamped first. The file and EditPerson work being asynchronous
+   * here, the primitive waits for it (frame state = the job).
+   */
+  private tryMakeNewCharacter(elem: StackElem, op0: number, op1: number, op2: number, type: number, op: number): number {
+    const m = this.module;
+    const hooks = m.characterHooks;
+    if (!hooks) return m.unportedPrim(op, "make new character", PRIM_FALSE);
+    const job = elem.state ? m.characterJobs.get(elem.state) : undefined;
+    if (job) {
+      if (!job.result) return PRIM_WAIT;
+      m.characterJobs.delete(elem.state);
+      elem.state = 0;
+      const r = job.result;
+      if (r.error) simThrow(r.error);
+      if (r.neighborId <= 0) return PRIM_FALSE;
+      elem.stackObj = r.neighborId;
+      return PRIM_TRUE;
+    }
+    const local = (n: number): number => {
+      if (n >= elem.numLocals) simThrow(XERR.paramRange);
+      return elem.getLocal(n);
+    };
+    const colorIndex = local(op0);
+    const ageValue = Math.max(0, local(op1));
+    const gender = local(op2);
+    // PersonAge: 1 (child) under 18, 0 (adult) otherwise; pets are adults.
+    const age = type === 0 ? (ageValue < 18 ? 1 : 0) : 0;
+    let head = 0;
+    let body = 0;
+    let petBody = -1;
+    if (type === 0) {
+      head = m.sim.random();
+      body = m.sim.random();
+    } else {
+      petBody = m.petIndex;
+      if (petBody === -1) body = m.sim.random();
+      m.petIndex = -1;
+    }
+    const name = m.dialogText || (m.dialogHooks?.uiString(DLG_STRINGS, 5) ?? "");
+    const id = ++m.characterJobSerial;
+    const entry: { result: MakeCharacterResult | null } = { result: null };
+    m.characterJobs.set(id, entry);
+    elem.state = id;
+    void hooks
+      .makeNewCharacter({ type, colorIndex, age, gender, head, body, petBody, name })
+      .catch((e: unknown) => {
+        console.warn("[sim] make new character", e);
+        return { neighborId: 0 };
+      })
+      .then((r) => {
+        entry.result = r;
+      });
+    return PRIM_WAIT;
   }
 
   /**

@@ -39,6 +39,9 @@ import { CasLot } from "./caslot.js";
 import { EditPerson } from "./editperson.js";
 import { generatePortraits } from "./portraits.js";
 
+/** SAnimator::ResetSuits: body string 13 -> person data 65. */
+const GENDERS = ["male", "female", "dogmale", "dogfemale", "catmale", "catfemale"];
+
 /** PersonGlobals.iff STR# 8192: unknown, lgt, drk, med. */
 const SKIN_INDEX: Record<string, number> = { lgt: 1, drk: 2, med: 3 };
 
@@ -153,7 +156,8 @@ export class CasSession {
       const pd = p.personData;
       // SAnimator::ResetSuits
       pd[PD.personAge] = Number.parseInt(p.bodyStrings[13] ?? "", 10) || 0;
-      pd[PD.gender] = (p.bodyStrings[12] ?? "").toLowerCase() === "female" ? 1 : 0;
+      const g = GENDERS.indexOf((p.bodyStrings[12] ?? "").toLowerCase());
+      if (g >= 0) pd[PD.gender] = g;
       pd[PD.skinColor] = SKIN_INDEX[(p.bodyStrings[14] ?? "").toLowerCase()] ?? 0;
       if (isNew && needsInterests(pd)) randomizeAllInterests(pd);
       // Neighborhood::SavePersistentData (into the simulator's Neighborhood too), then Neighborhood::Save.

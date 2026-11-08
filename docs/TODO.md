@@ -58,6 +58,24 @@ Interface / triches
   (boîte jamais montrée par l'original ; EditPerson::ValidateTextures non porté), damagelist et
   sweep (pas de rectangles de dommages ni de profileur ici), draw_routes (aucun code de dessin).
 
+## 2bis. Écarts restants de l'audit du 2026-11 (code décompilé contre port)
+
+Trouvés par l'audit complet ; les arbres du jeu qui les utilisent ont été cherchés dans tous les
+BHAV livrés.
+
+- **Appel générique 1, échange de places** (TryGenericSimCall) : SofaGlobals « Swap Seats - A »,
+  LoveTubHD / HotTubVacation « Switch Sides ».
+- **Appels génériques 39 et 40, transformations** (cSimulator::RequestTransform /
+  ExecuteTransforms, Neighborhood::ChildToAdult / AnyoneToAdult) : CharmsKid « Grow Me »,
+  SocialsMagic « Kid to Adult » et « Pet to Adult ».
+- **Appel générique 32, la famille rejoint le terrain communautaire** : NeighborhoodPhonePlugin
+  « Go To Community ».
+- **Rotation de la tête** (SAnimator::UpdateHeadDirection / AdjustHead / UnadjustHead,
+  `sim/personanim.ts`) : les Sims ne tournent pas la tête vers ce qu'ils regardent.
+- **Objets multi-cases dynamiques, point d'entrée 8** (cXMTObject::MergeInPlace /
+  UpdateDynAdjacency) : seulement flood.iff (flaques), graphisme selon les voisines.
+- Constats de l'audit classés « faible, non vérifiés » : pas encore repris un par un.
+
 ## 3. Son
 
 - Événements kSndob* 4..10 : vérifié, aucun fichier .hot livré ne les utilise (rien à porter).
