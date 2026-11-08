@@ -565,6 +565,9 @@ export class NeighborhoodStore {
   async removeFamily(familyId: number): Promise<void> {
     const f = this.familyRaw(familyId);
     if (!f) return;
+    // RemoveFamily(int): DeleteFamilyExport first, the family's exported file in
+    // <UserData>/Export (Family::GetExportName, the .FAM / .MTF ExportFamily writes).
+    for (const ext of [".FAM", ".MTF"]) await deleteGameFile(`${this.dir}/Export/${f.name}_${f.id}${ext}`).catch(() => undefined);
     while (f.memberGuids.length) {
       const guid = f.memberGuids[0]!;
       // Neighborhood::RemoveFromFamily
