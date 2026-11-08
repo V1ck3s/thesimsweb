@@ -2065,7 +2065,7 @@ export class SimObject extends TreeSim {
       if (vars) vars[0] = id;
       const st = m.sim.state;
       const info = st ? [...st.family, ...st.neighbors].find((q) => q.neighborId === id) : undefined;
-      return info?.firstName ?? nb.name;
+      return info?.firstName ?? m.neighborNames.get(id) ?? nb.name;
     });
     each("$CatalogLocal", (a) => {
       const v = local(a);
@@ -2124,7 +2124,8 @@ export class SimObject extends TreeSim {
     if (!nb) return null;
     const st = this.module.sim.state;
     const info = st ? [...st.family, ...st.neighbors].find((q) => q.neighborId === neighborId) : undefined;
-    return info ? [info.firstName, info.lastName].filter(Boolean).join(" ") || nb.name : nb.name;
+    const name = this.module.neighborNames.get(neighborId) ?? nb.name;
+    return info ? [info.firstName, info.lastName].filter(Boolean).join(" ") || name : name;
   }
 
   /**

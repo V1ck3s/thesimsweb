@@ -1642,7 +1642,7 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
       if (fixed) sim.world = fixed;
       sim.state = this.ctx.state;
       // The panels read the relationships the simulation writes (and the people met during play).
-      if (sim.module.nbhd) shareSimulationNeighborhood(this.ctx.state, sim.module.nbhd);
+      if (sim.module.nbhd) shareSimulationNeighborhood(this.ctx.state, sim.module.nbhd, sim.module.neighborNames);
       // LoadGame dirties the whole CPState: the clock comes from the loaded globals.
       sim.pushClock();
       // ... and the family's motives and person data (the Live panel samples them before the first tick).

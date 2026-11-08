@@ -192,6 +192,15 @@ export class SimModule {
   /** The neighborhood (person persistent data, relationships); null when it failed to load. */
   nbhd: NeighborhoodData | null = null;
   /**
+   * PersonFinder::GetName of every neighbor, by neighbor id: the catalog name
+   * of the person's object (the character file's CTSS for the player's sims,
+   * the NPC object's for townies). Filled in the background once the lot
+   * runs (data/family.ts shareSimulationNeighborhood): the text tokens
+   * ($Neighbor, $NeighborLocal) are expanded synchronously, and a neighbor's
+   * own name is only its file's ("User00109").
+   */
+  readonly neighborNames = new Map<number, string>();
+  /**
    * ObjTestSim's menu globals (lbl_105BA35C / 358 / 354) while
    * AppendInteractionsForMenu runs a check tree: the menu being made and the
    * entry tested (ObjTestSim::IsMenuInProgress, MakeNewMenuItem).

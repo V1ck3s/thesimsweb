@@ -71,9 +71,19 @@ export async function activateFamily(state: CPState, n: NeighborhoodData, houseN
  * a sim makes or changes during play (the RelMatrix arrays the simulation
  * writes) show at once in the relationships panel, as in the original where
  * both are the one Neighborhood. People met during play join
- * `state.neighbors` when the panel asks for them (knowNeighbors).
+ * `state.neighbors` when the panel asks for them (knowNeighbors). `names`
+ * (SimModule.neighborNames) gets every neighbor's name.
  */
-export function shareSimulationNeighborhood(state: CPState, n: NeighborhoodData): void {
+export function shareSimulationNeighborhood(state: CPState, n: NeighborhoodData, names?: Map<number, string>): void {
+  // Every neighbor's name (PersonFinder::GetName), for the text tokens; in the background.
+  if (names) {
+    for (const nb of n.neighbors) {
+      void neighborSelector(n.dir, nb.guid).then((sel) => {
+        const name = sel?.getCatalogName();
+        if (name) names.set(nb.id, name);
+      });
+    }
+  }
   const byId = new Map(n.neighbors.map((nb) => [nb.id, nb]));
   for (const p of [...state.family, ...state.neighbors]) {
     const nb = p.neighborId !== undefined ? byId.get(p.neighborId) : undefined;
