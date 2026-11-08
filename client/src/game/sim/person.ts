@@ -1304,15 +1304,17 @@ export class PersonSim extends SimObject {
               state = 8;
               break;
             }
-            // Stand up first: the chair's stand tree (entry point 27) with the starting point's direction.
+            // Stand up first: a chair (sit and stand trees, entry points 26 / 27) runs its
+            // stand tree with the starting point's directions, which also become the
+            // route entry flags (person data 37). Without one, the route ends (state 7).
             const chair = me.parentId !== 0 ? m.getObject(me.parentId) : null;
-            const tree = chair ? chair.fnTable.getTreeID(EP.stand) : 0;
+            const tree = chair && chair.fnTable.getTreeID(EP.sit) !== 0 ? chair.fnTable.getTreeID(EP.stand) : 0;
             if (chair && tree !== 0 && this.gosubObjectTree(chair, { src: [route.startDirs, 0, 0, 0], at: 0 }, tree)) {
+              pd[PDX.routeEntryFlags] = route.startDirs;
               pd[72] = 0;
               return wait(5, PRIM_CONTINUE);
             }
-            route.result = ROUTE.couldNotStand;
-            state = 16;
+            state = 7;
           }
           break;
         }
@@ -1550,6 +1552,8 @@ export class PersonSim extends SimObject {
       }
     }
     if (this.animator.isFollowing()) this.animator.endFollow();
+    // State 7 (failure) without a result gives result 1.
+    if (!success && route.result === 0) route.result = ROUTE.unknown;
     pd[PDX.routeResult] = route.result;
     if (this.routes.length === 1 && pd[38] === 0) pd[PDX.routingComplete] = 1;
     me.objectData[9] = 0;
