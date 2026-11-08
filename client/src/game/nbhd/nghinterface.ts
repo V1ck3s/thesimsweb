@@ -30,6 +30,7 @@ import { copyMissingUnleashedFilesIntoUserData } from "../data/nbhdstore.js";
 import { buildIff, decodeStrSet, encodeStrSet, parseIff } from "../data/iff.js";
 import { ReconReader } from "../data/recon.js";
 import { decodeImage } from "../res/bmp.js";
+import { friendshipThreshold } from "../sim/floatconstants.js";
 
 /** ZoningData::eZoneTypes */
 export const enum Zone {
@@ -273,7 +274,7 @@ export class Neighborhood {
   /**
    * Neighborhood::UpdateFamilyFriendsCount: neighbors outside the family who
    * belong to a family themselves and share a daily relationship of at least
-   * 25 both ways with one of the members.
+   * lbl_105BA1F4 (friendshipThreshold) both ways with one of the members.
    */
   getFamilyFriendsCount(f: Family): number {
     const members = f.memberGuids.map((g) => neighborByGuid(this.data, g)).filter((m) => m !== undefined);
@@ -289,16 +290,13 @@ export class Neighborhood {
       const friend = members.some((m) => {
         const a = daily(n, m.id);
         const b = daily(m, n.id);
-        return a !== null && b !== null && a >= FRIEND_THRESHOLD && b >= FRIEND_THRESHOLD;
+        return a !== null && b !== null && a >= friendshipThreshold && b >= friendshipThreshold;
       });
       if (friend && (pd[PD.gender] ?? 0) < 2) count++;
     }
     return count;
   }
 }
-
-/** lbl_105BA1F4: the daily relationship needed to count as a friend. */
-const FRIEND_THRESHOLD = 25;
 
 /**
  * NeighborhoodConstants "architecture value multiplier" (default 0.7; the

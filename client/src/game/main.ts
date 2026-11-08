@@ -28,6 +28,7 @@ import { getOptionsMgr } from "./optionsmgr.js";
 import { NBHD_DOWNTOWN, NBHD_END_NOTES, NBHD_MAGICTOWN, NBHD_STUDIOTOWN, NBHD_VACATION, WinNeighborhoodUL } from "./nbhd/winneighborhoodul.js";
 import { applyLoadGameLocation, arrivalFor, type ChangeLotTrigger, holdSimulator, type LotArrival, prepareArrival, Transit } from "./nbhd/transit.js";
 import { objectDialogHooks } from "./world/objectdialogshow.js";
+import { loadGlobalConstants } from "./sim/simmodule.js";
 import { currentTaxiDialog } from "./nbhd/winpicturesplashdialog.js";
 import { Town, WinTown } from "./nbhd/wintown.js";
 import { Fonts } from "./res/fonts.js";
@@ -68,7 +69,7 @@ export type TestMount = (ctx: GameContext, mgr: WinMgr) => Promise<void>;
 
 async function createContext(): Promise<GameContext> {
   const strings = new Strings();
-  await Promise.all(["GameData/UIText.iff", "GameData/Live.iff", "GameData/Build.iff"].map((p) => strings.load(p)));
+  await Promise.all([...["GameData/UIText.iff", "GameData/Live.iff", "GameData/Build.iff"].map((p) => strings.load(p)), loadGlobalConstants()]);
   return {
     res: await UIRes.load(),
     fonts: new Fonts(),

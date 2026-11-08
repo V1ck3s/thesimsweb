@@ -25,6 +25,7 @@ import { deleteGameFile, writeGameFile } from "./files.js";
 import { buildIff, decodeStrSet, parseIff, stringSetBaseResave, stringSetMultiSave, stringSetMultiSaveLocal, type IffChunk } from "./iff.js";
 import { PD, type Neighbor, type NeighborhoodData } from "./neighborhood.js";
 import { ReconReader, ReconWriter } from "./recon.js";
+import { friendshipThreshold } from "../sim/floatconstants.js";
 
 /** RelMatrix: a counted list (count >= 0) or a pointer vector (count < 0). */
 interface RelMatrixRaw {
@@ -95,6 +96,13 @@ interface FamilyRaw {
 export interface LiveNeighborhood {
   data: NeighborhoodData;
   persistent: Map<number, Int16Array>;
+  /**
+   * The loaded house (Neighborhood +0x164) and its live net worth: cSimulator
+   * +0x9c (lot) + +0xa0 (objects) + (int)(+0xa4 (architecture) * the
+   * architecture value multiplier). Neighborhood::Save gives it to the
+   * families of that house.
+   */
+  loadedHouse?: () => { house: number; netWorth: number };
 }
 
 let liveNeighborhood: LiveNeighborhood | null = null;
@@ -932,6 +940,22 @@ export class NeighborhoodStore {
   /** Neighborhood::Save (see the file comment for what is rewritten). */
   async save(): Promise<void> {
     this.takeLive();
+    // Neighborhood::Save's family loop: the families of the loaded house get its
+    // live net worth (Family +0x11c), and each family's friend count (+0x120,
+    // UpdateFamilyFriendsCount; the original redoes it when RelationshipsChanged
+    // set +0x124, the count only depends on the relationships so it is redone here).
+    const live = liveNeighborhood?.data.dir === this.dir ? liveNeighborhood.loadedHouse?.() : undefined;
+    for (const f of this.families) {
+      if (live && f.houseNumber !== 0 && f.houseNumber === live.house && f.netWorth !== live.netWorth) {
+        f.netWorth = live.netWorth;
+        f.dirty = true;
+      }
+      const friends = this.familyFriendsCount(f);
+      if (f.unk120 !== friends) {
+        f.unk120 = friends;
+        f.dirty = true;
+      }
+    }
     const nbrs = this.chunks.find((c) => c.type === "NBRS")!;
     this.put({ ...nbrs, data: serializeNbrs(this.nbrs) });
     for (const f of this.families) {
@@ -969,6 +993,32 @@ export class NeighborhoodStore {
    * queued persistent data, every neighbor's RelMatrix and the SimInventory
    * vector (NGBH).
    */
+  /**
+   * Neighborhood::UpdateFamilyFriendsCount: the neighbors outside the family
+   * who belong to a family (Neighbor +0xee) and are not pets, with a daily
+   * relationship of at least the friendship threshold both ways with a member.
+   */
+  private familyFriendsCount(f: FamilyRaw): number {
+    const nbrs = this.nbrs.entries.filter((e): e is NeighborRaw => !!e);
+    const members = new Set(f.memberGuids.map((g) => g >>> 0));
+    const memberNbrs = nbrs.filter((n) => members.has(n.guid >>> 0));
+    const daily = (from: NeighborRaw, to: number): number | null => {
+      const r = from.rels.entries.find((x) => x?.other === to);
+      return r && r.values.length > 0 ? r.values[0]! : null;
+    };
+    let count = 0;
+    for (const n of nbrs) {
+      if (members.has(n.guid >>> 0) || n.pdVersion === 0 || n.personData[PD.familyNumber] === 0) continue;
+      const friend = memberNbrs.some((m) => {
+        const a = daily(n, m.id);
+        const b = daily(m, n.id);
+        return a !== null && b !== null && a >= friendshipThreshold && b >= friendshipThreshold;
+      });
+      if (friend && (n.personData[PD.gender] ?? 0) < 2) count++;
+    }
+    return count;
+  }
+
   private takeLive(): void {
     const live = liveNeighborhood;
     if (!live || live.data.dir !== this.dir) return;

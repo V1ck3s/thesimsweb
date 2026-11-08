@@ -44,6 +44,19 @@ import { routingSlotFrom, type RoutingSlot } from "./routing.js";
 
 const GLOBAL_FAR = "GameData/Global/Global.far";
 
+/** NeighborhoodConstants "architecture value multiplier" (lbl_105BA1EC, 0.7 as a float). */
+const ARCHITECTURE_VALUE_MULTIPLIER = Math.fround(0.7);
+
+/**
+ * GlobalConstantsClient::UpdateConstants at start-up (cSimsApp): the
+ * constants the neighborhood screens read before any lot is loaded, here the
+ * friendship threshold of FCNS 2 (AutonomyConstantsClient).
+ */
+export async function loadGlobalConstants(): Promise<void> {
+  const r = await SimResources.load();
+  setFriendshipThreshold(loadFloatConstants(r.glob, 2));
+}
+
 /** Global.iff and the semi-global files (ObjectFolder +0x2c / AddSelector's "<global folder><GLOB name>"). */
 export class SimResources {
   private readonly semi = new Map<string, ResFile | null>();
@@ -633,7 +646,18 @@ export class SimModule {
   initPeople(nbhd: NeighborhoodData | null): void {
     this.nbhd = nbhd;
     // This Neighborhood is the one in memory: Neighborhood::Save writes its relationships and inventories.
-    setLiveNeighborhood(nbhd ? { data: nbhd, persistent: new Map() } : null);
+    setLiveNeighborhood(
+      nbhd
+        ? {
+            data: nbhd,
+            persistent: new Map(),
+            loadedHouse: () => ({
+              house: this.sim.globals[10]!,
+              netWorth: (this.sim.lotValue + this.sim.objectValue + Math.trunc(Math.fround(Math.fround(this.sim.archValue) * ARCHITECTURE_VALUE_MULTIPLIER))) | 0,
+            }),
+          }
+        : null,
+    );
     const g = this.res.glob;
     // GlobalConstantsClient: FCNS 1 / 5 / 6 motives, FCNS 2 autonomy.
     setMotiveConstants([1, 5, 6].map((id) => loadFloatConstants(g, id)));
