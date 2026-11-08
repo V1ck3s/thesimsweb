@@ -397,7 +397,7 @@ export interface TownCallbacks {
   /** A feature that is not ported (Import, Move In, ...). */
   onUnported(what: string): void;
   /** The house file side of Neighborhood::MoveOut (bulldoze), as on the neighborhood screen. */
-  onMoveOutHouse?(house: number, bulldoze: boolean, store: NeighborhoodStore): Promise<boolean>;
+  onMoveOutHouse?(house: number, bulldoze: boolean, store: NeighborhoodStore, family: number): Promise<boolean>;
   /** The house file side of Neighborhood::RemoveFromVacation (the family sent home, the lot optionally bulldozed). */
   onRemoveFromVacation?(house: number, bulldoze: boolean, store: NeighborhoodStore): Promise<boolean>;
   /**
@@ -1360,8 +1360,8 @@ export class WinTown extends TSWin implements LotBtnOwner {
     let ok = false;
     try {
       const store = await NeighborhoodStore.open(this.nb.dir);
-      store.moveOutFamily(house);
-      ok = this.callbacks.onMoveOutHouse ? await this.callbacks.onMoveOutHouse(house, true, store) : false;
+      const fam = store.moveOutFamily(house, !this.callbacks.onMoveOutHouse);
+      ok = this.callbacks.onMoveOutHouse ? await this.callbacks.onMoveOutHouse(house, true, store, fam) : false;
       if (ok) await store.save();
       else if (!this.callbacks.onMoveOutHouse) this.callbacks.onUnported(`Neighborhood::MoveOut house file side (house ${house})`);
     } finally {

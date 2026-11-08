@@ -697,17 +697,40 @@ export class NeighborhoodStore {
    * GetFamilyNetWorth (budget + lot value, the house being no longer theirs),
    * lot value 0. Returns the family id, or -1 when nobody lives there. The
    * house file side (objects killed, walls / floors / pool cleared on a
-   * bulldoze, funds and global 26 zeroed, SaveHouse) is not done here.
+   * bulldoze, funds and global 26 zeroed, SaveHouse) is not done here. With
+   * `sell` false the sale is left to it (world/moveout.ts: the family's funds
+   * go through the simulator around "evict lot", then sellLot).
    */
-  moveOutFamily(house: number): number {
+  moveOutFamily(house: number, sell = true): number {
     const f = this.families.find((x) => x.houseNumber === house || x.unk13c === house);
     if (!f || house === 0) return -1;
     f.houseNumber = 0;
     f.flags &= ~8;
+    if (sell) this.sellLot(f.id);
+    f.dirty = true;
+    return f.id;
+  }
+
+  /** MoveOut's end of the sale: Family +0x118 = Family::GetNetWorth (budget + lot value), +0x11c = 0. */
+  sellLot(familyId: number): void {
+    const f = this.familyRaw(familyId);
+    if (!f) return;
     f.budget = f.budget + f.netWorth;
     f.netWorth = 0;
     f.dirty = true;
-    return f.id;
+  }
+
+  /** Family +0x118, the family's funds (0 without the family). */
+  familyBudget(familyId: number): number {
+    return this.familyRaw(familyId)?.budget ?? 0;
+  }
+
+  /** Family +0x118 := `budget`. */
+  setFamilyBudget(familyId: number, budget: number): void {
+    const f = this.familyRaw(familyId);
+    if (!f) return;
+    f.budget = budget | 0;
+    f.dirty = true;
   }
 
   /**

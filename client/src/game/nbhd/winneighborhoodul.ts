@@ -231,7 +231,7 @@ export interface NeighborhoodCallbacks {
    * `store` holds the family side already applied (saved after this
    * resolves); a bulldoze deletes the house's characters through it.
    */
-  onMoveOutHouse?(house: number, bulldoze: boolean, store: NeighborhoodStore): Promise<boolean>;
+  onMoveOutHouse?(house: number, bulldoze: boolean, store: NeighborhoodStore, family: number): Promise<boolean>;
 }
 
 /** UIText STR# 131 "BulldozeModeStrs" (title, text pairs; also the rezone eviction questions). */
@@ -1331,9 +1331,9 @@ export class WinNeighborhoodUL extends TSWin implements LotBtnOwner {
    */
   private async evictFamily(house: number, bulldoze: boolean): Promise<boolean> {
     const store = await NeighborhoodStore.open(this.nb.dir);
-    const fam = store.moveOutFamily(house);
+    const fam = store.moveOutFamily(house, !this.callbacks.onMoveOutHouse);
     if (fam === -1 && !bulldoze) return false;
-    if (this.callbacks.onMoveOutHouse && !(await this.callbacks.onMoveOutHouse(house, bulldoze, store))) return false;
+    if (this.callbacks.onMoveOutHouse && !(await this.callbacks.onMoveOutHouse(house, bulldoze, store, fam))) return false;
     if (!this.callbacks.onMoveOutHouse) this.callbacks.onUnported(`Neighborhood::MoveOut house file side (house ${house}, bulldoze ${bulldoze})`);
     await store.save();
     if (bulldoze) await this.clearLotDescription(house);

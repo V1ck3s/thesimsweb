@@ -307,7 +307,7 @@ class Game {
           mgr.main.childDelete(screen);
         });
       },
-      onMoveOutHouse: (house, bulldoze, store) => moveOutHouse(ctx, store, house, bulldoze),
+      onMoveOutHouse: (house, bulldoze, store, family) => moveOutHouse(ctx, store, house, bulldoze, family),
     });
     screen.setArea(0, 0, ctx.width, ctx.height);
     if (!(await screen.init())) throw new Error("neighborhood init failed");
@@ -335,7 +335,7 @@ class Game {
         }
       },
       onUnported: (what) => console.log(`not ported: ${what}`),
-      onMoveOutHouse: (house, bulldoze, store) => moveOutHouse(ctx, store, house, bulldoze),
+      onMoveOutHouse: (house, bulldoze, store, family) => moveOutHouse(ctx, store, house, bulldoze, family),
       onRemoveFromVacation: (house, bulldoze, store) => removeFromVacationHouse(ctx, store, house, bulldoze),
       // cWinMagicland::MoveInModeLotHandler: LoadGame(house, family) under the frozen screen.
       onMoveIn: (house, family, value) =>

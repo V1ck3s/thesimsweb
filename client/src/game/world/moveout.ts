@@ -261,8 +261,8 @@ function setSavedLevel(bytes: Uint8Array, level: number): Uint8Array {
  * neighborhood. Resolves false when the house could not be loaded or saved
  * (the caller then puts the family back, as MoveOut does).
  */
-export async function moveOutHouse(ctx: GameContext, store: NeighborhoodStore, house: number, bulldoze: boolean): Promise<boolean> {
-  return evictHouse(ctx, store, house, bulldoze, false);
+export async function moveOutHouse(ctx: GameContext, store: NeighborhoodStore, house: number, bulldoze: boolean, family = -1): Promise<boolean> {
+  return evictHouse(ctx, store, house, bulldoze, false, family);
 }
 
 /**
@@ -276,7 +276,7 @@ export async function removeFromVacationHouse(ctx: GameContext, store: Neighborh
   return evictHouse(ctx, store, house, bulldoze, true);
 }
 
-async function evictHouse(ctx: GameContext, store: NeighborhoodStore, house: number, bulldoze: boolean, vacation: boolean): Promise<boolean> {
+async function evictHouse(ctx: GameContext, store: NeighborhoodStore, house: number, bulldoze: boolean, vacation: boolean, family = -1): Promise<boolean> {
   const path = housePathOf(store.dir, house);
   let lot: HeadlessLot;
   try {
@@ -291,6 +291,8 @@ async function evictHouse(ctx: GameContext, store: NeighborhoodStore, house: num
   await makeTutorialObject(lot.placement, lot.folder, sim.module, store.dir).catch((e: unknown) => console.warn("[moveout] tutorial object", e));
   if (parseIff(lot.house.data).some((c) => c.type === "EXPi")) broadcastMessage(lot, IMPORT_LOT, 0);
   if (vacation) sim.globals[9] = 0; // global 9: the house family
+  // MoveOut: the evicted family's funds go into the simulator for "evict lot".
+  if (family >= 0) sim.setFunds(store.familyBudget(family));
   broadcastMessage(lot, EVICT_LOT, 0);
   if (vacation) {
     // OBJD type 2 (a person) and held by nothing.
@@ -300,7 +302,11 @@ async function evictHouse(ctx: GameContext, store: NeighborhoodStore, house: num
   }
   if (!vacation || bulldoze) killEvictedObjects(lot, bulldoze);
   if (bulldoze) bulldozeTiles(fixed);
+  // MoveOut: the family keeps what the funds are after it, the lot's are 0, then the
+  // family sells the lot (Family::GetNetWorth: budget + lot value, lot value 0).
+  if (family >= 0) store.setFamilyBudget(family, sim.getFunds());
   if (!vacation) sim.setFunds(0);
+  if (family >= 0) store.sellLot(family);
   sim.globals[26] = 0;
   sim.globals[G.daysRunning] = 0;
   computeRooms(fixed, new RoomManager(fixed));
