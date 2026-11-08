@@ -63,8 +63,6 @@ Interface / triches
 Trouvés par l'audit complet ; les arbres du jeu qui les utilisent ont été cherchés dans tous les
 BHAV livrés.
 
-- **Appel générique 1, échange de places** (TryGenericSimCall) : SofaGlobals « Swap Seats - A »,
-  LoveTubHD / HotTubVacation « Switch Sides ».
 - **Appels génériques 39 et 40, transformations** (cSimulator::RequestTransform /
   ExecuteTransforms, Neighborhood::ChildToAdult / AnyoneToAdult) : CharmsKid « Grow Me »,
   SocialsMagic « Kid to Adult » et « Pet to Adult ».

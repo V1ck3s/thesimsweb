@@ -1272,6 +1272,41 @@ export class SimObject extends TreeSim {
         if ((nb.personData?.[0x3d] ?? 0) !== 0 && !m.removeFromFamily(nb)) return PRIM_FALSE;
         return m.addToFamily(nb, fam) ? PRIM_TRUE : PRIM_FALSE;
       }
+      case 1: {
+        // Swap places (SofaGlobals "Swap Seats - A", the tubs' "Switch Sides"): I and the stack
+        // object are people (error 0x1c; no stack object 0x15), each in a container (+0x4e,
+        // error 0x15; the original checks mine twice and not the other's). Both are picked up
+        // (Pickup(1)), each goes into the other's container, slot 0 (CanPlace, then
+        // cXPerson::Place; a refused CanPlace leaves it out), the directions are swapped and
+        // the animators snap to the new spots (SnapToGrid(1)). The animation displacement of
+        // the container's slot 0 (SetAnimDisplacements) is not ported, as in TrySnap.
+        if (!this.isPerson) simThrow(XERR.notPerson);
+        const other = this.obj_(elem.stackObj);
+        if (!other) simThrow(XERR.noStackObject);
+        if (!other.isPerson) simThrow(XERR.notPerson);
+        const mine = this.obj_(this.obj.containerId)?.obj ?? null;
+        if (!mine) simThrow(XERR.noStackObject);
+        const theirs = this.obj_(other.obj.containerId)?.obj ?? null;
+        const hooks = m.worldHooks;
+        const myDir = this.obj.objectData[1]!;
+        const theirDir = other.obj.objectData[1]!;
+        if (hooks) {
+          hooks.pickup(this.obj);
+          hooks.pickup(other.obj);
+          const at = { fx: -16, fy: -16 };
+          if (theirs && hooks.canPlace(this.obj, at, 1, theirs, 0)) hooks.place(this.obj, at, 1, theirs, 0);
+          if (hooks.canPlace(other.obj, at, 1, mine, 0)) hooks.place(other.obj, at, 1, mine, 0);
+        }
+        this.obj.objectData[1] = theirDir;
+        other.obj.objectData[1] = myDir;
+        this.forceLocation();
+        other.forceLocation();
+        this.moved();
+        other.moved();
+        m.dirty(this);
+        m.dirty(other);
+        return PRIM_TRUE;
+      }
       case 5: {
         // Neighborhood::GetFamily(temp 0) (false without it); cSimulator::Spend(expense 2,
         // -Family::GetNetWorth): the lot's funds get the family's budget + lot value.
