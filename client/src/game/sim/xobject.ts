@@ -2671,13 +2671,15 @@ export class SimObject extends TreeSim {
    * 0x800 skips the bounds check. Then TrySnap(FTilePt, ...): bounds, then
    * CanPlace / Place (Placement) and the facing. On failure object data 52
    * is 2 when the spot was out of bounds and object data 54 the obstacle.
-   * Not ported: the room and wall checks between the two tiles, the
-   * animation displacement (flag 1) and moving people out of the way
-   * (flag 2, cXPerson::MoveOutOfWay). Without world hooks (headless) the
+   * With flag 2, a person whose spot is taken by another person (error 0xb)
+   * asks that person to move out of the way (cXPerson::MoveOutOfWay(int)):
+   * object data 52 is then 1, and the tree tries again (a sim getting up from
+   * a sofa while someone stands in front of it).
+   * Not ported: the room and wall checks between the two tiles and the
+   * animation displacement (flag 1). Without world hooks (headless) the
    * object is moved without placement checks.
    */
   protected trySnap(elem: StackElem, slotArg: number, mode: number, flags: number): number {
-    void flags;
     const o = this.obj_(elem.stackObj);
     if (!o) simThrow(0x15);
     const t = o.obj;
@@ -2732,7 +2734,9 @@ export class SimObject extends TreeSim {
       if (ok) ok = hooks.canPlace(this.obj, pos, t.level, container, slot);
       if (!ok) {
         const e = hooks.lastError();
-        if (!checkBounds || e.code === 1 || tx < 1 || ty < 1 || tx >= n - 1 || ty >= n - 1) d[52] = 2;
+        const other = e.obstacle !== 0 ? this.module.getObject(e.obstacle) : null;
+        if (flags & 2 && e.code === 0xb && other?.isPerson && this.askToMoveOutOfWay(other)) d[52] = 1;
+        else if (!checkBounds || e.code === 1 || tx < 1 || ty < 1 || tx >= n - 1 || ty >= n - 1) d[52] = 2;
         d[54] = e.obstacle;
         return PRIM_FALSE;
       }
@@ -2742,6 +2746,12 @@ export class SimObject extends TreeSim {
     this.moved();
     this.module.dirty(this);
     return PRIM_TRUE;
+  }
+
+  /** TrySnap's flag 2: has `other` (a person in the way) been asked to move? People override it. */
+  protected askToMoveOutOfWay(other: SimObject): boolean {
+    void other;
+    return false;
   }
 
   /**

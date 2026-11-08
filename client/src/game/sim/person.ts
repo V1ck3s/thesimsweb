@@ -1798,6 +1798,49 @@ export class PersonSim extends SimObject {
     return true;
   }
 
+  /** TrySnap's flag 2 (cXObject::TrySnap): the person in the way moves, with my current action's priority. */
+  protected override askToMoveOutOfWay(other: SimObject): boolean {
+    return other instanceof PersonSim && other.moveOutOfWayFor(this.currentAction?.priority ?? 0);
+  }
+
+  /**
+   * cXPerson::MoveOutOfWay(int priority), TrySnap's flag 2: false when
+   * already moving out of the way; else the helper object 0x7c4 is made at
+   * this person's position with a routing slot on its four sides (1 to 5
+   * tiles, any facing and rotation, random scores) and its interaction 3 is
+   * pushed with `priority`.
+   */
+  moveOutOfWayFor(priority: number): boolean {
+    if (this.hasMoveOutOfWay()) return false;
+    const me = this.obj;
+    const h = this.module.worldHooks;
+    const sel = h?.selector(PersonSim.MOVE_HELPER_GUID);
+    if (!h || !sel) return false;
+    const helperObj = h.make(sel);
+    if (!helperObj) return false;
+    const helper = this.module.getObject(helperObj.objectId);
+    if (!helper) return false;
+    h.place(helperObj, { fx: me.fx, fy: me.fy }, me.level, null, -1);
+    const s = newRoutingSlot();
+    for (const d of [0, 2, 4, 6]) allowDirection(s, d);
+    s.flags |= RSF.anyRotation;
+    s.minProximity = 0x10;
+    s.maxProximity = 0x50;
+    s.optimalProximity = 0x10;
+    s.facing = FACE_ANY;
+    s.multipliers[0] = 1;
+    s.flags |= RSF.randomScore;
+    const own = [...this.routingSlotsOfObject(helper)];
+    own[0] = s;
+    slotOverrides.set(helper, own);
+    const e = this.module.treeTableOf(helper.obj.selector)?.entries.find((x) => x.stringIndex === 3);
+    if (!e || !this.addAction(this.makeInteraction(helper, e, priority))) {
+      this.module.killObject(helper);
+      return false;
+    }
+    return true;
+  }
+
   /**
    * cXPerson::TryLookTowards: 0 turns the head (SAnimator::LookTowards, not
    * drawn here; true); 1 faces the camera; 2 / 3 face towards / away from
