@@ -182,7 +182,6 @@ export function findBestPortal(module: SimModule, person: SimObject, target: Sim
       v = getDist(p, id);
     }
     if (v === FAR || v === FAILED) continue;
-    if (v >= USED_LO && v <= USED_HI) continue;
     if (best && getDist(best, id) <= v) continue;
     best = p;
   }
