@@ -48,6 +48,7 @@ import { doSave, isLotDirty, markLotClean, saveGame } from "./world/savegame.js"
 import { moveOutHouse, removeFromVacationHouse } from "./world/moveout.js";
 import { installCheatConsole } from "./ui/cheat.js";
 import { firstRunTutorial, resetTutorial } from "./nbhd/tutorial.js";
+import { IDNO, IDOK, IDYES, MB_OKCANCEL, MB_YESNOCANCEL, TSWinMsgBox } from "./ui/msgbox.js";
 
 /** The screen size for this start (engine/display.ts: cSimsApp::PreFrameWorkInit's display mode). */
 const { w: SCREEN_W, h: SCREEN_H } = screenSize();
@@ -92,6 +93,8 @@ class Game {
   private soundsPaused: boolean | null = null;
   /** Teardown of audio/lotaudio.ts for the loaded lot. */
   private lotAudioOff: (() => void) | null = null;
+  /** lbl_105C0807: a Quit is asking. */
+  private quitting = false;
   /** cSimsApp +0x108..+0x10a for the next LoadGame (set by switchLots). */
   private arrival: LotArrival | null = null;
 
@@ -130,6 +133,29 @@ class Game {
         await saveGame(ctx, this.lotView, this.nbhdDir);
       },
       doSave: () => doSave(ctx, this.lotView, this.nbhdDir),
+      // cSimsApp::Quit: on a changed lot with a house (and saving allowed) "Do you want to save
+      // before quitting?" (STR# 153 entries 6 / 5, Yes saves, No quits, Cancel stays), else
+      // "Are you sure you want to quit?" (entries 2 / 1). The browser cannot close the game:
+      // quitting goes back to the landing page.
+      quit: async () => {
+        if (this.quitting) return false;
+        this.quitting = true;
+        try {
+          const str = (i: number): string => ctx.strings.get("UIText", 153, i);
+          const house = this.lotView?.sim?.globals[G.houseNumber] ?? 0;
+          let ok: boolean;
+          if (!ctx.state.isSaveDisabled() && isLotDirty(this.lotView) && house !== 0) {
+            const r = await TSWinMsgBox.show(ctx, str(6), str(5), MB_YESNOCANCEL);
+            ok = r === IDNO || (r === IDYES && (await saveGame(ctx, this.lotView, this.nbhdDir)));
+          } else {
+            ok = (await TSWinMsgBox.show(ctx, str(2), str(1), MB_OKCANCEL)) === IDOK;
+          }
+          if (ok) location.href = "/";
+          return ok;
+        } finally {
+          this.quitting = false;
+        }
+      },
       saveDowntownDescription: (prompt) => {
         const sim = this.lotView?.sim;
         const house = sim?.globals[G.houseNumber] ?? 0;
