@@ -2055,6 +2055,15 @@ export class PersonSim extends SimObject {
    */
   protected tryFindBestAction(elem: StackElem): number {
     const m = this.module;
+    // Free will off (lbl_105BA218): a human of the household (person type 0, not
+    // a pet: person data 0x41 bits 1 / 2 clear) or a human of the house's family
+    // (family number global 9, gender <= 1) picks nothing.
+    if (!m.sim.freeWillOn) {
+      const gender = this.pd[0x41]!;
+      if (this.pd[PDX.personType] === 0) {
+        if ((gender & 6) === 0) return PRIM_FALSE;
+      } else if (m.sim.globals[9] === this.pd[PDX.familyNumber] && gender <= 1) return PRIM_FALSE;
+    }
     const cur = this.currentScore();
     const k = m.autonomy;
     const visitor = this.pd[PDX.personType] !== 0;
@@ -2108,7 +2117,7 @@ export class PersonSim extends SimObject {
       if (this.autonomyLog.length > 5000) this.autonomyLog.shift();
     }
     if (!scored.length) return PRIM_FALSE;
-    const n = Math.max(1, Math.trunc(k.randomCount - this.pd[0x12]! / 2000));
+    const n = Math.max(1, Math.trunc(k.randomCount) - Math.trunc(this.pd[0x12]! / 2000));
     // A visitor, or a best entry whose interaction has flag 1 (TTAB entry flag 0x100,
     // ScoredInteraction +0xc), on a residential lot takes the top score.
     const top = (visitor || (scored[0]!.e.flags & 0x100) !== 0) && zoning === 1;

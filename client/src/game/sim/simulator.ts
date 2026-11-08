@@ -295,6 +295,11 @@ export class Simulator {
     this.globals[G.freeWill] = Simulator.freeWill ? 1 : 0;
   }
 
+  /** lbl_105BA218 (the free will option) as cXPerson::TryFindBestAction reads it. */
+  get freeWillOn(): boolean {
+    return Simulator.freeWill;
+  }
+
   /** cXObject::SetFreeWill (Mac 0x100c0eb0): the flag, and global 30 of the running simulator. */
   setFreeWill(on: boolean): void {
     Simulator.freeWill = on;
