@@ -215,11 +215,25 @@ export class TSWinBtn extends TSWin {
   override tsOnMouseEnter(): void {
     this.entered = true;
     if (this.enabled) this.playUISound(UISOUND_ENTER);
+    // cTSWinBtn::TSOnMouseEnter: back over the button it holds, toggle-on-down flips
+    // again, push and toggle show "down".
+    if (winMgr.getCapture() === this) {
+      if (this.mode === BTN_TOGGLE_ON_DOWN) this.state = this.state ? 0 : 1;
+      else if (this.mode === BTN_PUSH || this.mode === BTN_TOGGLE) this.state = 1;
+    }
     if (this.asyncFlags & ASYNC_ON_ENTER && !this.asyncTimerArmed) this.armAsyncTimer();
   }
 
   override tsOnMouseExit(): void {
     this.entered = false;
+    // cTSWinBtn::TSOnMouseExit: dragged off the button it holds (unless it fires on
+    // press), toggle-on-down flips back, push goes up, toggle flips back when the
+    // press changed it.
+    if (winMgr.getCapture() === this && !this.sendOnDown) {
+      if (this.mode === BTN_TOGGLE_ON_DOWN) this.state = this.state ? 0 : 1;
+      else if (this.mode === BTN_PUSH) this.state = 0;
+      else if (this.mode === BTN_TOGGLE && this.changedOnDown) this.state = this.state ? 0 : 1;
+    }
     if (this.asyncTimerArmed || this.asyncFlags & ASYNC_ON_ENTER) {
       this.asyncTimerArmed = false;
       this.parent?.tsOnCommand(CMD_ASYNC_EXIT, this);
