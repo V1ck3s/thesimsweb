@@ -22,10 +22,13 @@
  * usual reads (readFarEntry, readAssetFile); what the cache holds already is
  * skipped, so after the first complete run this costs one look at the
  * cache's keys. Nothing is preloaded when the game files are imported into
- * this browser (GAME_FILES=client: they are local) or without IndexedDB.
+ * this browser (GAME_FILES=client: they are local) or without IndexedDB,
+ * and only when the server asks for it (PRELOAD=1, engine/config.ts: off by
+ * default, the files are then read as the game needs them).
  */
 
 import { fetchManifest, readAssetFile, readFarEntry, readFarManifest } from "../engine/assets.js";
+import { getServerConfig } from "../engine/config.js";
 import { isGameFilesLocal } from "../engine/gamefiles.js";
 import { idbCachedKeys, openDb } from "../engine/idb.js";
 import lots from "./preload-lots.json";
@@ -99,7 +102,7 @@ async function wanted(folder: ObjectFolder): Promise<Item[]> {
  */
 export async function preloadGameFiles(folder: ObjectFolder, progress: (done: number) => void): Promise<void> {
   try {
-    if ((await isGameFilesLocal()) || !(await openDb())) return;
+    if (!(await getServerConfig()).preload || (await isGameFilesLocal()) || !(await openDb())) return;
     const [items, cached] = await Promise.all([wanted(folder), idbCachedKeys()]);
     const missing = items.filter((it) => ("far" in it ? !cached.entries.has(`${it.far}|${it.entry.toLowerCase()}`) : !cached.files.has(it.path)));
     if (!missing.length) return;

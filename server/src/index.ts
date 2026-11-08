@@ -52,6 +52,13 @@ if (!serverGameFiles && process.env["SAVES"] === "server") {
   console.warn('GAME_FILES=client: SAVES=server is ignored (the saves stay in the browsers)');
 }
 const serverSaves = SAVES === "server";
+/**
+ * PRELOAD=1: the game downloads, at its first start in each browser, the
+ * files nearly every session reads (about 340 MB, with a progress bar under
+ * the splash screen; client/src/game/preload.ts). Off by default: the files
+ * are then read as the game needs them. Ignored with GAME_FILES=client.
+ */
+const PRELOAD = process.env["PRELOAD"] === "1" || process.env["PRELOAD"] === "true";
 
 const app = Fastify({
   // Saved game files shadow the read-only originals (routes/userdata.ts).
@@ -84,7 +91,7 @@ if (serverGameFiles) await app.register(fastifyStatic, {
 
 app.get("/api/health", async () => ({ ok: true }));
 // Read by the client at startup (client/src/engine/saves.ts).
-app.get("/api/config", async () => ({ saves: SAVES, gameFiles: GAME_FILES }));
+app.get("/api/config", async () => ({ saves: SAVES, gameFiles: GAME_FILES, preload: PRELOAD && serverGameFiles }));
 
 if (!serverGameFiles) {
   // No game file leaves this server: the browsers read their own import.
@@ -118,6 +125,7 @@ if (serverGameFiles && (await readdir(resolve(assetsDir, "Sims")).catch(() => []
   app.log.warn(`no game folder in ${resolve(assetsDir, "Sims")}: link or mount the install of The Sims there (SIMS_DIR with Docker), or set GAME_FILES=client`);
 }
 app.log.info(`saves: ${SAVES === "server" ? "on the server (shared)" : "in each browser"}`);
+if (PRELOAD && serverGameFiles) app.log.info("preload: on (the browsers download the common game files at their first start)");
 // The built game (`pnpm build`); in dev, vite serves the client on :5173 instead.
 // Served whenever client/dist exists; SERVE_CLIENT=0 turns it off.
 if (process.env["SERVE_CLIENT"] !== "0" && (await registerClientRoute(app, { clientDir }))) {

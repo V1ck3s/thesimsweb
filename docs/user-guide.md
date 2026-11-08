@@ -83,13 +83,14 @@ Les adresses directes du jeu restent valables : `/game.html`, et `/` suivi d'une
 (`/?house=1` entre directement dans la maison 1, `/?nbhd=UserData2` choisit le quartier). Un
 marque-page sur `/?…` lance donc toujours le jeu.
 
-Le premier lancement lit tout le catalogue d'objets, puis télécharge sous l'écran de chargement,
-avec une barre de progression, les fichiers que presque toutes les parties utilisent (environ
-350 Mo : les objets que tout terrain charge, les murs et les sols, les corps et les têtes des
-Sims). Sur une connexion lente, c'est l'étape la plus longue, mais elle n'a lieu qu'une fois :
-les fichiers sont ensuite gardés par le navigateur (IndexedDB), les lancements suivants prennent
-quelques secondes, et entrer dans un terrain ou créer une famille ne les attend plus. Ne jouer
-que dans un seul onglet à la fois.
+Le premier lancement lit tout le catalogue d'objets ; les fichiers du jeu sont ensuite gardés par
+le navigateur (IndexedDB) et les lancements suivants prennent quelques secondes. Si le serveur a
+activé le préchargement (`PRELOAD=1`, voir [`docker.md`](./docker.md) ; désactivé par défaut), ce
+premier lancement télécharge aussi, sous l'écran de chargement et avec une barre de progression,
+les fichiers que presque toutes les parties utilisent (environ 340 Mo : les objets que tout terrain
+charge, les murs et les sols, les corps et les têtes des Sims). Sur une connexion lente, c'est
+l'étape la plus longue, mais elle n'a lieu qu'une fois, et entrer dans un terrain ou créer une
+famille ne les attend plus ensuite. Ne jouer que dans un seul onglet à la fois.
 
 ## 3. Les deux modes de sauvegarde
 

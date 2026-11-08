@@ -591,7 +591,8 @@ Every lot load reads the same object files whatever the lot (people, cars, NPCs,
 doors, windows, stairs, beds…), plus every wall and floor plugin. On a slow connection this made
 the first lot take minutes, and Create-a-Sim showed sims without their meshes or textures.
 
-- **Preload** (`client/src/game/preload.ts`): under the splash screen, with a progress bar, the
+- **Preload** (`client/src/game/preload.ts`, only when the server sets `PRELOAD=1`; off by
+  default): under the splash screen, with a progress bar, the
   files common to the recorded lot loads (`client/src/game/preload-lots.json`, written by
   `scripts/preload-list.mjs` from recordings), the object files `ObjectFolder.everyLotFiles`
   names, every wall and floor plugin, and the sims' bodies and heads (meshes, textures, suits:
