@@ -42,13 +42,16 @@ export function makeMoneyString(amount: number, lang: number): string {
 const AMPM_LANGUAGES = [1, 2, 0x13];
 
 /**
- * cTSLanguageManager::MakeTimeString(hour, minute, upperCase = true, prefix = true):
- * "AM 10:05" in the English languages (and 0x13), "10:05" (24 h) otherwise.
+ * cTSLanguageManager::MakeTimeString(hour, minute, upperCase, prefix): in the
+ * English languages (and 0x13) a 12-hour hour with "am" / "pm" ("AM" / "PM"
+ * when upperCase), before the time when prefix ("%s %2u:%.2u") or after it
+ * ("%2u:%.2u %s"); "%2u:%.2u" (24 h) otherwise. The clock passes true / true,
+ * the job popup and $TimeLocal false / false.
  */
-export function makeTimeString(hour: number, minute: number, lang: number): string {
+export function makeTimeString(hour: number, minute: number, lang: number, upperCase = true, prefix = true): string {
   const mm = String(minute).padStart(2, "0");
   if (!AMPM_LANGUAGES.includes(lang)) return `${String(hour).padStart(2, " ")}:${mm}`;
-  const ampm = hour < 12 ? "AM" : "PM";
-  const h = hour === 0 ? 12 : hour > 12 ? hour - 12 : hour;
-  return `${ampm} ${String(h).padStart(2, " ")}:${mm}`;
+  const suffix = hour < 12 ? (upperCase ? "AM" : "am") : upperCase ? "PM" : "pm";
+  const h = String(hour === 0 ? 12 : hour > 12 ? hour - 12 : hour).padStart(2, " ");
+  return prefix ? `${suffix} ${h}:${mm}` : `${h}:${mm} ${suffix}`;
 }

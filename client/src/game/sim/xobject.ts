@@ -38,6 +38,8 @@ import { tickSpriteSlot } from "../world/slots.js";
 import { EditPerson } from "../cas/editperson.js";
 import { addToken, findToken, removeAllTokensOfType, removeToken, removeTokenByIndex, setToNextToken } from "./inventory.js";
 import { roomOutside } from "./spacepartition.js";
+import { makeTimeString } from "../res/langutil.js";
+import { UI_LANGUAGE } from "../res/uires.js";
 
 /** Object data indexes (Behavior.iff STR# 141; index = (offset - 0x4a) / 2). */
 const OD = {
@@ -2135,7 +2137,7 @@ export class SimObject extends TreeSim {
     each("$Grade", (a) => (local(a) === null ? null : getGrade(m.jobGrades, a)));
     each("$TimeLocal", (a) => {
       const v = local(a);
-      return v !== null && v >= 0 && v < 24 ? `${v}:00` : null;
+      return v !== null && v >= 0 && v < 24 ? makeTimeString(v, 0, UI_LANGUAGE, false, false) : null; // GViewer::MakeTimeString
     });
     // lbl_105BBA80: $JobOffer (cCareer::GetOfferDialogText), $JobDesc (cJob +0x3b4), $Job (cJob::GetName).
     const pd = this.person?.personData ?? null;

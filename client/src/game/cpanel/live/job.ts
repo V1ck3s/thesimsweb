@@ -25,6 +25,7 @@ import { personGender, type PersonInfo } from "../../cpstate.js";
 import type { GameContext } from "../../context.js";
 import type { FfnFont } from "../../res/ffn.js";
 import { DOUBLE_BYTE_UI, LANG_FRENCH, UI_LANGUAGE } from "../../res/uires.js";
+import { makeTimeString } from "../../res/langutil.js";
 import { getOptionsMgr } from "../../optionsmgr.js";
 import { ASYNC_ON_ENTER, BTN_TOGGLE, CMD_ASYNC_EXIT } from "../../ui/btn.js";
 import { rgb, UI_FONT_COLOR } from "../../ui/syscolors.js";
@@ -387,7 +388,7 @@ export class WinSubpanelJob extends TSWin {
         c.setName(name(0));
         c.setDesc(desc(0));
       } else {
-        const hour = (h: number): string => `${h}:00`;
+        const hour = (h: number): string => makeTimeString(h, 0, UI_LANGUAGE, false, false);
         const start = job.startHour;
         // cTSLanguageManager::MakeTimeString(hour, 0) of the start, end and carpool ((start + 23) % 24) hours.
         const text = t(POPUP.jobTemplate)
