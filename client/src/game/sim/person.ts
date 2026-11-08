@@ -2304,7 +2304,9 @@ export class PersonSim extends SimObject {
    * ObjTestSim::AppendInteractionsForMenu: the entries of `target`'s tree
    * table the person may be asked to do (the user pie menu): each one is
    * tested as an interaction of priority 50, not autonomous; debug entries
-   * (TTAB flag 0x80) are left out. Pets only get menus from GUID 0x7c4.
+   * (TTAB flag 0x80) are tested like the others (only autonomy skips them),
+   * their name starting with "*" (Interaction::GetName, lbl_105BB8AC).
+   * Pets only get menus from GUID 0x7c4.
    * While a check tree runs the menu is "in progress": its Add / Change
    * Action String primitives add items (MakeNewMenuItem, e.g. the phone's
    * "$Family/Call $Neighbor" for each friend) and then the entry itself
@@ -2320,11 +2322,10 @@ export class PersonSim extends SimObject {
     const m = this.module;
     try {
       for (const e of tt.entries) {
-        if (e.flags & 0x80) continue;
         m.menuInProgress = { items, entry: e };
         const n = items.length;
         // an entry whose check tree made items of its own is not added itself
-        if (this.testInteraction(target, e, false) && items.length === n && !this.hiddenFromMenu()) items.push({ entry: e, name: e.name, args: null });
+        if (this.testInteraction(target, e, false) && items.length === n && !this.hiddenFromMenu()) items.push({ entry: e, name: e.flags & 0x80 ? `*${e.name}` : e.name, args: null });
       }
       // The join block: when my current action is joinable, a clicked person may be
       // asked to join it (Interaction(clicked person, me), stack var 2 = my id,
@@ -2376,7 +2377,6 @@ export class PersonSim extends SimObject {
     if (!tt) return [];
     const out: TreeTableEntry[] = [];
     for (const e of tt.entries) {
-      if (e.flags & 0x80) continue;
       if (this.testInteraction(target, e, false) && !this.hiddenFromMenu()) out.push(e);
     }
     return out;
