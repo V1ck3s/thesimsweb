@@ -31,7 +31,7 @@
 
 import type { GameContext } from "../context.js";
 import type { DisposeItem } from "../cpstate.js";
-import { loadCatalog } from "../data/catalog.js";
+import { loadCatalog, type Product } from "../data/catalog.js";
 import { makeMoneyString } from "../nbhd/nghinterface.js";
 import { ALIGN_LEFT, type FfnFont } from "../res/ffn.js";
 import { UI_LANGUAGE } from "../res/uires.js";
@@ -90,22 +90,33 @@ export class WinDisposePopup extends TSWin {
     return true;
   }
 
-  /** cWinDisposePopup::BuildMyBuffer */
+  /**
+   * cWinDisposePopup::BuildMyBuffer. The background and the picture are
+   * drawn as soon as the picture is ready; the text needs the product's name
+   * (Catalog::FindProduct), and the catalog is built on first use (all the
+   * object files read, a long wait the first time in a browser): the text
+   * joins once it is there, the page is not left blank meanwhile.
+   */
   private async buildMyBuffer(item: DisposeItem): Promise<void> {
     const serial = ++this.serial;
-    const [catalog, icon] = await Promise.all([
-      loadCatalog().catch(() => null),
-      ObjectIcon.create(item.res, item.objdId).catch(() => null),
-    ]);
+    const catalogRead = loadCatalog().catch(() => null);
+    const icon = await ObjectIcon.create(item.res, item.objdId).catch(() => null);
     if (serial !== this.serial) return;
-    const product = catalog?.products.find((p) => p.guid === item.guid) ?? null;
+    this.buffer = this.compose(item, icon, undefined);
+    const catalog = await catalogRead;
+    if (serial !== this.serial || !catalog) return;
+    this.buffer = this.compose(item, icon, catalog.products.find((p) => p.guid === item.guid) ?? null);
+  }
 
+  /** The page: background, picture, and the text when the catalog is known (`product` undefined: not yet). */
+  private compose(item: DisposeItem, icon: ObjectIcon | null, product: Product | null | undefined): OffscreenCanvas {
     const w = this.getW();
     const h = this.getH();
     const c = new OffscreenCanvas(Math.max(1, w), Math.max(1, h));
     const g = c.getContext("2d") as unknown as CanvasRenderingContext2D;
     if (this.background) g.drawImage(this.background, 0, 0);
     icon?.draw(g, ICON_RECT.left, ICON_RECT.top, ICON_RECT.right - ICON_RECT.left, ICON_RECT.bottom - ICON_RECT.top);
+    if (product === undefined) return c;
 
     const refund = item.notNew && item.refundable ? Math.trunc(Math.fround(item.factor * item.currentValue) + ROUND) : 0;
     const strings = this.ctx.strings.list("UIText", STR_DISPOSE);
@@ -119,7 +130,7 @@ export class WinDisposePopup extends TSWin {
       if (money >= 0) text = text.slice(0, money) + makeMoneyString(refund, UI_LANGUAGE) + text.slice(money + 1);
       this.font?.drawTextPara(g, TEXT_RECT, text, ALIGN_LEFT, UI_FONT_COLOR);
     }
-    this.buffer = c;
+    return c;
   }
 
   override tsPaint(g: Gfx): void {
