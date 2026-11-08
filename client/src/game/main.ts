@@ -35,7 +35,7 @@ import { Fonts } from "./res/fonts.js";
 import { Strings } from "./res/strings.js";
 import { UIRes } from "./res/uires.js";
 import { whileFrozen } from "./screens/frozen.js";
-import { G } from "./sim/simulator.js";
+import { G, Simulator } from "./sim/simulator.js";
 import { TSWinSplashScreen } from "./screens/splash.js";
 import { preloadGameFiles } from "./preload.js";
 import { playIntroMovie } from "./screens/intro.js";
@@ -443,6 +443,13 @@ class Game {
     const t0 = performance.now();
     if (!(await view.init())) throw new Error("lot view init failed");
     console.log(`lot ${house} loaded in ${Math.round(performance.now() - t0)} ms`);
+    if (view.sim) {
+      // EnteringHouse -> CPState::UpdateCPStateFromWorld: the lot's saved speed and pause.
+      const sim = view.sim;
+      const button = [1, 2, 3].find((b) => Simulator.speedForButton(b) === sim.globals[G.speed]);
+      if (button !== undefined) state.setSpeed(button);
+      state.pause(sim.isPaused());
+    }
     if (view.sim) {
       const nb = this.nbhd;
       view.sim.module.transitHooks = new Transit(

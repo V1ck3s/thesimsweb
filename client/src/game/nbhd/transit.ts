@@ -496,6 +496,9 @@ export async function applyLoadGameLocation(ctx: GameContext, view: WinLotView, 
     sim.globals[G.houseNumber] = house;
   }
   if (familyNumber === 0) {
+    // Every branch of LoadGame here: cSimulator::SetSpeed(the speed 1 button's), Resume.
+    state.setSpeed(1);
+    state.pause(false);
     if (zoning === Zone.None || (arrival && (arrival.member || arrival.family || arrival.studioMember))) {
       if (house >= 0x15 && house <= 0x1e) {
         if (arrival?.member) arrive();
