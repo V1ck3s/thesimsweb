@@ -38,7 +38,7 @@ import { WallManager } from "./walls.js";
 import { CursorDrawer, GUID_TILE_CURSOR } from "./tools/cursorobject.js";
 import { BUILD_TOOLS } from "./tools/buildtools.js";
 import { GameTools, MoveToolAdapter, ToolId } from "./tools/gametools.js";
-import { MoveTool } from "./tools/movetool.js";
+import { MoveMode, MoveTool } from "./tools/movetool.js";
 import { ToolSounds, type ToolHost } from "./tools/tool.js";
 import { UndoManager } from "./tools/undo.js";
 import { Placement, type ObjectBehaviorHooks } from "./tools/placement.js";
@@ -546,7 +546,12 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
       guid = g;
       const ticket = ++pending;
       if (g === null) {
-        if (tool.newPurchase) tool.setParameter(null);
+        // UpdateWorldFromCPState hands the tool its parameter again: the
+        // catalog item is gone. Also after a sale (ShopSoldItem, newPurchase
+        // already cleared): the tool must leave Buy (mode 2), or the next
+        // click with nothing in hand plays the purchase sound (Release's
+        // UI_object_place). A lot object held by the hand is left alone.
+        if (tool.newPurchase || tool.mode === MoveMode.Buy) tool.setParameter(null);
         return;
       }
       void this.selectorForPurchase(lot, g).then((sel) => {
