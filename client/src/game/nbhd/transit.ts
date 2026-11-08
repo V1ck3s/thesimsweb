@@ -329,13 +329,15 @@ export class Transit implements TransitHooks {
         writeTokens(memberInv, p);
       });
     }
-    // The arrival clock: now + hours:minutes, unless leaving a residential lot for a vacation lot.
-    let hour = this.sim.globals[G.hour]!;
-    let minute = this.sim.globals[G.minute]!;
+    // The arrival clock: now + hours:minutes, unless leaving a residential lot for a
+    // vacation lot, where the operands are the arrival time as they are.
+    let hour = hours;
+    let minute = minutes;
     const here = this.sim.globals[G.houseNumber]!;
     const nb = this.host.nb();
     if (nb?.getZoningType(here) !== Zone.Residential || houseArg < 0x28 || houseArg > 0x31) {
-      minute += minutes;
+      hour = this.sim.globals[G.hour]!;
+      minute = this.sim.globals[G.minute]! + minutes;
       if (minute > 0x3b) {
         hour += 1;
         minute %= 0x3c;
