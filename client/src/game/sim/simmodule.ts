@@ -36,7 +36,7 @@ import type { FameScoring } from "./fametrack.js";
 import { ObjectDialog, type DialogHooks } from "./objectdialog.js";
 import type { StackElem } from "./treestack.js";
 import { TreeTable, type TreeTableEntry } from "./treetable.js";
-import { loadFloatConstants } from "./floatconstants.js";
+import { friendshipThreshold, loadFloatConstants, setFriendshipThreshold } from "./floatconstants.js";
 import { setMotiveConstants } from "./motives.js";
 import { autonomyConstants, type AutonomyConstants } from "./person.js";
 import { readSlotChunk } from "../world/slots.js";
@@ -428,7 +428,7 @@ export class SimModule {
     s[23] = e[7]!;
     s[24] = this.sim.getFunds();
     // Relationships across the family's border: value 1 set (members toward others, others
-    // toward members), value 0 at least lbl_105BA1F4 (25) (members toward others, others toward members).
+    // toward members), value 0 at least lbl_105BA1F4 (friendshipThreshold) (members toward others, others toward members).
     const members = new Set(fam.memberGuids.map((g) => g | 0));
     const byId = new Map((this.nbhd?.neighbors ?? []).map((n) => [n.id, n]));
     for (const n of this.nbhd?.neighbors ?? []) {
@@ -436,7 +436,7 @@ export class SimModule {
       for (const r of n.relationships) {
         const other = byId.get(r.other);
         if (!other || members.has(other.guid | 0) === inFamily) continue;
-        if ((r.values[0] ?? 0) >= 25) s[inFamily ? 27 : 28]!++;
+        if ((r.values[0] ?? 0) >= friendshipThreshold) s[inFamily ? 27 : 28]!++;
         if (r.values.length > 1 && r.values[1] !== 0) s[inFamily ? 25 : 26]!++;
       }
     }
@@ -637,7 +637,9 @@ export class SimModule {
     const g = this.res.glob;
     // GlobalConstantsClient: FCNS 1 / 5 / 6 motives, FCNS 2 autonomy.
     setMotiveConstants([1, 5, 6].map((id) => loadFloatConstants(g, id)));
-    this.autonomy = autonomyConstants(loadFloatConstants(g, 2));
+    const autonomy = loadFloatConstants(g, 2);
+    this.autonomy = autonomyConstants(autonomy);
+    setFriendshipThreshold(autonomy);
     if (g) {
       this.happyCurves = curvesFromStrings(loadStringSet(g, 0x1f6) ?? [], HAPPY_CURVE_MOTIVES);
       this.happyCurvesChild = curvesFromStrings(loadStringSet(g, 0x1f8) ?? [], HAPPY_CURVE_MOTIVES);
@@ -1331,11 +1333,11 @@ export class SimModule {
     return r && r.values.length > 0 ? r.values[0]! : null;
   }
 
-  /** Both ways at least lbl_105BA1F4 (25). */
+  /** Both ways at least lbl_105BA1F4 (friendshipThreshold). */
   private static areFriends(a: Neighbor, b: Neighbor): boolean {
     const ab = SimModule.dailyRel(a, b.id);
     const ba = SimModule.dailyRel(b, a.id);
-    return ab !== null && ba !== null && ab >= 25 && ba >= 25;
+    return ab !== null && ba !== null && ab >= friendshipThreshold && ba >= friendshipThreshold;
   }
 
   /**

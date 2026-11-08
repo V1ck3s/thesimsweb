@@ -32,6 +32,7 @@ import type { FfnFont } from "../../res/ffn.js";
 import { DOUBLE_BYTE_UI, LANG_FRENCH, UI_LANGUAGE } from "../../res/uires.js";
 import { getOptionsMgr } from "../../optionsmgr.js";
 import { loadUIStringSet } from "../../sim/behavior.js";
+import { friendshipThreshold } from "../../sim/floatconstants.js";
 import { loadFameScoring, type FameScoring } from "../../sim/fametrack.js";
 import { ASYNC_ON_ENTER, BTN_TOGGLE, CMD_ASYNC_EXIT } from "../../ui/btn.js";
 import { UI_FONT_COLOR } from "../../ui/syscolors.js";
@@ -345,7 +346,7 @@ export class WinSubpanelFame extends TSWin {
       if (o === p || ofam === 0 || ofam === fam) continue;
       const ab = daily(p, o.neighborId);
       const ba = daily(o, p.neighborId);
-      if (ab !== null && ba !== null && ab >= 25 && ba >= 25) n += this.data(o, 0x51);
+      if (ab !== null && ba !== null && ab >= friendshipThreshold && ba >= friendshipThreshold) n += this.data(o, 0x51);
     }
     return n;
   }

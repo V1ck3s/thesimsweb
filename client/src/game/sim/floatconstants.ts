@@ -34,3 +34,15 @@ export function loadFloatConstants(res: ResFile | null, id: number): FloatConsta
 export function fc(c: FloatConstants, name: string, def: number): number {
   return c.get(name) ?? def;
 }
+
+/**
+ * lbl_105BA1F4: "friendship threshold" of FCNS 2, truncated to an int
+ * (AutonomyConstantsClient::UpdateConstants; 25 when the file has no value,
+ * 50 in the shipped Global.iff). Both daily relationships at least this make
+ * two sims friends (PersonFinder::GetRelation, Neighborhood::GetFriendCount).
+ */
+export let friendshipThreshold = 25;
+
+export function setFriendshipThreshold(c: FloatConstants): void {
+  friendshipThreshold = Math.trunc(fc(c, "friendship threshold", 25));
+}

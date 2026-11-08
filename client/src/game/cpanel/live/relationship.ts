@@ -37,9 +37,8 @@ import { TSWinText, WTF_MULTILINE } from "../../ui/text.js";
 import { type Gfx, TSWin } from "../../ui/tswin.js";
 import { popupClick, type WinLivePopup, WinLivePopupClient } from "../livepopup.js";
 import { computeZodiacSign } from "./personality.js";
+import { friendshipThreshold } from "../../sim/floatconstants.js";
 
-/** "friendship threshold" (GameData/Global/Global.far, AutonomyConstants; 25 in code). */
-const FRIENDSHIP_THRESHOLD = 50;
 
 /** PersonFinder::eRelationTypes, chosen by the sort buttons. */
 const enum RelationType {
@@ -101,9 +100,9 @@ export function getRelation(from: PersonInfo, to: PersonInfo): PersonRelation {
   rel.daily = clamp100(v[0]!);
   rel.crush = v.length > 1 && v[1] !== 0;
   rel.love = v.length > 3 && v[3] !== 0;
-  if (rel.value >= FRIENDSHIP_THRESHOLD) {
+  if (rel.value >= friendshipThreshold) {
     const back = row(to, from);
-    rel.friends = !!back && back.length > 0 && back[0]! >= FRIENDSHIP_THRESHOLD;
+    rel.friends = !!back && back.length > 0 && back[0]! >= friendshipThreshold;
   }
   return rel;
 }

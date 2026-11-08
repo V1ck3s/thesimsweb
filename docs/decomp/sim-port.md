@@ -730,7 +730,7 @@ not caught in TickAllObjects (none in the original either).
   House::GetHouseStats (object count = HouseStats +0x28, FillInObjectStats' catalog objects;
   square feet, lot size, the five scores), cSimulator +0xa0 / +0xa4, today's expenses (types
   1, 4, 3, 5, 6, 2 + 0, 7), funds, the relationships across the family border (value 1 set,
-  value 0 >= 25, each way) and Family::GetFriendCount. FamilyHistory::AddNewStat keeps 0x400.
+  value 0 >= the "friendship threshold" of FCNS 2, 50 in the data, each way) and Family::GetFriendCount. FamilyHistory::AddNewStat keeps 0x400.
 - FAMh (FamilyHistory::DoStream): ReconBool compressed + compressed ints, Recon32 count,
   FamilyStat::DoStream (30 fields; +0x10/+0x14/+0x28..+0x3c 16-bit below version 1); saved as
   version 1. The chunk is kept on the family at neighborhood load (Family +0x140), parsed on
