@@ -802,6 +802,7 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
         p.obstacle = null;
         return p.canPlace(obj, pos, level, container, slot);
       },
+      sectWall: (obj, pos, level) => this.placement?.sectWallAt(obj, pos, level) ?? false,
       place: (obj, pos, level, container, slot) => {
         const p = this.placement;
         if (!p) return;

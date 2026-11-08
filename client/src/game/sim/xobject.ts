@@ -29,7 +29,7 @@ import type { SimModule } from "./simmodule.js";
 import { tryLotChangeCall } from "./lotcalls.js";
 import { PRIM_CONTINUE, PRIM_FALSE, PRIM_TRUE, PRIM_WAIT, TreeSim, simThrow, treeSimGlobals } from "./treesim.js";
 import type { ParamSource, StackElem } from "./treestack.js";
-import { DIR_VEC, rotateOffset, tileObjects } from "./routing.js";
+import { DIR_VEC, rotateOffset, tileObjects, wallBlockFlagsAtTile } from "./routing.js";
 import { getWall, SEG_ROTATION } from "../world/tilewalls.js";
 import { getBehCareerData, getGrade, offerDialogText, simJobName, type SimCareer } from "./careers.js";
 import { demoteIfNeeded, getTitleFromLevel, promoteIfNeeded } from "./fametrack.js";
@@ -2693,9 +2693,13 @@ export class SimObject extends TreeSim {
    * asks that person to move out of the way (cXPerson::MoveOutOfWay(int)):
    * object data 52 is then 1, and the tree tries again (a sim getting up from
    * a sofa while someone stands in front of it).
-   * Not ported: the room and wall checks between the two tiles and the
-   * animation displacement (flag 1). Without world hooks (headless) the
-   * object is moved without placement checks.
+   * With the bounds check, the spot must also be in my room (object data
+   * 29) and, from my tile to its tile, no wall may block the way (wall
+   * block flags bit 0 both ways). With flag 2 and a container, the object
+   * turned to its new direction must not cross a wall at the container
+   * (SectWall; else false and object data 54 cleared).
+   * Not ported: the animation displacement (flag 1). Without world hooks
+   * (headless) the object is moved without placement checks.
    */
   protected trySnap(elem: StackElem, slotArg: number, mode: number, flags: number): number {
     const o = this.obj_(elem.stackObj);
@@ -2748,13 +2752,60 @@ export class SimObject extends TreeSim {
       const n = this.module.sim.world?.size ?? 64;
       const tx = pos.fx >> 4;
       const ty = pos.fy >> 4;
-      let ok = !(checkBounds && (tx < 1 || ty < 1 || tx >= n - 1 || ty >= n - 1));
-      if (ok) ok = hooks.canPlace(this.obj, pos, t.level, container, slot);
+      const outOfBounds = (x: number, y: number): boolean => x < 1 || y < 1 || x >= n - 1 || y >= n - 1;
+      if (checkBounds) {
+        // TrySnap(FTilePt, ...) 100e3530 with the slot's 0x800 bit clear.
+        if (outOfBounds(tx, ty)) {
+          d[52] = 2;
+          d[54] = 0;
+          return PRIM_FALSE;
+        }
+        const world = this.module.sim.world;
+        const rooms = world?.rooms[t.level - 1];
+        if (rooms && rooms.u16(tx, ty) !== (d[29]! & 0xffff)) {
+          d[54] = 0;
+          return PRIM_FALSE;
+        }
+        const me = this.obj;
+        const cx = ((me.fx >> 4) << 24) >> 24;
+        const cy = ((me.fy >> 4) << 24) >> 24;
+        const ddx = pos.fx - me.fx;
+        const ddy = pos.fy - me.fy;
+        if (!outOfBounds(cx, cy) && (ddx !== 0 || ddy !== 0)) {
+          const ax = Math.abs(ddx);
+          const ay = Math.abs(ddy);
+          let wd = ax * 2 < ay ? 4 : ay * 2 < ax ? 2 : 3;
+          if (ddx < 0) {
+            if (wd === 3) wd = 5;
+            else if (wd === 2) wd = 6;
+          }
+          if (ddy < 0) {
+            if (wd === 4) wd = 0;
+            else if (wd === 3) wd = 1;
+            else if (wd === 5) wd = 7;
+          }
+          if (wallBlockFlagsAtTile(this.module, cx, cy, me.level, wd) & 1 || wallBlockFlagsAtTile(this.module, tx, ty, me.level, (wd + 4) & 7) & 1) {
+            d[54] = 0;
+            return PRIM_FALSE;
+          }
+        }
+      }
+      let ok = hooks.canPlace(this.obj, pos, t.level, container, slot);
+      if (ok && container && flags & 2) {
+        const saved = d[1]!;
+        d[1] = ((dir % 8) + 8) % 8;
+        const hit = hooks.sectWall(this.obj, { fx: container.fx, fy: container.fy }, container.level);
+        d[1] = saved;
+        if (hit) {
+          d[54] = 0;
+          return PRIM_FALSE;
+        }
+      }
       if (!ok) {
         const e = hooks.lastError();
         const other = e.obstacle !== 0 ? this.module.getObject(e.obstacle) : null;
         if (flags & 2 && e.code === 0xb && other?.isPerson && this.askToMoveOutOfWay(other)) d[52] = 1;
-        else if (!checkBounds || e.code === 1 || tx < 1 || ty < 1 || tx >= n - 1 || ty >= n - 1) d[52] = 2;
+        else if (e.code === 1) d[52] = 2;
         d[54] = e.obstacle;
         return PRIM_FALSE;
       }

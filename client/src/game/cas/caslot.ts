@@ -219,6 +219,7 @@ export class CasLot {
         return p.canPlace(obj, pos, level, container, slot);
       },
       place: (obj, pos, level, container, slot) => p.place(obj, pos, level, container, slot, true),
+      sectWall: (obj, pos, level) => p.sectWallAt(obj, pos, level),
       moveTo: (obj, pos, level) => p.setLocation(obj, pos, level),
       pickup: (obj) => p.pickup(obj, true),
       turn: (obj, n) => p.turnObject(obj, n),

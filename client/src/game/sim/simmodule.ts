@@ -127,6 +127,8 @@ export interface WorldHooks {
   make(sel: ObjSelector): XObject | null;
   canPlace(obj: XObject, pos: FPos, level: number, container: XObject | null, slot: number): boolean;
   place(obj: XObject, pos: FPos, level: number, container: XObject | null, slot: number): void;
+  /** ComputeRect(obj, pos) then SectWall(rect, level), with the object's current direction. */
+  sectWall(obj: XObject, pos: FPos, level: number): boolean;
   moveTo(obj: XObject, pos: FPos, level: number): void;
   /** cXObject::Pickup (out of the world). */
   pickup(obj: XObject): void;

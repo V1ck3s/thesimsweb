@@ -706,6 +706,11 @@ export class Placement {
     return true;
   }
 
+  /** ComputeRect(obj, at) then SectWall: would a wall cross `obj`'s footprint there (with its current direction)? */
+  sectWallAt(obj: XObject, at: FPt, level: number): boolean {
+    return this.sectWall(this.computeRect(obj, at), level);
+  }
+
   /** SectWall(FTileRect, level): does a wall cross the footprint? */
   private sectWall(r: readonly [number, number, number, number], level: number): boolean {
     for (let y = r[2] >> 4; y <= (r[0] - 1) >> 4; y++) {
