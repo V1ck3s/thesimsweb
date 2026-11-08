@@ -178,7 +178,7 @@ export class LotPeople {
    * lot world space (VitaBoy units, level 1): slot 0 is body strings 6 / 7
    * (the hand bone and its "Palm" offset), slot 1 body strings 4 / 5 (the
    * head and "Top"). The named offset is RotationTf(Z, a) * TranslationTf(t)
-   * (lbl_105C2224: Palm (pi, 0.5 0 0), Top and HeadFake (-pi/2, 0.8 0 0),
+   * (lbl_105C2224: Palm (pi, 0.5 0 0), Top (-pi/2, 0.8 0 0), HeadFake (-pi/2, 0.8 0 100),
    * Shoulder (pi, 0 0 1)), i.e. the point t in the bone's frame. Null when
    * the person has no such bone.
    */
@@ -188,7 +188,7 @@ export class LotPeople {
     const bs = p.anim.bodyStrings;
     const bone = p.anim.vitaboy.skeleton.findBone(bs.get(slot === 0 ? 6 : 4));
     if (!bone) return null;
-    const OFFSETS: Readonly<Record<string, Vec3>> = { palm: [0.5, 0, 0], top: [0.8, 0, 0], headfake: [0.8, 0, 0], shoulder: [0, 0, 1] };
+    const OFFSETS: Readonly<Record<string, Vec3>> = { palm: [0.5, 0, 0], top: [0.8, 0, 0], headfake: [0.8, 0, 100], shoulder: [0, 0, 1] };
     const t = OFFSETS[bs.get(slot === 0 ? 7 : 5).toLowerCase()] ?? [0, 0, 0];
     const r = quatRotate(bone.worldRot, t);
     const local: Vec3 = [bone.worldPos[0] + r[0], bone.worldPos[1] + r[1], bone.worldPos[2] + r[2]];

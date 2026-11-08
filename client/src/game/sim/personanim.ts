@@ -19,7 +19,9 @@
 
 import { enterLiveModeHooks } from "../cpstate.js";
 import { LoopMode, Practice } from "../sims/practice.js";
-import type { Skeleton } from "../sims/skeleton.js";
+import type { Bone, Skeleton } from "../sims/skeleton.js";
+import { rootTransform } from "../sims/camera.js";
+import { quatMul, quatRotate, transformPoint, type Quat, type Vec3 } from "../sims/math3d.js";
 import { type Skill, skillClock } from "../sims/skill.js";
 import { SkillReadError, VBAnimMgr } from "../sims/vbanimmgr.js";
 
@@ -304,6 +306,14 @@ export interface AnimatorHost {
   holding(): boolean;
   /** HandleVitaBoyAnimEvent's sound props (sim/animsound.ts); `forward`: the practice plays forward. */
   animSound(key: string, value: string, forward: boolean): void;
+  /** The person's place: cXObject +0xf4 / +0xf8 (fy / fx), +0x110 level, +0x4c direction. */
+  place(): { fx: number; fy: number; level: number; dir: number };
+  /**
+   * UpdateHeadDirection's look-at object (object id, person data 0x28): its
+   * level and position, and for a person the world point of its head
+   * registration (SAnimator +0x13c); null when there is no such object.
+   */
+  lookAt(id: number): { level: number; fx: number; fy: number; head: Vec3 | null } | null;
 }
 
 /** SAnimator +0x188 animation states. */
@@ -591,8 +601,156 @@ export class PersonAnimator {
     }
     if (this.skeleton) {
       this.skeleton.updateBoneTransforms();
+      // SAnimator::UpdatePose: AdjustHead, UpdateHeadDirection, then the head bone's own
+      // rotation back (the world transforms keep the turn until the next pose).
+      this.adjustHead();
+      this.updateHeadDirection();
+      if (this.headSaved) {
+        const bone = this.headBone();
+        if (bone) bone.rotation = this.headSaved;
+        this.headSaved = null;
+      }
       this.onPose?.();
     }
+  }
+
+  /** +0x148 / +0x14c: the head bone's rotation before AdjustHead turned it. */
+  private headSaved: Quat | null = null;
+  /** +0x208: where the face points, +0x20c: where the target is (eighths of a turn, [0, 8)). */
+  private headFaceDir = 0;
+  private headTargetDir = 0;
+  /** +0x210: the head's turn (eighths), +0x214: the target point (world). */
+  private headTurn = 0;
+  private headTargetPt: Vec3 = [0, 0, 0];
+
+  /**
+   * Skeleton::FindBone(0x1f): bone ids are given by Skeleton::ComputeBoneId
+   * in the order names are first met; 0x1f is the head bone the head
+   * registrations hang on (body string 4, "HEAD"), looked up by name here.
+   */
+  private headBone(): Bone | undefined {
+    // StringSetBase::GetString is 1-based: string 4 is index 3.
+    const name = this.host.bodyStrings()[3];
+    return name ? this.skeleton?.findBone(name) : undefined;
+  }
+
+  /**
+   * The world point of a registration on the head bone (body string 4):
+   * VitaBoy::FindRegistration's offset RotationTf(Z, a) * TranslationTf(t)
+   * puts it at t in the bone's frame (Top: 0.8 0 0; HeadFake: 0.8 0 100, the
+   * face's direction); then the person's root transform. Null without the bone.
+   */
+  headRegistration(fake: boolean): Vec3 | null {
+    const bone = this.headBone();
+    if (!bone) return null;
+    // Body string 5 names the head's offset (Top); HeadFake is SAnimator's own.
+    const off: Vec3 = fake ? [0.8, 0, 100] : (this.host.bodyStrings()[4] ?? "").toLowerCase() === "top" ? [0.8, 0, 0] : [0, 0, 0];
+    const r = quatRotate(bone.worldRot, off);
+    const local: Vec3 = [bone.worldPos[0] + r[0], bone.worldPos[1] + r[1], bone.worldPos[2] + r[2]];
+    const p = this.host.place();
+    return transformPoint(local, rootTransform({ x: p.fx / 16, y: p.fy / 16, level: p.level, direction: this.dirF }, 0));
+  }
+
+  /**
+   * SAnimator::AdjustHead (Mac 1034dbb0), once per tick: person data 0x2d
+   * counts down (at its end person data 0x2a := 8). Without bit 0 of person
+   * data 0x2a the turn decays (x 0.8); with it, it moves toward the target
+   * by at most 0.2 (the face-target difference wrapped to [-4, 4)), within
+   * +-1.5: reaching the limit sets person data 0x2a to 4 (person data 0x2c
+   * = 1) or 5 (0). A turn beyond +-0.01 rotates the head bone (id 0x1f) about
+   * its X axis by 2 pi turn / 8, the bone's own angle kept within +-1.2
+   * radians; a smaller one is 0.
+   */
+  private adjustHead(): void {
+    const h = this.host;
+    const n = h.personData(0x2d);
+    if (n > 0) {
+      h.setPersonData(0x2d, n - 1);
+      if (n === 1) h.setPersonData(0x2a, 8);
+    }
+    if ((h.personData(0x2a) & 1) === 0) {
+      this.headTurn = Math.fround(this.headTurn * 0.8);
+    } else {
+      let d = Math.fround(this.headFaceDir - this.headTargetDir);
+      while (d < -4) d = Math.fround(d + 8);
+      while (d >= 4) d = Math.fround(d - 8);
+      d = Math.min(0.2, Math.max(-0.2, d));
+      let w = Math.fround(this.headTurn + d);
+      let limit = false;
+      if (w < -1.5) {
+        w = -1.5;
+        limit = true;
+      } else if (w > 1.5) {
+        w = 1.5;
+        limit = true;
+      }
+      this.headTurn = w;
+      if (limit) {
+        const k = h.personData(0x2c);
+        if (k === 1) h.setPersonData(0x2a, 4);
+        else if (k === 0) h.setPersonData(0x2a, 5);
+      }
+    }
+    const bone = this.headBone();
+    if (!bone || !(this.headTurn >= 0.01 || this.headTurn <= -0.01)) {
+      this.headTurn = 0;
+      return;
+    }
+    let a = Math.fround(Math.fround(2 * Math.PI) * this.headTurn * 0.125);
+    const [x0, y0, z0, w0] = bone.rotation;
+    const mag = Math.hypot(x0, y0, z0, w0);
+    const q: Quat = mag === 0 ? [0, 0, 0, 1] : [x0 / mag, y0 / mag, z0 / mag, w0 / mag];
+    // Quaternion::ConvertToMatrix4: m[5] = 1 - 2x² - 2z², m[6] = 2yz - 2wx.
+    const m5 = 1 - 2 * q[0] * q[0] - 2 * q[2] * q[2];
+    const m6 = 2 * q[1] * q[2] - 2 * q[3] * q[0];
+    const yaw = Math.fround(Math.atan2(-m6, m5));
+    if (yaw + a < -1.2) a = Math.fround(-1.2 - yaw);
+    else if (yaw + a > 1.2) a = Math.fround(1.2 - yaw);
+    this.headSaved = [...bone.rotation];
+    // Quaternion::SetFromEuler(a, 0, 0) * q
+    bone.rotation = quatMul([Math.fround(Math.sin(a * 0.5)), 0, 0, Math.fround(Math.cos(a * 0.5))], q);
+    if (bone.parent) bone.updateTransform(bone.parent.worldPos, bone.parent.worldRot);
+  }
+
+  /**
+   * SAnimator::UpdateHeadDirection (Mac 1034e0b0): with the head
+   * registrations and bit 0 of person data 0x2a, the look-at object (person
+   * data 0x28; gone: 0x28 := 0, 0x2a := 0x10) gives the target point (a
+   * person's head registration, else the object's position); one on another
+   * level also clears 0x28 (0x2a := 0x10). Then the face's direction (Top to
+   * HeadFake) and the target's (Top to the target), each kept when the
+   * distance is 0.
+   */
+  private updateHeadDirection(): void {
+    const h = this.host;
+    if ((h.personData(0x2a) & 1) === 0) return;
+    const top = this.headRegistration(false);
+    const fake = this.headRegistration(true);
+    if (!top || !fake) return;
+    const id = h.personData(0x28);
+    if (id !== 0) {
+      const o = h.lookAt(id);
+      if (!o) {
+        h.setPersonData(0x28, 0);
+        h.setPersonData(0x2a, 0x10);
+      } else {
+        if (o.head) this.headTargetPt = o.head;
+        else this.headTargetPt = [Math.fround(0.1875 * o.fy), this.headTargetPt[1], Math.fround(0.1875 * o.fx)];
+        if (o.level !== h.place().level) {
+          h.setPersonData(0x28, 0);
+          h.setPersonData(0x2a, 0x10);
+        }
+      }
+    }
+    const dir = (dx: number, dz: number): number | null => {
+      if (!(dx * dx + dz * dz > 0)) return null;
+      let v = Math.fround(8 * Math.fround(Math.fround(Math.atan2(dz, -dx)) / Math.fround(2 * Math.PI)));
+      while (v < 0) v = Math.fround(v + 8);
+      while (v >= 8) v = Math.fround(v - 8);
+      return v;
+    };
+    this.headFaceDir = dir(fake[0] - top[0], fake[2] - top[2]) ?? this.headFaceDir;
+    this.headTargetDir = dir(this.headTargetPt[0] - top[0], this.headTargetPt[2] - top[2]) ?? this.headTargetDir;
   }
 
   /** SAnimator::HandleVitaBoyAnimEvent. */

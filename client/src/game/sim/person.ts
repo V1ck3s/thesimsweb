@@ -278,6 +278,13 @@ export class PersonSim extends SimObject {
       setLocation: (fx, fy) => this.setLocation(fx, fy),
       holding: () => (this.obj.objectSlots[1]?.containedId ?? 0) !== 0,
       animSound: (key, value, forward) => handleAnimSound(this, key, value, forward),
+      place: () => ({ fx: this.obj.fx, fy: this.obj.fy, level: this.obj.level, dir: this.obj.dir }),
+      lookAt: (id) => {
+        const o = this.module.getObject(id);
+        if (!o) return null;
+        const head = o.isPerson ? ((o as PersonSim).animator.headRegistration(false) ?? null) : null;
+        return { level: o.obj.level, fx: o.obj.fx, fy: o.obj.fy, head };
+      },
     });
     // What the lot renderer dresses (SAnimator::UpdateOutfitAndHands from SAnimator::Render).
     const personData = (): Int16Array => this.pd;
@@ -1859,14 +1866,24 @@ export class PersonSim extends SimObject {
   }
 
   /**
-   * cXPerson::TryLookTowards: 0 turns the head (SAnimator::LookTowards, not
-   * drawn here; true); 1 faces the camera; 2 / 3 face towards / away from
+   * cXPerson::TryLookTowards: 0 turns the head towards the stack object
+   * (SAnimator::LookTowards: person data 0x28 := its id, 0x2a := 1 when it
+   * is one, else 0, 0x2b := 0, 0x2c := 1, 0x2d := 0; the animator's
+   * AdjustHead turns it; true); 1 faces the camera; 2 / 3 face towards / away from
    * the stack object (error 0x15 without one). 1..3 walk a path [me, me,
    * facing point] with the walk engine (a StandingTurn), false when
    * sitting; others error 0x27.
    */
   protected tryLookTowards(elem: StackElem, mode: number): number {
-    if (mode === 0) return PRIM_TRUE;
+    if (mode === 0) {
+      const id = elem.stackObj;
+      this.pd[0x28] = id;
+      this.pd[0x2a] = id !== 0 ? 1 : 0;
+      this.pd[0x2b] = 0;
+      this.pd[0x2c] = 1;
+      this.pd[0x2d] = 0;
+      return PRIM_TRUE;
+    }
     if (mode < 0 || mode > 3) simThrow(0x27);
     const a = this.animator;
     if (elem.state === 0) {
