@@ -239,14 +239,16 @@ export class SimObject extends TreeSim {
 
   /**
    * cXObject::Cleanup(0): runs the cleanup entry point and restarts Main, or
-   * (no cleanup tree) Pickup + Reset + Place. Pickup / Place keep the object
-   * where it is here (placement is not simulated): only Reset runs.
+   * (no cleanup tree) Pickup + Reset + Place, Reset and Place skipped for an
+   * object being killed (+0x114 bit 0x40). Pickup / Place keep the object
+   * where it is here (placement is not simulated): only Reset runs. The
+   * tutorial object stops being it.
    */
   cleanup(): void {
     const fns = this.fnTable;
     const cleanupTree = fns.getTreeID(EP.cleanup);
     if (cleanupTree === 0) {
-      this.reset(true);
+      if (!this.killed) this.reset(true);
     } else {
       this.runCheckTree(this.behavior, 0, cleanupTree, null);
       this.obj.objectData[OD.cleanupFlags] = 0;
@@ -256,6 +258,7 @@ export class SimObject extends TreeSim {
     this.module.setIdleCounter(this.id, 0xffff);
     // cXObject::Cleanup: cSoundPlayer::QuietBySourceID(id).
     this.module.soundHooks?.killSounds(this.id);
+    if (this.module.tutorialObject === this) this.module.setTutorialObject(null);
   }
 
   /**

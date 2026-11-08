@@ -875,11 +875,24 @@ export class Placement {
     const nx = obj.fx >> 4;
     const ny = obj.fy >> 4;
     if (column && !this.outOfBounds(nx, ny)) this.setTileFlags(nx, ny, obj.level, (this.tileFlags(nx, ny, obj.level) & 0xf7) | 8);
+    this.lightChanged(obj);
+  }
+
+  /**
+   * Place / Pickup of a light (object data 40 bit 0x400): GlobalDispatch(0xf2,
+   * id) -> ObjectModule: GlobalDispatch(0xf1, its room) unless 0xfffb, the
+   * room's lighting is recomputed (RoomManager::RoomLightingChanged).
+   */
+  private lightChanged(obj: XObject): void {
+    if (!(Placement.uod(obj, 40) & 0x400)) return;
+    const room = Placement.uod(obj, 29);
+    if (room !== 0xfffb) this.hooks.roomChanged?.(room);
   }
 
   /** cXObject::Pickup. */
   pickupSingle(obj: XObject, notify: boolean): void {
     if (!this.isMultiTile(obj)) this.hooks.runCheckTree?.(obj, FN.pickup, 0);
+    this.lightChanged(obj);
     const ox = obj.fx >> 4;
     const oy = obj.fy >> 4;
     const container = this.getPlacementSpec(obj).container;
