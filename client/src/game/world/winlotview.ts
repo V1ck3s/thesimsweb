@@ -2409,12 +2409,18 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
   }
 
   override tsOnMouseMove(x: number, y: number): boolean {
-    this.edge?.onMouseMove(x, y);
+    // cDDDSimsView::IsMouseOverCP: the control panel window.
+    const cp = this.children.find((c): c is WinCPanel => c instanceof WinCPanel);
+    const overCP = !!cp && cp.windowFromPoint(x - cp.area.left, y - cp.area.top) !== null;
+    this.edge?.onMouseMove(x, y, performance.now(), overCP);
     this.cursor = { x, y };
-    // EdgeDetectScroller::OnMouseMove: no HouseViewer::MouseTrack while the Alt pan is on.
+    // EdgeDetectScroller::OnMouseMove: no HouseViewer::MouseTrack while the Alt pan is on,
+    // nor while the cursor is over the control panel.
     if (this.edge?.panning) return this.viewer !== null;
-    this.cutaway?.mouseTrack(x, y);
-    this.activeTools()?.mouseTrack(x, y);
+    if (!overCP) {
+      this.cutaway?.mouseTrack(x, y);
+      this.activeTools()?.mouseTrack(x, y);
+    }
     if (this.ctx.state.getMode() === Mode.Live) {
       if (this.overChild(x, y)) this.tip = null;
       else this.liveFloat(x, y);

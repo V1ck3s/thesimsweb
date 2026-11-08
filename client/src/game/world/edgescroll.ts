@@ -211,7 +211,7 @@ export class EdgeDetectScroller {
   }
 
   /** OnMouseMove: the mouse history, then (no pan) the right drag (threshold, velocity, cursor), else the edge zones. */
-  onMouseMove(x: number, y: number, now = performance.now()): void {
+  onMouseMove(x: number, y: number, now = performance.now(), overCP = false): void {
     if (this.moves === 0) {
       this.panX = this.mouseX;
       this.panY = this.mouseY;
@@ -240,7 +240,7 @@ export class EdgeDetectScroller {
       }
       return;
     }
-    this.edgeMove(x, y, now);
+    this.edgeMove(x, y, now, overCP);
   }
 
   /** EdgeDetectScroller::StopScrolling: state 1 ends, with the pan, the right drag, the zone, the anchor and the cursor. */
@@ -257,14 +257,15 @@ export class EdgeDetectScroller {
   }
 
   /** The edge half of OnMouseMove: classify the cursor into one of the 8 edge zones (0 = none). */
-  private edgeMove(x: number, y: number, now: number): void {
+  private edgeMove(x: number, y: number, now: number, overCP: boolean): void {
     let zone = 0;
     let vx = 0;
     let vy = 0;
-    const top = y < EDGE;
-    const bottom = y >= this.height - EDGE;
-    const left = x < EDGE;
-    const right = x >= this.width - EDGE;
+    // cDDDSimsView::IsMouseOverCP: no edge zone over the control panel.
+    const top = !overCP && y < EDGE;
+    const bottom = !overCP && y >= this.height - EDGE;
+    const left = !overCP && x < EDGE;
+    const right = !overCP && x >= this.width - EDGE;
     if (top) {
       vy = -SPEED;
       if (left) [zone, vx] = [1, -2 * SPEED];
