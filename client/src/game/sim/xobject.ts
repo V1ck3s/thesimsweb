@@ -2259,8 +2259,11 @@ export class SimObject extends TreeSim {
    * (its person), 8 fail when anything is on the target tile, 0x10 my temp
    * 0 as its parameter 0, 0x20 face the stack object's direction. The new
    * object is made out of the world, then CanPlace / Place (it is killed
-   * when it does not fit) and becomes the stack object. The room check of
-   * the target tile is not ported. An object file not opened yet loads
+   * when it does not fit) and becomes the stack object. Placed in front of
+   * or into the stack object (modes 3, 4, 12..14), the target tile must be
+   * in the stack object's room (unless 0xfffb); mode 9 fails when a wall
+   * blocks the target tile towards me (wall block flags bit 0); flag 0x40
+   * skips both checks. An object file not opened yet loads
    * asynchronously: the primitive waits meanwhile (the original loads
    * synchronously).
    */
@@ -2283,6 +2286,7 @@ export class SimObject extends TreeSim {
     let slot = 0;
     let place = true;
     let wallDir = -1;
+    let room = 0xfffb;
     const front = (o: XObject, d: number): { fx: number; fy: number } => {
       const [dx, dy] = DIR_VEC[d & 7]!;
       return { fx: o.fx + dx * 16, fy: o.fy + dy * 16 };
@@ -2308,12 +2312,14 @@ export class SimObject extends TreeSim {
       case 3:
         if (!at(stack)) return PRIM_FALSE;
         pos = front(stack!, stack!.dir);
+        room = stack!.objectData[29]! & 0xffff;
         break;
       case 4:
       case 12:
       case 13:
       case 14:
         if (!at(stack)) return PRIM_FALSE;
+        room = stack!.objectData[29]! & 0xffff;
         container = stack;
         slot = mode === 4 ? 0 : mode - 10;
         break;
@@ -2343,9 +2349,8 @@ export class SimObject extends TreeSim {
         at(me);
         break;
     }
-    void wallDir;
-    const tx = pos.fx >> 4;
-    const ty = pos.fy >> 4;
+    const tx = ((pos.fx >> 4) << 24) >> 24;
+    const ty = ((pos.fy >> 4) << 24) >> 24;
     const onTarget = (): SimObject[] => this.module.list.filter((x) => x.obj.tileX === tx && x.obj.tileY === ty && x.obj.level === level && x.obj.containerId === 0);
     if (flags & 1 && onTarget().some((x) => x.obj.selector === sel)) return PRIM_FALSE;
     if (flags & 8 && onTarget().length > 0) return PRIM_FALSE;
@@ -2353,6 +2358,15 @@ export class SimObject extends TreeSim {
       const n = this.module.sim.world?.size ?? 64;
       if (tx < 1 || ty < 1 || tx >= n - 1 || ty >= n - 1) return PRIM_FALSE;
     }
+    if (flags & 0x40) {
+      room = 0xfffb;
+      wallDir = -1;
+    }
+    if (place && room !== 0xfffb) {
+      const rooms = this.module.sim.world?.rooms[level - 1];
+      if (rooms && rooms.u16(tx, ty) !== room) return PRIM_FALSE;
+    }
+    if (wallDir !== -1 && wallBlockFlagsAtTile(this.module, tx, ty, level, wallDir) & 1) return PRIM_FALSE;
     const x = hooks.make(sel);
     if (!x) return PRIM_FALSE;
     const o = this.module.addObject(x, true);
