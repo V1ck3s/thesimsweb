@@ -17,8 +17,7 @@
  *
  * Not ported here (SimAntics or rendering side): the trees the original runs
  * on place / pickup / allow-intersection (`hooks.runCheckTree`), room ids
- * (ResolveRoomID), UpdateWallAdjacency, UpdateChairFacing, lights, render
- * layers and damage rectangles.
+ * (ResolveRoomID), lights, render layers and damage rectangles.
  */
 
 import { cheatFlags } from "../../cheatflags.js";
@@ -86,6 +85,8 @@ export const FN = {
 export interface ObjectBehaviorHooks {
   /** TreeSim::RunCheckTree on `obj`'s function table entry; false when the object has no such tree. */
   runCheckTree?(obj: XObject, entry: number, param: number): boolean;
+  /** ObjFnTable::GetTreeID(entry) != 0 for `obj`. */
+  hasTree?(obj: XObject, entry: number): boolean;
   /** cXObject::Reset's init tree on a new object; return false to fall back to seeded data. */
   runInitTree?(obj: XObject): boolean;
   /** ObjectModule::OnEnterWorld / OnExitWorld. */
@@ -383,10 +384,98 @@ export class Placement {
   turn(obj: XObject, n: number): void {
     const notches = Placement.od(obj, ODX.rotationNotches);
     if (n === 0 || notches === 0) return;
+    const oldDir = obj.dir;
     Placement.setOd(obj, OD.direction, (obj.dir + notches * n) & 7);
     obj.isStatic = false;
     obj.staticWhenIdle = false;
     obj.rect = this.computeRect(obj, obj);
+    if (this.isChair(obj)) {
+      this.updateChairFacingInFront(obj.fx >> 4, obj.fy >> 4, oldDir, obj.level);
+      this.updateChairFacingInFront(obj.fx >> 4, obj.fy >> 4, obj.dir, obj.level);
+    }
+    this.updateWallAdjacency(obj);
+  }
+
+  // --- UpdateChairFacing / UpdateWallAdjacency ------------------------------------------
+
+  /** An object with a "sit" tree (function table entry 0x1a). */
+  private isChair(obj: XObject): boolean {
+    return this.hooks.hasTree?.(obj, 0x1a) ?? false;
+  }
+
+  /** UpdateChairFacing of the tile in front of a chair at (x, y) facing `dir`. */
+  private updateChairFacingInFront(x: number, y: number, dir: number, level: number): void {
+    this.updateChairFacing(x + NEIGHBOR_DX[dir & 7]!, y + NEIGHBOR_DY[dir & 7]!, level);
+  }
+
+  /**
+   * cXObject::UpdateChairFacing (100be360): when the tile holds objects, a
+   * chair (sit tree) on one of its 4 side tiles facing it (direction
+   * (i + 4) & 7; an object in a container counts through the tile chain)
+   * sets flag 0x100 on every object of the tile's hierarchy, else it is
+   * cleared; an object whose flag changed and that has an "eating surface"
+   * tree (0x19) runs its placement tree (9).
+   */
+  updateChairFacing(x: number, y: number, level: number): void {
+    x = (x << 24) >> 24;
+    y = (y << 24) >> 24;
+    if (this.outOfBounds(x, y) || !this.get(this.tileObjectId(x, y, level))) return;
+    let facing = false;
+    for (let i = 0; i < 8; i += 2) {
+      const nx = x + NEIGHBOR_DX[i]!;
+      const ny = y + NEIGHBOR_DY[i]!;
+      if (this.outOfBounds(nx, ny)) continue;
+      let o = this.get(this.tileObjectId(nx, ny, level));
+      while (o && Placement.uod(o, OD.flags) & 4) o = this.get(o.nextSiblingId);
+      if (o && this.isChair(o) && o.dir === ((i + 4) & 7)) {
+        facing = true;
+        break;
+      }
+    }
+    for (const o of [...this.tileObjects(x, y, level)]) {
+      const f = Placement.uod(o, OD.flags);
+      const was = (f & FL_CHAIR_FACING) !== 0;
+      Placement.setOd(o, OD.flags, facing ? f | FL_CHAIR_FACING : f & ~FL_CHAIR_FACING);
+      if (was !== facing && this.hooks.hasTree?.(o, 0x19)) this.hooks.runCheckTree?.(o, FN.place, 0);
+    }
+  }
+
+  /**
+   * cXObject::UpdateWallAdjacency (100bb2a0), for objects with a "wall
+   * adjacency changed" tree (6): object data 5's low bits become the
+   * tile's walls turned with the object (TileWalls::Rotate by -dir / 2),
+   * a wall counting unless its style is 2, 0xc, 0xd or 0xe: segment 1 ->
+   * bit 1, 2 -> 4, 4 -> 2, 8 -> 8 (the level-below branch never runs, levels
+   * being 1-based); a change runs tree 6.
+   */
+  updateWallAdjacency(obj: XObject): void {
+    if (!this.hooks.hasTree?.(obj, 6)) return;
+    const x = tileOf(obj.fx);
+    const y = tileOf(obj.fy);
+    let v = Placement.uod(obj, ODX.wallAdjacency) & 0xffc0;
+    if (!this.outOfBounds(x, y)) {
+      const r = Math.trunc(-obj.dir / 2) & 3;
+      const walls = getWall(this.world, x, y, obj.level);
+      const w = r !== 0 ? rotateWalls(walls, r) : { segs: walls.segs, styles: walls.styles };
+      const counts = (seg: number): boolean => {
+        if ((w.segs & seg) !== seg) return false;
+        const st = w.styles[segIndex(seg)]!;
+        return !(st === 2 || st === 0xc || st === 0xd || st === 0xe);
+      };
+      if (counts(1)) v |= 1;
+      if (counts(2)) v |= 4;
+      if (counts(4)) v |= 2;
+      if (counts(8)) v |= 8;
+    }
+    if (v !== Placement.uod(obj, ODX.wallAdjacency)) {
+      Placement.setOd(obj, ODX.wallAdjacency, v);
+      this.hooks.runCheckTree?.(obj, 6, 0);
+    }
+  }
+
+  /** ObjectModule::DoCommand(0x101) (walls changed): UpdateWallAdjacency of every object. */
+  wallsChanged(objects: Iterable<XObject>): void {
+    for (const o of objects) this.updateWallAdjacency(o);
   }
 
   // --- TestAndPlace -------------------------------------------------------------------
@@ -764,7 +853,10 @@ export class Placement {
     const oldY = obj.fy;
     const wasOut = this.outOfBounds(tileOf(oldX), tileOf(oldY));
     const oldLevel = obj.level;
+    const oldDir = obj.dir;
     this.testAndPlace(obj, { placing: false, fy: 0, fx: 0, container: null, slot: -1, level: 0 }, true);
+    const chair = this.isChair(obj);
+    if (chair) this.updateChairFacingInFront(oldX >> 4, oldY >> 4, oldDir, oldLevel);
     const column = obj.selector.getMasterSelector().objd.buildModeType === 6;
     if (column && !this.outOfBounds(oldX >> 4, oldY >> 4)) this.setTileFlags(oldX >> 4, oldY >> 4, oldLevel, this.tileFlags(oldX >> 4, oldY >> 4, oldLevel) & 0xf7);
     const lvl = container ? container.level : level;
@@ -774,6 +866,9 @@ export class Placement {
     Placement.setOd(obj, OD.containerId, container ? container.objectId : 0);
     Placement.setOd(obj, OD.slotNumber, spec.slot);
     this.setLocation(obj, { fx: at.fx, fy: at.fy }, lvl);
+    this.updateChairFacing(obj.fx >> 4, obj.fy >> 4, obj.level);
+    if (chair) this.updateChairFacingInFront(obj.fx >> 4, obj.fy >> 4, obj.dir, obj.level);
+    this.updateWallAdjacency(obj);
     if (!this.isMultiTile(obj)) this.hooks.runCheckTree?.(obj, FN.place, 0);
     if (container) this.hooks.runCheckTree?.(container, FN.place, 0);
     if ((oldX !== obj.fx || oldY !== obj.fy) && wasOut && notify) this.hooks.onEnterWorld?.(obj);
@@ -792,8 +887,10 @@ export class Placement {
     Placement.setOd(obj, OD.containerId, 0);
     Placement.setOd(obj, OD.slotNumber, -1);
     const oldLevel = obj.level;
+    const oldDir = obj.dir;
     this.setLocation(obj, { fx: -16, fy: -16 }, 1);
     Placement.setOd(obj, OD.flags, Placement.uod(obj, OD.flags) & ~FL_CHAIR_FACING);
+    if (this.isChair(obj)) this.updateChairFacingInFront(ox, oy, oldDir, oldLevel);
     if (container) this.hooks.runCheckTree?.(container, FN.place, 0);
     if (obj.selector.getMasterSelector().objd.buildModeType === 6 && !this.outOfBounds(ox, oy)) {
       this.setTileFlags(ox, oy, oldLevel, this.tileFlags(ox, oy, oldLevel) & 0xf7);

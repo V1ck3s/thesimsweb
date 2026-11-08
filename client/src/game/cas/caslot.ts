@@ -135,6 +135,10 @@ export class CasLot {
         }
         return true;
       },
+      hasTree: (obj, entry) => {
+        const o = lot?.sim.module.getObject(obj.objectId);
+        return !!o && o.obj === obj && !o.killed && o.fnTable.getTreeID(entry) !== 0;
+      },
       runCheckTree: (obj, entry, stackObj) => {
         const o = lot?.sim.module.getObject(obj.objectId);
         if (!o || o.obj !== obj || o.killed) return false;
