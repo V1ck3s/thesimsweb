@@ -50,6 +50,7 @@ export const EV = {
   SetMusicVolume: 38,
   SetVoxVolume: 39,
   SetAmbienceMode: 52,
+  SequenceTrackHitList: 53,
 } as const;
 
 /** The register each kSndobSet* event's track setter writes (cTrackPlayer::SetVolume .. SetFxLevel). */
@@ -800,6 +801,15 @@ export class BoxX {
         }
         this.updateAmbienceLoop();
         return true;
+      case EV.SequenceTrackHitList: {
+        // The track chains a patch the global hit list a4 chooses (cHitList vtable 8,
+        // Choose; cTrackPlayer vtable 0xb0, ChainPatch).
+        const t = this.track(arg);
+        if (!t) return true;
+        const list = this.hm.globalHitList(a4);
+        if (list) t.chainPatch(list.choose());
+        return true;
+      }
       case EV.SetAmbienceMode: {
         const next = arg >= 0 && arg < 4 ? (this.ambience[arg] ?? null) : null;
         if (next === this.ambienceCur) return true;

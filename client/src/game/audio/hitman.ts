@@ -232,8 +232,9 @@ export class HitMan {
     for (const p of [...this.updateList]) p.handleTimerCallback();
   }
 
-  /** cHitMan::KillAll */
+  /** cHitMan::KillAll: every registered sound object (paused ones too) gets vtable 0x40, Kill. */
   killAll(): void {
+    for (const o of [...this.objects.values()]) (o as Partial<{ kill(): unknown }>).kill?.();
     for (const p of [...this.updateList]) p.kill();
   }
 

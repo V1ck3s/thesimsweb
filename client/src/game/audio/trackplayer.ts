@@ -203,7 +203,7 @@ export class TrackPlayer extends SoundObject {
   }
 
   /** cTrackPlayer::ChainPatch: play `id` now, or right after the current sample. */
-  private chainPatch(id: number): boolean {
+  chainPatch(id: number): boolean {
     if (this.channel?.isPlaying()) {
       this.chained = id;
       return true;
