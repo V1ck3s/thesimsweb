@@ -805,6 +805,7 @@ export class PersonSim extends SimObject {
       }
       const skill = this.loadSkill(elem, anim, source, flags);
       if (skill === undefined) return PRIM_WAIT;
+      a.milsFlag = (flags & 0x80) !== 0;
       const t = skill ? a.start(slot, skill, backwards) : null;
       // the trees own the carry practice (+0x1a0 = 6) until they stop it
       if (t && slot === "carry") {
@@ -833,6 +834,9 @@ export class PersonSim extends SimObject {
       // animation tree" and plays StdAnimIdx 0x25 instead (SAnimator::TryAnimate).
       const t = skill ? a.start("main", skill, backwards) : this.startMissingAnimation(a);
       if (t) t.interruptible = (flags & 8) !== 0;
+      // SAnimator +0xa8 (Animator::GetMils without the 1.2 factor) and +0x294 (the practice plays at the walking scale).
+      a.milsFlag = (flags & 0x80) !== 0;
+      a.practiceScaled = (flags & 0x40) !== 0;
       // flags 1 | 0x10: a full-body animation, the carry practice stops until it ends (+0x19c = 1)
       if (slot === "carry3") {
         a.stop("carry");

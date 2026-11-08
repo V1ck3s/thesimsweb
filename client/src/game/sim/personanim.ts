@@ -23,8 +23,14 @@ import type { Skeleton } from "../sims/skeleton.js";
 import { type Skill, skillClock } from "../sims/skill.js";
 import { SkillReadError, VBAnimMgr } from "../sims/vbanimmgr.js";
 
-/** Animator::GetMilsPerTick. */
+/** Animator::GetMilsPerTick (the walk engine's unit). */
 export const MILS_PER_TICK = 42;
+/**
+ * Animator::GetMils per sim tick: trunc(1.2 * GetMilsPerTick) = 50 (the
+ * clock SAnimator::Tick hands VitaBoy::AnimationTick), GetMilsPerTick alone
+ * while SAnimator +0xa8 (Animate flag 0x80) is set.
+ */
+const ANIM_MILS_PER_TICK = Math.trunc(Math.fround(1.2) * MILS_PER_TICK);
 
 /** SAnimator::CalcAngle(dx, dy): atan2(dy, dx) in [0, 2 pi). */
 function calcAngle(dx: number, dy: number): number {
@@ -448,11 +454,42 @@ export class PersonAnimator {
    */
   reset(): void {
     this.suitsResetPending = true;
+    // SAnimator::Reset: the walk fields, Standing (+0x188 = 3), the carry
+    // fields (+0x1a0 = 0, +0x1a4 = -1), the background sit value (+0x190).
+    this.pathIndex = -1;
+    this.bgSit = -1;
+    this.looping = false;
+    this.pending = 0;
+    this.stopping = false;
+    this.walkActive = false;
+    this.stopAt = 0;
+    this.carryMode = 0;
+    this.carryAnim = -1;
+    this.state = AS.standing;
+    // The follow state (+0x180): a walk under way is asked to end (+0x27c),
+    // anything else goes back to neutral with the targets on the grid position.
+    if (this.followState !== FOLLOW.neutral) {
+      if (this.followState === FOLLOW.engaged || this.followState === FOLLOW.ending) {
+        this.endAsked = true;
+      } else {
+        this.pathIndex = -1;
+        this.path = [];
+        this.stopAt = 0;
+        this.tx = this.gridX;
+        this.ty = this.gridY;
+        this.tdir = this.dirF;
+        this.state = AS.standing;
+      }
+      this.followState = FOLLOW.neutral;
+    }
+    // StopCurAnim, StopAnimation of the carry, main and background practices,
+    // the event queue (+0x2c) erased, not animating (+0xa0).
     this.stop("main");
     this.stop("carry");
     this.stop("background");
-    this.carryMode = 0;
-    this.carryAnim = -1;
+    this.fade = null;
+    this.events.length = 0;
+    this.animating = false;
   }
 
   /**
@@ -542,14 +579,15 @@ export class PersonAnimator {
 
   /** Animator::Tick: advance the practices one tick and handle the crossed time props. */
   tick(): void {
-    this.clock += MILS_PER_TICK;
+    const mils = this.milsFlag ? MILS_PER_TICK : ANIM_MILS_PER_TICK;
+    this.clock += mils;
     if (this.skeleton) this.updateCarryPractice();
     this.tickMovement();
     // Apply order: background (priority -10), main, carry (10) on top.
     for (const slot of ["background", "main", "carry"] as const) {
       const t = this[slot];
       if (!t) continue;
-      for (const props of t.advance(MILS_PER_TICK)) this.handleProps(t, props);
+      for (const props of t.advance(mils)) this.handleProps(t, props);
     }
     if (this.skeleton) {
       this.skeleton.updateBoneTransforms();
@@ -808,6 +846,11 @@ export class PersonAnimator {
     this.bgSit = sit;
   }
 
+  /** SAnimator +0xa8: Animate flag 0x80, the animation clock advances GetMilsPerTick (42) instead of 50 a tick. */
+  milsFlag = false;
+  /** SAnimator +0x294: Animate flag 0x40, the main practice plays at the walking scale. */
+  practiceScaled = false;
+
   /** The movement part of SAnimator::Tick (prelude and states 1..12). */
   private tickMovement(): void {
     // Prelude: the background practice and the walking scale, smoothed by 0.2 a tick.
@@ -858,7 +901,9 @@ export class PersonAnimator {
           if (this.main) this.main.rate = this.scale;
           return;
         default:
-          // Animating (0) and WalkingTurn (8): nothing moves here.
+          // Animating (0): with +0x294 the main practice plays at the walking scale
+          // (Practice::SetScale, negated when the practice's speed is). WalkingTurn (8): nothing.
+          if (this.state === AS.animating && this.practiceScaled && this.main) this.main.rate = this.scale;
           return;
       }
     }
