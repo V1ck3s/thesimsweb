@@ -674,9 +674,13 @@ export class Placement {
   /** cXObject::TestIntersection: other objects on the 3x3 tiles around, then the walls. */
   private testIntersection(obj: XObject, p: FPt, level: number): boolean {
     const isPerson = obj.selector.objd.objectType === TYPE_PERSON;
-    // A person whose person data 68 has bit 0 (walking through a portal) intersects nothing.
-    // (The person data 84 case, tested against the running tree's stack object, is not ported.)
-    if (isPerson && ((this.hooks.personData?.(obj)?.[68] ?? 0) & 1) === 1) return true;
+    // A person whose person data 68 has bit 0 (walking through a portal) intersects nothing,
+    // nor one with person data 84 bit 0 holding nothing in slot 1 and in no container.
+    if (isPerson) {
+      const pd = this.hooks.personData?.(obj);
+      if (((pd?.[68] ?? 0) & 1) === 1) return true;
+      if (((pd?.[84] ?? 0) & 1) === 1 && (obj.objectSlots[1]?.containedId ?? 0) === 0 && this.getPlacementSpec(obj).container === null) return true;
+    }
     const rect = this.computeRect(obj, p);
     const myFlags = Placement.uod(obj, OD.flags);
     const zero = (myFlags & FL_ZERO_EXTENT) !== 0;

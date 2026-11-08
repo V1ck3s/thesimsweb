@@ -337,7 +337,8 @@ export class Simulator {
       return;
     }
     try {
-      const load = o.fnTable.getTreeID(EP.load);
+      // cXObject::PostLoad runs the Load tree for anything but people (OBJD type 2).
+      const load = o.obj.selector.objd.objectType === 2 ? 0 : o.fnTable.getTreeID(EP.load);
       if (load !== 0) o.runCheckTree(o.behavior, 0, load, null);
       // cXObject::PostLoad: changed trees (ObjSelector +0xb4 bit 1, with
       // lbl_105BA214 set) or the standard placeholder: ObjectModule::CleanupPeople

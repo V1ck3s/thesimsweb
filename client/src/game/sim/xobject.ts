@@ -2142,9 +2142,10 @@ export class SimObject extends TreeSim {
       // Neighborhood::GetNeighborSelector: the dialog's picture (SetParams mode 0).
       const sel = this.obj.selector.folder.selectorByGUID?.(nb.guid >>> 0) ?? null;
       if (out && sel) out.selector = sel;
+      // ObjSelector::GetCatalogName of the neighbor's selector (never the character file's name).
       const st = m.sim.state;
       const info = st ? [...st.family, ...st.neighbors].find((q) => q.neighborId === id) : undefined;
-      return info?.firstName ?? m.neighborNames.get(id) ?? nb.name;
+      return sel?.getCatalogName() ?? m.neighborNames.get(id) ?? info?.firstName ?? null;
     });
     each("$CatalogLocal", (a) => {
       const v = local(a);
