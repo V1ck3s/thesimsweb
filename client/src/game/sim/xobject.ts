@@ -237,6 +237,9 @@ export class SimObject extends TreeSim {
    */
   cleanupFor(_obj: SimObject): void {}
 
+  /** cXObject::ForceLocation (vtable +0x7c): its animator snaps to the position (objects have none here). */
+  forceLocation(): void {}
+
   /**
    * cXObject::Cleanup(0): runs the cleanup entry point and restarts Main, or
    * (no cleanup tree) Pickup + Reset + Place, Reset and Place skipped for an
@@ -2534,9 +2537,11 @@ export class SimObject extends TreeSim {
       level = ref.obj.level;
     }
     const x = target.obj;
-    const placeAt = (pos: { fx: number; fy: number } | null, lvl: number): number => {
+    const placeAt = (pos: { fx: number; fy: number } | null, lvl: number, force = false): number => {
       if (!pos || !hooks.canPlace(x, pos, lvl, null, 0)) return PRIM_FALSE;
       hooks.place(x, pos, lvl, null, 0);
+      // Modes 5 and the default end with ForceLocation (a person's swimming flag).
+      if (force) target.forceLocation();
       this.module.dirty(target);
       return PRIM_TRUE;
     };
@@ -2561,7 +2566,7 @@ export class SimObject extends TreeSim {
     if (mode === 5) opts.random = () => this.module.sim.random();
     // the start tile's room first, then anywhere
     const pos = hooks.findGoodLocation(x, start, level, { ...opts, sameRoom: true }) ?? hooks.findGoodLocation(x, start, level, { ...opts, sameRoom: false });
-    return placeAt(pos, level);
+    return placeAt(pos, level, true);
   }
 
   /**
@@ -2675,7 +2680,7 @@ export class SimObject extends TreeSim {
       const lvl = o.obj.level;
       o.cleanup();
       hooks.moveTo(o.obj, pos, lvl);
-      (o as unknown as { animator?: { forceLocation(p: XObject): void } }).animator?.forceLocation(o.obj);
+      o.forceLocation();
     }
     let made = false;
     for (const o of set) {

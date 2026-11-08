@@ -1544,7 +1544,7 @@ export class PersonSim extends SimObject {
           const b = route.path[n - 1]!;
           if (a.fx !== b.fx || a.fy !== b.fy) me.objectData[1] = dirOf(b.fx - a.fx, b.fy - a.fy);
         }
-        this.animator.forceLocation(me);
+        this.forceLocation();
         this.renderDir = null;
         route.result = 0;
       }
@@ -2346,6 +2346,22 @@ export class PersonSim extends SimObject {
       m.menuInProgress = null;
     }
     return items;
+  }
+
+  /**
+   * cXPerson::ForceLocation: the animator snaps to the position, then person
+   * data 64 (swimming) is 1 when the person's tile (inside the lot) has pool
+   * water (cFixedWorld::HasPool), else 0.
+   */
+  override forceLocation(): void {
+    const me = this.obj;
+    this.animator.forceLocation(me);
+    this.pd[64] = 0;
+    const world = this.module.sim.world;
+    if (!world) return;
+    const x = ((me.fx >> 4) << 24) >> 24;
+    const y = ((me.fy >> 4) << 24) >> 24;
+    if (x > 0 && x < world.size - 1 && y > 0 && y < world.size - 1 && world.hasPool(x, y, me.level)) this.pd[64] = 1;
   }
 
   /**
