@@ -406,6 +406,8 @@ class Game {
     }
     // Neighborhood::LoadHouse reads the neighborhood as it is now (a family may just have moved in).
     this.nbhd = await Neighborhood.load(this.nbhdDir);
+    // Neighborhood::GetZoningType(house), which the original asks each time (CPState::SetMode, the panels).
+    state.zoningType = this.nbhd.getZoningType(house);
     const view = new WinLotView(ctx, this.nbhd.getHousePath(house));
     // LoadGame: the members arriving (+0x108 / +0x109 / +0x10a) come through PersonFinder::CreateDowntownSim.
     view.arrivalOutOfWorld = !!(arrival && (arrival.member || arrival.family || arrival.studioMember));
