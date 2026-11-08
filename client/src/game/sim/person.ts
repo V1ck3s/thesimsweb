@@ -1586,8 +1586,11 @@ export class PersonSim extends SimObject {
       if (success) {
         const n = route.path.length;
         // With 2+ path points and object data 9 clear: the direction of the last
-        // segment (dirOf(0, 0) = 3 for equal points), then ForceLocation.
-        if (n >= 2 && !me.objectData[9]) {
+        // segment (dirOf(0, 0) = 3 for equal points), then ForceLocation. A person
+        // sitting or held by an object (the sit tree ran: in its chair) does not fit
+        // where it stands (CanPlace fails while sitting): both are skipped.
+        const placed = pd[PDX.sitting] === 0 && me.parentId === 0;
+        if (placed && n >= 2 && !me.objectData[9]) {
           const a = route.path[n - 2]!;
           const b = route.path[n - 1]!;
           me.objectData[1] = dirOf(b.fx - a.fx, b.fy - a.fy);
