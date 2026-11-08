@@ -1494,6 +1494,7 @@ export class SimObject extends TreeSim {
       case 20:
       case 21:
       case 23:
+      case 32:
         // The lot change's arrival side (sim/lotcalls.ts).
         return tryLotChangeCall(this, call, this.temps, (id) => this.obj_(id)) ?? PRIM_TRUE;
       case 3:

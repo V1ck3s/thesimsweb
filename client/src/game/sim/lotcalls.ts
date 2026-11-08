@@ -19,6 +19,10 @@
  *      0x51; each token used is removed. The loop runs CountTokensOfType(2)
  *      times from the first type-2 token: the clock tokens (7 / 8) are not
  *      removed, so one of them first stops the restore (as in the original).
+ *   32 (0x100EA954, NeighborhoodPhonePlugin "Go To Community"): each member
+ *      of the house family without a person here is made
+ *      (CreateDowntownSim), gets its type-2 tokens back (as 21) and is placed
+ *      near me (FindGoodLocation: my room first), then ForceLocation.
  *   23 (0x100EA710): on me (a person): temp 0 = the count of my type-2 token
  *      7 (arrival hour), temp 1 = token 8 (minutes), each removed; stops at
  *      the first one missing.
@@ -62,6 +66,26 @@ function instanceOf(o: SimObject, guid: number): SimObject | null {
 }
 
 /**
+ * Call 21's restore (also run by call 32): the person gets back what its
+ * type-2 tokens carried; each token used is removed.
+ */
+function restoreChangeLotsTokens(who: SimObject): void {
+  const person = who.person!;
+  const inv = who.module.getInventoryByNeighbourID(neighborIdOf(who));
+  for (let n = countTokensOfType(inv, 2); n > 0; n--) {
+    const at = setToNextToken(inv, 2, -1, 0);
+    if (at.index < 0) continue;
+    const t = inv.tokens[at.index]!;
+    const what = t.guid >>> 0 <= 12 ? TOKEN_MOTIVES[t.guid] : undefined;
+    if (what === undefined) continue;
+    if (what === null) continue;
+    if ("motive" in what) person.motives[what.motive] = t.count;
+    else person.personData[what.pd] = t.count;
+    removeTokenByIndex(inv, at.index, -1);
+  }
+}
+
+/**
  * The calls above; `temps` are the caller's temps and `obj` resolves an
  * object id (cXObject's ObjectModule lookup). Returns null for other calls.
  */
@@ -100,17 +124,31 @@ export function tryLotChangeCall(o: SimObject, call: number, temps: Int16Array, 
     case 21: {
       const who = obj(temps[0]!);
       if (!who?.person) simThrow(ERR_NOT_PERSON);
-      const inv = m.getInventoryByNeighbourID(neighborIdOf(who));
-      for (let n = countTokensOfType(inv, 2); n > 0; n--) {
-        const at = setToNextToken(inv, 2, -1, 0);
-        if (at.index < 0) continue;
-        const t = inv.tokens[at.index]!;
-        const what = t.guid >>> 0 <= 12 ? TOKEN_MOTIVES[t.guid] : undefined;
-        if (what === undefined) continue;
-        if (what === null) continue;
-        if ("motive" in what) who.person.motives[what.motive] = t.count;
-        else who.person.personData[what.pd] = t.count;
-        removeTokenByIndex(inv, at.index, -1);
+      restoreChangeLotsTokens(who);
+      return PRIM_TRUE;
+    }
+    case 32: {
+      // Every member of the house family without a person on the lot: CreateDowntownSim, its
+      // type-2 tokens restored (as call 21), then FindGoodLocation around me (my room, empty
+      // tile, buildable; then any room), CanPlace / cXPerson::Place and ForceLocation.
+      const hooks = m.worldHooks;
+      for (const member of m.sim.state?.family ?? []) {
+        const guid = member.guid;
+        if (guid === undefined || instanceOf(o, guid)) continue;
+        const sel = hooks?.selector(guid);
+        if (sel === undefined) return PRIM_WAIT;
+        const x = sel && hooks ? hooks.make(sel) : null;
+        const p = x ? m.addObject(x, true) : null;
+        if (!p?.person || !hooks) continue;
+        restoreChangeLotsTokens(p);
+        const start = { fx: o.obj.fx, fy: o.obj.fy };
+        const level = o.obj.level;
+        const opts = { emptyTile: true, buildable: true, random: null };
+        const pos = hooks.findGoodLocation(p.obj, start, level, { ...opts, sameRoom: true }) ?? hooks.findGoodLocation(p.obj, start, level, { ...opts, sameRoom: false });
+        if (!pos || !hooks.canPlace(p.obj, pos, level, null, 0)) continue;
+        hooks.place(p.obj, pos, level, null, 0);
+        p.forceLocation();
+        m.dirty(p);
       }
       return PRIM_TRUE;
     }
