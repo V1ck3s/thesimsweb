@@ -668,8 +668,9 @@ export class XRoute {
               const cx = lx >> 4;
               const cy = ly >> 4;
               let inRing: boolean;
+              // Rows below the ring are accepted as they are (the extra outer ring for chairs).
               if (cy === ring) inRing = ring <= cx && cx <= last;
-              else inRing = ring < cy && ring < cx && cx < last;
+              else inRing = cy < ring || (ring < cx && cx < last);
               if (inRing) {
                 const w = transformToWorldCoords(base.fx, base.fy, lx, ly, gdir);
                 const wx = ((w.fx >> 4) << 24) >> 24;
@@ -680,6 +681,8 @@ export class XRoute {
                   if (!occupant || occupant === this.person) {
                     chair = c.id;
                     weight = chairWeight;
+                    // The goal's entry flags: the probe direction the chair was found in.
+                    dirFlags = 1 << n;
                   } else {
                     chairTaken = true;
                     this.blocker = occupant.id;
