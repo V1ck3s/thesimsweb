@@ -686,6 +686,8 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
       this.syncSecondLevel(this.ctx.state);
     }
     if (this.lighting) this.lighting.compute(this.lighting.phase);
+    // GlobalDispatch(0x101) -> cTerrain::DoCommand: PreCompute again (the walls' shadows on the grass).
+    this.terrain?.markDirty();
     // GlobalDispatch(0x101) -> ObjectModule::DoCommand: UpdateWallAdjacency of every object.
     const objects = this.lotObjects?.module.objects;
     if (objects) this.placement?.wallsChanged([...objects.values()]);

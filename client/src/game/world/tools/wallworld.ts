@@ -259,8 +259,10 @@ export function setViewFloor(world: RotatableWorld, x: number, y: number, level:
   setU16(a.data, a.offset(wx, wy), pattern);
 }
 
-/** cRotatableWorld::MayEditTile: the tile's flags have no 0x20 (lot-protected) bit, or the build-anywhere cheat. */
-export function mayEditTile(world: RotatableWorld, x: number, y: number, level: number, anywhere = false): boolean {
-  if (anywhere) return true;
-  return (world.getFlags(x, y, level) & 0x20) === 0;
+/**
+ * cRotatableWorld::MayEditTile: the ground floor tile's flags have no 0x20
+ * (lot-protected) bit, or the build-anywhere cheat; the level is not used.
+ */
+export function mayEditTile(world: RotatableWorld, x: number, y: number, _level: number, anywhere = false): boolean {
+  return world.mayEditTile(x, y, anywhere);
 }
