@@ -1324,7 +1324,8 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
     const sim = this.sim;
     if (!sim) return false;
     const n = st.family.length;
-    const cur = st.selectedIndex();
+    // The search starts after the selected person, or at the first member when none is on the lot.
+    const cur = this.selectedPerson() ? st.selectedIndex() : -1;
     for (let i = 1; i <= n; i++) {
       const k = (cur + i) % n;
       const g = st.family[k]?.guid;
@@ -2207,6 +2208,11 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
       // Tut_CheckForEvents, right before cSimulator::Simulate.
       if (this.tutEvents) tutCheckForEvents(this.tutEvents, findPeoplePopup(winMgr.main));
       this.sim.simulate(nowMs);
+      // ObjectModule::PostSim's tail: with no selected person on the lot, or on a
+      // residential lot a selected person who does not live there (person data 0x20),
+      // AdvanceSelectedPerson.
+      const sel = this.selectedPerson();
+      if (!sel || (this.ctx.state.zoningType === 1 && sel.pd[0x20] !== 0)) this.advanceSelectedPerson();
       // ObjectModule::SetSelectedPerson (CPState's selection), then HouseViewer's ObjectModule::UpdatePlumbBobs.
       if (this.plumbBobs) {
         this.plumbBobs.setSelectedPerson(this.selectedPerson()?.obj ?? null);
