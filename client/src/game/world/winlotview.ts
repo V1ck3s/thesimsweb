@@ -2090,6 +2090,8 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
   // --- HouseViewerHooks ---------------------------------------------------------
 
   setScale(zoom: number): void {
+    // CPState::ZoomIn / ZoomOut: the current tool's vtable +0x44 (ResetGrabPoint).
+    this.gameTools?.current?.resetGrabPoint();
     this.viewer?.setScale(zoom);
     // HouseViewer::SetScale -> GlobalDispatch(0xf9, scale) -> cSimulator::DoCommand: global 2
     // (the tutorial's "detect zoom" reads it).
@@ -2097,6 +2099,8 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
   }
 
   setRotation(rotation: number): void {
+    // CPState::RotateLeft / RotateRight / SetRotation: the current tool's ResetGrabPoint.
+    this.gameTools?.current?.resetGrabPoint();
     this.viewer?.setRotation(rotation);
   }
 

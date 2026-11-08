@@ -82,6 +82,9 @@ export class MoveToolAdapter extends Tool {
   override rapidFire(): boolean {
     return true;
   }
+  override resetGrabPoint(): void {
+    this.move.resetGrabPoint();
+  }
   override select(): void {
     this.move.select();
   }

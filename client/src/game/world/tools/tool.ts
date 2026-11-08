@@ -159,6 +159,8 @@ export abstract class Tool {
   cancel(): void {}
   /** +0x7c */
   rotationChanged(): void {}
+  /** +0x44: CPState's zoom and rotation calls (cMoveTool::ResetGrabPoint). */
+  resetGrabPoint(): void {}
   /** The tool's own drawing over the lot (cursor, wall preview, selection), after the dynamic objects. */
   drawOverlay?(viewer: HouseViewer, comp: Compositor, rp: RenderParam): void;
 

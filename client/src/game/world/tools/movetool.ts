@@ -405,7 +405,7 @@ export class MoveTool implements FloorUndoTool, CutawayTool {
    * offset by zoom and facing from lbl_105BA53C..48 (Windows 0x6e5770..7c),
    * which nothing writes: zero, like every other object.
    */
-  private resetGrabPoint(): void {
+  resetGrabPoint(): void {
     if (!this.cursor) return;
     this.grabV = 0;
     this.grabH = 0;
