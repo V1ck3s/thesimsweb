@@ -64,3 +64,36 @@ export async function activateFamily(state: CPState, n: NeighborhoodData, houseN
   state.setFunds(fam.budget);
   return fam;
 }
+
+/**
+ * Once the lot's simulation runs, the panels read the neighborhood it plays
+ * on (SimModule.nbhd), not the copy activateFamily read: the relationships
+ * a sim makes or changes during play (the RelMatrix arrays the simulation
+ * writes) show at once in the relationships panel, as in the original where
+ * both are the one Neighborhood. People met during play join
+ * `state.neighbors` when the panel asks for them (knowNeighbors).
+ */
+export function shareSimulationNeighborhood(state: CPState, n: NeighborhoodData): void {
+  const byId = new Map(n.neighbors.map((nb) => [nb.id, nb]));
+  for (const p of [...state.family, ...state.neighbors]) {
+    const nb = p.neighborId !== undefined ? byId.get(p.neighborId) : undefined;
+    if (nb) p.relationships = nb.relationships;
+  }
+  const loading = new Set<number>();
+  // (looked up at each call: the simulation adds neighbors during play, the townies it makes)
+  state.knowNeighbors = async (ids) => {
+    const known = new Set([...state.family, ...state.neighbors].map((p) => p.neighborId));
+    const add = ids.filter((id) => !known.has(id) && !loading.has(id)).flatMap((id) => n.neighbors.find((nb) => nb.id === id) ?? []);
+    if (!add.length) return false;
+    for (const nb of add) loading.add(nb.id);
+    const people = await Promise.all(add.map((nb) => personFromNeighbor(n, nb, "")));
+    for (const nb of add) loading.delete(nb.id);
+    let added = false;
+    for (const p of people) {
+      if (state.neighbors.some((q) => q.neighborId === p.neighborId)) continue;
+      state.neighbors.push(p);
+      added = true;
+    }
+    return added;
+  };
+}

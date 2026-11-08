@@ -468,6 +468,15 @@ export class RelationshipsPanel extends TSWin {
   /** The synchronous part of BuildRelationships, once the tiles exist. */
   private layoutRelationships(): void {
     const selected = this.ctx.state.personGetSelected();
+    // Someone the selected sim met during play: PersonFinder knows every
+    // neighbor, the panel loads them when first needed, then lays out again.
+    const knowNeighbors = this.ctx.state.knowNeighbors;
+    const others = selected?.relationships?.map((r) => r.other) ?? [];
+    if (knowNeighbors && others.length) {
+      void knowNeighbors(others).then((added) => {
+        if (added) this.layoutRelationships();
+      });
+    }
     const types: Array<[TSWinBtn, RelationType]> = [
       [this.sortFamily, RelationType.Family],
       [this.sortFriends, RelationType.Friends],

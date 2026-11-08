@@ -294,6 +294,13 @@ export class CPState {
   family: PersonInfo[] = [];
   /** Everyone the family may know (relationships panel), looked up by neighborId. */
   neighbors: PersonInfo[] = [];
+  /**
+   * Adds the neighbors of `ids` missing from `neighbors` (people met during
+   * play: PersonFinder knows every neighbor of the neighborhood); true when
+   * some were added. Installed once the lot's simulation runs
+   * (data/family.ts shareSimulationNeighborhood).
+   */
+  knowNeighbors: ((ids: number[]) => Promise<boolean>) | null = null;
   familyName = "";
   viewer: HouseViewerHooks | null = null;
   private listeners: Array<(s: CPState) => void> = [];
