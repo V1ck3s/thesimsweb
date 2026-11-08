@@ -60,10 +60,11 @@ Interface / triches
 
 ## 2bis. Écarts restants de l'audit du 2026-11 (code décompilé contre port)
 
-Trouvés par l'audit complet ; les arbres du jeu qui les utilisent ont été cherchés dans tous les
-BHAV livrés.
+Les écarts confirmés par l'audit complet sont tous traités (journal de `PLAN.md`, 2026-11-08).
 
-- Constats de l'audit classés « faible, non vérifiés » : pas encore repris un par un.
+- **134 constats « faibles, non vérifiés »** de l'audit : listés dans
+  [`docs/decomp/audit-2026-11-low.md`](decomp/audit-2026-11-low.md), à confirmer un par un contre le
+  décompilé avant correction.
 
 ## 3. Son
 
