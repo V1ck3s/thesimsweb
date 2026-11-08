@@ -257,6 +257,9 @@ export class MoveTool implements FloorUndoTool, CutawayTool {
     }
   }
 
+  /** cMoveTool +0x58: the stairs' base level offset (0 for a purchase, the grabbed part's +0x1a8). */
+  private stairBase = 0;
+
   /** cTool::GetCurrentLevel. */
   private level(): number {
     return this.host.viewer.level;
@@ -353,7 +356,9 @@ export class MoveTool implements FloorUndoTool, CutawayTool {
     if (sel.objd.i16(0x24) > this.host.getFunds()) return;
     const obj = makeNewOutOfWorldObject(this.p, this.host.folder, sel);
     if (!obj) return;
-    const c = XCursorObject.makeMouseObject(this.p, obj, this.host.cursorSelector, this.level(), () => this.host.getFunds() - this.runningTotal, true);
+    // Stairs are always made on level 1 (the floater +0x58 base level 0).
+    this.stairBase = 0;
+    const c = XCursorObject.makeMouseObject(this.p, obj, this.host.cursorSelector, this.mode === MoveMode.Stair ? 1 : this.level(), () => this.host.getFunds() - this.runningTotal, true);
     if (!c) {
       killObject(this.p, obj);
       return;
@@ -645,7 +650,8 @@ export class MoveTool implements FloorUndoTool, CutawayTool {
       this.host.invalidate();
       return;
     }
-    const level = this.level();
+    // Stairs float at their base level + 1 (+0x58), anything else at the current level.
+    const level = this.mode === MoveMode.Stair ? this.stairBase + 1 : this.level();
     this.floatH = px;
     this.floatV = py;
     // The previous Float's stairs floors go (FlushPostSubUndoables), then back where it was, maybe rotated by a drag.
@@ -885,6 +891,8 @@ export class MoveTool implements FloorUndoTool, CutawayTool {
    * it stood.
    */
   private grabObject(obj: XObject, px: number, py: number): void {
+    // +0x58: the grabbed part's level offset (cXMTObject +0x1a8).
+    this.stairBase = obj.mt1a8;
     const c = XCursorObject.makeMouseObject(this.p, obj, this.host.cursorSelector, obj.level, () => this.host.getFunds() - this.runningTotal, false);
     if (!c) return;
     this.cursor = c;
