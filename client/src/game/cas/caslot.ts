@@ -153,6 +153,7 @@ export class CasLot {
       onKill: (obj) => lot?.sim.module.removeObject(obj),
       personData: (obj) => lot?.sim.module.persons.find((p) => p.obj === obj)?.pd ?? null,
       modeFreeze: () => lot?.sim.globals[G.modeFreeze] ?? 0,
+      simGlobals: () => lot?.sim.globals ?? null,
     };
     const placement = new Placement(module, fixed, hooks);
     // ObjectModule::KillAllObjects (house 0), before PostLoad.

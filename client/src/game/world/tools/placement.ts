@@ -98,6 +98,8 @@ export interface ObjectBehaviorHooks {
   personData?(obj: XObject): Int16Array | null;
   /** cSimulator +0x36 (global 19, the mode freeze: 0 Live, 1 Build, 2 Buy); 0 when missing. */
   modeFreeze?(): number;
+  /** The simulator's globals (cSimulator +0x10): the clock cXObject::JustBorn copies. */
+  simGlobals?(): Int16Array | null;
   /** GlobalDispatch(0xf3, room): an object with a room impact changed rooms (House::DoCommand -> RoomManager::RoomScoreChanged). */
   roomChanged?(room: number): void;
 }

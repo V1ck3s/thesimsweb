@@ -750,6 +750,7 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
       },
       personData: (obj) => this.sim?.module.persons.find((p) => p.obj === obj)?.pd ?? null,
       modeFreeze: () => this.sim?.globals[G.modeFreeze] ?? 0,
+      simGlobals: () => this.sim?.globals ?? null,
       // House::DoCommand(0xf3): RoomManager::RoomScoreChanged unless 0xfffb.
       roomChanged: (room) => {
         if (room !== 0xfffb) this.lighting?.roomChanged(room);

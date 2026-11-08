@@ -86,9 +86,16 @@ function kindOf(sel: ObjSelector): ObjectKind | null {
   return "object";
 }
 
-/** cXObject::JustBorn. */
-function justBorn(obj: XObject, d: BirthDate | null): void {
-  if (!d) return;
+/**
+ * cXObject::JustBorn: the birth date is the simulator's date and time
+ * (globals 8 year, 7 month, 1 day, 0 hour, 5 minute), or `d` when given.
+ */
+function justBorn(p: Placement, obj: XObject, d: BirthDate | null): void {
+  if (!d) {
+    const g = p.hooks.simGlobals?.();
+    if (!g) return;
+    d = { year: g[8]!, month: g[7]!, day: g[1]!, hour: g[0]!, minute: g[5]! };
+  }
   obj.objectData[ODX.birthYear] = d.year;
   obj.objectData[ODX.birthMonth] = d.month;
   obj.objectData[ODX.birthDay] = d.day;
@@ -129,7 +136,7 @@ export function makeNewOutOfWorldObject(p: Placement, folder: ObjectFolder, sel:
     addObject(p, o);
     o.initialize();
     if (head) o.mtLeadId = head.objectId;
-    justBorn(o, birth);
+    justBorn(p, o, birth);
     made.push(o);
     return o;
   };
