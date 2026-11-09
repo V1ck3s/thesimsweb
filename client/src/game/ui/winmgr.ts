@@ -24,6 +24,8 @@ const TT_SHOW_MS = 5000;
 const TOUCH_LONG_PRESS_MS = 500;
 /** CSS pixels a finger may move and still tap. */
 const TOUCH_SLOP = 10;
+/** CSS pixels around a tap searched for a clickable window when it lands on none (a finger is wider than the cursor's point). */
+const TOUCH_REACH = 12;
 /** GetDoubleClickTime's default; the distance in game pixels (a finger is wider than SM_CXDOUBLECLK). */
 const TOUCH_DOUBLE_MS = 500;
 const TOUCH_DOUBLE_DIST = 16;
@@ -740,7 +742,12 @@ export class WinMgr {
   // Not in the original (a mouse game): touches are turned into the mouse
   // and key messages above, so every window keeps its own behavior.
   //  - a finger down hovers (enter / exit, tooltips, live popups);
-  //  - a tap is a left click, two quick taps a double click;
+  //  - a tap is a left click, two quick taps a double click; a tap on a
+  //    window that takes no click, or beside one of its own children that
+  //    does (the neighborhood map between its houses), goes to the nearest
+  //    window that takes a click within TOUCH_REACH: the houses of a
+  //    neighborhood are a few millimeters wide on a phone, and only their
+  //    opaque pixels take the click;
   //  - moving before the long press time is a left drag from the start point;
   //  - a long press on a window with a right button handler (the lot view,
   //    the pie menu, the people panel, ...) is a right press, dragging on is
@@ -920,8 +927,42 @@ export class WinMgr {
     if (this.touches.size === 0) this.touchState = "idle";
   }
 
+  /** Whether `w` does something with a left click of its own (buttons, the views). */
+  private static takesClick(w: TSWin | null): boolean {
+    return !!w && (w.tsOnMouseDownL !== TSWin.prototype.tsOnMouseDownL || w.tsOnMouseUpL !== TSWin.prototype.tsOnMouseUpL);
+  }
+
+  /**
+   * The tap point, or the nearest point within TOUCH_REACH whose window takes
+   * a click, when the tap's own window takes none or is that window's
+   * ancestor (a house on the neighborhood map, itself a button).
+   */
+  private tapTarget(p: { x: number; y: number }): { x: number; y: number } {
+    const l0 = this.clientToLogical(p);
+    const at = this.route(l0.x, l0.y)?.win ?? null;
+    const own = WinMgr.takesClick(at);
+    const better = (w: TSWin | null): boolean => {
+      if (!w || w === at || !WinMgr.takesClick(w)) return false;
+      if (!own) return true;
+      for (let a = w.parent; a; a = a.parent) if (a === at) return true;
+      return false;
+    };
+    for (let r = 3; r <= TOUCH_REACH; r += 3) {
+      const steps = Math.max(8, Math.round((2 * Math.PI * r) / 3));
+      for (let i = 0; i < steps; i++) {
+        const a = (2 * Math.PI * i) / steps;
+        const q = { x: p.x + r * Math.cos(a), y: p.y + r * Math.sin(a) };
+        const l = this.clientToLogical(q);
+        if (better(this.route(l.x, l.y)?.win ?? null)) return q;
+      }
+    }
+    return p;
+  }
+
   private tap(): void {
-    const p = this.touchStart;
+    const p = this.tapTarget(this.touchStart);
+    // (the hover goes there first, so the window is entered before it is pressed)
+    if (p !== this.touchStart) this.touchMoveTo(p);
     const l = this.clientToLogical(p);
     const now = performance.now();
     const double = now - this.lastTap.t <= TOUCH_DOUBLE_MS && Math.hypot(l.x - this.lastTap.x, l.y - this.lastTap.y) <= TOUCH_DOUBLE_DIST;
