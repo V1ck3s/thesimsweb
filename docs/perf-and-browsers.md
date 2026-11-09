@@ -609,3 +609,23 @@ the first lot take minutes, and Create-a-Sim showed sims without their meshes or
   scrolls into view. Main-thread style work at idle (emulated phone, CPU / 6) went from 337 to
   199 ms per 4 s; the GPU cost cannot be measured here (SwiftShader).
 
+
+## Picture in picture (2026-11-09)
+
+The live zoom window (cWinPictureInPicture, user events such as the car pool) draws the lot a
+second time each frame, at its own scale and origin (`drawPictureInPicture`). Measured in headless
+Chrome (SwiftShader, House01 of a throwaway UserData copy, speed 1): 31 frames/s without the window,
+9.3 with a 300 x 300 window at scale 1.
+
+- The software terrain pass is cached for one scale and origin (`TerrainCache`, the compositor's raw
+  layer). The picture invalidated it each frame, so the whole terrain was rasterized twice a frame
+  (for the picture, then again for the lot view). The picture now has its own terrain state
+  (`HouseViewer.swapTerrainState`, `Compositor.swapRawState`); each one scrolls its own cache.
+- `ColorSwatch.initGrass` kept the blades of one scale only: they are now kept by scale (same seed,
+  same blades).
+- The picture's frame is clipped to its square (`Compositor.setFrameClip`, scissor), the floor and
+  object tiles that cannot reach it are skipped (`HouseViewer.pictureCull`), the frame is not copied
+  to the canvas (`render(false)`) and only the square is read back (`Compositor.readColor`).
+
+Result: 18 to 19 frames/s with the window at scale 1, 23.7 at scale 3 (the lot view alone: 26 to
+31). What remains is the second draw of the lot's sprites and people in the square.

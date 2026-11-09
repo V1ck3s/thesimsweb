@@ -50,7 +50,7 @@ import { ALIGN_LEFT, type FfnFont } from "../res/ffn.js";
 import { DOUBLE_BYTE_UI } from "../res/uires.js";
 import { UI_FONT_COLOR } from "../ui/syscolors.js";
 import { Gfx, TSWin } from "../ui/tswin.js";
-import type { HouseViewer } from "./houseviewer.js";
+import type { HouseViewer, TerrainPassState } from "./houseviewer.js";
 import type { XObject } from "./objects.js";
 import { RotatableWorld } from "./world.js";
 import { stopTracking } from "./tracking.js";
@@ -329,6 +329,9 @@ export class WinPictureInPicture extends TSWin {
  * and level swapped, the picture is read from the middle of its canvas, then
  * the view is restored and drawn again for the screen.
  */
+/** The picture's own terrain pass (HouseViewer.swapTerrainState), kept between frames, by viewer. */
+const pipTerrain = new WeakMap<HouseViewer, TerrainPassState>();
+
 function drawPictureInPicture(
   v: HouseViewer,
   g: CanvasRenderingContext2D,
@@ -346,6 +349,9 @@ function drawPictureInPicture(
   // Animator::SetPickingObject(0) for the picture (the picked object is cleared), restored after.
   const people = v.people;
   const picking = people?.pickPoint ?? null;
+  // Not part of the original (perf): the picture keeps its own terrain, so that neither it nor
+  // the lot view draws its whole terrain again each frame.
+  const lotTerrain = v.swapTerrainState(pipTerrain.get(v) ?? null);
   try {
     if (people) people.pickPoint = null;
     v.scale = scale;
@@ -356,10 +362,22 @@ function drawPictureInPicture(
     const p = v.tileToPointF(fx, fy, level);
     v.originX += Math.trunc(v.viewW / 2) - p.h;
     v.originY += Math.trunc(v.viewH / 2) - p.v - shift;
-    v.render();
-    g.clearRect(0, 0, w, h);
-    g.drawImage(v.comp.canvas, Math.trunc((v.viewW - w) / 2), Math.trunc((v.viewH - h) / 2), w, h, 0, 0, w, h);
+    const left = Math.trunc((v.viewW - w) / 2);
+    const top = Math.trunc((v.viewH - h) / 2);
+    // Not part of the original (perf): only the picture's square of the frame is drawn.
+    const clip = { left, top, right: left + w, bottom: top + h };
+    v.comp.setFrameClip(clip);
+    v.pictureCull = clip;
+    try {
+      v.render(false);
+    } finally {
+      v.comp.setFrameClip(null);
+      v.pictureCull = null;
+    }
+    // Not part of the original (perf): the square read from the frame, not the whole canvas copied.
+    g.putImageData(v.comp.readColor(left, top, w, h), 0, 0);
   } finally {
+    pipTerrain.set(v, v.swapTerrainState(lotTerrain));
     if (people) people.pickPoint = picking;
     v.originX = saved.originX;
     v.originY = saved.originY;

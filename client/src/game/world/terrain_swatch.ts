@@ -709,7 +709,13 @@ export class ColorSwatch extends GouraudSwatch {
   private grassScale = -1;
   private totalBlades = 0;
   /** +0xdc: one GrassVector per column. */
-  private readonly grass: GrassVector[] = Array.from({ length: GRASS_COLUMNS }, () => new GrassVector());
+  private grass: GrassVector[] = Array.from({ length: GRASS_COLUMNS }, () => new GrassVector());
+  /**
+   * Not part of the original (perf): the blades already scattered, by scale.
+   * InitGrass always starts from the same seed, so a scale drawn before
+   * (the picture in picture alternates with the lot view) gives the same blades.
+   */
+  private readonly grassByScale = new Map<number, GrassVector[]>();
   /** +0x35c..+0x35f: corner color indices [left, top, right, bottom]. */
   readonly mesh = new Uint8Array(4);
   /** +0x360: tile random, +0x364: tile grass value. */
@@ -863,6 +869,7 @@ export class ColorSwatch extends GouraudSwatch {
   override preCompute(world: RotatableWorld): void {
     super.preCompute(world);
     this.grassScale = -1;
+    this.grassByScale.clear();
     const size = world.size;
     if (this.tileRand && this.tileRandSize !== size) this.tileRand = null;
     if (!this.tileRand) {
@@ -914,6 +921,14 @@ export class ColorSwatch extends GouraudSwatch {
   private initGrass(scale: number): void {
     if (scale === this.grassScale) return;
     this.grassScale = scale;
+    const kept = this.grassByScale.get(scale);
+    if (kept) {
+      this.grass = kept;
+      this.totalBlades = Math.max(500, this.maxBlades << 2);
+      return;
+    }
+    this.grass = Array.from({ length: GRASS_COLUMNS }, () => new GrassVector());
+    this.grassByScale.set(scale, this.grass);
     const saved = getSRandSeed();
     if (this.fGrassRandSeed === 0) this.fGrassRandSeed = getSRandSeed();
     setSRandSeed(this.fGrassRandSeed);

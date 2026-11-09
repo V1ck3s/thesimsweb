@@ -15,7 +15,7 @@
  * split and the scroll blits (the whole view is re-rendered on change).
  */
 
-import type { Compositor, SpriteTex } from "./compositor.js";
+import type { Compositor, RawLayerState, SpriteTex } from "./compositor.js";
 import { FloorShadowMgr, rotateShadowID } from "./floorshadow.js";
 import { drawFloor, type FloorGraphicsMgr } from "./floors.js";
 import { RenderParam } from "./renderparam.js";
@@ -42,6 +42,16 @@ function roundAway(v: number): number {
 }
 
 /** Software target the terrain swatches draw into (see terrain.ts). */
+/** HouseViewer.swapTerrainState */
+export interface TerrainPassState {
+  target: TerrainTarget;
+  cache: TerrainCache;
+  carried: Map<number, string>;
+  extentTop: Int32Array<ArrayBuffer>;
+  extentBottom: Int32Array<ArrayBuffer>;
+  raw: RawLayerState;
+}
+
 export interface TerrainTarget {
   width: number;
   height: number;
@@ -71,7 +81,7 @@ export interface TerrainDrawer {
  * shift): the terrain's pixels do not depend on where the view is, so the
  * layer is moved on the GPU and only the uncovered strips are drawn.
  */
-class TerrainCache {
+export class TerrainCache {
   private key: string | null = null;
   private originX = 0;
   private originY = 0;
@@ -177,7 +187,7 @@ export class HouseViewer {
   /** Water sprites with their transparent color keyed out, by (id << 2) | frame. */
   private readonly waterTex = new Map<number, SpriteTex | null>();
   private target: TerrainTarget;
-  private readonly terrainCache = new TerrainCache();
+  private terrainCache = new TerrainCache();
   /** The scroll strips' terrain pixels (see renderStatic). */
   private stripColor = new Uint32Array(0);
   private stripColor2 = new Uint32Array(0);
@@ -253,6 +263,32 @@ export class HouseViewer {
     this.zLookupIndex = comp.table1D("zsprite", makeZSpriteLookup());
     this.target = HouseViewer.terrainTarget(comp);
     this.buildMaxAltsTable();
+  }
+
+  /**
+   * Not part of the original (perf): swap in another terrain pass state (the
+   * software target, its cache, the carried tile states, the extents and the
+   * compositor's raw layer), so that a second view of this viewer (the
+   * picture in picture, drawn at another scale and origin each frame) and
+   * the lot view each reuse their own terrain instead of drawing it again
+   * twice a frame. `s` null starts an empty state. Returns the one taken out.
+   */
+  swapTerrainState(s: TerrainPassState | null): TerrainPassState {
+    const out: TerrainPassState = {
+      target: this.target,
+      cache: this.terrainCache,
+      carried: this.carried,
+      extentTop: this.extentTop,
+      extentBottom: this.extentBottom,
+      raw: this.comp.swapRawState(s?.raw ?? null),
+    };
+    const fits = s !== null && s.target.width === this.comp.width && s.target.height === this.comp.height;
+    this.target = fits ? s.target : HouseViewer.terrainTarget(this.comp);
+    this.terrainCache = fits ? s.cache : new TerrainCache();
+    this.carried = fits ? s.carried : new Map();
+    this.extentTop = fits ? s.extentTop : new Int32Array(0);
+    this.extentBottom = fits ? s.extentBottom : new Int32Array(0);
+    return out;
   }
 
   private static terrainTarget(comp: Compositor): TerrainTarget {
@@ -852,8 +888,8 @@ export class HouseViewer {
 
   // --- rendering --------------------------------------------------------------
 
-  /** HouseViewer::UpdateStaticLayer for the whole view. */
-  render(): void {
+  /** HouseViewer::UpdateStaticLayer for the whole view (`present` false: left in the target, not copied to the canvas). */
+  render(present = true): void {
     const comp = this.comp;
     // lbl_105BA240[0x39] (the anti-aliasing option) picks the Spr2 decoders;
     // MakeThumbnail clears it while it renders (thumbnail mode, +0x17c).
@@ -881,7 +917,7 @@ export class HouseViewer {
     // UpdateWorld: RenderCursorObject, then RenderCensoredBlocks.
     this.cursor?.draw(this, comp, rp);
     this.people?.censor?.(this);
-    comp.present();
+    if (present) comp.present();
     this.dirty = false;
   }
 
@@ -1190,6 +1226,23 @@ export class HouseViewer {
     }
   }
 
+  /**
+   * Not part of the original (perf): the screen rectangle a picture in
+   * picture keeps of the frame; the tiles drawn for their floors and objects
+   * are limited to those that can reach it (null: the whole view).
+   */
+  pictureCull: { left: number; top: number; right: number; bottom: number } | null = null;
+
+  /** The tile whose top corner is (sx, sy) can draw inside pictureCull (2 tiles to the sides, the level heights and tall sprites above, 512 pixels below). */
+  private inPictureCull(sx: number, sy: number): boolean {
+    const r = this.pictureCull;
+    if (!r) return true;
+    const s = this.scale;
+    const side = 32 << s;
+    const above = this.levelPx() * 2 + (0x40 << (s + 1)) + 512;
+    return sx + side >= r.left && sx - side < r.right && sy + (8 << s) + 512 >= r.top && sy - above < r.bottom;
+  }
+
   private tileVisible(sx: number, sy: number): boolean {
     const s = this.scale;
     return sx + (8 << s) >= 0 && sx - (8 << s) < this.viewW && sy + (8 << s) >= 0 && sy - (0x40 << (s + 1)) < this.viewH;
@@ -1251,7 +1304,7 @@ export class HouseViewer {
       const x = x0 + step[0] * k;
       const y = y0 + step[1] * k;
       const base = this.tileToPoint(x, y, 1, s, 0);
-      if (!this.tileVisible(base.h, base.v)) continue;
+      if (!this.tileVisible(base.h, base.v) || !this.inPictureCull(base.h, base.v)) continue;
       if (this.isThumbnailHidden(...w2(w, x, y))) continue;
       const alt = w.getPackedAlt(x, y);
       const fx = base.h - (8 << s);
@@ -1505,6 +1558,7 @@ export class HouseViewer {
       const x = x0 + step[0] * k;
       const y = y0 + step[1] * k;
       const base = this.tileToPoint(x, y, level, s, 0);
+      if (!this.inPictureCull(base.h, base.v)) continue;
       if (this.isThumbnailHidden(...w2(w, x, y))) continue;
       const alt = w.getPackedAlt(x, y);
       rp.ambient = this.ambientAtTile(x, y, level);

@@ -251,6 +251,17 @@ function alphaWeight(a: number): number {
   return Math.round((a & 0x1f) * 8 + 3.5);
 }
 
+type ClipRect = { left: number; top: number; right: number; bottom: number };
+
+/** Compositor.swapRawState */
+export interface RawLayerState {
+  raw: Array<{ tex: WebGLTexture[]; fb: WebGLFramebuffer[] }>;
+  rawCur: number;
+  rawValid: boolean;
+  rawW: number;
+  rawH: number;
+}
+
 export class Compositor {
   readonly canvas: HTMLCanvasElement;
   readonly gl: WebGL2RenderingContext;
@@ -399,6 +410,7 @@ export class Compositor {
     gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, null);
     gl.blitFramebuffer(0, 0, this.width, this.height, 0, 0, this.width, this.height, gl.COLOR_BUFFER_BIT, gl.NEAREST);
     gl.bindFramebuffer(gl.FRAMEBUFFER, this.target);
+    this.applyScissor();
   }
 
   /**
@@ -461,6 +473,7 @@ export class Compositor {
     gl.bindFramebuffer(gl.FRAMEBUFFER, this.target);
     gl.viewport(0, 0, this.width, this.height);
     gl.enable(gl.DEPTH_TEST);
+    this.applyScissor();
     const packed = flipRows(raw);
     const depth = new Int32Array(w * h);
     for (let i = 0; i < w * h; i++) {
@@ -498,6 +511,7 @@ export class Compositor {
     gl.depthMask(true);
     gl.viewport(0, 0, this.width, this.height);
     gl.enable(gl.DEPTH_TEST);
+    this.applyScissor();
   }
 
   private link(vs: string, fs: string): WebGLProgram {
@@ -600,16 +614,40 @@ export class Compositor {
 
   clear(r: number, g: number, b: number): void {
     const gl = this.gl;
-    gl.disable(gl.SCISSOR_TEST);
+    this.userClip = null;
+    this.applyScissor();
     gl.clearColor(r / 255, g / 255, b / 255, 1);
     gl.clearDepth((Z_CLEAR - DEPTH_MIN) / DEPTH_RANGE);
     gl.depthMask(true);
     gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
   }
 
+  /** setClip's rectangle, and the frame's (setFrameClip). */
+  private userClip: ClipRect | null = null;
+  private frameClip: ClipRect | null = null;
+
   /** Clip rectangle (lbl_105BA5F4) in target pixels, or null for none. */
-  setClip(r: { left: number; top: number; right: number; bottom: number } | null): void {
+  setClip(r: ClipRect | null): void {
+    this.userClip = r;
+    this.applyScissor();
+  }
+
+  /**
+   * Not part of the original (perf): every draw of the frame, clears
+   * included, stays inside `r` (null: the whole target). The picture in
+   * picture renders the lot only where its window shows it.
+   */
+  setFrameClip(r: ClipRect | null): void {
+    this.frameClip = r;
+    this.applyScissor();
+  }
+
+  /** The scissor for setClip's rectangle within the frame clip. */
+  private applyScissor(): void {
     const gl = this.gl;
+    const a = this.userClip;
+    const b = this.frameClip;
+    const r = a && b ? { left: Math.max(a.left, b.left), top: Math.max(a.top, b.top), right: Math.min(a.right, b.right), bottom: Math.min(a.bottom, b.bottom) } : (a ?? b);
     if (!r) {
       gl.disable(gl.SCISSOR_TEST);
       return;
@@ -784,6 +822,39 @@ export class Compositor {
     });
   }
 
+  /**
+   * Not part of the original (perf): the target's colors in a rectangle, top
+   * row first, opaque, ready for putImageData (reads w x h pixels instead of
+   * copying the whole canvas).
+   */
+  readColor(x: number, y: number, w: number, h: number): ImageData {
+    const gl = this.gl;
+    const raw = new Uint8Array(w * h * 4);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, this.target);
+    gl.readPixels(x, this.height - y - h, w, h, gl.RGBA, gl.UNSIGNED_BYTE, raw);
+    const out = new ImageData(w, h);
+    const d = out.data;
+    for (let r = 0; r < h; r++) d.set(raw.subarray((h - 1 - r) * w * 4, (h - r) * w * 4), r * w * 4);
+    for (let i = 3; i < d.length; i += 4) d[i] = 255;
+    return out;
+  }
+
+  /**
+   * Not part of the original (perf): the raw layer's GPU state, swapped by a
+   * second view drawn into this compositor (the picture in picture), so each
+   * keeps its own uploaded terrain. `s` null starts an empty one. Returns the
+   * state taken out.
+   */
+  swapRawState(s: RawLayerState | null): RawLayerState {
+    const out: RawLayerState = { raw: this.raw, rawCur: this.rawCur, rawValid: this.rawValid, rawW: this.rawW, rawH: this.rawH };
+    this.raw = s?.raw ?? [];
+    this.rawCur = s?.rawCur ?? 0;
+    this.rawValid = s?.rawValid ?? false;
+    this.rawW = s?.rawW ?? 0;
+    this.rawH = s?.rawH ?? 0;
+    return out;
+  }
+
   /** The raw layer textures at the target's size (allocated, contents undefined). */
   private ensureRaw(): void {
     const gl = this.gl;
@@ -867,6 +938,7 @@ export class Compositor {
       }
     }
     gl.bindFramebuffer(gl.FRAMEBUFFER, this.target);
+    this.applyScissor();
     this.rawCur = 1 - this.rawCur;
     return true;
   }
