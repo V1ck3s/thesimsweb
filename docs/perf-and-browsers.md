@@ -652,5 +652,5 @@ Second pass (same day), aiming at no loss:
 Headless Chrome only has SwiftShader here, where every draw call costs ~20 µs of CPU: 20.7 to 22.5
 frames/s with the window (27.9 to 28.7 without). The picture's JavaScript is ~1.5 ms a frame. On a
 real GPU, the extra draw calls should cost little and nothing waits for the GPU any more, so the loss
-should be small. That still has to be checked in Firefox on a real GPU (a GPU-backed browser could not
-be driven from WSL here).
+should be small. Checked by eye in Firefox on a real GPU (2026-11-09): smooth, accepted (no exact
+frame rate measured; a GPU-backed browser could not be driven from WSL here).
