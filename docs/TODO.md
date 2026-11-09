@@ -24,8 +24,8 @@ sous `client/src/game/`).
 Live
 - **Popups des besoins des animaux** : portés, non vérifiés. Page célébrité : niveaux 0 et
   0x11..0x13 non vérifiés.
-- **PIP** : composition BoboVision exacte (table AlphaBlend_565_P5, ~0,7 ms par image) ; coût de la
-  relecture non mesuré dans Firefox sur un vrai GPU.
+- **PIP** : composition BoboVision exacte (table AlphaBlend_565_P5, ~0,7 ms par image). Fenêtre zoom
+  vivante sans relecture GPU (2026-11-09), jugée fluide dans Firefox par l'utilisateur.
 - **Annuler une suppression de mur** : porté (la porte est ramassée puis replacée, sans Init, comme
   l'original) ; à vérifier en jeu.
 - **Pizza** : appel, arrivée, accueil et dialogue vus ; paiement et remise de la boîte non observés.
