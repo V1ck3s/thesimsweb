@@ -123,7 +123,7 @@ export class DeformableMesh {
    * occurs in the skin's mesh name the texture is `name`, otherwise the mesh's
    * own texture is used.
    */
-  bind(skeleton: Skeleton, textureSpec: string | null): SkeletonBinding | null {
+  bind(skeleton: Skeleton, textureSpec: string | null, skinName: string = this.name): SkeletonBinding | null {
     const bones: Bone[] = [];
     for (const n of this.boneNames) {
       const b = skeleton.findBone(n);
@@ -132,7 +132,7 @@ export class DeformableMesh {
     }
     let texture = this.textureName;
     const eq = textureSpec ? textureSpec.indexOf("=") : -1;
-    if (textureSpec && eq > 0 && this.name.includes(textureSpec.slice(0, eq))) texture = textureSpec.slice(eq + 1);
+    if (textureSpec && eq > 0 && skinName.includes(textureSpec.slice(0, eq))) texture = textureSpec.slice(eq + 1);
     return new SkeletonBinding(this, bones, texture);
   }
 }

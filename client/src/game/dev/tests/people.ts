@@ -47,6 +47,7 @@ export async function mount(ctx: GameContext, mgr: WinMgr): Promise<void> {
   s.setFunds(fam?.budget ?? 20000);
   // No source in the neighborhood file for these yet (house scores, friends).
   s.familyFriendCount = 3;
+  s.houseFamilyFriendCount = 3;
   s.houseStats = {
     sizeScore: 55,
     furnishingsScore: 100,

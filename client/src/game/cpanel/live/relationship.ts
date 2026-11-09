@@ -23,7 +23,6 @@
  * __ct__14cWinDeltaMeterFi): PumpSample does nothing, so the arrows never
  * show on the relationship page, here as in the original.
  *
- * Not ported: right-click centering the view on the Sim (cXObject::CenterHouseViewOnMe).
  */
 
 import { hudLayoutWidth, type GameContext } from "../../context.js";
@@ -214,6 +213,15 @@ export class WinRelationship extends TSWinBtn {
   /** +0x18c: the other person's GUID (undefined without one). */
   otherGuid(): number | undefined {
     return this.other?.guid === undefined ? undefined : this.other.guid >>> 0;
+  }
+
+  /** cWinRelationship::TSOnMouseDownR: the lot view centers on the other Sim when it is on the lot (CenterHouseViewOnMe). */
+  override tsOnMouseDownR(): boolean {
+    const guid = this.otherGuid();
+    const viewer = this.ctx.state.viewer;
+    const inst = guid === undefined ? null : (viewer?.getPersonInstance?.(guid) ?? null);
+    if (inst) viewer?.centerOnObjectId?.(inst.objectId, true);
+    return true;
   }
 
   /** cWinRelationship::SetRelationship(other, selected). */

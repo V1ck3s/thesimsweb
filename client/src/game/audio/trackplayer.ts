@@ -190,7 +190,8 @@ export class TrackPlayer extends SoundObject {
   private playNote(): void {
     if (!this.channel) return this.hm.error(this.def.name, "Attempt to play note with no channel");
     if (!this.patchObj) return this.hm.error(this.def.name, "Attempt to play note with no patch");
-    this.channel.setLooped(this.registerVal(R.IsLooped) !== 0 || this.patchObj.registerVal(R.IsLooped) !== 0);
+    // cSampleChannel::NoteOn: the loop flag is the patch's register 0x2c only.
+    this.channel.setLooped(this.patchObj.registerVal(R.IsLooped) !== 0);
     this.channel.play();
     // cTrackPlayer::DoCommand note / note_on: only a streamed patch (register
     // 0x26) gets UpdateVolPan and SetPitch again after cSampleChannel::NoteOn.
@@ -232,7 +233,9 @@ export class TrackPlayer extends SoundObject {
     this.setRegister(R.arg2, a2);
     this.setRegister(R.arg3, a3);
     if (this.active && this.pausedFlag) {
+      // PlayPause on an active, paused track: +0x1e0 := 1 then Unpause (vtable 0x64).
       this.pausedFlag = true;
+      this.unpause();
       return;
     }
     this.pausedFlag = false;
@@ -294,6 +297,15 @@ export class TrackPlayer extends SoundObject {
     } else {
       this.kill();
     }
+  }
+
+  /** cBoxX::Event 18: fade the track to 0 at `speed`; `kill` (+0x1e7) kills it once the fade ends. */
+  fadeOut(speed: number, kill: boolean): void {
+    this.setRegister(R.fade_dest, 0);
+    this.setRegister(R.fade_var, R.extvol);
+    this.setRegister(R.fade_speed, speed);
+    this.stopping = kill;
+    this.setRegister(R.fade_on, 1);
   }
 
   /** cTrackPlayer::Kill */

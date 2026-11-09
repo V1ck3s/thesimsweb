@@ -61,6 +61,8 @@ export interface WallpaperUndoTool {
   refreshWalls(level: number): void;
   /** cTool::DirtyTile */
   dirtyTile(): void;
+  /** lbl_105BA244, the edit-anywhere switch (MayEditTile). */
+  anywhere(): boolean;
   /** WallGraphicsMgr::GetWallPatternCost */
   wallPatternCost(pattern: number): number;
 }
@@ -91,6 +93,11 @@ export class WallpaperUndoable extends Undoable {
     return this.cannotAffordFlag;
   }
 
+  /** WallpaperUndoable +0x40 (written by cNewWallpaperTool::Click / Drag after a failed DoRoom). */
+  setCannotAfford(v: boolean): void {
+    this.cannotAffordFlag = v;
+  }
+
   /** WallpaperUndoable::Reset: the changes off the world and forgotten. */
   reset(): void {
     this.undoSelf();
@@ -111,7 +118,7 @@ export class WallpaperUndoable extends Undoable {
     if (err) err.code = 0;
     this.cannotAffordFlag = false;
     const w = this.world;
-    if (!w.inInterior(x, y) || !mayEditTile(w, x, y)) return false;
+    if (!w.inInterior(x, y) || !mayEditTile(w, x, y, this.tool.anywhere())) return false;
     const vw = getViewWall(w, x, y, level);
     if (seg === 0 || (seg & vw.t.segs) !== seg) return false;
     const pattern = this.patternFor(mode);

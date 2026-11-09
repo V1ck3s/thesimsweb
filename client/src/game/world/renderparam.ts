@@ -106,6 +106,14 @@ export class RenderParam {
     const zb = v.zbuf;
     const lvl = (this.level - 1) * (LEVEL_PX_OF(s));
     const row = (4 << s) + lvl + screenY;
+    const base = zb.floorBase.get(s)!;
+    const idx = row - v.originY + base;
+    if (idx < 0 || idx >= zb.floor.get(s)!.length) {
+      // Off the floor table: the depth row is its top (top - margin), depth 0.
+      this.depthRow = v.originY - base;
+      this.depth = 0;
+      return;
+    }
     this.depthRow = row - lvl;
     this.depth = zb.floorAt(s, row, v.originY) + (this.level - 1) * zb.levelZ.get(s)!;
     if (Math.abs(worldH) > 1e-6) {

@@ -177,7 +177,8 @@ function insideScore(l: RoomLight, k: RoomScoreConstants): number {
   s = f(s + k.area0);
   s = f(s + f(l.ambient * k.lightSlope));
   s = f(s + k.light0);
-  return s < SCORE_MIN ? SCORE_MIN : s > SCORE_MAX ? SCORE_MAX : s;
+  // NaN gives SCORE_MIN (the original tests -100 <= s).
+  return !(s >= SCORE_MIN) ? SCORE_MIN : s > SCORE_MAX ? SCORE_MAX : s;
 }
 
 /** Room's statistics (Room::Clear zeroes them, CollectTileStats / CollectObjectStats count them). */
@@ -465,7 +466,8 @@ export class RoomLighting {
       const half = Math.trunc(l.area / 2);
       const win = Math.min(k, (l.windowLight / 100 / half) * k * sk.lightFactor);
       let d = win + (l.lampLight / 100 / half) * sk.lightFactor;
-      if (d < 0.01) d = 0;
+      // NaN (a room of half-area 0) gives 0, as the original's comparisons do.
+      if (!(d >= 0.01)) d = 0;
       else if (d > 0.99) d = 1;
       l.ambient = d;
     }
@@ -512,10 +514,11 @@ export class RoomLighting {
    * Room::GetAmbientLight, IsOutside, GetLevel and GetArea (+0x38 / 2).
    * Null when the room does not exist.
    */
-  roomInfo(id: number): { ambient: number; outside: boolean; level: number; area: number } | null {
+  roomInfo(id: number): { ambient: number; outside: boolean; level: number; area: number; objects: number } | null {
     const r = this.rooms.getRoom(id);
     if (!r) return null;
-    return { ambient: this.roomAmbient(id), outside: r.isOutside(), level: r.level, area: Math.trunc((this.lights.get(id)?.area ?? 0) / 2) };
+    const l = this.lights.get(id);
+    return { ambient: this.roomAmbient(id), outside: r.isOutside(), level: r.level, area: Math.trunc((l?.area ?? 0) / 2), objects: l?.objects ?? 0 };
   }
 
   /**

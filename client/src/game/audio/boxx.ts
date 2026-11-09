@@ -31,6 +31,8 @@ export const EV = {
   SndobSetFxLevel: 10,
   SndobPause: 11,
   SndobUnpause: 12,
+  /** The sep6_*_fade events. */
+  SndobFade: 18,
   SndobCancelNote: 19,
   KillAll: 20,
   Pause: 21,
@@ -475,6 +477,19 @@ export class BoxX {
     return true;
   }
 
+  /**
+   * Jump table entry 19: CancelNote (vtable 0xa4) of the sound objects 0x104,
+   * 0x10d, 0x10e, 0x118, 0x1a19..0x1a1d and 0x18704 in turn, stopping at the
+   * first one that does not exist; the event's track is ignored.
+   */
+  private cancelFixedNotes(): void {
+    for (const id of [0x104, 0x10d, 0x10e, 0x118, 0x1a19, 0x1a1a, 0x1a1b, 0x1a1c, 0x1a1d, 0x18704]) {
+      const o = this.track(id);
+      if (!o) return;
+      o.cancelNote();
+    }
+  }
+
   private track(id: number): TrackPlayer | null {
     const o = this.hm.soundObject(id);
     return o instanceof TrackPlayer ? o : null;
@@ -745,8 +760,17 @@ export class BoxX {
       case EV.SndobKill:
         this.track(arg)?.kill();
         return true;
+      case EV.SndobFade: {
+        // Jump table entry 18: fade the track out (speed = the source, else 100),
+        // killed at the end when a4 != 0; then falls through into entry 19.
+        const t = this.track(arg);
+        if (!t) return true;
+        t.fadeOut(source !== 0 ? source : 100, a4 !== 0);
+        this.cancelFixedNotes();
+        return true;
+      }
       case EV.SndobCancelNote:
-        this.track(arg)?.cancelNote();
+        this.cancelFixedNotes();
         return true;
       case EV.SndobPause:
         this.track(arg)?.pause();

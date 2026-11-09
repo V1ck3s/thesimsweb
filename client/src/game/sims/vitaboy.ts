@@ -76,7 +76,8 @@ export class VitaBoy {
         console.warn(`missing mesh ${skin.meshName}`);
         continue;
       }
-      const binding = mesh.bind(this.skeleton, texture || null);
+      // The texture key is matched against the Skin's mesh name (Skin +8).
+      const binding = mesh.bind(this.skeleton, texture || null, skin.meshName);
       if (!binding) continue;
       binding.deform();
       meshes.push({ binding, image: await this.mgr.loadTexture(binding.texture) });

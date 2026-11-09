@@ -207,8 +207,12 @@ export class WinCPanel extends TSWin {
       [PanelID.Camera, this.camPanel],
       [PanelID.Dispose, this.disposePopup],
     ];
+    // With interface effects (BoboVision) the pages fade (cTSWin::AsyncShowHideWin).
+    const fade = getOptionsMgr().getBoboVision();
     for (const [pid, win] of map) {
-      if (pid === id) win.showWindow();
+      const show = pid === id;
+      if (fade) win.asyncShowHideWin(show, false);
+      else if (show) win.showWindow();
       else win.hideWindow();
     }
   }

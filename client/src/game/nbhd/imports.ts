@@ -118,6 +118,22 @@ export async function setLotDescription(nbhdDir: string, file: string, house: nu
   await writeGameFile(path, buildIff(chunks));
 }
 
+/**
+ * Neighborhood::MoveOut's bulldoze branch: the description file of the lot
+ * (DTDesc for 0x15..0x1e, VIDesc for 0x28..0x30, NeighborhoodDesc for a zoned
+ * lot, STDesc for 0x51..0x59, MTDesc for 0x5a..0x63), then STR# 2000 + house
+ * entries 1 and 2 set empty.
+ */
+export async function clearLotDescriptionOnMoveOut(nbhdDir: string, house: number, zone: number): Promise<void> {
+  let file: string | null = null;
+  if (house >= 0x15 && house <= 0x1e) file = "DTDesc.iff";
+  else if (house >= 0x28 && house <= 0x30) file = "VIDesc.iff";
+  else if (zone !== 0) file = "NeighborhoodDesc.iff";
+  else if (house >= 0x51 && house <= 0x59) file = "STDesc.iff";
+  else if (house >= 0x5a && house <= 0x63) file = "MTDesc.iff";
+  if (file) await setLotDescription(nbhdDir, file, house, "", "");
+}
+
 /** cWinNeighborhoodUL::CheckForNewImports: any file to import. */
 export async function hasImports(nbhdDir: string): Promise<boolean> {
   const l = await listImports(nbhdDir);

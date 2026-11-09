@@ -53,7 +53,7 @@ import { deleteGameFile, writeGameFile } from "../data/files.js";
 import { buildIff, parseIff, stringSetMultiSave } from "../data/iff.js";
 import { LOT_POSITIONS, makeMoneyString, saveLotPositions, Zone } from "./nghinterface.js";
 import { WinCredits } from "./wincredits.js";
-import { getImportInfoForFile, getLotImportInfo, hasImports, importFamily, importLotFile, isWrongCharacterSet, listImports, needsUnleashedImport, pickAndUploadImports, tryImportUnleashedFamilies, uploadImports, type ImportInfo, type LotImportInfo } from "./imports.js";
+import { clearLotDescriptionOnMoveOut, getImportInfoForFile, getLotImportInfo, hasImports, importFamily, importLotFile, isWrongCharacterSet, listImports, needsUnleashedImport, pickAndUploadImports, tryImportUnleashedFamilies, uploadImports, type ImportInfo, type LotImportInfo } from "./imports.js";
 import { PD_AVOID_RECT, WinPictureDialog } from "../ui/picturedialog.js";
 import { getCheatCodeManager, type CheatCommandLine } from "../ui/cheat.js";
 import {
@@ -1347,7 +1347,7 @@ export class WinNeighborhoodUL extends TSWin implements LotBtnOwner {
 
   /** MoveOut(bulldoze): StringSetMulti 2000 + house of Houses\NeighborhoodDesc.iff, entries 1 and 2 emptied. */
   private clearLotDescription(house: number): Promise<void> {
-    return this.setLotDescription(house, "", "");
+    return clearLotDescriptionOnMoveOut(this.nb.dir, house, this.nb.getZoningType(house));
   }
 
   /** Houses\NeighborhoodDesc.iff STR# 2000 + house, entries 1 and 2 (left alone when the file or the set is missing). */
@@ -1377,6 +1377,8 @@ export class WinNeighborhoodUL extends TSWin implements LotBtnOwner {
       return;
     }
     await this.lots.get(house)?.reloadThumbnail();
+    // EvictModeLotHandler's tail: the tutorial lots' arrow again while Neighborhood +0x12e (data[3]) is 0.
+    if (this.nb.data.data[3] === 0) for (const lot of this.lots.values()) if (lot.info?.isTutorial) void lot.hiliteForTutorial(this.ctx, true);
   }
 
   /** cWinNeighborhoodUL::EvictModeLotHandler */

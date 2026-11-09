@@ -236,7 +236,7 @@ export async function saveGame(ctx: GameContext, lv: WinLotView | null, nbhdDir:
         store.saveAllPersistentDataForMatterTransferance(personDataOnLot(sim));
         await store.save();
       }
-      markLotClean(lv);
+      // The town branches leave cSimsApp +0xbf set (DoSave clears it).
       return true;
     }
     const prices = (await loadBuildCatalog(ctx)).prices;
@@ -276,7 +276,7 @@ export async function saveGame(ctx: GameContext, lv: WinLotView | null, nbhdDir:
     await writeGameFile(lv.housePath, bytes);
     if (store) {
       // House::SaveFile's cXPerson::PreSave: Neighborhood::SavePersistentData of each person.
-      if (sim) for (const p of sim.module.persons) if (p.person && !p.killed) store.savePersistentData(p.obj.selector.guid >>> 0, p.person.personData);
+      if (sim) for (const p of sim.module.persons) if (p.person && !p.killed) store.savePersistentDataOfPerson(p.person.personData);
       await deleteUnhousedCharacters(store, lot.folder, (guid) => {
         if (sim) for (const p of [...sim.module.persons]) if (!p.killed && p.obj.selector.guid >>> 0 === guid >>> 0) sim.module.killObject(p);
       });
@@ -309,6 +309,10 @@ export async function doSave(ctx: GameContext, lv: WinLotView | null, nbhdDir: s
   const str = (i: number): string => ctx.strings.get("UIText", SAVE_STRINGS, i);
   const r = await TSWinMsgBox.show(ctx, str(SAVE_ASK_MESSAGE), str(SAVE_ASK_TITLE), MB_YESNOCANCEL);
   if (r === IDCANCEL) return false;
-  if (r === IDYES && !(await saveGame(ctx, lv, nbhdDir))) return false;
+  if (r === IDYES) {
+    if (!(await saveGame(ctx, lv, nbhdDir))) return false;
+    // cSimsApp::DoSave: +0xbf := 0 once SaveGame succeeded.
+    if (lv) markLotClean(lv);
+  }
   return true;
 }

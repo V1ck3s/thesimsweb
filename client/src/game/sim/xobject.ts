@@ -1418,21 +1418,25 @@ export class SimObject extends TreeSim {
       }
       case 34: {
         // The stack object (a person, error 0x1c): cFameTrack::PromoteIfNeeded, then
-        // ObjectModule::OnStarPowerChange (the star plumb bobs: not ported). True when promoted.
+        // Then ObjectModule::OnStarPowerChange (setStarSimDirty: the star plumb bobs). True when promoted.
         const o = this.obj_(elem.stackObj);
         if (!o?.person) simThrow(XERR.notPerson);
         const t = m.fameScoring;
         if (!t) return PRIM_FALSE;
-        return promoteIfNeeded(t, o.person.personData, m.famousFriendCount(o.obj.selector.guid >>> 0)) ? PRIM_TRUE : PRIM_FALSE;
+        const promoted = promoteIfNeeded(t, o.person.personData, m.famousFriendCount(o.obj.selector.guid >>> 0));
+        m.setStarSimDirty(o);
+        return promoted ? PRIM_TRUE : PRIM_FALSE;
       }
       case 36: {
         // The stack object (a person, error 0x1c): cFameTrack::DemoteIfNeeded, then
-        // ObjectModule::OnStarPowerChange (not ported, see call 34). True when demoted.
+        // Then ObjectModule::OnStarPowerChange, as call 34. True when demoted.
         const o = this.obj_(elem.stackObj);
         if (!o?.person) simThrow(XERR.notPerson);
         const t = m.fameScoring;
         if (!t) return PRIM_FALSE;
-        return demoteIfNeeded(t, o.person.personData) ? PRIM_TRUE : PRIM_FALSE;
+        const demoted = demoteIfNeeded(t, o.person.personData);
+        m.setStarSimDirty(o);
+        return demoted ? PRIM_TRUE : PRIM_FALSE;
       }
       case 41:
         // Jumps straight to the common exit (lbl_100EB28C): nothing, true.
@@ -3296,7 +3300,8 @@ export class SimObject extends TreeSim {
         // object on the same tile (ObjectIterator over the tile, wrapping)
         const o = m.getObject(cur);
         if (!o || o.obj.tileX < 0) return PRIM_FALSE;
-        const here = m.list.filter((x) => x.obj.tileX === o.obj.tileX && x.obj.tileY === o.obj.tileY && x.obj.level === o.obj.level);
+        // ObjectIterator over the tile: its head, then the slot hierarchy.
+        const here = [...tileObjects(m, o.obj.tileX, o.obj.tileY, o.obj.level)];
         const i = here.indexOf(o);
         // The object iterator never meets the variable's object: false.
         if (i < 0) return PRIM_FALSE;

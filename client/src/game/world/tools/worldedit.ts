@@ -99,10 +99,10 @@ export function setPool(fixed: FixedWorld, x: number, y: number, v: number): voi
 
 /**
  * cRotatableWorld::MayEditTile (view tile): bit 5 of the ground floor's
- * flags is clear (lbl_105BA244, the edit-anywhere switch, is off).
+ * flags is clear, or lbl_105BA244 (the edit-anywhere switch) is on.
  */
-export function mayEditTile(world: RotatableWorld, x: number, y: number): boolean {
-  return mayEditViewTile(world, x, y, 1);
+export function mayEditTile(world: RotatableWorld, x: number, y: number, anywhere = false): boolean {
+  return mayEditViewTile(world, x, y, 1, anywhere);
 }
 
 /** RoomManager::ResolveDiagonal(CTilePt, Room**, Room**, Sides*, Sides*) (world tile). */

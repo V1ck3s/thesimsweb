@@ -76,7 +76,7 @@ const OBJECT_TYPE_PERSON = 2;
 const CATALOG_ICON_W = 0x4a;
 const CATALOG_ICON_H = 0x25;
 /** Bumped when the cached record layout changes; per language, the records hold its strings. */
-const CACHE_KEY = `catalog:v2:${UI_LANGUAGE}`;
+const CACHE_KEY = `catalog:v3:${UI_LANGUAGE}`;
 
 /** Where an object file lives: inside a FAR (far set) or loose under the game folder. */
 export interface ObjectFileRef {
@@ -407,9 +407,8 @@ async function scanFile(ref: ObjectFileRef, size: number): Promise<ProductRecord
     // GetHasGraphics || GetHasInteractions (a tree table to look interactions up in).
     const hasGraphics = f(OBJD.masterId) !== 0 || f(OBJD.numGraphics) !== 0;
     if (!hasGraphics && !map.some((m) => m.kind === "TTAB" && m.id === f(OBJD.treeTableId))) continue;
-    // Objects without any catalog sort (buy mode) or build mode type (build mode) never show.
-    const sorts = [OBJD.roomSort, OBJD.functionSort, OBJD.downtownSort, OBJD.vacationSort, OBJD.communitySort, OBJD.studiotownSort, OBJD.magictownSort, OBJD.buildModeType];
-    if (!sorts.some((i) => f(i) !== 0)) continue;
+    // Catalog::Init keeps objects without any sort too (FindProduct finds them); the views
+    // test the sorts themselves.
     const id = f(OBJD.catalogStringsId);
     let [name, description] = await catalogStrings(file, map, id);
     if (!name) name = `*${e.label}`;

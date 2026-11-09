@@ -276,10 +276,10 @@ export class TSWinBtn extends TSWin {
     if (this.mode === BTN_PUSH) {
       this.state = 0;
     } else if (this.mode === BTN_TOGGLE && !this.sendOnDown) {
-      // Pressing showed the "down" frame; releasing outside cancels.
+      // cTSWinBtn::TSOnMouseUpL, mode 1: a press that changed the state is undone on
+      // release (the command handler sets it); an already selected button stays as it is.
       // Buttons that fire on press keep their state (cTSWinBtn+0xec == 1).
-      if (!this.entered && this.changedOnDown) this.state = 0;
-      else if (this.entered && !this.changedOnDown) this.state = 0;
+      if (this.changedOnDown) this.state = this.state === 0 ? 1 : 0;
     }
     if (!this.sendOnDown && this.entered) {
       this.fire();

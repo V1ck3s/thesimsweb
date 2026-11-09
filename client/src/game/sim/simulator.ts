@@ -128,6 +128,8 @@ export class Simulator {
   readonly expenseHistory: Int32Array[] = Array.from({ length: 5 }, () => new Int32Array(8));
   /** +0xac */
   seed = 0;
+  /** DoStream read a saved seed pair (version > 0xd): kept only on a residential lot, see create. */
+  private hasSavedSeed = false;
   /** +0xbc */
   private accumulated = 0;
   /** +0xb8 */
@@ -221,6 +223,12 @@ export class Simulator {
     // Neighborhood::Load reads the lot zoning from <neighborhood>/LotZoning.iff.
     const zoning = await zoningRead;
     if (zoning) sim.module.loadZoning(loadStringSet(zoning, 1) ?? []);
+    // cSimulator::DoStream: only a residential lot (GetZoningType == 1) keeps the saved
+    // seeds; elsewhere +0xac and the global seed come from timeGetTime.
+    if (sim.hasSavedSeed && sim.module.getZoningType(sim.globals[10]!) !== 1) {
+      sim.seed = Date.now() >>> 0;
+      setSRandSeed(Date.now() >>> 0);
+    }
     // LoadCareers: one cCareer per CARR chunk of work.iff, in index order (GetCareers).
     sim.module.careers = await careersRead;
     sim.module.jobGrades = await gradesRead;
@@ -267,8 +275,8 @@ export class Simulator {
     if (v > 1) this.funds = buf.recon32();
     if (v > 0xd) {
       this.seed = buf.recon32();
-      // The global seed is restored only on residential lots (zoning type 1); houses are.
       setSRandSeed(buf.recon32());
+      this.hasSavedSeed = true;
     }
     if (v >= 0xf) this.funds += buf.recon32();
     if (v >= 0x25) {
@@ -446,6 +454,18 @@ export class Simulator {
    */
   private houseDayChanged(): void {
     if (this.layoutHistory) layoutHistoryDayChanged(this.layoutHistory);
+    this.enterLiveMode();
+  }
+
+  /**
+   * House::EnterLiveMode's stats part (CPState::SetMode into Live mode; the
+   * midnight House::DayChanged does the same): ObjectModule::ComputeStats and
+   * ComputeArchValue into family +0x138 bits 0 / 1 (not family 0), the object
+   * and architecture values (+0xa0 / +0xa4), globals 0x17, 0x16 and 0x25.
+   * ClearRoomPartitions and InvalidateAllRoutes are routing.ts's partition
+   * cache key and syncFromState's leave-freeze.
+   */
+  enterLiveMode(): void {
     const r = this.houseHooks?.computeStats();
     if (!r) return;
     const { summary: st, lotSize } = r;
@@ -608,7 +628,8 @@ export class Simulator {
   simulate(nowMs: number): number {
     this.updateSuspendedSpeed();
     if (this.lastMs === 0) this.accumulated = this.period;
-    else this.accumulated += nowMs - this.lastMs;
+    // TimeBase_Sims::SetNow: one frame moves the game clock by 2000 ms (+0x14) at most.
+    else this.accumulated += Math.min(nowMs - this.lastMs, 2000);
     this.lastMs = nowMs;
     let n = 0;
     while (this.accumulated >= this.period && n < MAX_PULSES) {
@@ -680,8 +701,9 @@ export class Simulator {
         this.pushClock();
       }
     }
-    // ObjectModule::PostSim: object dialogs are recorded only; the kill queue runs here.
-    this.module.runKillQueue();
+    // ObjectModule::PostSim: object dialogs are recorded only; the kill queue runs when
+    // the tick advanced (PostSim's argument is "not advanced").
+    if (advanced) this.module.runKillQueue();
     if (midnight) this.houseDayChanged();
     if (advanced) this.pushPeople();
     return advanced;
@@ -702,6 +724,7 @@ export class Simulator {
       info.personData = p.pd;
     }
     s.familyFriendCount = this.module.cpFamilyFriendCount(s.personGetSelected()?.guid);
+    s.houseFamilyFriendCount = this.module.houseFamilyFriendCount();
   }
 
   /**

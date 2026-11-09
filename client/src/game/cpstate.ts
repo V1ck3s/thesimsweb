@@ -422,8 +422,10 @@ export class CPState {
       this.slowPulseAccum = this.slowPulsePeriod;
     }
     else {
-      this.motivePulseAccum += now - this.motivePulseLast;
-      this.slowPulseAccum += now - this.motivePulseLast;
+      // TimeBase_Sims::SetNow: the clock advances by at most 2000 ms a frame.
+      const d = Math.min(now - this.motivePulseLast, 2000);
+      this.motivePulseAccum += d;
+      this.slowPulseAccum += d;
     }
     this.motivePulseLast = now;
     if (this.shouldPulseMotives()) this.touch(1);
@@ -597,6 +599,7 @@ export class CPState {
     const created = guid !== undefined && (this.viewer?.createPersonInstance?.(guid) ?? false);
     if (index === this.selected && !created) {
       this.viewer?.centerOnSelected?.();
+      this.touch(DIRTY_SELECTED_PERSON);
       return;
     }
     this.selected = index;
@@ -614,6 +617,8 @@ export class CPState {
 
   /** Friends of the active family (CPState::GetFamilyFriendCount); the simulation fills it. */
   familyFriendCount = 0;
+  /** Family::GetFriendCount of the house family (House +0x10, no zoning test): the job panel's count. */
+  houseFamilyFriendCount = 0;
   /** Statistics of the current house (House::GetHouseStats); the lot fills it. */
   houseStats: HouseStats = {
     sizeScore: 0,
@@ -638,6 +643,10 @@ export class CPState {
 
   getFamilyFriendCount(): number {
     return this.familyFriendCount;
+  }
+
+  getHouseFamilyFriendCount(): number {
+    return this.houseFamilyFriendCount;
   }
 
   isBuyAndBuildDisabled(): boolean {

@@ -44,6 +44,8 @@ import type { GameContext } from "../context.js";
 import { personBitmap } from "../cas/personpictures.js";
 import { decodeImage } from "../res/bmp.js";
 import type { SimModule } from "../sim/simmodule.js";
+import { HEAD_TEXT_FONT_SIZE, HEAD_TEXT_TICKS, type HeadTextItem } from "../sim/headtext.js";
+import type { FfnFont } from "../res/ffn.js";
 import type { HouseViewer } from "./houseviewer.js";
 import { ResFile } from "./iffres.js";
 import type { LotPeople } from "./lotpeople.js";
@@ -205,6 +207,7 @@ export class BalloonPainter {
    */
   draw(comp: Compositor, scene: BalloonScene): void {
     const v = scene.viewer;
+    this.drawHeadTexts(comp, scene);
     if (v.scale === 1 || !sprites) return;
     // The view's ZSpriteLookup table (registered by the HouseViewer under this key).
     const zLookup = comp.table1D("zsprite", makeZSpriteLookup());
@@ -217,6 +220,8 @@ export class BalloonPainter {
       if (!so) continue;
       const o = so.obj;
       if (o.level > v.level || o.fx < 0 || o.fy < 0) continue;
+      // cXPerson::DrawIso: nothing, sprite slots included, while the person is hidden (+0x8e).
+      if (so.isPerson && o.hidden !== 0) continue;
       for (const slot of o.spriteSlots) {
         if (slot.activeTicks === 0) continue;
         const rp = new RenderParam(v, zLookup);
@@ -239,6 +244,71 @@ export class BalloonPainter {
     }
     comp.ambient = ambient;
     comp.light = light;
+  }
+
+  /**
+   * cXObject's draw, its head text part (sim/headtext.ts): a person's item
+   * for HEAD_TEXT_TICKS ticks, centred 0xaf >> (3 - scale) pixels above where
+   * it stands (4 more at the small zoom); an older item is retired.
+   */
+  private drawHeadTexts(comp: Compositor, scene: BalloonScene): void {
+    const m = scene.module;
+    if (m.headTexts.size === 0) return;
+    const v = scene.viewer;
+    const font = this.headFont();
+    if (!font) return;
+    const zLookup = comp.table1D("zsprite", makeZSpriteLookup());
+    const now = m.sim.tickCount;
+    for (const [id, item] of m.headTexts) {
+      const so = m.getObject(id);
+      if (!so || so.killed || now - item.tick >= HEAD_TEXT_TICKS) {
+        m.headTexts.delete(id);
+        continue;
+      }
+      const o = so.obj;
+      if (!so.isPerson || o.level > v.level) continue;
+      const at = scene.people.drawPosition(o);
+      if (!at) continue;
+      const rp = new RenderParam(v, zLookup);
+      rp.setGridCoords(at.fx, at.fy, o.level);
+      const box = this.headTextCanvas(item, font);
+      const s = rp.scale;
+      let y = Math.trunc(rp.sy) - (0xaf >> (3 - s));
+      if (s === 1) y -= 4;
+      blitAt(comp, rp, box, Math.trunc(rp.sx) - Math.trunc(box.width / 2), y - Math.trunc(box.height / 2));
+    }
+  }
+
+  private headFontP: Promise<FfnFont> | null = null;
+  private headFontV: FfnFont | null = null;
+
+  /** gFonts[7], acquired once. */
+  private headFont(): FfnFont | null {
+    if (!this.headFontP) {
+      this.headFontP = this.ctx.fonts.acquire(HEAD_TEXT_FONT_SIZE);
+      void this.headFontP.then((f) => (this.headFontV = f)).catch(() => null);
+    }
+    return this.headFontV;
+  }
+
+  private readonly headBoxes = new WeakMap<HeadTextItem, HTMLCanvasElement>();
+
+  /** DrawHeadTextItem: the text at (2, 2) of its TSTextArea grown by 4, on the item's fill. */
+  private headTextCanvas(item: HeadTextItem, font: FfnFont): HTMLCanvasElement {
+    const cached = this.headBoxes.get(item);
+    if (cached) return cached;
+    const a = font.textArea(item.text);
+    const c = document.createElement("canvas");
+    c.width = a.w + 4;
+    c.height = a.h + 4;
+    const cx = c.getContext("2d")!;
+    if (item.fill) {
+      cx.fillStyle = item.fill;
+      cx.fillRect(0, 0, c.width, c.height);
+    }
+    font.drawText(cx, item.text, 2, 2, item.color);
+    this.headBoxes.set(item, c);
+    return c;
   }
 
   /** cXObject::DrawSpriteSlot */

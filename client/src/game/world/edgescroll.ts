@@ -140,6 +140,14 @@ export class EdgeDetectScroller {
     return this.pan;
   }
 
+  /** +0x92: an arrow-key scroll is held; mouse presses do nothing until the key goes up. */
+  arrowHeld = false;
+
+  /** +4 == 1: the scroller is scrolling. */
+  get scrolling(): boolean {
+    return this.state === 1;
+  }
+
   /**
    * EdgeDetectScroller::OnKeyDown, VK_MENU (0x12): unless the pan is on
    * already, StopScrolling, the pan on, StartScrolling when not scrolling

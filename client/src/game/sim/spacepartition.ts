@@ -923,6 +923,10 @@ export function roomOutside(module: SimModule, room: number): boolean | null {
  * counted by CollectObjectStats (not hidden, object data 34).
  */
 export function roomStats(module: SimModule, room: number): { area: number; objects: number; tiles: number } {
+  // The Room of the last ComputeRooms (its CollectTileStats / CollectObjectStats); the
+  // count below is the fallback without the lot view's rooms.
+  const info = module.roomHooks?.room(room);
+  if (info) return { area: info.area, objects: info.objects, tiles: 1 };
   const fixed = module.sim.world!;
   const level = roomLevel(room);
   const rooms = fixed.rooms[level - 1]!;

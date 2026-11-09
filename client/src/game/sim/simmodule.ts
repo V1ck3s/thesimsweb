@@ -15,6 +15,7 @@
  * (cXPerson::TryElement), which are not ported in this phase.
  */
 
+import type { HeadTextItem } from "./headtext.js";
 import { needsInterests, randomizeAllInterests } from "../data/character.js";
 import { isDynamic, removeFromDynamic } from "./dynamic.js";
 import { Transforms } from "./transforms.js";
@@ -33,7 +34,7 @@ import { PersonSim, SCORE_CURVE_MOTIVES, type Interaction, type MenuItem } from 
 import { curvesFromStrings, HAPPY_CURVE_MOTIVES, type MotiveCurve } from "./motives.js";
 import { loadStringSet, loadTree } from "./behavior.js";
 import type { Family, Neighbor, NeighborhoodData, SimInventory } from "../data/neighborhood.js";
-import { getLiveNeighborhood, PERSISTENT_DATA_FIELDS, setLiveNeighborhood } from "../data/nbhdstore.js";
+import { getLiveNeighborhood, LATEST_PERS_DATA_VERSION, PERSISTENT_DATA_FIELDS, setLiveNeighborhood } from "../data/nbhdstore.js";
 import type { SimCareer } from "./careers.js";
 import type { FameScoring } from "./fametrack.js";
 import { ObjectDialog, type DialogHooks } from "./objectdialog.js";
@@ -410,7 +411,7 @@ export class SimModule {
    * and RoomManager::RoomLightingChanged / RoomScoreChanged(room) for cXObject::TryUpdate.
    */
   roomHooks: {
-    room(id: number): { ambient: number; outside: boolean; level: number; area: number } | null;
+    room(id: number): { ambient: number; outside: boolean; level: number; area: number; objects: number } | null;
     roomLightingChanged?(id: number): void;
     roomScoreChanged?(id: number): void;
     /** cXPerson::Simulate's room motive: Room +0x68, RoomManager +0x48 outside, null without the room. */
@@ -616,6 +617,8 @@ export class SimModule {
   readonly characterJobs = new Map<number, { result: MakeCharacterResult | null }>();
   /** cSimulator +0x1a4: the transform requests of generic sim calls 39 / 40. */
   readonly transforms = new Transforms(this);
+  /** cHeadTextRenderer: the text over each object's head (sim/headtext.ts), by object id. */
+  readonly headTexts = new Map<number, HeadTextItem>();
   characterJobSerial = 0;
 
   /** +0x64: the queued object dialogs (EnqueueObjectDialog). */
@@ -712,18 +715,18 @@ export class SimModule {
     // Without it a bought object's Main never runs and its lockout count
     // (object data 25) never counts down: autonomy skips it for good.
     this.simFlags[id - 1] = 0x1ffff;
-    // The list stays in object id order (TickAllObjects, Set To Next).
-    let k = this.list.findIndex((y) => y.id > id);
-    if (k < 0) k = this.list.length;
-    this.list.splice(k, 0, o);
+    // ObjectModule::AddObject(.., 0): a new object goes to the head of the module list
+    // (+0x30); the stream load appends. TickAllObjects walks the ids, not this list.
+    this.list.unshift(o);
     if (x.isPerson) {
       this.people.push(o);
       if (o instanceof PersonSim) this.onPersonMade?.(o);
     }
-    // A multi-tile part arrives alone (the factory adds them one by one): its own Init runs.
+    // MakeNewOutOfWorldObject's Reset(1): Init, then one simulate. A multi-tile part arrives
+    // alone (the factory adds them one by one): its own Init and tick run.
     if (runInit) {
-      if (x.selector.objd.masterId === 0) o.reset(false);
-      else o.resetPart(false);
+      if (x.selector.objd.masterId === 0) o.reset(true);
+      else o.resetPart(true);
     } else o.resetTree(o.behavior, o.fnTable.getTreeID(EP.main));
     this.updatePrimitiveLimit();
     // MakeNewOutOfWorldObject ends with GlobalDispatch(0xe2, id): House::DoCommand
@@ -782,6 +785,7 @@ export class SimModule {
             persistent: new Map(),
             loadedHouse: () => ({
               house: this.sim.globals[10]!,
+              tutorial: this.sim.globals[26]! !== 0,
               netWorth: (this.sim.lotValue + this.sim.objectValue + Math.trunc(Math.fround(Math.fround(this.sim.archValue) * ARCHITECTURE_VALUE_MULTIPLIER))) | 0,
             }),
           }
@@ -832,14 +836,17 @@ export class SimModule {
    */
   savePersistentData(p: SimObject): void {
     if (!p.person) return;
-    const guid = p.obj.selector.guid >>> 0;
-    const nb = this.findNeighborByGUID(guid);
+    // Neighborhood::SavePersistentData: the neighbor person data 0x1f (its id) names.
+    const nb = this.findNeighborByID(p.person.personData[0x1f] ?? 0);
     if (!nb) return;
+    const guid = nb.guid >>> 0;
     if (!nb.personData || nb.personData.length < 0x100) {
       const pd = new Int16Array(0x100);
       if (nb.personData) pd.set(nb.personData);
       nb.personData = pd;
     }
+    // Neighbor +0x18: Neighbor::GetLatestPersDataVersion.
+    nb.version = LATEST_PERS_DATA_VERSION;
     for (const i of PERSISTENT_DATA_FIELDS) nb.personData[i] = p.person.personData[i] ?? 0;
     const live = getLiveNeighborhood();
     if (live?.data === this.nbhd) live.persistent.set(guid, nb.personData.slice());
@@ -1192,7 +1199,9 @@ export class SimModule {
     // A multi-tile part queues its lead (cXMTObject: the +0x190 lead of a static object; a dynamic one is queued itself).
     const lead = o.obj.selector.objd.masterId !== 0 && o.obj.mtLeadId !== 0 && !isDynamic(o) ? (this.getObject(o.obj.mtLeadId) ?? o) : o;
     if (this.killQueue.some((k) => k.id === lead.id || k.id === id)) return;
-    // Pickup(1) is left to KillObject's world part. Bit 0x1000: kept records (see SimObject.keepRecordObjects).
+    // cXObject::Pickup(1) at queue time (vtable +0x58), then bit 0x1000: kept records
+    // (see SimObject.keepRecordObjects).
+    this.worldHooks?.pickup(lead.obj);
     lead.keepRecordObjects = flag === 0;
     this.killQueue.push({ id: lead.id, flag });
   }
@@ -1561,6 +1570,13 @@ export class SimModule {
     let fn = 0;
     if (this.getZoningType(g[10]!) === 1) fn = g[9]!;
     else if (selectedGuid !== undefined) fn = this.persons.find((p) => (p.obj.selector.guid | 0) === (selectedGuid | 0))?.pd[0x3d] ?? 0;
+    const fam = fn === 0 ? undefined : this.nbhd?.families.find((f) => f.chunkId === fn);
+    return fam ? this.familyFriendsCount(fam) : 0;
+  }
+
+  /** Family::GetFriendCount(House +0x10): the house family's friends, whatever the lot's zoning. */
+  houseFamilyFriendCount(): number {
+    const fn = this.sim.globals[9]!;
     const fam = fn === 0 ? undefined : this.nbhd?.families.find((f) => f.chunkId === fn);
     return fam ? this.familyFriendsCount(fam) : 0;
   }

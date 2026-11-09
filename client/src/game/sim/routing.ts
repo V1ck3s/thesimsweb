@@ -536,7 +536,8 @@ export class XRoute {
       const [vx, vy] = DIR_VEC[d]!;
       const fx = me.fx + vx * 16;
       const fy = me.fy + vy * 16;
-      const r = this.evalTileForGoal(fx, fy, -1);
+      // EvalTileForGoal with the tried direction (the wall test included).
+      const r = this.evalTileForGoal(fx, fy, d);
       if (r !== 6 && r !== 5) continue;
       const dd = (t.fx - fx) ** 2 + (t.fy - fy) ** 2;
       if (best < 0 || dd < best) {
@@ -558,16 +559,11 @@ export class XRoute {
     this.chooseStartingPoint();
     const p = this.person;
     const pd = p.person?.personData ?? null;
-    const fixed = this.fixed;
     const room = p.obj.objectData[29]! & 0xffff;
+    // Room::GetArea of the person's room (half tiles for diagonal walls); no Room: not large.
     if (pd) {
-      let area = 0;
-      const level = p.obj.level;
-      if (level >= 1 && level <= 2 && room < ROOM_DEGENERATE) {
-        const rooms = fixed.rooms[level - 1]!;
-        for (let x = 0; x < fixed.size; x++) for (let y = 0; y < fixed.size; y++) if (rooms.u16(x, y) === room) area++;
-      }
-      if (area > 0xfa) this.maxGoals = 8;
+      const level = roomLevel(room);
+      if (level >= 1 && level <= 2 && room < ROOM_DEGENERATE && roomStats(this.module, room).area > 0xfa) this.maxGoals = 8;
     }
     const dir = p.obj.objectData[1]!;
     if (pd) pd[73] = this.footprint;
@@ -603,7 +599,6 @@ export class XRoute {
       if (r === 6) {
         this.goals.push({ fy: p.fy, fx: p.fx, score: 100, chair: 0, dirFlags: 0 });
         this.maxScore = Math.max(this.maxScore, 100);
-        this.result = 0;
       } else {
         this.result = r === 5 ? ROUTE.personInWay : r === 1 ? ROUTE.destOccupied : r === 2 || r === 3 ? ROUTE.wallInWay : r === 4 ? ROUTE.altitudes : 0;
       }
@@ -837,7 +832,7 @@ export class XRoute {
       return false;
     }
     const level = roomLevel(room);
-    if (room >= ROOM_DEGENERATE || level < 1 || level > 2 || me.level !== level) {
+    if (room >= ROOM_DEGENERATE || level < 1 || level > 2) {
       this.dropCurrentGoal();
       return false;
     }

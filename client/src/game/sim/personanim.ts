@@ -9,7 +9,7 @@
  * crossed during a tick are handled like SAnimator::HandleVitaBoyAnimEvent:
  * "xevt" queues an event, "interruptable"/"interruptible" set the
  * practice's interruptible flag, "lefthand"/"righthand"/"censor" set person
- * data 0x16/0x17/0x1e, "discontinuity" stops the carry practice, sounds go
+ * data 0x16/0x17/0x1e, "discontinuity" does nothing (it stops a fading practice the game never makes), sounds go
  * to sim/animsound.ts, "dress" / "undress" put an accessory on or off
  * (SAnimator::Dress / Undress: the lot renderer dresses `accessories`).
  *
@@ -220,8 +220,12 @@ class Track {
     return this.practice.finished;
   }
 
-  /** Advance to `clock`; returns the time props crossed, in order. */
-  advance(dt: number): Array<Map<string, string>> {
+  /**
+   * Advance to `clock`; returns the time props crossed, in order. Practice::Apply
+   * skips the bones a practice of higher priority also moves (bone +0x58, set by
+   * Skeleton::UpdatePriorities, above this practice's +0x14): `blocked`.
+   */
+  advance(dt: number, blocked?: (bone: string) => boolean): Array<Map<string, string>> {
     const p = this.practice;
     const before = p.position;
     this.local += dt * this.rate;
@@ -239,7 +243,7 @@ class Track {
       return wrapped ? t < from || t >= now : t < from && t >= now;
     };
     for (const m of this.skill.motions) {
-      if (!m.timeProps) continue;
+      if (!m.timeProps || blocked?.(m.boneName)) continue;
       const times = [...m.timeProps.keys()].sort((a, b) => (forward ? a - b : b - a));
       for (const t of times) if (hit(t)) out.push(m.timeProps.get(t)!);
     }
@@ -595,11 +599,15 @@ export class PersonAnimator {
     this.clock += mils;
     if (this.skeleton) this.updateCarryPractice();
     this.tickMovement();
-    // Apply order: background (priority -10), main, carry (10) on top.
-    for (const slot of ["background", "main", "carry"] as const) {
-      const t = this[slot];
+    // Apply order: background (priority -10), main (1, or 6), carry (10) on top.
+    const slots = ["background", "main", "carry"] as const;
+    for (let i = 0; i < slots.length; i++) {
+      const t = this[slots[i]!];
       if (!t) continue;
-      for (const props of t.advance(mils)) this.handleProps(t, props);
+      // A bone a practice of higher priority moves too: its time props are skipped.
+      const above = slots.slice(i + 1).map((s) => this[s]).filter((x): x is Track => !!x);
+      const blocked = above.length ? (bone: string): boolean => above.some((o) => o.skill.motions.some((m) => m.boneName === bone)) : undefined;
+      for (const props of t.advance(mils, blocked)) this.handleProps(t, props);
     }
     if (this.skeleton) {
       this.skeleton.updateBoneTransforms();
@@ -777,7 +785,7 @@ export class PersonAnimator {
           this.host.setPersonData(0x1e, n);
           break;
         case "discontinuity":
-          if (this.carry) this.carry = null;
+          // Stops only the fading practice (SAnimator +0x10), which is never made: nothing.
           break;
         case "dress":
           // SAnimator::Dress(suit, ""): Undress(suit), then a new record.
@@ -997,13 +1005,18 @@ export class PersonAnimator {
   /** SAnimator::UpdateBackgroundPractice: the sit / floor sit / standing loop by person data 0. */
   private updateBackgroundPractice(): void {
     const sit = this.host.personData(0);
-    if (sit === this.bgSit && this.background) return;
-    const idx = sit === 1 ? STD.sitLoop : sit === 2 ? STD.floorSitLoop : STD.standingLoop;
+    // +0x190: the practice stops when the sit value changed.
+    if (sit !== this.bgSit) this.stop("background");
+    // OBJD +0xcc bit 2: no background practice.
+    if ((this.host.objdFlags() & 4) !== 0 || this.background) return;
+    // 1 sitting, 2 on the floor, 0 standing; any other value starts nothing.
+    const idx = sit === 1 ? STD.sitLoop : sit === 2 ? STD.floorSitLoop : sit === 0 ? STD.standingLoop : -1;
+    this.bgSit = sit;
+    if (idx < 0) return;
     const n = this.getSkillName(idx);
     const sk = n ? requestSkill(n) : null;
     if (!sk) return;
     this.start("background", sk, false, true);
-    this.bgSit = sit;
   }
 
   /** SAnimator +0xa8: Animate flag 0x80, the animation clock advances GetMilsPerTick (42) instead of 50 a tick. */

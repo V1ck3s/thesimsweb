@@ -13,6 +13,7 @@
  *   44 Animate (SAnimator::TryAnimate), 45 Go To Routing Slot, 47 Reach.
  */
 
+import { setHeadFee } from "./headtext.js";
 import { needsInterests, randomizeAllInterests } from "../data/character.js";
 import type { Neighbor } from "../data/neighborhood.js";
 import type { XObject } from "../world/objects.js";
@@ -341,7 +342,7 @@ export class PersonSim extends SimObject {
    * motive decay every 60 ticks, the animator, the current room
    * (UpdateCurrentRoom) and the room motive, the motive increments every
    * tick, every 10 ticks a layout tick for the house, and the head fee
-   * cleared (its overhead text and the head text are not drawn).
+   * shown over the head and cleared (the head text is not ported).
    */
   override simulate(): boolean {
     const a = this.animator;
@@ -376,11 +377,9 @@ export class PersonSim extends SimObject {
       if (tick % 10 === 0 && this.pd[PDX.personType] === 0 && this.obj.hidden === 0 && m[MOTIVE.sleepState]! >= 0) {
         this.module.sim.addLayoutTick(this.routes.length > 0);
       }
-      // Person data 1 is the head fee (GViewer::SetHeadFee: magic tokens below -20000,
-      // tickets below -10000, else simoleons over the head), shown once then cleared.
-      // The port records it; the overhead text is not drawn.
+      // Person data 1 is the head fee (GViewer::SetHeadFee, sim/headtext.ts), shown then cleared.
       if (this.pd[1] !== 0) {
-        this.module.record(this, "headFee", this.pd[1]!);
+        setHeadFee(this.module, this, this.pd[1]!);
         this.pd[1] = 0;
       }
       // SimLog::SimTickCompleted ("sim_log begin").
@@ -846,6 +845,11 @@ export class PersonSim extends SimObject {
       if (skill === undefined) return PRIM_WAIT;
       a.milsFlag = (flags & 0x80) !== 0;
       const t = skill ? a.start(slot, skill, backwards) : null;
+      if (!skill) {
+        // StartSkill failed: cXObject::RunTree "missing animation tree" (no substitute skill here).
+        const tree = this.behavior.getTreeID("missing animation tree");
+        if (tree !== 0) this.runCheckTree(this.behavior, 0, tree, null);
+      }
       // the trees own the carry practice (+0x1a0 = 6) until they stop it
       if (t && slot === "carry") {
         a.carryMode = 6;

@@ -223,9 +223,13 @@ export function parseFami(bytes: Uint8Array, chunkId: number, name: string): Fam
   }
   let flags = 0;
   if (v < 7) {
-    if (v >= 3) flags = r.bool() ? 1 : 0;
+    // Family::DoStream: bit 0 set before version 3; version 6 reads bit 1 again.
+    flags = v < 3 ? 1 : r.bool() ? 1 : 0;
     if (v > 3 && r.bool()) flags |= 2;
-    if (v > 5 && r.bool()) flags |= 2;
+    if (v > 5) {
+      flags &= ~2;
+      if (r.bool()) flags |= 2;
+    }
   } else {
     flags = r.i32();
   }
@@ -273,6 +277,14 @@ export async function loadNeighborhood(dir = "UserData", lang = UI_LANGUAGE): Pr
   for (const f of families) {
     const famh = chunks.find((c) => c.kind === "FAMh" && c.id === f.chunkId);
     if (famh) f.historyChunk = payload(data, famh);
+  }
+  // Neighborhood::UpdateFamilyNumbers: person data 0x3d := the id of the family listing the neighbor, else 0.
+  for (const n of neighbors) if (n.personData) n.personData[PD.familyNumber] = 0;
+  for (const f of families) {
+    for (const guid of f.memberGuids) {
+      const n = guid === 0 ? undefined : neighbors.find((x) => (x.guid | 0) === (guid | 0));
+      if (n?.personData) n.personData[PD.familyNumber] = f.chunkId;
+    }
   }
   const ngbh = chunks.find((c) => c.kind === "NGBH" && c.id === 1);
   let ngbhData: { data: Int16Array; inventories: SimInventory[] } = { data: new Int16Array(0x10), inventories: [] };

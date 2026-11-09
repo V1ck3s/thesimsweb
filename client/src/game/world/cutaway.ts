@@ -33,6 +33,8 @@ export interface CutawayPerson {
   x: number;
   y: number;
   level: number;
+  /** cXPerson +0xaac, the person's stored current room (absent: the tile's room). */
+  room?: number | undefined;
 }
 
 /** What DoDynamicCutaway asks of the current tool (cTool +0x24, vtable +0x4c / +0x48). */
@@ -125,7 +127,7 @@ export class DynamicCutaway {
       // The tracked object (lbl_105BA3A8) when there is one, else the selected person.
       const tracked = this.hooks.trackedPerson?.();
       const p = tracked === undefined ? this.hooks.selectedPerson() : tracked;
-      const id = p ? w.fixed.rooms[p.level - 1]?.u16(p.x, p.y) : undefined;
+      const id = p ? (p.room ?? w.fixed.rooms[p.level - 1]?.u16(p.x, p.y)) : undefined;
       if (p && id !== undefined && p.level === v.level && id < ROOM_DEGENERATE) {
         const room = this.rooms.getRoom(id);
         if (room) {
@@ -200,10 +202,11 @@ export class DynamicCutaway {
    * the first different room found below it within half a level height
    * (the room whose walls stand in front of the cursor) join the cutaway set.
    */
-  mouseTrack(x: number, y: number): void {
+  mouseTrack(x: number, y: number, leftDown = false): void {
     const v = this.viewer;
     if (x < 0 || y < 0 || x > v.viewW || y > v.viewH) return;
-    if (!this.walls.dynamicCutaway) return;
+    // Not while the left button is held (EdgeDetectScroller passes GetKeyState(VK_LBUTTON)).
+    if (leftDown || !this.walls.dynamicCutaway) return;
     const w = v.world;
     const t = v.pointToWholeTile(x, y, v.level);
     if (!w.inInterior(t.x, t.y)) {

@@ -154,6 +154,10 @@ export class NewWallpaperTool extends Tool implements WallpaperUndoTool {
     this.host.invalidate();
   }
 
+  anywhere(): boolean {
+    return this.host.placement.anywhere;
+  }
+
   wallPatternCost(pattern: number): number {
     return this.host.walls?.gfx.getWallPatternCost(pattern) ?? 0;
   }
@@ -321,7 +325,10 @@ export class NewWallpaperTool extends Tool implements WallpaperUndoTool {
     this.undoable.reset();
     if (this.mode === WallpaperMode.Room || this.mode === WallpaperMode.DeleteRoom) {
       if (!this.doRoom(e, level, seg, e, this.mode)) {
+        // cNewWallpaperTool::Click: the cannot-afford flag survives the reset.
+        const cannot = this.undoable.cannotAfford();
         this.undoable.reset();
+        if (cannot) this.undoable.setCannotAfford(true);
       } else {
         if (this.mode === WallpaperMode.DeleteRoom) this.doExplodeSound();
         this.refreshWalls(this.currentLevel());
@@ -366,7 +373,9 @@ export class NewWallpaperTool extends Tool implements WallpaperUndoTool {
     let tipShown = false;
     if (this.mode === WallpaperMode.Room || this.mode === WallpaperMode.DeleteRoom) {
       if (!this.doRoom(e, level, seg, e, this.mode)) {
+        // cNewWallpaperTool::Drag: a failed room sets the cannot-afford flag.
         this.undoable.reset();
+        this.undoable.setCannotAfford(true);
       } else {
         if (this.mode === WallpaperMode.DeleteRoom) this.doExplodeSound();
         this.refreshWalls(this.currentLevel());
@@ -393,7 +402,7 @@ export class NewWallpaperTool extends Tool implements WallpaperUndoTool {
     const e = this.modifiedEvent(ev);
     const x = e.fx >> 4;
     const y = e.fy >> 4;
-    if (this.host.world.inInterior(x, y) && mayEditTile(this.host.world, x, y)) {
+    if (this.host.world.inInterior(x, y) && mayEditTile(this.host.world, x, y, this.host.placement.anywhere)) {
       const seg = this.findNearestWallSegment(e, e);
       const level = this.currentLevel();
       this.setCursorVertex(e, level, seg);

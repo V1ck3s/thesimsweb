@@ -473,7 +473,7 @@ export class WinSubpanelJob extends TSWin {
     const next = this.getNextJob(p);
     if (!next) return 0;
     const min = next.minimumReq[JobReq.Friends] ?? 0;
-    return this.ctx.state.getFamilyFriendCount() < min ? min : 0;
+    return this.ctx.state.getHouseFamilyFriendCount() < min ? min : 0;
   }
 
   /** cJob::GetPerformance */
@@ -489,7 +489,7 @@ export class WinSubpanelJob extends TSWin {
   private setFriendsNeeded(needed: number): void {
     const btn = this.summaryBtns[3];
     if (!btn) return;
-    if (this.ctx.state.getFamilyFriendCount() < needed) {
+    if (this.ctx.state.getHouseFamilyFriendCount() < needed) {
       btn.showWindow();
       btn.caption = this.friendsFormat.replace(/%d/, String(needed));
       btn.imageX = (btn.font?.stringWidth(btn.caption) ?? 0) + 3;

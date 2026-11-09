@@ -82,7 +82,8 @@ export function getOtherSide(module: SimModule, p: SimObject): SimObject | null 
   const chain = module.list.filter((o) => (o.obj.mtLeadId || o.id) === leadId);
   if (chain.length < 2 || !chain.includes(p)) return null;
   const lead = chain.find((o) => o.id === leadId) ?? chain[0]!;
-  const ordered = [lead, ...chain.filter((o) => o !== lead)];
+  // The +0x18c chain from the lead: the parts in creation (id) order.
+  const ordered = [lead, ...chain.filter((o) => o !== lead).sort((a, b) => a.id - b.id)];
   const next = (o: SimObject): SimObject | null => ordered[ordered.indexOf(o) + 1] ?? null;
   const byGroup = p.obj.selector.objd.i16(0x8a) === 1;
   const group = (o: SimObject): number => o.obj.selector.objd.i16(0x10);
@@ -220,7 +221,8 @@ export function beginningPortalTree(module: SimModule, person: SimObject, portal
     if (v === FAILED) return;
     nv = USED_LO;
     for (const q of portals(module)) {
-      if (room(q) !== room(portal)) continue;
+      // The portals of the person's room.
+      if (room(q) !== room(person)) continue;
       const qv = getDist(q, id);
       if (qv >= USED_LO && qv <= USED_HI && nv <= qv) nv = qv + 1;
     }

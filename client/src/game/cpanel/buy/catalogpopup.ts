@@ -32,7 +32,7 @@ import { UI_LANGUAGE } from "../../res/uires.js";
 import { SYS_POPUP_TILES, TSWinCtrlMgr } from "../../ui/ctrlmgr.js";
 import { rgb, UI_FONT_COLOR } from "../../ui/syscolors.js";
 import { Gfx, TSWin } from "../../ui/tswin.js";
-import type { ResFile } from "../../world/iffres.js";
+import { ResFile } from "../../world/iffres.js";
 import { engine } from "../../../engine/wasm.js";
 import { ObjectIcon } from "./objecticon.js";
 
@@ -86,6 +86,8 @@ const TT_ALLOW_DOGS = 1 << 10;
 
 interface Interaction {
   flags: number;
+  /** +0x18: the TTAs string index. */
+  ttasIndex: number;
   joiningIndex: number;
 }
 
@@ -108,20 +110,40 @@ function restriction(list: Interaction[]): Restriction {
   return Restriction.None;
 }
 
-/** ObjSelector::HasGroupActions: a visible interaction that joins another one of the table. */
-function hasGroupActions(list: Interaction[]): boolean {
-  return list.some((i) => (i.flags & TT_DEBUG) === 0 && i.joiningIndex >= 0 && i.joiningIndex < list.length);
+/** The semi-global files' archive (Behavior::GetMiddleFile). */
+const GLOBAL_FAR = "GameData/Global/Global.far";
+
+/** GLOB chunk: the semi-global file name, Pascal or C string. */
+function globName(b: Uint8Array): string {
+  if (b.length > 0 && b[b.length - 1] === 0) return String.fromCharCode(...b.subarray(0, b.indexOf(0)));
+  return String.fromCharCode(...b.subarray(1, 1 + (b[0] ?? 0)));
 }
 
-/** The selector's tree table (OBJD +0x0e) in the object's own file. */
+/** ObjSelector::HasGroupActions: a visible interaction that joins another one of the table. */
+function hasGroupActions(list: Interaction[]): boolean {
+  // An entry (not debug) whose joining index (+0x20) is the TTAs index (+0x18) of an entry of the table.
+  return list.some((i) => (i.flags & TT_DEBUG) === 0 && list.some((j) => j.ttasIndex === i.joiningIndex));
+}
+
+/**
+ * ObjSelector::AdultsOnly's tree table (OBJD +0x0e; a negative id other than -1, the
+ * master's, gives 0): Behavior::GetPrivFile, else GetMiddleFile (the semi-global file).
+ */
 async function interactions(file: ResFile, p: Product): Promise<Interaction[]> {
-  const id = p.field(OBJD.treeTableId);
-  const data = file.get("TTAB", id);
+  let id = p.field(OBJD.treeTableId);
+  if (id < 0) id = 0;
+  let data = file.get("TTAB", id);
+  if (!data) {
+    const glob = file.list("GLOB")[0];
+    const name = glob ? globName(file.payload(glob)) : "";
+    const semi = name ? await ResFile.openInFar(GLOBAL_FAR, `${name}.iff`).catch(() => null) : null;
+    data = semi?.get("TTAB", id) ?? null;
+  }
   if (!data) return [];
   try {
     const wasm = await engine();
     const t = wasm.parseTtab(data) as { interactions: Interaction[] };
-    return t.interactions.map((i) => ({ flags: i.flags, joiningIndex: i.joiningIndex | 0 }));
+    return t.interactions.map((i) => ({ flags: i.flags, ttasIndex: i.ttasIndex | 0, joiningIndex: i.joiningIndex | 0 }));
   } catch {
     return [];
   }

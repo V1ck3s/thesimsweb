@@ -85,7 +85,8 @@ export class SoundPlayer {
       if (this.ready && this.pending.length < 32) this.pending.push([name, source]);
       return true;
     }
-    if (!name.toLowerCase().startsWith("footstep") && source > 0) this.lastSource = source;
+    // strncmp("footstep", name, 8) == 0 && source > 0 (case-sensitive, on the raw name).
+    if (name.startsWith("footstep") && source > 0) this.lastSource = source;
     if (source === -2) {
       if (this.lastSource === 0) return false;
       source = this.lastSource;

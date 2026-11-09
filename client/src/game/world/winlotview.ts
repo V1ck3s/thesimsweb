@@ -17,7 +17,7 @@ import { WinCPanel } from "../cpanel/cpanel.js";
 import type { GameContext } from "../context.js";
 import { soundPlayer, UI_SOURCE } from "../audio/index.js";
 import { getOptionsMgr, type OptionsMgr } from "../optionsmgr.js";
-import { ArchTool, DIRTY_ARCH_SUBTOOL, DIRTY_ARCH_TOOL, DIRTY_ARCH_UNDO, DIRTY_LEVEL, DIRTY_SHOP_ITEM, Mode, WallState, type CPState, type HouseViewerHooks } from "../cpstate.js";
+import { ArchTool, DIRTY_ARCH_SUBTOOL, enterLiveModeHooks, DIRTY_ARCH_TOOL, DIRTY_ARCH_UNDO, DIRTY_LEVEL, DIRTY_SHOP_ITEM, Mode, WallState, type CPState, type HouseViewerHooks } from "../cpstate.js";
 import { DefaultTTWindow } from "../ui/ttwindow.js";
 import { Gfx, type Rect, TSWin, WF_GLOBAL_CURSOR } from "../ui/tswin.js";
 import { Compositor } from "./compositor.js";
@@ -90,6 +90,7 @@ import { findRelButton } from "../cpanel/live/relationship.js";
 import { moduleOrder } from "./housesave.js";
 import { clearLayoutHistory, getHouseStats, piecewiseFromText, readLayoutHistory, STR_HOUSE_SCORE_CURVES, summarizeHouseStats, type ArchPrices, type HousePageStats, type PiecewiseFn } from "./housestats.js";
 import { loadStringSet } from "../sim/behavior.js";
+import { updateComeSeeMeObjects } from "../sim/comeseeme.js";
 
 /** ObjectModule::ShowTutorialInfo's tree (lbl_105BBA30 + 0x72). */
 const SHOW_SITUATION_INFO = "show situation info";
@@ -377,13 +378,13 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
         const guid = st.personGetSelected()?.guid;
         const objs = this.lotObjects?.objects;
         if (guid === undefined || !objs) return null;
-        for (const o of objs.values()) if (o.isPerson && o.guid === guid && o.hidden === 0) return { x: o.tileX, y: o.tileY, level: o.level };
+        for (const o of objs.values()) if (o.isPerson && o.guid === guid && o.hidden === 0) return { x: o.tileX, y: o.tileY, level: o.level, room: this.currentRoomOf(o) };
         return null;
       },
       trackedPerson: () => {
         const o = getTrackedObject();
         if (!o) return undefined;
-        return o.isPerson ? { x: o.tileX, y: o.tileY, level: o.level } : null;
+        return o.isPerson ? { x: o.tileX, y: o.tileY, level: o.level, room: this.currentRoomOf(o) } : null;
       },
       cursor: () => this.cursor,
       tool: () => {
@@ -875,15 +876,24 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
    * RenderLoc::SetWorldCoord: world (x, y, z) -> fixed (z, x) / 0.1875 and
    * altitude y * 2 sqrt 6 / 3).
    */
-  private placeHeld(d: DrawableObject, rp: RenderParam): boolean {
+  /** cXPerson +0xaac: a person's stored current room (UpdateCurrentRoom). */
+  private currentRoomOf(o: PlacedObject): number | undefined {
+    return this.sim?.module.persons.find((q) => q.obj === o)?.currentRoom;
+  }
+
+  private placeHeld(d: DrawableObject, rp: RenderParam): boolean | "skip" {
     const obj = (d as { obj?: XObject }).obj;
     const v = this.viewer;
     const lot = this.lotObjects;
     if (!obj || !v || !lot || !this.people) return false;
     const parent = lot.objects.get(obj.parentId);
-    if (!parent?.isPerson || obj.slotHierNumber !== 1) return false;
-    const p = this.people.registrationPoint(parent, 0, v.world.rotation, v.world.fixed.getFAlt(parent.fx, parent.fy));
-    if (!p) return false;
+    if (!parent?.isPerson) return false;
+    // cXPerson::DrawIso: slots 1, 3, 4, 5 use SAnimator::PrepReg 0, 3, 1, 0; nothing is drawn
+    // while the person is hidden (+0x8e) or when PrepReg fails.
+    const reg = ({ 1: 0, 3: 3, 4: 1, 5: 0 } as Readonly<Record<number, number>>)[obj.slotHierNumber];
+    if (reg === undefined || parent.hidden !== 0) return "skip";
+    const p = this.people.registrationPoint(parent, reg, v.world.rotation, v.world.fixed.getFAlt(parent.fx, parent.fy));
+    if (!p) return "skip";
     rp.x = p[2] / 0.1875;
     rp.y = p[0] / 0.1875;
     rp.z = Math.fround((p[1] * 2 * Math.sqrt(6)) / 3);
@@ -1617,7 +1627,7 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
       return true;
     }
     // EdgeDetectScroller::OnMouseDownL: XViewer::MouseDown only in state 0 (not while the Alt pan scrolls).
-    if (this.edge?.panning) return true;
+    if (this.arrowScrollHeld() || this.edge?.panning) return true;
     const tools = this.activeTools();
     if (!tools && this.viewer && this.ctx.state.getMode() === Mode.Live && this.sim) {
       void this.liveClick(x, y);
@@ -1699,6 +1709,7 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
         },
       };
       this.sim = sim;
+      enterLiveModeHooks.add(this.onEnterLiveMode);
       void this.initTutorialIcon(sim);
       getOptionsMgr().onChange(this.onOptions);
       this.initBudgetSource(sim, lot);
@@ -1771,9 +1782,7 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
    * What the view control's dialogs read from this lot: cDDDSimsView::SetBlockSimulator,
    * global 0x20 and cWinBudgetDlg's data. House::PrepareForBudgetWindow recomputes
    * the object / architecture values only outside Live mode (global 19 set); in Live
-   * mode they are House::EnterLiveMode's, whose stats part is not ported: the port
-   * computes them when the window opens, so values changed since entering Live mode show.
-   * The family flags (+0x138) and global 0x17 of those functions are not applied here.
+   * mode they are House::EnterLiveMode's (Simulator.enterLiveMode, run by onEnterLiveMode).
    */
   private initBudgetSource(sim: Simulator, lot: LotObjects): void {
     // The midnight House::GetHouseStats (family history) and House::DoCommand(0xdc) stats;
@@ -1799,16 +1808,9 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
     this.ctx.state.simGlobal = (i) => sim.globals[i] ?? 0;
     WinBudgetDlg.source = {
       prepareForBudgetWindow: async () => {
-        const viewer = this.viewer;
-        const walls = this.wallManager;
-        if (!viewer || !walls) return;
-        const prices = (await loadBuildCatalog(this.ctx)).prices;
-        const objects = new Map(moduleOrder(lot.module).map((o) => [o.objectId, o]));
-        const st = summarizeHouseStats(objects, viewer.world.fixed, walls.gfx, viewer.floors, prices);
-        sim.objectValue = st.simA0;
-        sim.archValue = st.simA4;
-        sim.globals[0x16] = st.lotHasHouse;
-        sim.globals[0x25] = st.transitFilterFlags;
+        // House::PrepareForBudgetWindow: EnterLiveMode's stats, only outside Live mode (global 19 set).
+        prices ??= (await loadBuildCatalog(this.ctx)).prices;
+        if (sim.globals[G.modeFreeze] !== 0) sim.enterLiveMode();
       },
       getTodaysExpenses: () => sim.getTodaysExpenses(),
       getExpensesHistory: () => sim.getExpensesHistory(),
@@ -1880,7 +1882,16 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
     if (this.viewer) this.viewer.dirty = true;
   };
 
+  /** CPState::SetMode back to Live: UpdateComeSeeMeObjects. */
+  private readonly onEnterLiveMode = (): void => {
+    if (!this.sim) return;
+    // CPState::SetMode: House::EnterLiveMode, then UpdateComeSeeMeObjects.
+    this.sim.enterLiveMode();
+    updateComeSeeMeObjects(this.sim.module);
+  };
+
   override shutdown(): void {
+    enterLiveModeHooks.delete(this.onEnterLiveMode);
     for (const fn of this.listeners) this.ctx.state.offChange(fn);
     getOptionsMgr().offChange(this.onOptions);
     window.removeEventListener("keydown", this.onModifiers);
@@ -2380,7 +2391,11 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
     }
     const tw = 16 << v.scale;
     // EdgeDetectScroller::OnKeyDown: an arrow (no Shift / Ctrl, not scrolling) first stops the tracking.
-    if (key.startsWith("Arrow")) stopTracking();
+    if (key.startsWith("Arrow")) {
+      if (winMgr.isKeyDown("Shift") || winMgr.isKeyDown("Control") || this.edge?.scrolling) return false;
+      stopTracking();
+      if (this.edge) this.edge.arrowHeld = true;
+    }
     switch (key) {
       case "ArrowLeft":
         v.asyncScroll(tw, 0);
@@ -2400,7 +2415,23 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
   }
 
   /** cDDDSimsView::TSOnKeyUp: the scrolling strategy first (EdgeDetectScroller::OnKeyUp: Alt ends the pan). */
+  /**
+   * EdgeDetectScroller +0x92 for the mouse presses. (The browser can lose a key-up when the
+   * focus changes: the lock ends once no arrow key is down.)
+   */
+  private arrowScrollHeld(): boolean {
+    const e = this.edge;
+    if (!e?.arrowHeld) return false;
+    if (!["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].some((k) => winMgr.isKeyDown(k))) e.arrowHeld = false;
+    return e.arrowHeld;
+  }
+
   override tsOnKeyUp(key: string): boolean {
+    // EdgeDetectScroller::OnKeyUp: an arrow up ends the held scroll (+0x92).
+    if (key.startsWith("Arrow") && this.edge?.arrowHeld) {
+      this.edge.arrowHeld = false;
+      return true;
+    }
     return key === "Alt" && !!this.edge?.onAltUp();
   }
 
@@ -2438,7 +2469,7 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
     // nor while the cursor is over the control panel.
     if (this.edge?.panning) return this.viewer !== null;
     if (!overCP) {
-      this.cutaway?.mouseTrack(x, y);
+      this.cutaway?.mouseTrack(x, y, this.buttonDown);
       this.activeTools()?.mouseTrack(x, y);
     }
     if (this.ctx.state.getMode() === Mode.Live) {
@@ -2592,6 +2623,7 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
     const v = this.viewer;
     if (!v) return false;
     if (this.overChild(x, y)) return true;
+    if (this.arrowScrollHeld()) return true;
     winMgr.setCapture(this);
     this.edge?.onMouseDownR(x, y, winMgr.isKeyDown("Shift"), () => this.rightClickSelect());
     return true;

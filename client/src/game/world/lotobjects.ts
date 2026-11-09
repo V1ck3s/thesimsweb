@@ -63,6 +63,12 @@ class DrawableLotObject implements DrawableObject {
   get fullBright(): boolean {
     return this.obj.lightingContribution !== 0 && this.obj.selector.objd.objectType !== OBJ_TYPE_PORTAL;
   }
+  get poolEquipment(): boolean {
+    return this.obj.selector.getMasterSelector().objd.buildModeType === 7;
+  }
+  get baseGraphic(): number {
+    return this.obj.selector.objd.baseGraphic;
+  }
   get flags(): number {
     return this.obj.flags;
   }

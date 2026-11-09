@@ -46,7 +46,7 @@ import { WinPickFamily } from "../cas/winpickfamily.js";
 import { IDOK, IDYES, MB_OK, MB_YESNO, TSWinMsgBox } from "../ui/msgbox.js";
 import { PD_AVOID_RECT, WinPictureDialog } from "../ui/picturedialog.js";
 import { deleteGameFile } from "../data/files.js";
-import { getImportInfoForFile, getLotImportInfo, importFamily, importLotFile, isWrongCharacterSet, listTownImports, pickAndUploadImports, setLotDescription } from "./imports.js";
+import { clearLotDescriptionOnMoveOut, getImportInfoForFile, getLotImportInfo, importFamily, importLotFile, isWrongCharacterSet, listTownImports, pickAndUploadImports, setLotDescription } from "./imports.js";
 import { Gfx, TSWin } from "../ui/tswin.js";
 import { winMgr } from "../ui/winmgr.js";
 import { Zone, type Neighborhood } from "./nghinterface.js";
@@ -1362,8 +1362,10 @@ export class WinTown extends TSWin implements LotBtnOwner {
       const store = await NeighborhoodStore.open(this.nb.dir);
       const fam = store.moveOutFamily(house, !this.callbacks.onMoveOutHouse);
       ok = this.callbacks.onMoveOutHouse ? await this.callbacks.onMoveOutHouse(house, true, store, fam) : false;
-      if (ok) await store.save();
-      else if (!this.callbacks.onMoveOutHouse) this.callbacks.onUnported(`Neighborhood::MoveOut house file side (house ${house})`);
+      if (ok) {
+        await store.save();
+        await clearLotDescriptionOnMoveOut(this.nb.dir, house, this.nb.getZoningType(house));
+      } else if (!this.callbacks.onMoveOutHouse) this.callbacks.onUnported(`Neighborhood::MoveOut house file side (house ${house})`);
     } finally {
       winMgr.setGlobalCursor(null);
     }

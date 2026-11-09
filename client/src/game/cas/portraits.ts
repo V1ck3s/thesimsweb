@@ -201,7 +201,7 @@ export async function headPerson(bodyStrings: readonly string[]): Promise<VitaBo
     for (const skin of suit.skins) {
       if (skin.boneName !== "HEAD") continue;
       const mesh = await mgr.loadDeformableMesh(skin.meshName);
-      const binding = mesh?.bind(vb.skeleton, texture || null);
+      const binding = mesh?.bind(vb.skeleton, texture || null, skin.meshName);
       if (!binding) continue;
       deformIdentity(binding);
       meshes.push({ binding, image: await mgr.loadTexture(binding.texture) });

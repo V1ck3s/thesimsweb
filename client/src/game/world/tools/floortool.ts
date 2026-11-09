@@ -94,7 +94,7 @@ export function tileIsUnfloorable(w: RotatableWorld, placement: Placement, x: nu
 export function tileIsFloorable(w: RotatableWorld, placement: Placement, x: number, y: number, level: number): boolean {
   const [wx, wy] = w.toWorld(x, y);
   const fixed = w.fixed;
-  if (fixed.flags[0]!.u8(wx, wy) & 0x20) return false;
+  if (!placement.anywhere && fixed.flags[0]!.u8(wx, wy) & 0x20) return false;
   if (fixed.hasPool(wx, wy, level)) return false;
   const o = fixed.alt.offset(wx, wy);
   const a = fixed.alt.data;
@@ -218,7 +218,7 @@ export class NewFloorTool extends Tool implements FloorUndoTool {
     this.last = e;
     const x = e.fx >> 4;
     const y = e.fy >> 4;
-    if (!this.host.world.inInterior(x, y) || !mayEditTile(this.host.world, x, y)) {
+    if (!this.host.world.inInterior(x, y) || !mayEditTile(this.host.world, x, y, this.host.placement.anywhere)) {
       this.cannotAffordFlag = false;
       this.revert();
       this.finalizePurchase();
@@ -529,7 +529,7 @@ export class NewFloorTool extends Tool implements FloorUndoTool {
     const y = p.fy >> 4;
     if (!w.inInterior(x, y)) return false;
     if (!this.tileIsFloorable(x, y, level)) return false;
-    if (!mayEditTile(w, x, y)) return false;
+    if (!mayEditTile(w, x, y, this.host.placement.anywhere)) return false;
     const [wx, wy] = w.toWorld(x, y);
     const old = w.getFloor(x, y, level);
     const vw = getViewWall(w, x, y, level);

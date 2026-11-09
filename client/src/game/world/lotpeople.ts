@@ -182,14 +182,21 @@ export class LotPeople {
    * Shoulder (pi, 0 0 1)), i.e. the point t in the bone's frame. Null when
    * the person has no such bone.
    */
+  /** Where the person is drawn (its animator's follow position while walking), null when not shown here. */
+  drawPosition(obj: PlacedObject): { fx: number; fy: number } | null {
+    const p = this.people.find((x) => x.obj === obj);
+    return p ? drawPos(p) : null;
+  }
+
   registrationPoint(obj: PlacedObject, slot: number, rotation: number, alt: number): Vec3 | null {
     const p = this.people.find((x) => x.obj === obj);
-    if (!p || (slot !== 0 && slot !== 1)) return null;
+    if (!p || (slot !== 0 && slot !== 1 && slot !== 3)) return null;
     const bs = p.anim.bodyStrings;
-    const bone = p.anim.vitaboy.skeleton.findBone(bs.get(slot === 0 ? 6 : 4));
+    // PrepReg 3 (+0x140, SetupRegistrations): the PELVIS bone, no offset.
+    const bone = p.anim.vitaboy.skeleton.findBone(slot === 3 ? "PELVIS" : bs.get(slot === 0 ? 6 : 4));
     if (!bone) return null;
     const OFFSETS: Readonly<Record<string, Vec3>> = { palm: [0.5, 0, 0], top: [0.8, 0, 0], headfake: [0.8, 0, 100], shoulder: [0, 0, 1] };
-    const t = OFFSETS[bs.get(slot === 0 ? 7 : 5).toLowerCase()] ?? [0, 0, 0];
+    const t: Vec3 = slot === 3 ? [0, 0, 0] : (OFFSETS[bs.get(slot === 0 ? 7 : 5).toLowerCase()] ?? [0, 0, 0]);
     const r = quatRotate(bone.worldRot, t);
     const local: Vec3 = [bone.worldPos[0] + r[0], bone.worldPos[1] + r[1], bone.worldPos[2] + r[2]];
     const at = drawPos(p);

@@ -301,7 +301,8 @@ export class Transit implements TransitHooks {
         companion = m.people.find((p) => !p.killed && (p.obj.selector.guid | 0) === (g | 0)) ?? null;
       }
     } else if (mode === 1) {
-      family = store.family(familyId)?.memberGuids ?? [];
+      // GetFamily null: the person's own tokens.
+      family = store.family(familyId)?.memberGuids ?? null;
     }
     const writeTokens = (target: SimInventory, p: SimObject): void => {
       removeAllTokensOfType(target, 2);
@@ -521,6 +522,9 @@ export async function applyLoadGameLocation(ctx: GameContext, view: WinLotView, 
             if (fam) fam.vacationLot = house;
           }
         } else {
+          // LoadGame: ObjectModule::ResetForVacation runs for the whole branch before
+          // the arrival test, then again on a vacation lot.
+          resetForVacation();
           visit();
           if (house > 0x27 && house < 0x32) {
             resetForVacation();

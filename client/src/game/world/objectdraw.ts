@@ -83,6 +83,10 @@ export interface DrawableObject {
   readonly hiliteFlags?: number;
   /** Lighting contribution (+0xb0) on a non-portal: DrawIso draws it at full light (SetMaxAmbient). */
   readonly fullBright?: boolean;
+  /** The master OBJD +0x8a is 7 (pool equipment): DrawIso sets the ambient level to 1.0 (clamped). */
+  readonly poolEquipment?: boolean;
+  /** OBJD +6 (base graphic): DrawIso draws no draw group when it is 0 (absent: not 0). */
+  readonly baseGraphic?: number;
   /** ObjSelector +8: the object's sprite file. */
   renderer: Renderer;
   /** DrawGroup::GetItemList(graphic draw group, direction bit, scale). */
@@ -137,7 +141,7 @@ function objectOffset(dir: number, x: number, y: number): [number, number] {
  * and head text are drawn elsewhere.
  */
 export function drawIso(obj: DrawableObject, viewer: HouseViewer, comp: Compositor, rp: RenderParam, hidden = obj.hidden): void {
-  if (hidden === 0) drawGroup(obj, viewer, comp, rp);
+  if (hidden === 0 && obj.baseGraphic !== 0) drawGroup(obj, viewer, comp, rp);
   const slots = obj.slotContents?.();
   if (slots) for (const s of slots) drawObjectSlot(obj, s, viewer, comp, rp);
 }
@@ -173,6 +177,8 @@ function drawGroup(obj: DrawableObject, viewer: HouseViewer, comp: Compositor, r
   const hilite = rp.hilite;
   rp.hilite = ((obj.hiliteFlags ?? 0) & 1) !== 0;
   if (obj.fullBright) comp.ambient = 1;
+  // GetMasterSelector OBJD +0x8a == 7: RenderParam::SetAmbientLightLevel(1.0), clamped.
+  if (obj.poolEquipment) comp.ambient = viewer.lighting ? viewer.lighting.clampAmbient(1) : 1;
   for (const it of list) {
     const m = obj.spriteMask;
     if (m && m.length) {
@@ -212,7 +218,7 @@ export class ObjectModuleDrawer implements ObjectDrawer {
    * carries (SAnimator::PrepReg) and returns true; false draws the object
    * at its own location.
    */
-  placeHeld: ((o: DrawableObject, rp: RenderParam) => boolean) | null = null;
+  placeHeld: ((o: DrawableObject, rp: RenderParam) => boolean | "skip") | null = null;
 
   /** Wall state for hiding wall objects (doors, windows) in cut walls; null = never hidden. */
   cutawayView: CutawayView | null = null;
@@ -281,7 +287,9 @@ export class ObjectModuleDrawer implements ObjectDrawer {
       const ty = o.fy >> 4;
       if (tx < 1 || ty < 1 || tx >= n - 1 || ty >= n - 1) continue;
       if (viewer.isThumbnailHidden(tx, ty)) continue;
-      if (!this.placeHeld?.(o, rp)) rp.setGridCoords(o.fx, o.fy, o.level);
+      const held = this.placeHeld?.(o, rp);
+      if (held === "skip") continue;
+      if (!held) rp.setGridCoords(o.fx, o.fy, o.level);
       const [vx, vy] = viewer.world.toView(tx, ty);
       comp.ambient = viewer.ambientAtTile(vx, vy, o.level);
       const cut = this.hiddenByCutaway(o, viewer, vx, vy, true);

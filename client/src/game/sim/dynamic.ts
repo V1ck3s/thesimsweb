@@ -41,7 +41,8 @@ function leadOf(m: SimModule, o: SimObject): SimObject {
 /** The chain of `o`: its lead, then the parts that name it. */
 function chainOf(m: SimModule, o: SimObject): SimObject[] {
   const lead = leadOf(m, o);
-  return [lead, ...m.list.filter((x) => x !== lead && x.obj.mtLeadId === lead.id)];
+  // The parts in creation (id) order, as the +0x18c chain.
+  return [lead, ...m.list.filter((x) => x !== lead && x.obj.mtLeadId === lead.id).sort((a, b) => a.id - b.id)];
 }
 
 /** cXObject::IsInWorld (GetPlacementSpec): on a tile of the lot. */

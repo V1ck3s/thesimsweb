@@ -681,6 +681,8 @@ export class HouseViewer {
       // CPState::SetLevel(level, 1): the level buttons follow.
       this.onLevelFromWorld?.(level);
     }
+    // Off the lot: only the level change is done.
+    if (!this.world.inBounds(fx >> 4, fy >> 4)) return;
     const p = this.tileToPointF(fx, fy, this.level);
     const tx = this.originX - (p.h - Math.trunc(this.viewW / 2));
     const ty = this.originY - (p.v - Math.trunc(this.viewH / 2));
@@ -721,6 +723,14 @@ export class HouseViewer {
     this.scroll = { fromX: this.originX, fromY: this.originY, toX, toY, start: now, dur };
   }
 
+  /** SetScale / SetRotation's start: a running smooth scroll stops on its destination (GetEndX / GetEndY). */
+  private finishScroll(): void {
+    const s = this.scroll;
+    if (!s) return;
+    this.scroll = null;
+    this.setOffsets(s.toX, s.toY);
+  }
+
   isScrolling(): boolean {
     return this.scroll !== null;
   }
@@ -748,9 +758,9 @@ export class HouseViewer {
   /** HouseViewer::SetScale: keep the centermost tile centered. */
   setScale(scale: number): void {
     if (scale === this.scale) return;
+    this.finishScroll();
     const c = this.centerFixed();
     this.scale = scale;
-    this.scroll = null;
     this.scrollToTile(c.fx, c.fy, this.level, false);
     this.dirty = true;
     this.cutawayCtl?.onScale();
@@ -759,6 +769,7 @@ export class HouseViewer {
   /** HouseViewer::SetRotation: rotate around the centermost tile. */
   setRotation(rot: number): void {
     if ((rot & 3) === this.world.rotation) return;
+    this.finishScroll();
     const c = this.centerFixed();
     let [wx, wy] = RotatableWorld.rotateCoords(c.fx, c.fy, (4 - this.world.rotation) & 3, 0x400);
     const old = this.world.rotation;
@@ -773,7 +784,6 @@ export class HouseViewer {
       }
     }
     [wx, wy] = RotatableWorld.rotateCoords(wx, wy, this.world.rotation, 0x400);
-    this.scroll = null;
     this.scrollToTile(wx, wy, this.level, false);
     this.dirty = true;
     this.cutawayCtl?.onRotation();

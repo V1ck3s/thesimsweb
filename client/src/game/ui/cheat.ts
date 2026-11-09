@@ -598,13 +598,29 @@ const ON_OFF_ONLY = '"on" and "off" are the only acceptable parameters.';
  * checks for exactly one "on" / "off" word, shows or hides the terrain's
  * grid overlay (cTerrain::ShowOverlay, when the world has a terrain) and
  * redraws the world (XViewer::IssueWorldDirty); case 10 is genable
- * (genableCheat). The other cases switch renderer debug features (sprite
+ * (genableCheat); case 3 is money (cSimulator::SetFunds). The other cases switch renderer debug features (sprite
  * decoder flags, damagelist, the sweep meter, people quality...) that this
  * port's renderer does not have: they only log.
  */
 function graphicsCheatCallback(ctx: GameContext, host: CheatAppHost, cmd: CheatCommandLine, id: number): boolean {
   const name = GRAPHICS_CHEATS[id]?.[0] ?? "";
   if (name === "genable") return genableCheat(ctx, host, cmd);
+  if (name === "money") {
+    // Callback case 3: exactly one all-digit word, then cSimulator::SetFunds.
+    const amt = cmd.args[1];
+    if (cmd.args.length !== 2 || amt === undefined || !/^[0-9]+$/.test(amt)) {
+      cmd.errMsg = 'format is "money [amt]", e.g. "money 20000".';
+      return false;
+    }
+    const sim = host.lotView()?.sim ?? null;
+    if (!sim) {
+      cmd.errMsg = "NULL Simulator!";
+      return false;
+    }
+    sim.setFunds(parseInt(amt, 10) | 0);
+    ctx.state.setFunds(sim.getFunds());
+    return true;
+  }
   if (name !== "grid") {
     console.log(`not ported: graphics cheat "${name}"`);
     return true;

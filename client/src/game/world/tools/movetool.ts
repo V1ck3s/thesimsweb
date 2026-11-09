@@ -358,7 +358,7 @@ export class MoveTool implements FloorUndoTool, CutawayTool {
     if (!obj) return;
     // Stairs are always made on level 1 (the floater +0x58 base level 0).
     this.stairBase = 0;
-    const c = XCursorObject.makeMouseObject(this.p, obj, this.host.cursorSelector, this.mode === MoveMode.Stair ? 1 : this.level(), () => this.host.getFunds() - this.runningTotal, true);
+    const c = XCursorObject.makeMouseObject(this.p, obj, this.host.cursorSelector, this.mode === MoveMode.Stair ? 1 : this.level(), () => this.host.getFunds(), true);
     if (!c) {
       killObject(this.p, obj);
       return;
@@ -731,6 +731,15 @@ export class MoveTool implements FloorUndoTool, CutawayTool {
     const c = this.cursor;
     const f = c?.anchor;
     if (!c || !f || !this.p.shouldAutoRotate(f)) return false;
+    // Doors and windows: three turns each way; a fit or error 0x16 keeps the turn, false either way.
+    if (this.mode === MoveMode.Door || this.mode === MoveMode.Window) {
+      for (let i = 1; i < 4; i++) {
+        c.turn(i);
+        if (this.cursorValid() || this.p.error === 0x16) return false;
+        c.turn(-i);
+      }
+      return false;
+    }
     const notches = Placement.od(f, 23) || 2;
     for (let i = 1; i < Math.trunc(8 / notches); i++) {
       c.turn(i);
@@ -893,7 +902,7 @@ export class MoveTool implements FloorUndoTool, CutawayTool {
   private grabObject(obj: XObject, px: number, py: number): void {
     // +0x58: the grabbed part's level offset (cXMTObject +0x1a8).
     this.stairBase = obj.mt1a8;
-    const c = XCursorObject.makeMouseObject(this.p, obj, this.host.cursorSelector, obj.level, () => this.host.getFunds() - this.runningTotal, false);
+    const c = XCursorObject.makeMouseObject(this.p, obj, this.host.cursorSelector, obj.level, () => this.host.getFunds(), false);
     if (!c) return;
     this.cursor = c;
     // The grab offset: mouse minus the object's tile top on screen.

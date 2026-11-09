@@ -401,6 +401,8 @@ class Game {
   /** cSimsApp::LoadGame(house, family): Neighborhood::LoadHouse moves the family in first. */
   async moveIn(house: number, family: number, houseValue: number): Promise<void> {
     const store = await NeighborhoodStore.open(this.nbhdDir);
+    // LoadHouse drops the families without members first.
+    store.removeEmptyFamilies();
     store.setFamilyHouse(family, house, houseValue);
     // LoadHouse reads and clears the move-in bit before anything is saved.
     const moving = store.takeMoveInFlag(family);
@@ -412,6 +414,11 @@ class Game {
   async enterLot(house: number, moveInFamily = 0): Promise<void> {
     const { ctx } = this;
     resetSaveFileCache();
+    // Neighborhood::LoadHouse: the families without members are dropped (and the neighborhood saved).
+    {
+      const store = await NeighborhoodStore.open(this.nbhdDir);
+      if (store.removeEmptyFamilies()) await store.save();
+    }
     // The control panel's bitmaps, read while the lot loads (its windows read them one by one).
     ctx.res.prefetchTable("Res_CPanel");
     try {

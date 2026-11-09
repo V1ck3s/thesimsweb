@@ -102,7 +102,7 @@ export interface LiveNeighborhood {
    * architecture value multiplier). Neighborhood::Save gives it to the
    * families of that house.
    */
-  loadedHouse?: () => { house: number; netWorth: number };
+  loadedHouse?: () => { house: number; netWorth: number; tutorial: boolean };
 }
 
 let liveNeighborhood: LiveNeighborhood | null = null;
@@ -141,7 +141,7 @@ const SPECIAL_FAMILY_IDS = new Set([0, 2000, 4000, 5000, 5500, 6000]);
 export const MONEY_FOR_NEW_FAMILY = 20000;
 
 /** Neighbor::GetLatestPersDataVersion */
-const LATEST_PERS_DATA_VERSION = 9;
+export const LATEST_PERS_DATA_VERSION = 9;
 
 /** Neighbor::GetPersistentDataFields(9): person data indices saved into the neighbor. */
 export const PERSISTENT_DATA_FIELDS = [
@@ -396,7 +396,9 @@ export class NeighborhoodStore {
       names.set(c.id, pick?.value ?? "");
     }
     const families = chunks.filter((c) => c.type === "FAMI").map((c) => parseFamily(c.data, c.id, names.get(c.id) ?? ""));
-    return new NeighborhoodStore(dir, chunks, nbrs, families);
+    const store = new NeighborhoodStore(dir, chunks, nbrs, families);
+    store.updateFamilyNumbers();
+    return store;
   }
 
   /** NBRS file version (0x49 for a Complete Collection save, 0x3f for the templates). */
@@ -518,6 +520,17 @@ export class NeighborhoodStore {
     this.families.sort((a, b) => (b.familyNumber | 0) - (a.familyNumber | 0) || (b.id | 0) - (a.id | 0));
   }
 
+  /** Neighborhood::UpdateFamilyNumbers (end of Neighborhood::Load): person data 0x3d of every neighbor := the id of the family listing it, else 0. */
+  private updateFamilyNumbers(): void {
+    for (const e of this.nbrs.entries) if (e?.personData) e.personData[PD.familyNumber] = 0;
+    for (const f of this.families) {
+      for (const guid of f.memberGuids) {
+        const n = guid === 0 ? undefined : this.neighborByGuid(guid);
+        if (n) n.personData[PD.familyNumber] = f.id;
+      }
+    }
+  }
+
   /** Neighborhood::MakeNewFamily */
   makeNewFamily(): number {
     let id = 1;
@@ -538,6 +551,8 @@ export class NeighborhoodStore {
       spells: [0, 0, 0, 0, 0, 0],
       dirty: true,
     });
+    // Neighborhood::MakeNewFamily: customsort with SortFamilyByCreation once there is more than one family.
+    if (this.families.length > 1) this.sortFamiliesByCreation();
     return id;
   }
 
@@ -568,20 +583,46 @@ export class NeighborhoodStore {
     // RemoveFamily(int): DeleteFamilyExport first, the family's exported file in
     // <UserData>/Export (Family::GetExportName, the .FAM / .MTF ExportFamily writes).
     for (const ext of [".FAM", ".MTF"]) await deleteGameFile(`${this.dir}/Export/${f.name}_${f.id}${ext}`).catch(() => undefined);
+    const folder = await (await import("../world/objectfolder.js")).ObjectFolder.get(this.dir).catch(() => null);
     while (f.memberGuids.length) {
       const guid = f.memberGuids[0]!;
       // Neighborhood::RemoveFromFamily
       f.memberGuids.shift();
       const n = this.neighborByGuid(guid);
       if (n) n.personData[PD.familyNumber] = 0;
-      await this.deleteCharacter(guid);
+      // Only a character of the user's Characters folder (ObjSelector +0xb4 bits 2-3 == 1) is deleted.
+      if (n && (!folder || folder.sourceOfGUID(guid) === 1)) await this.deleteCharacter(guid);
     }
-    // Neighborhood::RemoveFamily only removes housed-nowhere families other than 0.
+    // Neighborhood::RemoveFamily only removes housed-nowhere families other than 0,
+    // and the neighborhood is saved only when it did.
     if (f.id !== 0 && f.houseNumber === 0) {
       this.families.splice(this.families.indexOf(f), 1);
       this.chunks = this.chunks.filter((c) => !((c.type === "FAMI" || c.type === "FAMs" || c.type === "FAMh") && c.id === f.id));
+      await this.save();
     }
-    await this.save();
+  }
+
+  /** Neighborhood::SavePersistentData(cXPerson*): the neighbor named by person data 0x1f (cXPerson +0x5ca), nothing when out of range. */
+  savePersistentDataOfPerson(personData: Int16Array): void {
+    const id = personData[0x1f] ?? 0;
+    const n = id >= 1 ? this.nbrs.entries[id - 1] : null;
+    if (n) this.savePersistentData(n.guid, personData);
+  }
+
+  /**
+   * Neighborhood::LoadHouse's first loop (Mac 100a7010): every family without
+   * members other than family 0 loses its house and is removed
+   * (Neighborhood::RemoveFamily). Returns whether one was.
+   */
+  removeEmptyFamilies(): boolean {
+    const gone = this.families.filter((f) => f.memberGuids.length === 0 && f.id !== 0);
+    for (const f of gone) {
+      f.houseNumber = 0;
+      this.families.splice(this.families.indexOf(f), 1);
+    }
+    const ids = new Set(gone.map((f) => f.id));
+    if (ids.size) this.chunks = this.chunks.filter((c) => !((c.type === "FAMI" || c.type === "FAMs" || c.type === "FAMh") && ids.has(c.id)));
+    return gone.length > 0;
   }
 
   /** Neighborhood::SavePersistentData */
@@ -1057,6 +1098,11 @@ export class NeighborhoodStore {
     // UpdateFamilyFriendsCount; the original redoes it when RelationshipsChanged
     // set +0x124, the count only depends on the relationships so it is redone here).
     const live = liveNeighborhood?.data.dir === this.dir ? liveNeighborhood.loadedHouse?.() : undefined;
+    // With the tutorial global (26) set, Neighborhood +0x12c (NGBH shorts[2]) := the current house.
+    if (live?.tutorial && this.ngbh().shorts[2] !== live.house) {
+      this.ngbh().shorts[2] = live.house;
+      this.touchNgbh();
+    }
     for (const f of this.families) {
       if (live && f.houseNumber !== 0 && f.houseNumber === live.house && f.netWorth !== live.netWorth) {
         f.netWorth = live.netWorth;

@@ -18,6 +18,7 @@
 import type { Product } from "../../data/catalog.js";
 import { renderCatalogShot } from "./objecticon.js";
 import { makeMoneyString } from "../../nbhd/nghinterface.js";
+import { getOptionsMgr } from "../../optionsmgr.js";
 import { UI_LANGUAGE } from "../../res/uires.js";
 import { BTN_TOGGLE, TSWinBtn } from "../../ui/btn.js";
 import type { Gfx } from "../../ui/tswin.js";
@@ -25,8 +26,6 @@ import type { ToolTipColorSource } from "../../ui/winmgr.js";
 
 export const CMD_ASYNC = 0x13;
 export const CMD_ASYNC_CANCEL = 0x14;
-/** lbl_105BA774 (cOptionsMgr: quick tips on). */
-const ASYNC_TIMEOUT_MS = 0xfa;
 
 /** What a product button reads from its product (data/catalog Product, data/buildcatalog BuildProduct). */
 export interface ButtonProduct {
@@ -60,6 +59,8 @@ export class ProductButton<P extends ButtonProduct = Product> extends TSWinBtn i
   private icon: ImageBitmap | null = null;
   private asyncPending = false;
   private asyncStart = 0;
+  /** +0x150: lbl_105BA774 (cOptionsMgr::SetQuickTips) when the button is made (Product::CreateButton). */
+  private readonly hoverTimeout = getOptionsMgr().getDefaultAsyncTimeout();
 
   constructor(
     readonly product: P,
@@ -121,7 +122,7 @@ export class ProductButton<P extends ButtonProduct = Product> extends TSWinBtn i
 
   override pump(nowMs: number): void {
     super.pump(nowMs);
-    if (this.asyncPending && nowMs - this.asyncStart > ASYNC_TIMEOUT_MS) {
+    if (this.asyncPending && nowMs - this.asyncStart > this.hoverTimeout) {
       this.asyncPending = false;
       this.parent?.tsOnCommand(CMD_ASYNC, this);
     }
