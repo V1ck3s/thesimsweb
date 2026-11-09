@@ -629,3 +629,28 @@ Chrome (SwiftShader, House01 of a throwaway UserData copy, speed 1): 31 frames/s
 
 Result: 18 to 19 frames/s with the window at scale 1, 23.7 at scale 3 (the lot view alone: 26 to
 31). What remains is the second draw of the lot's sprites and people in the square.
+
+Second pass (same day), aiming at no loss:
+
+- The synchronous `readPixels` of the square cost ~12 ms a frame in Chrome whatever its size (a
+  round trip to the GPU process, which waits for the GPU), against 1.9 ms for the picture's own
+  render. An asynchronous read (pixel pack buffer + fence) still cost ~3.7 ms in
+  `getBufferSubData`: Chrome dropped its shadow copy each frame ("READ-usage buffer was written,
+  then fenced, but written again before being read back"), so it was abandoned.
+- The picture no longer reads anything back. The compositor's canvas has a strip of columns right
+  of the view (`Compositor.reserveStrip` / `presentStrip`); the lot view's paint renders the live
+  picture after its own frame (`WinPictureInPicture.renderLive`), blits its square into the strip,
+  then copies the canvas once into its frame (`OffscreenCanvas`), which feeds both the screen and the
+  picture (`WinPictureInPicture.strip`). One canvas read per frame, as without the window. The
+  camera snapshots and F10 only see the view's columns.
+- Under a frame clip the raw terrain layer is only uploaded and scrolled inside the clip
+  (`uploadRaw` with `UNPACK_ROW_LENGTH`, `shiftRaw`), and is valid for that clip only (`rawKey`):
+  a followed person who walks no longer moves three full-size textures each frame.
+- Draws wholly outside the scissor are not sent (`Compositor.culled`): 840 → 423 draw calls a frame
+  for the picture at scale 1 (it shows the whole lot), 272 → 100 at scale 3.
+
+Headless Chrome only has SwiftShader here, where every draw call costs ~20 µs of CPU: 20.7 to 22.5
+frames/s with the window (27.9 to 28.7 without). The picture's JavaScript is ~1.5 ms a frame. On a
+real GPU, the extra draw calls should cost little and nothing waits for the GPU any more, so the loss
+should be small. That still has to be checked in Firefox on a real GPU (a GPU-backed browser could not
+be driven from WSL here).

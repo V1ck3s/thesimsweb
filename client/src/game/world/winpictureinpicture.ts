@@ -99,6 +99,12 @@ export class WinPictureInPicture extends TSWin {
   /** +0xe4 */
   private closeBox: TSWinBtn | null = null;
   private buffer: HTMLCanvasElement | null = null;
+  /**
+   * Not part of the original (perf): this frame's live picture, drawn by
+   * renderLive into the compositor's strip, as the lot view copied it with
+   * its frame (src at (x, y)); tsPaint takes it instead of drawing again.
+   */
+  strip: { src: CanvasImageSource; x: number; y: number } | null = null;
   private font: FfnFont | null = null;
 
   constructor(
@@ -220,14 +226,32 @@ export class WinPictureInPicture extends TSWin {
     return [avg((p) => p.fx), avg((p) => p.fy)];
   }
 
-  /** cWinPictureInPicture::BuildImage */
-  private buildImage(): void {
+  /** Not part of the original (perf): whether the lot view's frame should carry the live picture (renderLive). */
+  wantsLive(): boolean {
+    return this.live && this.host.livePIP() && this.isVisible() && this.getW() > 0 && this.getH() > 0;
+  }
+
+  /**
+   * Not part of the original (perf): the live picture of this frame, drawn
+   * by the lot view's paint after its own render and copied to the
+   * compositor's strip (Compositor.presentStrip); false when not drawn.
+   */
+  renderLive(): boolean {
+    const p = this.wantsLive() ? this.pictureParams() : null;
+    if (!p) return false;
+    return drawPictureInPicture(p.v, p.w, p.h, p.cx, p.cy, p.shift, p.level, this.pipScale, (left, top) =>
+      p.v.comp.presentStrip(left, top, p.w, p.h),
+    );
+  }
+
+  /** BuildImage's view of the picture: its size, centre, shift and level. */
+  private pictureParams(): { v: HouseViewer; w: number; h: number; cx: number; cy: number; shift: number; level: number } | null {
     const v = this.host.viewer();
     const w = this.getW();
     const h = this.getH();
-    if (!v || w <= 0 || h <= 0) return;
+    if (!v || w <= 0 || h <= 0) return null;
     const [cx, cy] = this.getCenterOnPt(v);
-    if (cx < 0 || cy < 0) return;
+    if (cx < 0 || cy < 0) return null;
     const o = this.obj;
     let shift = 0;
     if (o?.isPerson) shift = -Math.trunc(Math.trunc(PERSON_HEIGHT * (2 << v.scale)) / 2);
@@ -238,13 +262,30 @@ export class WinPictureInPicture extends TSWin {
       if (r) shift = -((r[3] - r[1]) >> (v.scale - this.pipScale + 3));
     }
     const level = o ? o.level : v.level;
+    return { v, w, h, cx, cy, shift, level };
+  }
+
+  /** cWinPictureInPicture::BuildImage */
+  private buildImage(): void {
+    const p = this.pictureParams();
+    if (!p) return;
+    const { v, w, h, cx, cy, shift, level } = p;
     if (this.buffer?.width !== w || this.buffer.height !== h) {
       this.buffer = document.createElement("canvas");
       this.buffer.width = w;
       this.buffer.height = h;
     }
     const g = this.buffer.getContext("2d")!;
-    drawPictureInPicture(v, g, w, h, cx, cy, shift, level, this.pipScale);
+    // Not part of the original (perf): the live picture the lot view's frame carries (renderLive),
+    // else drawn and read back here (the square of the frame, not the whole canvas).
+    const strip = this.snapshot || !this.live || !this.host.livePIP() ? null : this.strip;
+    this.strip = null;
+    if (strip) g.drawImage(strip.src, strip.x, strip.y, w, h, 0, 0, w, h);
+    else if (!drawPictureInPicture(v, w, h, cx, cy, shift, level, this.pipScale, (left, top) => {
+      g.putImageData(v.comp.readColor(left, top, w, h), 0, 0);
+      return true;
+    }))
+      return;
     if (this.caption && !this.snapshot && this.font) {
       const f = this.font;
       const lines = f.calculateNumberOfLines(this.caption, w - 10);
@@ -334,7 +375,6 @@ const pipTerrain = new WeakMap<HouseViewer, TerrainPassState>();
 
 function drawPictureInPicture(
   v: HouseViewer,
-  g: CanvasRenderingContext2D,
   w: number,
   h: number,
   cx: number,
@@ -342,9 +382,12 @@ function drawPictureInPicture(
   shift: number,
   level: number,
   scale: number,
-): void {
+  /** Takes the drawn square (its top left corner in the frame). */
+  take: (left: number, top: number) => boolean,
+): boolean {
   const n = v.world.fixed.size;
-  if (cx >> 4 >= n || cy >> 4 >= n) return;
+  if (cx >> 4 >= n || cy >> 4 >= n) return false;
+  let drawn = false;
   const saved = { originX: v.originX, originY: v.originY, scale: v.scale, level: v.level, cursor: v.cursor, drawRoof: v.drawRoof };
   // Animator::SetPickingObject(0) for the picture (the picked object is cleared), restored after.
   const people = v.people;
@@ -374,8 +417,7 @@ function drawPictureInPicture(
       v.comp.setFrameClip(null);
       v.pictureCull = null;
     }
-    // Not part of the original (perf): the square read from the frame, not the whole canvas copied.
-    g.putImageData(v.comp.readColor(left, top, w, h), 0, 0);
+    drawn = take(left, top);
   } finally {
     pipTerrain.set(v, v.swapTerrainState(lotTerrain));
     if (people) people.pickPoint = picking;
@@ -387,4 +429,5 @@ function drawPictureInPicture(
     v.cursor = saved.cursor;
     v.dirty = true;
   }
+  return drawn;
 }

@@ -1609,7 +1609,7 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
     if (this.viewer && this.ctx.state.getMode() === Mode.Camera) {
       // cDDDSimsView::TSOnMouseDownL (camera mode): HouseViewer::TakeAsyncSnapshot of the camera frame.
       const v = this.viewer;
-      void takeCameraSnapshot(this.ctx, v.comp.canvas, computeCameraFrame(this.ctx, x, y, v.viewW, v.viewH));
+      void takeCameraSnapshot(this.ctx, v.comp.canvas, computeCameraFrame(this.ctx, x, y, v.viewW, v.viewH), v.comp);
       return true;
     }
     // EdgeDetectScroller::OnMouseDownL: XViewer::MouseDown only in state 0 (not while the Alt pan scrolls).
@@ -2283,6 +2283,12 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
     this.watchDone = true;
   }
 
+  /** The copy of the compositor's canvas (with its strip), at its size. */
+  private frameFor(comp: Compositor): OffscreenCanvas {
+    if (this.frame?.width !== comp.canvas.width || this.frame.height !== comp.canvas.height) this.frame = new OffscreenCanvas(comp.canvas.width, comp.canvas.height);
+    return this.frame;
+  }
+
   override tsPaint(g: Gfx): void {
     // cDDDSimsView::TSPaint: the watch cursor ends (SetGlobalCursor(0, true), then the saved one unforced).
     if (this.watchOn && this.watchDone) {
@@ -2295,23 +2301,38 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
       g.fill(0, 0, this.getW(), this.getH(), "#000");
       return;
     }
+    const comp = v.comp;
+    const pip = this.pip;
+    if (pip) pip.strip = null;
     if (v.dirty) {
+      // Not part of the original (perf): the live picture in picture's strip, before the frame (it may clear the canvas).
+      const live = pip?.wantsLive() ?? false;
+      if (pip && live) comp.reserveStrip(pip.getW());
       v.render();
       // HouseViewer::UpdateWorld: the snapshot TakeAsyncSnapshot asked for, out of this frame.
       const snap = this.pendingSnapshot;
       this.pendingSnapshot = null;
-      if (snap) void takeAsyncSnapshot(this.ctx, v.comp.canvas, snap.rect, false, snap.description);
-      // A frame rendered for this paint is read back once, straight to the screen.
-      g.ctx.drawImage(v.comp.canvas, g.ox, g.oy);
-      this.frameStale = true;
+      if (snap) void takeAsyncSnapshot(this.ctx, comp.canvas, snap.rect, false, snap.description, comp);
+      if (pip && live && pip.renderLive()) {
+        // Not part of the original (perf): the frame and the picture in picture's strip read back
+        // together, once (a second read back for the picture costs a GPU wait each frame).
+        const f = this.frameFor(comp);
+        f.getContext("2d")!.drawImage(comp.canvas, 0, 0);
+        this.frameStale = false;
+        pip.strip = { src: f, x: comp.width, y: 0 };
+        g.ctx.drawImage(f, 0, 0, comp.width, comp.height, g.ox, g.oy, comp.width, comp.height);
+      } else {
+        // A frame rendered for this paint is read back once, straight to the screen.
+        g.ctx.drawImage(comp.canvas, 0, 0, comp.width, comp.height, g.ox, g.oy, comp.width, comp.height);
+        this.frameStale = true;
+      }
     } else {
       // Frames repainted without a render reuse one copy (one readback per rendered frame).
-      if (this.frameStale || !this.frame || this.frame.width !== v.comp.width || this.frame.height !== v.comp.height) {
-        if (this.frame?.width !== v.comp.width || this.frame.height !== v.comp.height) this.frame = new OffscreenCanvas(v.comp.width, v.comp.height);
-        this.frame.getContext("2d")!.drawImage(v.comp.canvas, 0, 0);
+      if (this.frameStale || !this.frame || this.frame.width !== comp.canvas.width || this.frame.height !== comp.canvas.height) {
+        this.frameFor(comp).getContext("2d")!.drawImage(comp.canvas, 0, 0);
         this.frameStale = false;
       }
-      g.ctx.drawImage(this.frame, g.ox, g.oy);
+      g.ctx.drawImage(this.frame!, 0, 0, comp.width, comp.height, g.ox, g.oy, comp.width, comp.height);
     }
     // HouseViewer::UpdateStaticDynamic: the pie's round shadow, then the
     // popup head over the 3D pass (SAnimator::GetPopupHeadLocation / RenderPopupHead).
@@ -2341,7 +2362,12 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
         const p = winMgr.cursorPosition();
         return winMgr.main.windowFromPoint(p.x, p.y) === this;
       },
-      screenBuffer: () => v.comp.canvas,
+      // The view's columns of the canvas (not the picture in picture's strip right of them).
+      screenBuffer: () => {
+        const shot = new OffscreenCanvas(v.comp.width, v.comp.height);
+        shot.getContext("2d")!.drawImage(v.comp.canvas, 0, 0);
+        return shot;
+      },
     };
     if (viewKeyDown(this.ctx.state, key, keyHooks)) return true;
     // cDDDSimsView::TSOnKeyDown: Escape is Neighborhood::CancelTutorial, then the tutorial arrow hides.

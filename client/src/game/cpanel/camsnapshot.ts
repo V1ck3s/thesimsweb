@@ -74,9 +74,14 @@ let shooting = false;
  * cDDDSimsView::TSOnMouseDownL (camera mode) -> HouseViewer::TakeAsyncSnapshot
  * of the camera frame inset by 1 pixel, the album opened after.
  */
-export async function takeCameraSnapshot(ctx: GameContext, view: HTMLCanvasElement | OffscreenCanvas, frame: Rect): Promise<void> {
+export async function takeCameraSnapshot(
+  ctx: GameContext,
+  view: HTMLCanvasElement | OffscreenCanvas,
+  frame: Rect,
+  size: { width: number; height: number } = view,
+): Promise<void> {
   const r = { left: frame.left + 1, top: frame.top + 1, right: frame.right - 1, bottom: frame.bottom - 1 };
-  await takeAsyncSnapshot(ctx, view, r, true, "");
+  await takeAsyncSnapshot(ctx, view, r, true, "", size);
 }
 
 /**
@@ -93,6 +98,8 @@ export async function takeAsyncSnapshot(
   rect: Rect,
   openAlbum: boolean,
   description: string,
+  /** The screen buffer's size within `view` (the lot view's canvas also has the picture in picture's strip). */
+  size: { width: number; height: number } = view,
 ): Promise<void> {
   if (shooting) return;
   shooting = true;
@@ -105,8 +112,8 @@ export async function takeAsyncSnapshot(
     // Kept inside the screen buffer.
     if (r.left < 0) r = { ...r, left: 0, right: w };
     if (r.top < 0) r = { ...r, top: 0, bottom: h };
-    if (r.right > view.width) r = { ...r, left: view.width - w, right: view.width };
-    if (r.bottom > view.height) r = { ...r, top: view.height - h, bottom: view.height };
+    if (r.right > size.width) r = { ...r, left: size.width - w, right: size.width };
+    if (r.bottom > size.height) r = { ...r, top: size.height - h, bottom: size.height };
     const photo = new OffscreenCanvas(w, h);
     photo.getContext("2d")!.drawImage(view, r.left, r.top, w, h, 0, 0, w, h);
     const book = await currentScrapbook(ctx);

@@ -258,6 +258,7 @@ export interface RawLayerState {
   raw: Array<{ tex: WebGLTexture[]; fb: WebGLFramebuffer[] }>;
   rawCur: number;
   rawValid: boolean;
+  rawKey: string;
   rawW: number;
   rawH: number;
 }
@@ -299,6 +300,8 @@ export class Compositor {
   private rawH = 0;
   /** The current raw layer holds an upload for the target's size. */
   private rawValid = false;
+  /** Not part of the original (perf): the frame clip the raw layer is valid for ("" the whole target; layerKey). */
+  private rawKey = "";
   private rawZBytes: Uint16Array | null = null;
   /** drawWallSprite's uniform arrays (rewritten every call). */
   private readonly wallColIdx = new Int32Array(8);
@@ -386,7 +389,7 @@ export class Compositor {
     const gl = this.gl;
     this.width = width;
     this.height = height;
-    this.canvas.width = width;
+    this.canvas.width = width + this.stripW;
     this.canvas.height = height;
     gl.bindRenderbuffer(gl.RENDERBUFFER, this.colorRb);
     gl.renderbufferStorage(gl.RENDERBUFFER, gl.RGBA8, width, height);
@@ -400,6 +403,36 @@ export class Compositor {
     gl.viewport(0, 0, width, height);
     this.rawZBytes = null;
     this.rawValid = false;
+  }
+
+  /**
+   * Not part of the original (perf): columns of the canvas right of the
+   * view (x >= width), where presentStrip puts a rectangle of the target. The
+   * picture in picture goes there, so that the one copy of the canvas the lot
+   * view makes each frame carries it too: no read back of its own (a
+   * synchronous readPixels waits for the GPU, ~12 ms in Chrome).
+   */
+  private stripW = 0;
+
+  /** Makes the strip at least w columns wide (clears the canvas when it grows: before the frame's present). */
+  reserveStrip(w: number): void {
+    if (w <= this.stripW) return;
+    this.stripW = w;
+    this.canvas.width = this.width + w;
+  }
+
+  /** Copies the target's rectangle to the strip's top left corner, canvas (width, 0); false when it does not fit. */
+  presentStrip(x: number, y: number, w: number, h: number): boolean {
+    if (w > this.stripW || h > this.height || x < 0 || y < 0 || x + w > this.width || y + h > this.height) return false;
+    const gl = this.gl;
+    const H = this.height;
+    gl.disable(gl.SCISSOR_TEST);
+    gl.bindFramebuffer(gl.READ_FRAMEBUFFER, this.target);
+    gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, null);
+    gl.blitFramebuffer(x, H - y - h, x + w, H - y, this.width, H - h, this.width + w, H, gl.COLOR_BUFFER_BIT, gl.NEAREST);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, this.target);
+    this.applyScissor();
+    return true;
   }
 
   /** The frame is finished: copy the target's color to the canvas. */
@@ -643,11 +676,22 @@ export class Compositor {
   }
 
   /** The scissor for setClip's rectangle within the frame clip. */
+  /** Not part of the original (perf): the scissor in effect, so draws wholly outside it are not sent at all. */
+  private scissorRect: ClipRect | null = null;
+
+  /** Whether (x, y, w, h) misses the target or the scissor. */
+  private culled(x: number, y: number, w: number, h: number): boolean {
+    if (x >= this.width || y >= this.height || x + w <= 0 || y + h <= 0) return true;
+    const r = this.scissorRect;
+    return r !== null && (x >= r.right || y >= r.bottom || x + w <= r.left || y + h <= r.top);
+  }
+
   private applyScissor(): void {
     const gl = this.gl;
     const a = this.userClip;
     const b = this.frameClip;
     const r = a && b ? { left: Math.max(a.left, b.left), top: Math.max(a.top, b.top), right: Math.min(a.right, b.right), bottom: Math.min(a.bottom, b.bottom) } : (a ?? b);
+    this.scissorRect = r;
     if (!r) {
       gl.disable(gl.SCISSOR_TEST);
       return;
@@ -658,7 +702,7 @@ export class Compositor {
 
   private draw(tex: SpriteTex, x: number, y: number, flip: boolean, setup: () => void, noAlpha = false): void {
     const gl = this.gl;
-    if (x >= this.width || y >= this.height || x + tex.width <= 0 || y + tex.height <= 0) return;
+    if (this.culled(x, y, tex.width, tex.height)) return;
     gl.useProgram(this.prog);
     this.uploadTable();
     gl.bindVertexArray(this.quad);
@@ -728,7 +772,7 @@ export class Compositor {
    */
   drawShadow(shadow: { data: Uint8Array; pitch: number }, w: number, h: number, x: number, y: number, offset: number, base: number, rows: number): void {
     const gl = this.gl;
-    if (w <= 0 || h <= 0 || x >= this.width || y >= this.height || x + w <= 0 || y + h <= 0) return;
+    if (w <= 0 || h <= 0 || this.culled(x, y, w, h)) return;
     this.uploadTable();
     this.shadowProg ??= this.link(VS, SHADOW_FS);
     const p = this.shadowProg;
@@ -846,10 +890,11 @@ export class Compositor {
    * state taken out.
    */
   swapRawState(s: RawLayerState | null): RawLayerState {
-    const out: RawLayerState = { raw: this.raw, rawCur: this.rawCur, rawValid: this.rawValid, rawW: this.rawW, rawH: this.rawH };
+    const out: RawLayerState = { raw: this.raw, rawCur: this.rawCur, rawValid: this.rawValid, rawKey: this.rawKey, rawW: this.rawW, rawH: this.rawH };
     this.raw = s?.raw ?? [];
     this.rawCur = s?.rawCur ?? 0;
     this.rawValid = s?.rawValid ?? false;
+    this.rawKey = s?.rawKey ?? "";
     this.rawW = s?.rawW ?? 0;
     this.rawH = s?.rawH ?? 0;
     return out;
@@ -896,21 +941,60 @@ export class Compositor {
     const gl = this.gl;
     this.ensureRaw();
     const r = this.raw[this.rawCur]!;
+    // Not part of the original (perf): under a frame clip (the picture in picture) only its part is
+    // sent; the layer is then valid for that clip alone (rawKey).
+    const c = this.frameClip;
+    const x0 = c ? Math.max(x, c.left) : x;
+    const y0 = c ? Math.max(y, c.top) : y;
+    const x1 = c ? Math.min(x + w, c.right) : x + w;
+    const y1 = c ? Math.min(y + h, c.bottom) : y + h;
+    if (x1 <= x0 || y1 <= y0) return;
+    const cw = x1 - x0;
+    const ch = y1 - y0;
+    const sub = cw !== w || ch !== h;
+    if (sub) {
+      gl.pixelStorei(gl.UNPACK_ROW_LENGTH, w);
+      gl.pixelStorei(gl.UNPACK_SKIP_PIXELS, x0 - x);
+      gl.pixelStorei(gl.UNPACK_SKIP_ROWS, y0 - y);
+    }
     const n = w * h;
     gl.bindTexture(gl.TEXTURE_2D, r.tex[0]!);
-    gl.texSubImage2D(gl.TEXTURE_2D, 0, x, y, w, h, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array(even.buffer, even.byteOffset, n * 4));
+    gl.texSubImage2D(gl.TEXTURE_2D, 0, x0, y0, cw, ch, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array(even.buffer, even.byteOffset, n * 4));
     gl.bindTexture(gl.TEXTURE_2D, r.tex[1]!);
-    gl.texSubImage2D(gl.TEXTURE_2D, 0, x, y, w, h, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array(odd.buffer, odd.byteOffset, n * 4));
-    // RG8 big-endian depth: one u16 store per pixel (the platform is little-endian).
-    if (!this.rawZBytes || this.rawZBytes.length < n) this.rawZBytes = new Uint16Array(this.width * this.height);
+    gl.texSubImage2D(gl.TEXTURE_2D, 0, x0, y0, cw, ch, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array(odd.buffer, odd.byteOffset, n * 4));
+    if (sub) {
+      gl.pixelStorei(gl.UNPACK_ROW_LENGTH, 0);
+      gl.pixelStorei(gl.UNPACK_SKIP_PIXELS, 0);
+      gl.pixelStorei(gl.UNPACK_SKIP_ROWS, 0);
+    }
+    // RG8 big-endian depth: one u16 store per pixel (the platform is little-endian), the sent part only.
+    if (!this.rawZBytes || this.rawZBytes.length < cw * ch) this.rawZBytes = new Uint16Array(this.width * this.height);
     const zm = this.rawZBytes;
-    for (let i = 0; i < n; i++) {
-      const d = depth[i]!;
-      zm[i] = (d >> 8) | ((d & 0xff) << 8);
+    let k = 0;
+    for (let row = y0 - y; row < y1 - y; row++) {
+      const end = row * w + (x1 - x);
+      for (let i = row * w + (x0 - x); i < end; i++) {
+        const d = depth[i]!;
+        zm[k++] = (d >> 8) | ((d & 0xff) << 8);
+      }
     }
     gl.bindTexture(gl.TEXTURE_2D, r.tex[2]!);
-    gl.texSubImage2D(gl.TEXTURE_2D, 0, x, y, w, h, gl.RG, gl.UNSIGNED_BYTE, new Uint8Array(zm.buffer, 0, n * 2));
-    if (x === 0 && y === 0 && w === this.width && h === this.height) this.rawValid = true;
+    gl.texSubImage2D(gl.TEXTURE_2D, 0, x0, y0, cw, ch, gl.RG, gl.UNSIGNED_BYTE, new Uint8Array(zm.buffer, 0, cw * ch * 2));
+    // Valid once the whole target, or the whole clip, was sent.
+    const fx0 = c ? c.left : 0;
+    const fy0 = c ? c.top : 0;
+    const fx1 = c ? c.right : this.width;
+    const fy1 = c ? c.bottom : this.height;
+    if (x <= fx0 && y <= fy0 && x + w >= fx1 && y + h >= fy1) {
+      this.rawValid = true;
+      this.rawKey = this.layerKey();
+    }
+  }
+
+  /** The frame clip a raw layer drawn now is valid for. */
+  private layerKey(): string {
+    const c = this.frameClip;
+    return c ? `${c.left},${c.top},${c.right},${c.bottom}` : "";
   }
 
   /**
@@ -919,16 +1003,18 @@ export class Compositor {
    * left for uploadRaw. False when there is no layer to move.
    */
   shiftRaw(dx: number, dy: number): boolean {
-    if (!this.rawValid || this.rawW !== this.width || this.rawH !== this.height) return false;
+    if (!this.rawValid || this.rawKey !== this.layerKey() || this.rawW !== this.width || this.rawH !== this.height) return false;
     const gl = this.gl;
     const w = this.width;
     const h = this.height;
     const src = this.raw[this.rawCur]!;
     const dst = this.raw[1 - this.rawCur]!;
-    const sx0 = Math.max(0, -dx);
-    const sy0 = Math.max(0, -dy);
-    const sx1 = Math.min(w, w - dx);
-    const sy1 = Math.min(h, h - dy);
+    // Under a frame clip, only what lands inside it is moved.
+    const c = this.frameClip;
+    const sx0 = Math.max(0, -dx, c ? c.left - dx : 0);
+    const sy0 = Math.max(0, -dy, c ? c.top - dy : 0);
+    const sx1 = Math.min(w, w - dx, c ? c.right - dx : w);
+    const sy1 = Math.min(h, h - dy, c ? c.bottom - dy : h);
     gl.disable(gl.SCISSOR_TEST);
     if (sx1 > sx0 && sy1 > sy0) {
       for (let i = 0; i < src.fb.length; i++) {
@@ -950,7 +1036,7 @@ export class Compositor {
    * shifted before).
    */
   drawRaw(even: Uint32Array, odd: Uint32Array, depth: Uint16Array, oddRow: boolean, changed = true): void {
-    if (changed || !this.rawValid) this.uploadRaw(0, 0, this.width, this.height, even, odd, depth);
+    if (changed || !this.rawValid || this.rawKey !== this.layerKey()) this.uploadRaw(0, 0, this.width, this.height, even, odd, depth);
     const gl = this.gl;
     const r = this.raw[this.rawCur]!;
     const tex: SpriteTex = { width: this.width, height: this.height, color: r.tex[oddRow ? 1 : 0]!, zmode: r.tex[2]!, hasOpaque: true, hasAlpha: false };
