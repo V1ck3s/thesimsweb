@@ -85,8 +85,8 @@ Port of the house save path. Code: `client/src/game/world/{reconwriter,usagemap,
   - HOUS 0: roof pitch and roof pattern. The +0x49 dynamic cutaway byte (low byte of the first int) is the
     current `WallManager.dynamicCutaway` on an in-game save (`dynamicCutaway` of `HouseSaveInput`);
     a save without a viewer (MoveOut) carries the whole chunk.
-  - Per person: dressing, accessories, practices, and the tail (routes, interactions, queue, ObjectRecords).
-  - The runtime does not reload the saved queue. A live queue is therefore not saved; the loaded one is written back.
+  - Per person: dressing, accessories, practices, and the route count of the tail.
+  - The current and last interactions and the queue are restored at load (`PersonSim.restoreInteractions`, in `Simulator.postLoad`) and saved live (`PersonSim.savedInteraction`); the names come back from the tree table entry, as Interaction::GetName does.
 
 ## Checks (House01, UserData)
 

@@ -33,6 +33,9 @@ uniform vec2 uPixelFix;   // D3D pixel centers: +0.5 px right, +0.5 px down
 uniform vec3 uLightDir;
 uniform vec3 uLightColor;
 uniform vec3 uAmbient;
+uniform int uLampCount;
+uniform vec3 uLampDir[6];
+uniform vec3 uLampColor[6];
 out vec2 vUV;
 out vec3 vColor;
 out float vZ;
@@ -42,7 +45,12 @@ void main() {
   vec4 c = uViewProj * world;
   vZ = c.z / c.w;
   gl_Position = vec4(c.xy + uPixelFix * c.w, c.z * 2.0 - c.w, c.w);
-  vColor = min(vec3(1.0), uAmbient + uLightColor * max(0.0, dot(n, -uLightDir)));
+  vec3 lit = uAmbient + uLightColor * max(0.0, dot(n, -uLightDir));
+  for (int i = 0; i < 6; i++) {
+    if (i >= uLampCount) break;
+    lit += uLampColor[i] * max(0.0, dot(n, -uLampDir[i]));
+  }
+  vColor = min(vec3(1.0), lit);
   vUV = aUV;
 }`;
 
@@ -87,6 +95,8 @@ export interface RenderSimOptions {
   ambient?: number;
   /** Replaces the light rig (the person lighting) when set. */
   lighting?: ObjectLighting;
+  /** The lamp lights of the person's room (RoomLighting.roomLamps), world positions. */
+  lamps?: readonly (readonly [number, number, number])[];
   depth?: DepthMapping;
 }
 
@@ -109,7 +119,7 @@ export class SimRenderer {
 
   private constructor(readonly gl: WebGL2RenderingContext) {
     this.prog = link(gl, VS, FS);
-    for (const n of ["uModel", "uViewProj", "uPixelFix", "uLightDir", "uLightColor", "uAmbient", "uTex", "uHasTex", "uUntextured", "uDepthMin", "uDepthRange"]) {
+    for (const n of ["uModel", "uViewProj", "uPixelFix", "uLightDir", "uLightColor", "uAmbient", "uLampCount", "uLampDir", "uLampColor", "uTex", "uHasTex", "uUntextured", "uDepthMin", "uDepthRange"]) {
       this.u[n] = gl.getUniformLocation(this.prog, n);
     }
   }
@@ -144,7 +154,8 @@ export class SimRenderer {
     const gl = this.gl;
     const cam = this.cameraFor(view);
     const own = opts.lighting;
-    const rig = own ? null : engageLights(this.lights, cam, opts.ambient ?? 1);
+    // LightingRig::SetPosition: the person's root (the model's translation).
+    const rig = own ? null : engageLights(this.lights, cam, opts.ambient ?? 1, [model[12]!, model[13]!, model[14]!], opts.lamps ?? []);
     const depth = opts.depth ?? DEFAULT_DEPTH;
     const blend = gl.isEnabled(gl.BLEND);
     gl.useProgram(this.prog);
@@ -164,6 +175,12 @@ export class SimRenderer {
     gl.uniform3fv(this.u["uLightDir"]!, own ? own.direction : rig!.direction);
     gl.uniform3fv(this.u["uLightColor"]!, own ? own.color : rig!.color);
     gl.uniform3fv(this.u["uAmbient"]!, own ? own.ambient : [rig!.ambient, rig!.ambient, rig!.ambient]);
+    const lamps = rig?.lamps ?? [];
+    gl.uniform1i(this.u["uLampCount"]!, lamps.length);
+    if (lamps.length) {
+      gl.uniform3fv(this.u["uLampDir"]!, lamps.flatMap((l) => l.direction));
+      gl.uniform3fv(this.u["uLampColor"]!, lamps.flatMap((l) => l.color));
+    }
     // Without a texture Direct3D shows the lit material (white); people keep their grey placeholder.
     gl.uniform1f(this.u["uUntextured"]!, own ? 1 : 0.5);
     gl.uniform1f(this.u["uDepthMin"]!, depth.depthMin);

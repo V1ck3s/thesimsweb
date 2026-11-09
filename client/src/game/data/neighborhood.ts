@@ -119,6 +119,8 @@ export interface NeighborhoodData {
   inventories: SimInventory[];
   /** Neighborhood +0x128 (NGBH): 16 shorts (one before version 0x14), read by expression scope 34. */
   data: Int16Array;
+  /** The NBRS vector's size (+0x14c), empty slots included: AddNewNeighbor reuses the last empty one. */
+  slots?: number;
 }
 
 /**
@@ -293,7 +295,8 @@ export async function loadNeighborhood(dir = "UserData", lang = UI_LANGUAGE): Pr
   } catch {
     // keep the defaults
   }
-  return { dir, neighbors, families, inventories: ngbhData.inventories, data: ngbhData.data };
+  const slots = nbrs && nbrs.dataLen >= 16 ? new DataView(data.buffer, data.byteOffset + nbrs.dataStart + 12, 4).getInt32(0, true) : 0;
+  return { dir, neighbors, families, inventories: ngbhData.inventories, data: ngbhData.data, slots };
 }
 
 export async function loadCharacter(dir: string, shortName: string, lang = UI_LANGUAGE): Promise<Character> {

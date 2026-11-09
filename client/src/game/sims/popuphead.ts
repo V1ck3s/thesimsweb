@@ -144,7 +144,7 @@ class PopupHead {
   }
 
   /** PopupHead::Start */
-  start(pie: PopupHeadPie, bodyStrings: readonly string[]): void {
+  start(pie: PopupHeadPie, bodyStrings: readonly string[], worn?: readonly { suit: string; texture: string }[]): void {
     this.startX = -1;
     this.startY = -1;
     this.locX = -1;
@@ -160,13 +160,13 @@ class PopupHead {
     this.pie = pie;
     this.cur = pie;
     this.moveStart = now();
-    // The original reads the live person's bindings; the head is loaded once per body.
-    const key = bodyStrings.join("|");
+    // GetHeadBindings reads the live person's dressing records; the head is loaded once per outfit.
+    const key = `${bodyStrings.join("|")}#${(worn ?? []).map((w) => `${w.suit},${w.texture}`).join("|")}`;
     this.key = key;
     this.head = null;
     let p = this.heads.get(key);
     if (!p) {
-      p = headPerson(bodyStrings).catch(() => null);
+      p = headPerson(bodyStrings, worn).catch(() => null);
       this.heads.set(key, p);
     }
     void p.then((vb) => {
@@ -390,8 +390,8 @@ class PopupHead {
 const popupHead = new PopupHead();
 
 /** SAnimator::StartPopupHead */
-export function startPopupHead(pie: PopupHeadPie, bodyStrings: readonly string[]): void {
-  popupHead.start(pie, bodyStrings);
+export function startPopupHead(pie: PopupHeadPie, bodyStrings: readonly string[], worn?: readonly { suit: string; texture: string }[]): void {
+  popupHead.start(pie, bodyStrings, worn);
 }
 
 /** SAnimator::StopPopupHead */

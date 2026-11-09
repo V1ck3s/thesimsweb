@@ -107,6 +107,9 @@ export interface LiveNeighborhood {
 
 let liveNeighborhood: LiveNeighborhood | null = null;
 
+/** Run after each Neighborhood::Save of a neighborhood folder (the families' SaveFamily side effects). */
+export const neighborhoodSavedHooks = new Set<(dir: string) => void>();
+
 /** The lot's Neighborhood in memory (null when no lot is loaded). */
 export function setLiveNeighborhood(live: LiveNeighborhood | null): void {
   liveNeighborhood = live;
@@ -1144,6 +1147,8 @@ export class NeighborhoodStore {
       this.put({ type: "TATT", id: 1, flags: tatt?.flags ?? 0x10, label: tatt?.label ?? "", data: folder.saveTypeAttributes() });
     }
     await writeGameFile(`${this.dir}/Neighborhood.iff`, buildIff(this.chunks));
+    // Family::SaveFamily of every family: cScrapbook::CommitChanges.
+    for (const hook of neighborhoodSavedHooks) hook(this.dir);
   }
 
   /**
@@ -1180,6 +1185,13 @@ export class NeighborhoodStore {
   private takeLive(): void {
     const live = liveNeighborhood;
     if (!live || live.data.dir !== this.dir) return;
+    // Neighborhood::AddNewNeighbor in the lot (a person without a neighbor, SimModule.addNewNeighbor):
+    // the same slot here, so the ids the persons hold stay right.
+    for (const n of live.data.neighbors) {
+      if (this.nbrs.entries.some((e) => e && e.id === n.id && e.guid >>> 0 === n.guid >>> 0)) continue;
+      if (this.neighborByGuid(n.guid)) continue;
+      this.addNewNeighbor(n.guid, n.name, n.id);
+    }
     for (const [guid, pd] of live.persistent) this.savePersistentData(guid, pd);
     live.persistent.clear();
     for (const e of this.nbrs.entries) {

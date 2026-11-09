@@ -826,13 +826,6 @@ function usageFiles(house: ResFile, type: string): string[] {
   return map.map((e) => e.file);
 }
 
-/** ObjSelector::GetShortFilename: the object file's name without folder and extension. */
-function shortFilename(sel: ObjSelector): string {
-  const name = sel.fileKey.slice(Math.max(sel.fileKey.lastIndexOf("/"), sel.fileKey.lastIndexOf("|"), sel.fileKey.lastIndexOf("\\")) + 1);
-  const dot = name.lastIndexOf(".");
-  return dot < 0 ? name : name.slice(0, dot);
-}
-
 /**
  * The house's files for the .pub: the floor and wall usage maps, and the
  * folder's selectors from the download folders (+0xb4 source 2 or 3) that
@@ -849,7 +842,7 @@ function houseFiles(house: ResFile, module: ObjectModule): HouseFiles {
     .sort((a, b) => a.index - b.index)
     // The Windows build's file names come out lowercase (its .pub files list
     // "sccontroller" for SCController.iff).
-    .map((s) => shortFilename(s).toLowerCase());
+    .map((s) => s.shortFilename().toLowerCase());
   return { floors: usageFiles(house, "FLRm"), walls: usageFiles(house, "WALm"), objects };
 }
 

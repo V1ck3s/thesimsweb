@@ -200,6 +200,8 @@ export class HouseViewer {
     roomAmbient?(id: number): number;
     /** RoomManager::GetRoom(id): null when the room does not exist. */
     roomInfo?(id: number): { ambient: number } | null;
+    /** LightingRig::EngageLights: the lamp lights of the room at a world fixed-point position. */
+    roomLamps?(fx: number, fy: number, level: number): readonly (readonly [number, number, number])[];
     /** RoomManager::ResolveDiagonal (world tile): the two rooms of a diagonal tile and their sides. */
     resolveDiagonal?(x: number, y: number, level: number): { room1: number; side1: number; room2: number; side2: number };
   } | null = null;
@@ -543,6 +545,48 @@ export class HouseViewer {
       }
     }
     return this.pointToWholeTile(px, py, this.level);
+  }
+
+  /**
+   * HouseViewer::PointToTile(pt, true), its 2D branch (Mac 101cac70): the
+   * view tile under the point (PointToWholeTile) and the sixteenths inside it,
+   * from the tile's slanted edges at its corner altitudes (GetPackedAlt);
+   * no fraction outside the lot's interior.
+   */
+  pointToTileFine(px: number, py: number, level = this.level): { fx: number; fy: number } {
+    const t = this.pointToWholeTile(px, py, level);
+    if (!this.world.inInterior(t.x, t.y)) return { fx: t.x << 4, fy: t.y << 4 };
+    const f = Math.fround;
+    const s = this.scale;
+    const sh = s + 1;
+    const [a0, a1, a2, a3] = this.world.getPackedAlt(t.x, t.y);
+    const base = this.tileToPoint(t.x, t.y, level, s, 0);
+    // +0x5c: half a tile's width.
+    const w = 8 << s;
+    const left = px < base.h;
+    const sideH = (base.h + (left ? -w : w)) << 16 >> 16;
+    const sideV = (base.v + ((((a1! - (left ? a0! : a2!)) + 2) << sh) << 16 >> 16)) << 16 >> 16;
+    const bottomV = (base.v + ((((a1! - a3!) + 4) << sh) << 16 >> 16)) << 16 >> 16;
+    let e = f(f(base.v - sideV) / f(base.h - sideH));
+    const g = f(f(bottomV - sideV) / f(base.h - sideH));
+    let c: number;
+    if (g === e) {
+      c = px;
+      e = px;
+    } else {
+      c = f(f(f(g * px) - f(f(e * sideH) - f(sideV - py))) / f(g - e));
+      e = f(f(f(g * sideH) - f(f(e * px) - f(py - sideV))) / f(g - e));
+    }
+    let fy: number;
+    let fx: number;
+    if (left) {
+      fy = f(16 * f(f(base.h - c) / w));
+      fx = f(16 * f(f(e - sideH) / w));
+    } else {
+      fy = f(16 * f(f(sideH - e) / w));
+      fx = f(16 * f(f(c - base.h) / w));
+    }
+    return { fx: (t.x << 4) | (Math.trunc(fx) & 0xf), fy: (t.y << 4) | (Math.trunc(fy) & 0xf) };
   }
 
   /** HouseViewer::PointToWholeTile: view tile under a screen point. */

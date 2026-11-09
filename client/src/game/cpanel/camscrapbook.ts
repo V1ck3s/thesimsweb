@@ -23,13 +23,19 @@
  *
  * Here the files go through the overlay (data/files.ts) and JPEGs are
  * encoded by the browser (Gimex's encoder is not ported: same size and
- * quality, other bytes). Not ported: RevertScrapbook / CommitChanges (the
- * photos taken since the last save are dropped when the lot is not saved).
+ * quality, other bytes).
+ *
+ * CommitChanges (Family::SaveFamily, each Neighborhood::Save) marks the
+ * photos taken so far as kept (+0x238 := +0x14); RevertScrapbook (the
+ * Family destructor: the neighborhood is dropped when the lot is left)
+ * deletes the pages numbered from there on, so photos of a lot left without
+ * saving go away.
  */
 
 import { assetFetch, fetchManifest } from "../../engine/assets.js";
 import type { GameContext } from "../context.js";
 import { deleteGameFile, writeGameFile } from "../data/files.js";
+import { neighborhoodSavedHooks } from "../data/nbhdstore.js";
 import { loadNeighborhood, PD } from "../data/neighborhood.js";
 import { Neighborhood, Zone } from "../nbhd/nghinterface.js";
 import type { FfnFont } from "../res/ffn.js";
@@ -131,6 +137,8 @@ export class Scrapbook {
   private cur = 0;
   /** +0x14: the number of the next photo. */
   private nextNum = 0;
+  /** +0x238: the first photo number not committed (CommitChanges). */
+  private committed = 0;
 
   private constructor(
     /** +0x18 / +0x128: the album folder (game-relative, with the trailing slash). */
@@ -175,7 +183,23 @@ export class Scrapbook {
         pending: null,
       });
     }
+    book.committed = book.nextNum;
     return book;
+  }
+
+  /** cScrapbook::CommitChanges */
+  commitChanges(): void {
+    this.committed = this.nextNum;
+  }
+
+  /** cScrapbook::RevertScrapbook: every page numbered from +0x238 on is deleted (SetCurPage, DeleteCurrentPage). */
+  async revertScrapbook(): Promise<void> {
+    for (;;) {
+      const i = this.pages.findIndex((p) => p.num >= this.committed);
+      if (i < 0) return;
+      this.setCurPage(i);
+      await this.deleteCurrentPage();
+    }
   }
 
   getPageCount(): number {
@@ -332,6 +356,17 @@ export class Scrapbook {
 
 /** Family +0x148, per neighborhood and export name. */
 const scrapbooks = new Map<string, Promise<Scrapbook>>();
+
+neighborhoodSavedHooks.add((dir) => {
+  for (const [key, book] of scrapbooks) if (key.startsWith(`${dir}/`)) void book.then((b) => b.commitChanges()).catch(() => undefined);
+});
+
+/** ~Family for every family of the dropped neighborhood: RevertScrapbook, and the albums are read again next time. */
+export async function revertScrapbooks(): Promise<void> {
+  const books = [...scrapbooks.values()];
+  scrapbooks.clear();
+  for (const p of books) await (await p.catch(() => null))?.revertScrapbook();
+}
 
 /**
  * Family::GetScrapbook of the family HouseViewer::UpdateWorld and

@@ -603,9 +603,10 @@ function writePerson(w: ReconOut, rec: PersonRecord | null, live: PersonSim | nu
   w.recon16s(live ? live.pd : (r?.personData ?? new Int16Array(0x100)));
   const t = r?.tail;
   w.recon32(t?.routeCount ?? 0);
-  writeInteraction(w, t?.current ?? null);
-  writeInteraction(w, t?.last ?? null);
-  const q = t?.queue ?? [];
+  // The live interactions when the simulator runs (cXPerson +0xa08, +0xa44, the +0x820 queue).
+  writeInteraction(w, live ? live.savedInteraction(live.currentAction) : (t?.current ?? null));
+  writeInteraction(w, live ? live.savedInteraction(live.lastAction) : (t?.last ?? null));
+  const q = live ? live.queue.map((i) => live.savedInteraction(i)!).slice(0, 8) : (t?.queue ?? []);
   w.recon32(q.length);
   for (const i of q) writeInteraction(w, i);
   const saved = live ? live.objectRecords.map((x) => ({ object: x.id, value: x.depth, flag: x.action })) : (t?.objectRecords ?? []);

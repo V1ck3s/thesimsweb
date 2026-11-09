@@ -63,9 +63,10 @@ Interface / triches
 Les écarts confirmés par l'audit complet sont tous traités (journal de `PLAN.md`, 2026-11-08).
 
 - **Constats « faibles »** de l'audit : listés dans
-  [`docs/decomp/audit-2026-11-low.md`](decomp/audit-2026-11-low.md). Partie #0 à #52 vérifiée et
-  corrigée (restent #16, #33, le texte de #40, et les écarts voulus ou incertains annotés) ; #53 à
-  #136 à confirmer un par un contre le décompilé avant correction.
+  [`docs/decomp/audit-2026-11-low.md`](decomp/audit-2026-11-low.md). Tous vérifiés (2026-11-08 et
+  2026-11-09) et les écarts réels corrigés. Restent, annotés : écarts voulus, faux ou incertains ; le
+  veto des animaux sans Unleashed (#67, #104) ; la réconciliation de Neighborhood::Load avec le
+  dossier Characters (#125) ; l'horloge plafonnée de la boucle de trames (#135).
 
 ## 3. Son
 

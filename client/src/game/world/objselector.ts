@@ -208,6 +208,14 @@ export class ObjSelector {
     readonly semiGlobalName: string,
   ) {}
 
+  /** ObjSelector::GetShortFilename: the object file's name without folder and extension. */
+  shortFilename(): string {
+    const k = this.fileKey;
+    const name = k.slice(Math.max(k.lastIndexOf("/"), k.lastIndexOf("|"), k.lastIndexOf("\\")) + 1);
+    const dot = name.lastIndexOf(".");
+    return dot < 0 ? name : name.slice(0, dot);
+  }
+
   /**
    * ObjSelector::GetCatalogName (cached at +0xb8): CatalogResource::Load of
    * the OBJD's catalog strings id (+0x52), a CATS chunk ("description\0name")

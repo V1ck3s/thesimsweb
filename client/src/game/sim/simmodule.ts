@@ -773,6 +773,8 @@ export class SimModule {
 
   /** AutonomyConstantsClient (FCNS 2 of Global.iff). */
   autonomy: AutonomyConstants = autonomyConstants(new Map());
+  /** lbl_105BA16C: the last Interaction::SetUniqueID (the loaded interactions' largest). */
+  interactionUid = 0;
 
   /** cXPerson::Initialize / PostLoad's person part: neighbor data and motive curves. */
   initPeople(nbhd: NeighborhoodData | null): void {
@@ -814,10 +816,42 @@ export class SimModule {
     this.initPersonCurves(p);
   }
 
-  /** Neighborhood::LoadPersistentData(person): the neighbor's persistent data into the person. */
+  /**
+   * Neighborhood::LoadPersistentData(person): the neighbor's persistent data
+   * into the person; a person without a neighbor gets a new one
+   * (AddNewNeighbor(selector, -1)), whose id only goes to person data 0x1f.
+   * (cXObject::TryCreateObject's LoadInterestData does the same for a person
+   * created in the lot; its Reset already ran this.)
+   */
   loadPersonPersistent(p: PersonSim): void {
     const nb = this.nbhd?.neighbors.find((n) => (n.guid | 0) === (p.obj.selector.guid | 0));
-    if (nb) p.loadPersistentData(nb);
+    if (nb) {
+      p.loadPersistentData(nb);
+      return;
+    }
+    const added = this.addNewNeighbor(p.obj.selector);
+    if (added) p.pd[0x1f] = added.id;
+  }
+
+  /**
+   * Neighborhood::AddNewNeighbor(selector, -1) + Neighbor(id, selector): the
+   * last empty slot of the vector, else a new one at its end; the neighbor
+   * has the selector's GUID and short file name, persistent data version 0.
+   * NeighborhoodStore.save adds it to the file (takeLive).
+   */
+  addNewNeighbor(sel: ObjSelector): Neighbor | null {
+    const nbhd = this.nbhd;
+    if (!nbhd) return null;
+    const used = new Set(nbhd.neighbors.map((n) => n.id));
+    let slots = nbhd.slots ?? 0;
+    for (const id of used) if (id > slots) slots = id;
+    let id = 0;
+    for (let i = 1; i <= slots; i++) if (!used.has(i)) id = i;
+    if (id === 0) id = slots + 1;
+    nbhd.slots = Math.max(slots, id);
+    const nb: Neighbor = { id, guid: sel.guid >>> 0, name: sel.shortFilename(), personData: new Int16Array(0x100), relationships: [], version: 0 };
+    nbhd.neighbors.push(nb);
+    return nb;
   }
 
   /** The motive curve sets of one person (cXPerson::PostLoad, the end of cXPerson::Reset). */

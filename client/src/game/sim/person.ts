@@ -35,6 +35,7 @@ import { beginningPortalTree, failedPortalTree, findBestPortal, initPortalRoute,
 import { EP } from "./objfntable.js";
 import { RotatableWorld } from "../world/world.js";
 import type { TreeTableEntry } from "./treetable.js";
+import type { PersonTail, SavedInteraction } from "../world/personstream.js";
 import { fc, type FloatConstants } from "./floatconstants.js";
 import { personLooks } from "../sims/personlook.js";
 import { getTrackedObject } from "../world/tracking.js";
@@ -91,9 +92,17 @@ export interface Interaction {
   args: Int16Array;
   /** +0x38 flags: 2 user-pushed, 8 continuation... */
   flags: number;
-  /** +0x34 priority. */
+  /** +0x1c priority (person data 33 takes it). */
   priority: number;
   name: string;
+  /** +0 (1 for Interaction(person, person)), +4 the person it was made for (0: the owner). */
+  kind?: number;
+  caller?: number;
+  /** +0x20 the entry's action tree id, +0x24 its attenuation (TreeTableEntry::GetAttenuationValue). */
+  entryTree?: number;
+  attenuation?: number;
+  /** +0x34 Interaction::SetUniqueID (0: none yet). */
+  uid?: number;
 }
 
 /**
@@ -2278,6 +2287,70 @@ export class PersonSim extends SimObject {
       flags: e.flags & 0x100 ? 1 : 0,
       priority,
       name: item?.name ?? e.name,
+      entryTree: e.actionTree,
+      attenuation: attenuation(e, this.module.autonomy, this.pd[PDX.personType] !== 0),
+    };
+  }
+
+  /**
+   * cXPerson::ReconStream (v > 0x2a): the saved current (+0xa08) and last
+   * (+0xa44) interactions and the queue (+0x820 ring). An interaction
+   * without an object (+8) is none. The tree ids and the name come back from
+   * the object's tree table entry (Interaction::GetEntry / GetName: the
+   * MakeNewMenuItem names are not saved). Interaction::DoStream keeps the
+   * largest unique id as the next one's base (lbl_105BA16C).
+   */
+  restoreInteractions(tail: PersonTail | null | undefined): void {
+    if (!tail) return;
+    const m = this.module;
+    const load = (s: SavedInteraction | null): Interaction | null => {
+      if (!s) return null;
+      if (s.uid > m.interactionUid) m.interactionUid = s.uid;
+      if (s.object1 === 0) return null;
+      const o = m.getObject(s.object1);
+      const tt = o ? m.treeTableOf(o.obj.selector) : null;
+      const e = tt?.entries.find((x) => x.stringIndex === s.i10) ?? null;
+      return {
+        target: s.object1,
+        actionTree: e?.actionTree ?? 0,
+        checkTree: e?.checkTree ?? 0,
+        ttabIndex: s.i10,
+        icon: s.object2,
+        args: new Int16Array(s.shorts),
+        flags: s.flags,
+        priority: s.i1c,
+        name: e?.name ?? "",
+        kind: s.i0,
+        caller: s.person,
+        entryTree: s.s20,
+        attenuation: s.f24,
+        uid: s.uid,
+      };
+    };
+    this.currentAction = load(tail.current);
+    this.lastAction = load(tail.last);
+    this.queue.length = 0;
+    for (const s of tail.queue) {
+      const i = load(s);
+      if (i) this.queue.push(i);
+    }
+  }
+
+  /** Interaction::DoStream (write) of one of this person's interactions; null when there is none. */
+  savedInteraction(i: Interaction | null): SavedInteraction | null {
+    if (!i) return null;
+    return {
+      i0: i.kind ?? 0,
+      uid: i.uid ?? 0,
+      person: i.caller ?? this.id,
+      object1: i.target,
+      object2: i.icon,
+      i10: i.ttabIndex,
+      shorts: new Int16Array(i.args.subarray(0, 4)),
+      i1c: i.priority,
+      s20: i.entryTree ?? i.actionTree,
+      f24: i.attenuation ?? 0,
+      flags: i.flags,
     };
   }
 
@@ -2293,8 +2366,10 @@ export class PersonSim extends SimObject {
       this.lastActionResult = this.lastResult;
     }
     this.currentAction = i;
-    // A new action with a target starts with its routing flags (person data 38 / 39) cleared.
+    // A new action with a target starts with its routing flags (person data 38 / 39) cleared,
+    // and gets a unique id (Interaction::SetUniqueID) unless it has one.
     if (i && i.target !== 0) {
+      if (!i.uid) i.uid = ++this.module.interactionUid;
       this.pd[38] = 0;
       this.pd[PDX.routingComplete] = 0;
     }

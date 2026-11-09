@@ -13,7 +13,13 @@
  * sets the viewport's ambient light to that level too (LightingParameters
  * low/high = 0 and 1). With the "white" material (diffuse = ambient = 1)
  * Direct3D's vertex lighting gives  color = texture * min(1, A + A * max(0, N . -L)).
- * Room lamps (point lights within 20 units) are not modelled.
+ *
+ * Then the lamps of the person's room (Room::CollectObjectStats keeps the
+ * first 6): a lamp more than 20 units away (d^2 > 400) is off; else a
+ * ParallelPointLight from the lamp toward the person (SetPlacement), of
+ * intensity 1 up to 15 units and 1 / (0.5 (d^2 - 225) + 1) beyond
+ * (lbl_105BBF70 +4 / +8 / +0xc / +0x10), colour (1, 0.984, 0.82)
+ * (lbl_105BFAC8..D0).
  */
 
 import { readAssetFile } from "../../engine/assets.js";
@@ -71,23 +77,51 @@ export function loadStdLights(): Promise<U3DLight[]> {
   return stdLights;
 }
 
-/** What the vertex shader needs: one directional light and the ambient level. */
+/** What the vertex shader needs: one directional light, the lamps and the ambient level. */
 export interface SimLighting {
   /** Direction the light travels, world space, unit length. */
   direction: Vec3;
   color: Vec3;
   ambient: number;
+  /** The room's lamps that reach the person (at most 6): travel direction and colour x intensity. */
+  lamps: { direction: Vec3; color: Vec3 }[];
 }
+
+/** LightingRig::EngageLights's lamp constants (lbl_105BBF70 +4 / +8 / +0xc / +0x10). */
+const LAMP_I0 = 1;
+const LAMP_CUTOFF = 400;
+const LAMP_NEAR = 225;
+const LAMP_FALLOFF = 0.5;
+/** lbl_105BFAC8, lbl_105BFACC, lbl_105BFAD0. */
+const LAMP_COLOR: Vec3 = [1, Math.fround(251 / 255), Math.fround(209 / 255)];
 
 /**
  * LightingRig::EngageLights for one person. `roomAmbient` is the room's
  * ambient level (RenderParam::GetAmbientLightLevel, 1.0 by default; lower
  * indoors and at night).
  */
-export function engageLights(lights: readonly U3DLight[], camera: AnimDeviceCamera, roomAmbient: number): SimLighting {
+export function engageLights(
+  lights: readonly U3DLight[],
+  camera: AnimDeviceCamera,
+  roomAmbient: number,
+  position: Vec3 | null = null,
+  lamps: readonly (readonly [number, number, number])[] = [],
+): SimLighting {
   const l = lights[0];
   const dir: Vec3 = l ? vec3Normalize(transformDir(l.direction, camera.lightRotation)) : [0, -1, 0];
   const c: Vec3 = l ? l.color : [1, 1, 1];
   const level = Math.floor(0.5 + 255 * roomAmbient) / 255;
-  return { direction: dir, color: [c[0] * roomAmbient, c[1] * roomAmbient, c[2] * roomAmbient], ambient: Math.min(1, level) };
+  const out: SimLighting["lamps"] = [];
+  if (position) {
+    const f = Math.fround;
+    for (const p of lamps) {
+      const d: Vec3 = [f(position[0] - p[0]), f(position[1] - p[1]), f(position[2] - p[2])];
+      const d2 = f(f(f(d[2] * d[2]) + f(d[1] * d[1])) + f(d[0] * d[0]));
+      if (d2 > LAMP_CUTOFF) continue;
+      const intensity = d2 >= LAMP_NEAR ? f(LAMP_I0 / f(f(LAMP_FALLOFF * f(d2 - LAMP_NEAR)) + LAMP_I0)) : LAMP_I0;
+      if (d2 === 0) continue;
+      out.push({ direction: vec3Normalize(d), color: [LAMP_COLOR[0] * intensity, LAMP_COLOR[1] * intensity, LAMP_COLOR[2] * intensity] });
+    }
+  }
+  return { direction: dir, color: [c[0] * roomAmbient, c[1] * roomAmbient, c[2] * roomAmbient], ambient: Math.min(1, level), lamps: out };
 }

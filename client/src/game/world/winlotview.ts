@@ -1289,24 +1289,9 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
     const sel = h?.selector(0x7c4);
     if (!sim || !v || !h || !sel) return null;
     const level = v.level || 1;
-    const t = v.pointToWholeTile(x, y, level);
-    // GViewer::PointToTile(pt, true): the fraction inside the tile.
-    const o = v.tileToPoint(t.x, t.y, level);
-    const ax = v.tileToPoint(t.x + 1, t.y, level);
-    const ay = v.tileToPoint(t.x, t.y + 1, level);
-    const a = ax.h - o.h;
-    const b = ay.h - o.h;
-    const c = ax.v - o.v;
-    const d = ay.v - o.v;
-    const det = a * d - b * c;
-    let u = 0.5;
-    let w = 0.5;
-    if (det !== 0) {
-      u = ((x - o.h) * d - b * (y - o.v)) / det;
-      w = (a * (y - o.v) - c * (x - o.h)) / det;
-    }
-    const clamp = (f: number): number => Math.min(15, Math.max(0, Math.trunc(f * 16)));
-    const [fx, fy] = RotatableWorld.rotateCoords((t.x << 4) + clamp(u), (t.y << 4) + clamp(w), (4 - v.world.rotation) & 3, 0x400);
+    // GViewer::PointToTile(pt, true): the view tile and its sixteenths.
+    const t = v.pointToTileFine(x, y, level);
+    const [fx, fy] = RotatableWorld.rotateCoords(t.fx, t.fy, (4 - v.world.rotation) & 3, 0x400);
     const xo = h.make(sel);
     if (!xo) return null;
     const obj = sim.module.getObject(xo.objectId);
@@ -1538,7 +1523,8 @@ export class WinLotView extends TSWin implements HouseViewerHooks {
       if (first) {
         first = false;
         const lp = this.people?.people.find((q) => q.obj === person.obj);
-        if (lp) startPopupHead(pie, lp.anim.bodyStrings.strings);
+        // MakePersonHeadImage / GetHeadBindings: the person's dressing records as worn now.
+        if (lp) startPopupHead(pie, lp.anim.bodyStrings.strings, [...lp.anim.vitaboy.dressings.values()].map((d) => ({ suit: d.suit, texture: d.texture })));
       }
       const sel = await m.popupEventLoop();
       m.popupEnd();

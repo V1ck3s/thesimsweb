@@ -321,6 +321,8 @@ export class Simulator {
   postLoad(): void {
     const m = this.module;
     m.updatePrimitiveLimit();
+    // cXPerson::ReconStream: the saved interactions (every object exists now).
+    for (const p of m.persons) p.restoreInteractions(p.obj.personRecord?.tail);
     for (const o of m.list) {
       const saved = o.obj.savedStack;
       if (saved && saved.frames.length) {

@@ -184,17 +184,21 @@ function deformIdentity(b: SkeletonBinding): void {
   }
 }
 
-/** GetHeadBindings: the skins of the worn suits bound to "HEAD", posed in their own space. */
-export async function headPerson(bodyStrings: readonly string[]): Promise<VitaBoy | null> {
+/**
+ * GetHeadBindings: the skins of the worn suits bound to "HEAD", posed in
+ * their own space. `worn` lists the person's dressing records (suit and
+ * texture) when it is in the lot; without it, the day head and body suits of
+ * the body strings (UpdateOutfitAndHands for outfit 0).
+ */
+export async function headPerson(bodyStrings: readonly string[], worn?: readonly { suit: string; texture: string }[]): Promise<VitaBoy | null> {
   const mgr = await VBAnimMgr.get();
   const bs = new BodyStrings(bodyStrings);
   const skel = await mgr.findSkeleton(bs.get(BS.skeleton) || "adult");
   if (!skel) return null;
   const vb = new VitaBoy(mgr, skel.clone());
   const meshes: DressingMesh[] = [];
-  // UpdateOutfitAndHands(1): head and body suits (hands bind to other bones).
-  for (const index of [BS.head, BS.body]) {
-    const { suit: name, texture } = bs.getSuitAndTexture(index);
+  const suits = worn ?? [BS.head, BS.body].map((i) => bs.getSuitAndTexture(i));
+  for (const { suit: name, texture } of suits) {
     if (!name || name === "none") continue;
     const suit = await mgr.findSuit(name);
     if (!suit) continue;

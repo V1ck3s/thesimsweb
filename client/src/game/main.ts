@@ -22,6 +22,7 @@ import type { GameContext } from "./context.js";
 import { CPANEL_HEIGHT, WinCPanel } from "./cpanel/cpanel.js";
 import { activateFamily } from "./data/family.js";
 import { NeighborhoodStore, setLiveNeighborhood } from "./data/nbhdstore.js";
+import { revertScrapbooks } from "./cpanel/camscrapbook.js";
 import { loadNeighborhood } from "./data/neighborhood.js";
 import { currentNeighborhoodDir, Neighborhood, storeCurrentNeighborhoodDir, Zone } from "./nbhd/nghinterface.js";
 import { saveDowntownDescription } from "./nbhd/wineditdtlotdesc.js";
@@ -275,6 +276,8 @@ class Game {
     if (!this.lotView) return;
     // UnloadHouse: the next Neighborhood::Save no longer takes the lot's live data.
     setLiveNeighborhood(null);
+    // The lot's Neighborhood goes (~Family: cScrapbook::RevertScrapbook of the photos not saved).
+    void revertScrapbooks().catch((e: unknown) => console.warn("RevertScrapbook", e));
     this.mgr.main.childDelete(this.lotView);
     this.lotAudioOff?.();
     this.lotAudioOff = null;

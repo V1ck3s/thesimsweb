@@ -182,6 +182,14 @@ function insideScore(l: RoomLight, k: RoomScoreConstants): number {
 }
 
 /** Room's statistics (Room::Clear zeroes them, CollectTileStats / CollectObjectStats count them). */
+/** Room::CollectObjectStats: at most 6 lamp lights a room (the RoomManager's ParallelPointLight pool). */
+const LAMP_LIGHTS_MAX = 6;
+/** lbl_105BBC24 +8, +0xc, +0x10; lbl_105BA328 = 1 / (2 sqrt 6). */
+const LAMP_XY = 0.1875;
+const LAMP_Z_SCALE = 3;
+const LAMP_Z_OFFSET = 5;
+const LAMP_ALT = Math.fround(1 / (2 * Math.sqrt(6)));
+
 interface RoomLight {
   /** +0x38 area (2 per square tile, 1 per diagonal half), +0x3c floored area (same units). */
   area: number;
@@ -210,10 +218,15 @@ interface RoomLight {
   /** +0x27c lights that are not portals, +0x280 people. */
   lamps: number;
   people: number;
+  /**
+   * +0x1c..+0x24: the 3D positions of the room's first 6 point lights (light
+   * source 1 with a contribution), LightingRig::EngageLights's lamps.
+   */
+  lampPoints: [number, number, number][];
 }
 
 function newRoomLight(): RoomLight {
-  return { area: 0, floorArea: 0, objects: 0, windowLight: 0, lampLight: 0, dirt: 0, impact: 0, good: 0, beds: 0, baths: 0, walls: 0, papered: 0, score: 0, ambient: 0, pool: false, lamps: 0, people: 0 };
+  return { area: 0, floorArea: 0, objects: 0, windowLight: 0, lampLight: 0, dirt: 0, impact: 0, good: 0, beds: 0, baths: 0, walls: 0, papered: 0, score: 0, ambient: 0, pool: false, lamps: 0, people: 0, lampPoints: [] };
 }
 
 /** The ceiling lights are on in a lampless, occupied room darker than them (GetAmbientLight / ComputeRoom's test). */
@@ -444,7 +457,13 @@ export class RoomLighting {
     }
     if (type === OBJ_TYPE_PORTAL) l.windowLight += c;
     else l.lampLight += c;
-    // Light source 1 (point light): LightLayer::RemoveLight, PositionLight.
+    // Light source 1 (point light): one of the room's 6 lamp lights for the people
+    // (vec3(0.1875 fy, 3 GetFAlt / (2 sqrt 6) + 5, 0.1875 fx)), then LightLayer::RemoveLight, PositionLight.
+    if (o.objectData[OD.lightSource] === 1 && l.lampPoints.length < LAMP_LIGHTS_MAX) {
+      const f = Math.fround;
+      const alt = this.fixed.getFAlt(o.fx, o.fy);
+      l.lampPoints.push([f(LAMP_XY * o.fy), f(f(LAMP_Z_SCALE * f(alt * LAMP_ALT)) + LAMP_Z_OFFSET), f(LAMP_XY * o.fx)]);
+    }
     if (o.objectData[OD.lightSource] === 1 && layer) {
       layer.removeLight(this.fixed, o.tileX, o.tileY);
       layer.positionLight(this.fixed, this.rooms, o.tileX, o.tileY, o.level);
@@ -573,6 +592,19 @@ export class RoomLighting {
       if (side1 !== 3 && side1 !== 0) id = d.room2;
     } else if (side1 !== 1 && side1 !== 0) id = d.room2;
     return this.rooms.getRoom(id) ? this.roomAmbient(id) : 1;
+  }
+
+  /**
+   * LightingRig::EngageLights's room: the lamp lights of the room at a world
+   * fixed-point position (none off the lot's interior or on a special tile).
+   */
+  roomLamps(fx: number, fy: number, level: number): readonly (readonly [number, number, number])[] {
+    const x = fx >> 4;
+    const y = fy >> 4;
+    if (x < 1 || y < 1 || x >= this.fixed.size - 1 || y >= this.fixed.size - 1 || level < 1 || level > 2) return [];
+    const id = this.fixed.rooms[level - 1]!.u16(x, y);
+    if (id >= ROOM_DEGENERATE || !this.rooms.getRoom(id)) return [];
+    return this.lights.get(id)?.lampPoints ?? [];
   }
 
   /** Ambient of a view tile's center (RenderStaticRow: FTilePt(x + 1/2, y + 1/2)). */

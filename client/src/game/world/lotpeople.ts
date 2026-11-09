@@ -289,7 +289,9 @@ export class LotPeople {
         alt: viewer.world.fixed.getFAlt(Math.round(at.fx), Math.round(at.fy)),
         direction: simDir ? simDir() : obj.dir,
       };
-      this.picking(obj, () => this.renderer.renderSim(anim.vitaboy, place, view, { ambient }));
+      // LightingRig::EngageLights: the lamps of the room at the person's root (world tile).
+      const lamps = viewer.lighting?.roomLamps?.(Math.round(at.fx), Math.round(at.fy), obj.level) ?? [];
+      this.picking(obj, () => this.renderer.renderSim(anim.vitaboy, place, view, { ambient, lamps }));
       this.drawHeadObject(person, place, view);
     }
     this.drawingIn = null;
