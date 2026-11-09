@@ -91,13 +91,14 @@ Les adresses directes du jeu restent valables : `/game.html`, et `/` suivi d'une
 marque-page sur `/?…` lance donc toujours le jeu.
 
 Le premier lancement lit tout le catalogue d'objets ; les fichiers du jeu sont ensuite gardés par
-le navigateur (IndexedDB) et les lancements suivants prennent quelques secondes. Si le serveur a
-activé le préchargement (`PRELOAD=1`, voir [`docker.md`](./docker.md) ; désactivé par défaut), ce
-premier lancement télécharge aussi, sous l'écran de chargement et avec une barre de progression,
-les fichiers que presque toutes les parties utilisent (environ 340 Mo : les objets que tout terrain
-charge, les murs et les sols, les corps et les têtes des Sims). Sur une connexion lente, c'est
-l'étape la plus longue, mais elle n'a lieu qu'une fois, et entrer dans un terrain ou créer une
-famille ne les attend plus ensuite. Ne jouer que dans un seul onglet à la fois.
+le navigateur (IndexedDB) et les lancements suivants prennent quelques secondes. Sur une connexion
+lente, le panneau « Fichiers du jeu » de la page d'accueil permet de télécharger à l'avance, avec une
+barre de progression, les fichiers que presque toutes les parties utilisent (environ 340 Mo : les
+objets que tout terrain charge, les murs et les sols, les corps et les têtes des Sims) : entrer dans
+un terrain ou créer une famille ne les attend plus ensuite. « Arrêter » garde ce qui a été
+téléchargé ; « Vider les fichiers téléchargés » retire du navigateur les fichiers du jeu gardés
+(pas les sauvegardes) : le jeu les retélécharge au besoin et son lancement suivant relit le
+catalogue d'objets. Ne jouer que dans un seul onglet à la fois.
 
 ## 3. Les deux modes de sauvegarde
 

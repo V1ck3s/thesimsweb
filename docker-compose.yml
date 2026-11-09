@@ -10,8 +10,6 @@
 #                                 # client: each player imports their own copy of the game
 #                                 # into their browser; the server serves no game file
 #                                 # (forces THESIMSWEB_SAVES=client, SIMS_DIR not needed)
-#   THESIMSWEB_PRELOAD=0          # 1: each browser downloads the files nearly every session
-#                                 # reads at its first start (~340 MB, progress bar)
 #
 #   docker compose up -d --build
 #
@@ -26,7 +24,6 @@ services:
     environment:
       SAVES: "${THESIMSWEB_SAVES:-server}"
       GAME_FILES: "${THESIMSWEB_GAME_FILES:-server}"
-      PRELOAD: "${THESIMSWEB_PRELOAD:-0}"
     ports:
       - "${THESIMSWEB_BIND:-127.0.0.1}:${THESIMSWEB_PORT:-3000}:3000"
     volumes:

@@ -5,6 +5,9 @@
  * offline support (engine/pwa.ts). On an instance that serves no game file
  * (GAME_FILES=client), the import of the player's own install folder into
  * this browser (engine/gamefiles.ts); the game cannot start before it.
+ * On an instance that serves the game files, their download into this
+ * browser ahead of play (game/preload.ts) and the removal of what was
+ * downloaded.
  * The game's language (engine/language.ts), its screen size, fullscreen and
  * centred HUD options (engine/display.ts) and links to the family web pages
  * the game wrote (served by /webpages/ with their compatibility script).
@@ -15,7 +18,8 @@
  */
 
 import { exportSaves, getSaveMode, importSaves, listSaves, type SaveMode } from "../engine/saves.js";
-import { registerServiceWorker } from "../engine/pwa.js";
+import { clearOfflineGameFiles, registerServiceWorker } from "../engine/pwa.js";
+import { clearAssetCache } from "../engine/idb.js";
 import { LANGUAGES, readLanguage, storeLanguage } from "../engine/language.js";
 import {
   readCentredHud,
@@ -208,6 +212,109 @@ async function refreshGameFiles(): Promise<void> {
   else showGameCheck(null);
 }
 
+// --- Download of the game files (GAME_FILES=server) -----------------------------------
+
+/** The download in progress (Stop aborts it). */
+let downloading: AbortController | null = null;
+/** localStorage: how the last download ended ({ done, at }), dropped when the files are cleared. */
+const DL_KEY = "thesimsweb.download";
+
+function readDownload(): { done: boolean; at: number } | null {
+  try {
+    const v = JSON.parse(localStorage.getItem(DL_KEY) ?? "null") as { done?: unknown; at?: unknown } | null;
+    return v && typeof v.at === "number" ? { done: v.done === true, at: v.at } : null;
+  } catch {
+    return null;
+  }
+}
+
+function storeDownload(v: { done: boolean; at: number } | null): void {
+  try {
+    if (v) localStorage.setItem(DL_KEY, JSON.stringify(v));
+    else localStorage.removeItem(DL_KEY);
+  } catch {
+    // (storage refused: the state is just not remembered)
+  }
+}
+
+function setDownloadStatus(text: Text | "", kind: Kind = ""): void {
+  const el = $("dl-status");
+  show(el, text === "" ? () => "" : text);
+  el.className = `status ${kind}`;
+}
+
+function refreshDownload(): void {
+  const busy = downloading !== null;
+  $<HTMLButtonElement>("dl-start").disabled = busy;
+  $<HTMLButtonElement>("dl-clear").disabled = busy;
+  $<HTMLButtonElement>("dl-stop").hidden = !busy;
+  $("dl-progress").hidden = !busy;
+  const st = readDownload();
+  const el = $("dl-state");
+  show(el, () => (st ? t(st.done ? "dlStateDone" : "dlStatePartial", { date: formatDate(st.at) }) : t("dlStateNone")));
+  el.className = st?.done ? "ok" : "";
+}
+
+async function onDownload(): Promise<void> {
+  if (downloading) return;
+  downloading = new AbortController();
+  const signal = downloading.signal;
+  const progress = $<HTMLProgressElement>("dl-progress");
+  progress.removeAttribute("value");
+  refreshDownload();
+  try {
+    // (the game's modules, loaded only when asked for)
+    const { preloadGameFiles } = await import("../game/preload.js");
+    const r = await preloadGameFiles((p) => {
+      if (p.phase === "listing") {
+        progress.removeAttribute("value");
+        setDownloadStatus(() => t("dlListing"));
+        return;
+      }
+      progress.value = p.totalBytes ? p.doneBytes / p.totalBytes : 1;
+      setDownloadStatus(() => t("dlProgress", { done: formatBytes(p.doneBytes), size: formatBytes(p.totalBytes) }));
+    }, signal);
+    storeDownload({ done: true, at: Date.now() });
+    const failed = r.failed ? ` ${t("dlSomeFailed", { n: r.failed })}` : "";
+    if (r.bytes) setDownloadStatus(() => t("dlDone", { size: formatBytes(r.bytes) }) + failed, r.failed ? "warn" : "ok");
+    else setDownloadStatus(() => t("dlUpToDate") + failed, r.failed ? "warn" : "ok");
+  } catch (e) {
+    if ((e as Error).name === "AbortError") {
+      if (!readDownload()?.done) storeDownload({ done: false, at: Date.now() });
+      setDownloadStatus(() => t("dlStopped"), "warn");
+    } else setDownloadStatus(() => t("dlFailed", { error: (e as Error).message }), "err");
+  } finally {
+    downloading = null;
+    refreshDownload();
+    await refreshStorage();
+  }
+}
+
+async function onClearDownload(): Promise<void> {
+  if (!confirm(t("dlClearConfirm"))) return;
+  try {
+    await clearAssetCache();
+    await clearOfflineGameFiles();
+    storeDownload(null);
+    setDownloadStatus(() => t("dlCleared"), "ok");
+  } catch (e) {
+    setDownloadStatus(() => t("dlClearFailed", { error: (e as Error).message }), "err");
+  }
+  refreshDownload();
+  await refreshStorage();
+}
+
+function initDownload(): void {
+  $<HTMLButtonElement>("dl-start").addEventListener("click", () => void onDownload());
+  $<HTMLButtonElement>("dl-stop").addEventListener("click", () => downloading?.abort());
+  $<HTMLButtonElement>("dl-clear").addEventListener("click", () => void onClearDownload());
+  window.addEventListener("beforeunload", (e) => {
+    // (what was downloaded is kept, but the player may not mean to stop)
+    if (downloading) e.preventDefault();
+  });
+  refreshDownload();
+}
+
 // --- Installation check --------------------------------------------------------------
 
 /** The installation check's result in the game files panel (null: nothing to check yet). */
@@ -366,6 +473,7 @@ async function onRemoveGameFiles(): Promise<void> {
 
 function initGameFiles(): void {
   $("gamefiles").hidden = false;
+  for (const el of document.querySelectorAll<HTMLElement>("#gamefiles .server-only")) el.hidden = true;
   const input = $<HTMLInputElement>("gamefiles-input");
   input.addEventListener("change", () => {
     const list = input.files;
@@ -568,9 +676,10 @@ async function main(): Promise<void> {
   localGame = await isGameFilesLocal();
   if (localGame) initGameFiles();
   else {
-    // The server's game folder: only its installation check is shown.
+    // The server's game folder: its installation check and the download into this browser.
     $("gamefiles").hidden = false;
     for (const el of document.querySelectorAll<HTMLElement>("#gamefiles .local-only")) el.hidden = true;
+    initDownload();
     // The check downloads the server's file list (about 1 MB): only once the
     // panel comes into view (on a phone, far down the page).
     whenVisible($("gamefiles"), () => void refreshGameCheck());

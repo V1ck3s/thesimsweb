@@ -468,6 +468,8 @@
             <dd class="local-only" id="gamefiles-state">–</dd>
             <dt data-i18n="installH">Installation</dt>
             <dd id="gamecheck-state">–</dd>
+            <dt class="server-only" data-i18n="dlH">Downloaded files</dt>
+            <dd class="server-only" id="dl-state">–</dd>
           </dl>
           <p class="muted note" id="gamecheck-size" hidden></p>
           <details id="gamecheck-details" hidden>
@@ -483,6 +485,14 @@
             <input type="file" id="gamefiles-input" webkitdirectory multiple hidden />
           </div>
           <p class="status local-only" id="gamefiles-status" role="status"></p>
+          <p class="muted server-only" data-i18n="dlHelp"></p>
+          <progress class="server-only" id="dl-progress" max="1" value="0" hidden></progress>
+          <div class="row server-only">
+            <button type="button" id="dl-start" data-i18n="dlStart">Download the game files</button>
+            <button type="button" id="dl-stop" data-i18n="gfStop" hidden>Stop</button>
+            <button type="button" id="dl-clear" data-i18n="dlClear">Clear the downloaded files</button>
+          </div>
+          <p class="status server-only" id="dl-status" role="status"></p>
         </section>
 
         <section class="panel">

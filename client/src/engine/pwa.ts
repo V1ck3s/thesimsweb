@@ -33,3 +33,21 @@ export async function offlineStatus(): Promise<string> {
   if (reg.active) return "ready: the game starts without a network connection once it has been played here";
   return "being prepared…";
 }
+
+/**
+ * Drops the game files the service worker keeps for offline play (its "data"
+ * cache, src/sw/sw.ts: the loose files read whole), but not the save files
+ * (Sims/UserData*) nor the server's answers it keeps there.
+ */
+export async function clearOfflineGameFiles(): Promise<void> {
+  if (!("caches" in window)) return;
+  for (const name of await caches.keys()) {
+    if (!name.startsWith("data")) continue;
+    const cache = await caches.open(name);
+    for (const req of await cache.keys()) {
+      const m = /\/__offline__\/([^/?#]+)$/.exec(req.url);
+      const path = m ? decodeURIComponent(m[1]!) : "";
+      if (path.startsWith("sims/") && !/^sims\/userdata\d*\//.test(path)) await cache.delete(req);
+    }
+  }
+}

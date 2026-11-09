@@ -591,13 +591,14 @@ Every lot load reads the same object files whatever the lot (people, cars, NPCs,
 doors, windows, stairs, beds…), plus every wall and floor plugin. On a slow connection this made
 the first lot take minutes, and Create-a-Sim showed sims without their meshes or textures.
 
-- **Preload** (`client/src/game/preload.ts`, only when the server sets `PRELOAD=1`; off by
-  default): under the splash screen, with a progress bar, the
+- **Preload** (`client/src/game/preload.ts`; started from the landing page's "Game files" panel
+  since 2026-11-09, with a progress bar, a stop button and one that clears the downloaded files;
+  before, under the splash screen when the server set `PRELOAD=1`): the
   files common to the recorded lot loads (`client/src/game/preload-lots.json`, written by
   `scripts/preload-list.mjs` from recordings), the object files `ObjectFolder.everyLotFiles`
   names, every wall and floor plugin, and the sims' bodies and heads (meshes, textures, suits:
   names starting with `b` / `c` / `xskin-b` / `xskin-c`). The first run downloads about 340 MB.
-  The cache's keys are read once (`idbCachedKeys`), so later starts skip the step. After it, a lot
+  The cache's keys are read once (`idbCachedKeys`), so a second run downloads nothing. After it, a lot
   not among the recorded ones (House02) downloads 29 MB instead of 200+.
 - **Retries** (`fetchRetry`, `engine/assets.ts`): asset requests are asked again on a network
   error or a 408 / 429 / 502..504, about 30 s in all. VBAnimMgr no longer keeps a failed read: a

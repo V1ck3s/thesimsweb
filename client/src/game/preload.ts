@@ -1,11 +1,13 @@
 /**
- * Preloading of the game files nearly every session reads (not part of the
- * original, which read them from the disk): run under the splash screen at
- * start-up, with a progress bar, so that a slow connection pays once, up
+ * Download of the game files nearly every session reads (not part of the
+ * original, which read them from the disk), started from the landing page
+ * (landing/main.ts: a button, a progress bar, a stop button and one that
+ * clears what was downloaded), so that a slow connection can pay once, up
  * front, instead of during play (a family created with invisible sims while
- * their skins were still on the way, a lot taking minutes to open).
+ * their skins were still on the way, a lot taking minutes to open). Without
+ * it the game downloads the files as it needs them.
  *
- * What is preloaded:
+ * What is downloaded:
  *
  * - the files every lot load reads, whatever the lot: measured on recorded
  *   lot loads (preload-lots.json, scripts/preload-list.mjs: the people,
@@ -20,21 +22,17 @@
  *
  * The files land in the IndexedDB asset cache (engine/idb.ts) through the
  * usual reads (readFarEntry, readAssetFile); what the cache holds already is
- * skipped, so after the first complete run this costs one look at the
- * cache's keys. Nothing is preloaded when the game files are imported into
- * this browser (GAME_FILES=client: they are local) or without IndexedDB,
- * and only when the server asks for it (PRELOAD=1, engine/config.ts: off by
- * default, the files are then read as the game needs them).
+ * skipped. Not offered when the game files are imported into this browser
+ * (GAME_FILES=client: they are local) or without IndexedDB.
  */
 
 import { fetchManifest, readAssetFile, readFarEntry, readFarManifest } from "../engine/assets.js";
-import { getServerConfig } from "../engine/config.js";
 import { isGameFilesLocal } from "../engine/gamefiles.js";
 import { idbCachedKeys, openDb } from "../engine/idb.js";
 import lots from "./preload-lots.json";
 import { VBAnimMgr } from "./sims/vbanimmgr.js";
 import { scanPluginFiles } from "./world/floors.js";
-import type { ObjectFolder } from "./world/objectfolder.js";
+import { ObjectFolder } from "./world/objectfolder.js";
 
 /** One file to have in the cache: a FAR entry or a loose file ("Sims/..." paths). */
 type Item = { far: string; entry: string; size: number } | { path: string; size: number };
@@ -94,50 +92,75 @@ async function wanted(folder: ObjectFolder): Promise<Item[]> {
   return [...items.values()];
 }
 
+/** Where a download is: listing what to download (the object catalog is read the first time), then downloading. */
+export interface PreloadProgress {
+  phase: "listing" | "downloading";
+  doneBytes: number;
+  totalBytes: number;
+}
+
+export interface PreloadResult {
+  /** Bytes downloaded by this run (0: the cache held everything). */
+  bytes: number;
+  /** Files that could not be read (left to be read when the game needs them). */
+  failed: number;
+}
+
 /**
- * Brings the preloaded files into the cache, reporting the fraction done
- * (0..1, by bytes) to `progress` as it goes; resolves at once when the cache
- * holds them all. Never rejects: a file that could not be read is left to be
- * read when the game needs it.
+ * Brings the files into the cache, reporting its progress as it goes.
+ * Rejects with an AbortError when `signal` aborts (what was downloaded is
+ * kept), or when the files cannot be kept here (imported game files, no
+ * IndexedDB).
  */
-export async function preloadGameFiles(folder: ObjectFolder, progress: (done: number) => void): Promise<void> {
-  try {
-    if (!(await getServerConfig()).preload || (await isGameFilesLocal()) || !(await openDb())) return;
-    const [items, cached] = await Promise.all([wanted(folder), idbCachedKeys()]);
-    const missing = items.filter((it) => ("far" in it ? !cached.entries.has(`${it.far}|${it.entry.toLowerCase()}`) : !cached.files.has(it.path)));
-    if (!missing.length) return;
-    const total = missing.reduce((n, it) => n + it.size, 0) || 1;
-    let done = 0;
-    progress(0);
-    // Waves of about WAVE_BYTES, a few in flight.
-    const waves: Item[][] = [];
-    let wave: Item[] = [];
-    let bytes = 0;
-    for (const it of missing) {
-      if (wave.length && bytes + it.size > WAVE_BYTES) {
-        waves.push(wave);
-        wave = [];
-        bytes = 0;
-      }
-      wave.push(it);
-      bytes += it.size;
+export async function preloadGameFiles(progress: (p: PreloadProgress) => void, signal?: AbortSignal): Promise<PreloadResult> {
+  const aborted = (): void => {
+    if (signal?.aborted) throw new DOMException("stopped", "AbortError");
+  };
+  if (await isGameFilesLocal()) throw new Error("the game files are imported into this browser");
+  if (!(await openDb())) throw new Error("IndexedDB is unavailable");
+  progress({ phase: "listing", doneBytes: 0, totalBytes: 0 });
+  const folder = await ObjectFolder.get("UserData");
+  aborted();
+  const [items, cached] = await Promise.all([wanted(folder), idbCachedKeys()]);
+  aborted();
+  const missing = items.filter((it) => ("far" in it ? !cached.entries.has(`${it.far}|${it.entry.toLowerCase()}`) : !cached.files.has(it.path)));
+  const total = missing.reduce((n, it) => n + it.size, 0);
+  let done = 0;
+  let failed = 0;
+  progress({ phase: "downloading", doneBytes: 0, totalBytes: total });
+  // Waves of about WAVE_BYTES, a few in flight.
+  const waves: Item[][] = [];
+  let wave: Item[] = [];
+  let bytes = 0;
+  for (const it of missing) {
+    if (wave.length && bytes + it.size > WAVE_BYTES) {
+      waves.push(wave);
+      wave = [];
+      bytes = 0;
     }
-    if (wave.length) waves.push(wave);
-    let next = 0;
-    const worker = async (): Promise<void> => {
-      while (next < waves.length) {
-        const w = waves[next++]!;
-        await Promise.all(
-          w.map(async (it) => {
-            await ("far" in it ? readFarEntry(it.far, it.entry) : readAssetFile(it.path)).catch((e: unknown) => console.warn("preload:", e));
-            done += it.size;
-            progress(done / total);
-          }),
-        );
-      }
-    };
-    await Promise.all(Array.from({ length: WAVES }, worker));
-  } catch (e) {
-    console.warn("preload failed", e);
+    wave.push(it);
+    bytes += it.size;
   }
+  if (wave.length) waves.push(wave);
+  let next = 0;
+  const worker = async (): Promise<void> => {
+    while (next < waves.length && !signal?.aborted) {
+      const w = waves[next++]!;
+      await Promise.all(
+        w.map(async (it) => {
+          try {
+            await ("far" in it ? readFarEntry(it.far, it.entry) : readAssetFile(it.path));
+          } catch (e) {
+            failed++;
+            console.warn("preload:", e);
+          }
+          done += it.size;
+          progress({ phase: "downloading", doneBytes: done, totalBytes: total });
+        }),
+      );
+    }
+  };
+  await Promise.all(Array.from({ length: WAVES }, worker));
+  aborted();
+  return { bytes: total, failed };
 }

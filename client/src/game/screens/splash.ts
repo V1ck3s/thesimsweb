@@ -13,8 +13,6 @@
  *   queued.
  * - Messages are looked up by four-character stage tag in UIText STR# 155;
  *   entries whose comment starts with "!" are not shown (SetSplashMessage).
- * - Not in the original: while the game files are preloaded (game/preload.ts),
- *   a progress bar under the frame bitmap (setProgress).
  */
 
 import type { GameContext } from "../context.js";
@@ -38,8 +36,6 @@ export class TSWinSplashScreen extends TSWin {
   private previous = "";
   private slideStart = -Infinity;
   private readonly queue: string[] = [];
-  /** Fraction of the preload done (0..1), null when there is none to show. */
-  private progress: number | null = null;
 
   constructor(readonly ctx: GameContext) {
     super();
@@ -75,11 +71,6 @@ export class TSWinSplashScreen extends TSWin {
     this.startSlide(text);
   }
 
-  /** The preload's progress bar: the fraction done (0..1), or null to hide it. */
-  setProgress(fraction: number | null): void {
-    this.progress = fraction === null ? null : Math.min(1, Math.max(0, fraction));
-  }
-
   /** Resolves once every queued message has finished sliding in. */
   async finished(): Promise<void> {
     while (this.queue.length || performance.now() < this.slideStart + SLIDE_MS) {
@@ -103,20 +94,6 @@ export class TSWinSplashScreen extends TSWin {
     const h = this.getH();
     g.fill(0, 0, w, h, "#000");
     if (this.frame) g.blit(this.frame, (w - this.frame.width) >> 1, (h - this.frame.height) >> 1);
-    if (this.progress !== null) {
-      // A white frame and fill between the bitmap and the progress messages.
-      const fh = this.frame?.height ?? 0;
-      const bw = Math.min(w - 32, 400);
-      const bh = 8;
-      const bx = (w - bw) >> 1;
-      const by = Math.min(((h + fh) >> 1) + 16, h - 3 * (this.font?.height ?? 16) - bh);
-      g.fill(bx, by, bw, 1, "#ffffff");
-      g.fill(bx, by + bh - 1, bw, 1, "#ffffff");
-      g.fill(bx, by, 1, bh, "#ffffff");
-      g.fill(bx + bw - 1, by, 1, bh, "#ffffff");
-      const fill = Math.round((bw - 4) * this.progress);
-      if (fill > 0) g.fill(bx + 2, by + 2, fill, bh - 4, "#ffffff");
-    }
     const font = this.font;
     if (!font) return;
 

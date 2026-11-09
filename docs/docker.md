@@ -117,16 +117,16 @@ Limites :
 Hors Docker : `GAME_FILES=client pnpm start` (ou `GAME_FILES=client npx tsx src/index.ts` dans
 `server/`).
 
-## Préchargement (`THESIMSWEB_PRELOAD`, variable `PRELOAD` du serveur)
+## Téléchargement des fichiers à l'avance
 
-Désactivé par défaut (`0`) : le jeu télécharge les fichiers au moment où il en a besoin. Avec `1`,
-chaque navigateur télécharge à son premier lancement, sous l'écran de chargement et avec une barre
-de progression, les fichiers que presque toutes les parties utilisent (environ 340 Mo : les objets
-que tout terrain charge, les murs et les sols, les corps et les têtes des Sims ;
-`client/src/game/preload.ts`). Utile quand les joueurs ont une connexion lente : un terrain ou la
-création d'une famille n'attend plus ces fichiers. Les lancements suivants sautent l'étape (le
-navigateur les garde). Sans effet avec `THESIMSWEB_GAME_FILES=client` (les fichiers sont déjà dans
-le navigateur).
+Plus de variable serveur (l'ancienne `THESIMSWEB_PRELOAD` / `PRELOAD` est ignorée) : chaque joueur
+peut, depuis la page d'accueil (panneau « Fichiers du jeu »), télécharger à l'avance les fichiers
+que presque toutes les parties utilisent (environ 340 Mo : les objets que tout terrain charge, les
+murs et les sols, les corps et les têtes des Sims ; `client/src/game/preload.ts`), avec une barre de
+progression, un bouton pour arrêter et un bouton pour vider ce qui a été téléchargé. Utile sur une
+connexion lente : un terrain ou la création d'une famille n'attend plus ces fichiers. Sans ce
+téléchargement, le jeu lit les fichiers au moment où il en a besoin. Pas proposé avec
+`THESIMSWEB_GAME_FILES=client` (les fichiers sont déjà dans le navigateur).
 
 ## Sécurité
 
