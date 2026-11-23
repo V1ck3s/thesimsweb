@@ -841,10 +841,10 @@ jump and per-object writer probes.
   data makes a family member go to him: his only TTAB entry, "Greet" (flags 4 = run
   immediately, no motive ads), is user-only, so with nobody clicking him nobody pays (that is
   the "nobody paid" of the playtest). Greeting him ("Salue", "do npc greeting" 4101) creates the
-  Social Interactions object and pushes its entries 0x3c "Livre la pizza" (Pizza - Delivery
-  Person 4254) on him and 0x3d "Reçoit la pizza" (Pizza - Receive 4255) on the greeter at the
+  Social Interactions object and pushes its entries 0x3c "Deliver Pizza" (Pizza - Delivery
+  Person 4254) on him and 0x3d "Receive Pizza" (Pizza - Receive 4255) on the greeter at the
   greeter's priority (50 for a user greet). Seen: the dude routes through the front door to the
-  greeter, then the "Fred le livreur de pizza : Et voilà !..." dialog (STR# 301 of the dude,
+  greeter, then the "Fred the pizza delivery guy: Here you go!..." dialog (STR# 301 of the dude,
   node 14 of 4254); the payment (Transfer Funds, node 24, after the exchange animation) was
   not reached in the runs (the dialog came at the end of the run). When the greeter is eating
   (group meal, autonomous priority 2) the queued Receive waits: "eat standing up" / "do group
@@ -876,7 +876,7 @@ jump and per-object writer probes.
   standing up, "Have A Meal" grab food -> eat standing up; nobody starved. The data allows it: the
   food's "prepare food" (Food.iff 4198) marks the food prepared when Find Best Object for Function
   finds no surface. The earlier starving observation is not reproduced.
-- **Pizza delivery**: phone "Services.../Pizza" -> "C'est $40 en tout..." dialog, NPC Pizza Dude
+- **Pizza delivery**: phone "Services.../Pizza" -> "That's $40 total..." dialog, NPC Pizza Dude
   through the pedestrian portal 15 min later, left at 12:08 unpaid (funds unchanged; nobody went
   to pay in that run). Balloons not checked.
 - **0x44e at load**: House05 and House07 of a UserData copy load and run half a day with 0 tree

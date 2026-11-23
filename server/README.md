@@ -14,9 +14,9 @@ The first time, drop your Sims install into `server/assets/`:
 ```bash
 mkdir -p server/assets
 # Either copy the folder you want to host:
-cp -r "/mnt/c/Program Files (x86)/Maxis/Les Sims/." server/assets/
+cp -r "/path/to/The Sims/." server/assets/
 # Or symlink it (faster, no duplication):
-ln -s "/mnt/c/Program Files (x86)/Maxis/Les Sims" server/assets
+ln -s "/path/to/The Sims" server/assets
 ```
 
 `server/assets/` and `server/data/` are gitignored — assets are never

@@ -23,7 +23,7 @@ B=~/simsweb-build
 mkdir -p $B/opt $B/decomp/win
 # JDK 21 + Ghidra 12.1.x unpacked into $B/opt (no root needed)
 git clone --depth 1 https://github.com/simdecomp/sims1_mac_decomp $B/decomp/sims1_mac_decomp
-cp "/mnt/c/Program Files (x86)/Maxis/Les Sims/Sims.exe" $B/decomp/win/
+cp "<game folder>/Sims.exe" $B/decomp/win/
 
 tools/decomp/ghidra.sh mac   # -> $B/decomp/mac-pseudoc/<Class>.c
 tools/decomp/ghidra.sh win   # -> $B/decomp/win-pseudoc/_global.c

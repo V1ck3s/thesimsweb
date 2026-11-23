@@ -4,7 +4,7 @@
 // nothing of its content. The installation check (pnpm check-game, the landing page,
 // client/src/engine/gamecheck.ts) compares a game folder with it.
 //
-//   node scripts/gamefiles-reference.mjs "/mnt/c/Program Files (x86)/Maxis/Les Sims" "Complete Collection, French"
+//   node scripts/gamefiles-reference.mjs "/path/to/The Sims" "Complete Collection, French"
 //
 // Left out: the files at the top of the install (the program, its libraries, logs),
 // support/ (help, registration), Downloads/ and GameData/UserObjects/ (the player's

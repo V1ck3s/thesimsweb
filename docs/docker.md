@@ -1,150 +1,150 @@
-# Déploiement sur un serveur (Docker)
+# Deploying on a server (Docker)
 
-`Dockerfile` + `docker-compose.yml` à la racine. L'image contient le jeu construit (moteur WASM,
-`client/dist`, serveur Fastify) ; **les fichiers de The Sims n'y sont pas** et ne doivent jamais y
-être : ils sont montés en lecture seule depuis le serveur, ou, en mode « fichiers du jeu chez le
-joueur » (`THESIMSWEB_GAME_FILES=client`, voir plus bas), importés par chaque joueur dans son
-navigateur.
+`Dockerfile` + `docker-compose.yml` at the root. The image contains the built game (WASM engine,
+`client/dist`, Fastify server); **The Sims files are not in it** and must never be: they are
+mounted read-only from the server, or, in "game files on the player's side" mode
+(`THESIMSWEB_GAME_FILES=client`, see below), imported by each player into their browser.
 
-## Mise en place
+## Setup
 
-1. Copier le dossier d'installation du jeu sur le serveur (par exemple `/srv/sims/Les Sims`, celui
-   qui contient `GameData/`, `UserData/`, `ExpansionShared/`…). Il est lu tel quel, la casse des noms
-   n'a pas d'importance (vérifié sur un système de fichiers Linux sensible à la casse).
-2. Copier le dépôt (ou seulement les sources : voir `.dockerignore`) sur le serveur.
-3. `cp .env.example .env` et régler `SIMS_DIR` (obligatoire, sauf en mode
-   `THESIMSWEB_GAME_FILES=client`), `THESIMSWEB_PORT`, `THESIMSWEB_BIND`, `THESIMSWEB_SAVES`,
-   `THESIMSWEB_GAME_FILES` (voir ci-dessous). Sans `SIMS_DIR`, compose monte `./server/assets/Sims`
-   (créé vide au besoin) et le serveur signale dans son journal qu'il n'a pas de dossier de jeu.
-4. `docker compose up -d --build`, puis ouvrir `http://<serveur>:<port>/` (page d'accueil : jouer,
-   exporter / importer les sauvegardes ; guide du joueur : [`user-guide.md`](./user-guide.md)).
+1. Copy the game's install folder to the server (for example `/srv/sims/TheSims`, the one that
+   contains `GameData/`, `UserData/`, `ExpansionShared/`...). It is read as is, and the case of
+   file names does not matter (verified on a case-sensitive Linux file system).
+2. Copy the repository (or only the sources: see `.dockerignore`) to the server.
+3. `cp .env.example .env` and set `SIMS_DIR` (required, except in
+   `THESIMSWEB_GAME_FILES=client` mode), `THESIMSWEB_PORT`, `THESIMSWEB_BIND`, `THESIMSWEB_SAVES`,
+   `THESIMSWEB_GAME_FILES` (see below). Without `SIMS_DIR`, compose mounts `./server/assets/Sims`
+   (created empty if needed) and the server logs that it has no game folder.
+4. `docker compose up -d --build`, then open `http://<server>:<port>/` (landing page: play,
+   export / import saves; player's guide: [`user-guide.md`](./user-guide.md)).
 
-Mise à jour après un `git pull` : `docker compose up -d --build` (les sauvegardes restent).
+Updating after a `git pull`: `docker compose up -d --build` (saves are kept).
 
-### Image construite par GitHub (sans les sources sur le serveur)
+### Image built by GitHub (without the sources on the server)
 
-Le workflow `.github/workflows/docker.yml` construit l'image à chaque push sur `main` et la publie
-sur `ghcr.io/v1ck3s/thesimsweb` (tags `main`, `latest`, `sha-<commit>`, et `x.y.z` pour un tag
-`vx.y.z`). Le paquet est privé comme le dépôt : le serveur s'authentifie une fois avec
-`docker login ghcr.io` (un token GitHub avec `read:packages`).
+The workflow `.github/workflows/docker.yml` builds the image on every push to `main` and publishes
+it to `ghcr.io/<owner>/thesimsweb` (tags `main`, `latest`, `sha-<commit>`, and `x.y.z` for a
+`vx.y.z` tag). If the package is private, the server authenticates once with
+`docker login ghcr.io` (a GitHub token with `read:packages`).
 
-Sur le serveur, il suffit alors d'un `docker-compose.yml` qui remplace `build: .` par
-`image: ghcr.io/v1ck3s/thesimsweb:main` (mêmes variables, mêmes volumes), d'un `.env` et du dossier
-du jeu. Mise à jour : `docker compose pull && docker compose up -d`.
+On the server, all you then need is a `docker-compose.yml` that replaces `build: .` with
+`image: ghcr.io/<owner>/thesimsweb:main` (same variables, same volumes), a `.env` and the game
+folder. Update: `docker compose pull && docker compose up -d`.
 
-## Sauvegardes : deux modes (`THESIMSWEB_SAVES`, variable `SAVES` du serveur)
+## Saves: two modes (`THESIMSWEB_SAVES`, the server's `SAVES` variable)
 
-- **`server`** (par défaut) : une instance = un joueur. Une seule série de sauvegardes, sur le
-  serveur ; on la retrouve depuis n'importe quel navigateur.
-- **`client`** : une instance = plusieurs joueurs. Chaque navigateur garde ses propres sauvegardes
-  (IndexedDB, base `thesimsweb-saves`, `client/src/engine/saves.ts`) et part des quartiers
-  d'origine du dossier du jeu. Le serveur refuse alors toute écriture (403) et n'utilise pas le
-  volume `saves`. Les sauvegardes sont liées à l'adresse du site (domaine + port) et au
-  navigateur : changer d'adresse, de navigateur, ou effacer les données du site les perd. Le jeu
-  demande au navigateur un stockage persistant (`navigator.storage.persist`). La page d'accueil
-  exporte et importe ces sauvegardes (une archive ZIP, voir [`user-guide.md`](./user-guide.md) § 4).
+- **`server`** (default): one instance = one player. A single set of saves, on the server; it can
+  be reached from any browser.
+- **`client`**: one instance = several players. Each browser keeps its own saves
+  (IndexedDB, `thesimsweb-saves` database, `client/src/engine/saves.ts`) and starts from the
+  original neighbourhoods of the game folder. The server then refuses any write (403) and does not
+  use the `saves` volume. Saves are tied to the site address (domain + port) and to the
+  browser: changing address, browser, or clearing the site data loses them. The game
+  asks the browser for persistent storage (`navigator.storage.persist`). The landing page
+  exports and imports these saves (a ZIP archive, see [`user-guide.md`](./user-guide.md) § 4).
 
-Changer de mode ne convertit rien : les sauvegardes du serveur restent dans le volume, celles des
-navigateurs dans les navigateurs.
+Changing mode converts nothing: the server's saves stay in the volume, the browsers' saves in the
+browsers.
 
-### Mode `server`
+### `server` mode
 
-Le jeu écrit ses `UserData*` dans le volume nommé `saves` (monté sur `/app/server/data/overlay`) ;
-il survit aux reconstructions. Pour reprendre des sauvegardes existantes (l'overlay local
-`server/data/overlay/`) :
+The game writes its `UserData*` to the named volume `saves` (mounted on `/app/server/data/overlay`);
+it survives rebuilds. To bring over existing saves (the local overlay
+`server/data/overlay/`):
 
 ```bash
 docker compose cp server/data/overlay/Sims thesimsweb:/app/server/data/overlay/
 docker compose exec -u root thesimsweb chown -R node:node /app/server/data/overlay
 ```
 
-Pour les récupérer : `docker compose cp thesimsweb:/app/server/data/overlay/Sims ./sauvegardes`.
-Plus simple : **Export saves** / **Import saves…** sur la page d'accueil (`GET /api/saves` liste les
-fichiers de l'overlay, l'import passe par `DELETE` / `PUT /api/files`). Hors Docker, la variable
-`OVERLAY_DIR` du serveur change le dossier de l'overlay (défaut `server/data/overlay`).
+To retrieve them: `docker compose cp thesimsweb:/app/server/data/overlay/Sims ./saves`.
+Simpler: **Export saves** / **Import saves...** on the landing page (`GET /api/saves` lists the
+overlay's files, the import goes through `DELETE` / `PUT /api/files`). Outside Docker, the server's
+`OVERLAY_DIR` variable changes the overlay folder (default `server/data/overlay`).
 
-## Film d'intro
+## Intro movie
 
-Au démarrage, le jeu montre le film d'intro EA de sa langue (`Music/eag_<langue>.avi`, en
-MS-MPEG4, que les navigateurs ne lisent pas). Le serveur le convertit une fois en WebM avec
-`ffmpeg` (`server/src/routes/movies.ts`, copie gardée dans `server/data/movies/`). L'image
-l'installe par défaut ; `docker compose build --build-arg WITH_FFMPEG=0` l'omet (image plus
-petite, le film est alors sauté). En mode `GAME_FILES=client`, il est toujours sauté.
+At startup, the game shows the EA intro movie for its language (`Music/eag_<language>.avi`, in
+MS-MPEG4, which browsers cannot play). The server converts it once to WebM with
+`ffmpeg` (`server/src/routes/movies.ts`, a copy is kept in `server/data/movies/`). The image
+installs it by default; `docker compose build --build-arg WITH_FFMPEG=0` omits it (smaller image,
+the movie is then skipped). In `GAME_FILES=client` mode, it is always skipped.
 
-## Fichiers du jeu : sur le serveur ou chez chaque joueur (`THESIMSWEB_GAME_FILES`, variable `GAME_FILES` du serveur)
+## Game files: on the server or on each player's side (`THESIMSWEB_GAME_FILES`, the server's `GAME_FILES` variable)
 
-- **`server`** (par défaut) : le jeu tourne sur le dossier `SIMS_DIR` du serveur, servi sous
-  `/assets/` (avec `/api/manifest` et `/api/ranges`). C'est l'usage personnel : son propre jeu, sur
-  son propre serveur.
-- **`client`** : **le serveur ne sert aucun fichier du jeu**, seulement l'application (pages,
-  scripts, moteur WASM). Chaque joueur sélectionne sur la page d'accueil le dossier d'installation
-  de **sa propre copie** de The Sims (Complete Collection) ; la page vérifie que c'est bien un
-  dossier du jeu complet (`GameData/`, `ExpansionShared/`, `ExpansionPack…7/`, `UIGraphics/`,
-  `SoundData/`, `UserData/Neighborhood.iff`…) et copie dans le navigateur (IndexedDB, base
-  `thesimsweb-gamefiles`, `client/src/engine/gamefiles.ts`) les fichiers que le jeu lit (ni les
-  `.exe` / `.dll`, ni les journaux, ni `support/`, ni les vidéos d'intro). Le jeu ne démarre
-  qu'une fois l'import terminé ; sans import, `/game.html` renvoie à la page d'accueil.
-  `/assets/`, `/api/manifest` et `/api/ranges` répondent 404, et les sauvegardes restent dans les
-  navigateurs (`SAVES=client` est imposé, `THESIMSWEB_SAVES` est ignoré).
+- **`server`** (default): the game runs on the server's `SIMS_DIR` folder, served under
+  `/assets/` (with `/api/manifest` and `/api/ranges`). This is personal use: your own game, on your
+  own server.
+- **`client`**: **the server serves no game file**, only the application (pages,
+  scripts, WASM engine). On the landing page, each player selects the install folder
+  of **their own copy** of The Sims (Complete Collection); the page checks that it really is a
+  complete game folder (`GameData/`, `ExpansionShared/`, `ExpansionPack...7/`, `UIGraphics/`,
+  `SoundData/`, `UserData/Neighborhood.iff`...) and copies into the browser (IndexedDB,
+  `thesimsweb-gamefiles` database, `client/src/engine/gamefiles.ts`) the files the game reads (not
+  the `.exe` / `.dll`, the logs, `support/`, or the intro videos). The game only starts
+  once the import is done; without an import, `/game.html` redirects to the landing page.
+  `/assets/`, `/api/manifest` and `/api/ranges` answer 404, and saves stay in the
+  browsers (`SAVES=client` is forced, `THESIMSWEB_SAVES` is ignored).
 
-**Pourquoi ce mode** : pour ouvrir une instance à d'autres personnes sans **jamais distribuer les
-fichiers de Maxis / Electronic Arts**, qui sont protégés par le droit d'auteur. Le serveur ne fait
-qu'héberger le code du portage (libre) ; chaque joueur apporte son propre exemplaire du jeu, qui ne
-quitte pas son ordinateur (le fichier est lu par le navigateur, rien n'est envoyé au serveur). En
-mode `server`, au contraire, l'instance sert le jeu à quiconque l'atteint : à réserver à soi-même.
+**Why this mode**: to open an instance to other people without **ever distributing the
+files of Maxis / Electronic Arts**, which are protected by copyright. The server only
+hosts the port's code (free software); each player brings their own copy of the game, which does not
+leave their computer (the file is read by the browser, nothing is sent to the server). In
+`server` mode, on the other hand, the instance serves the game to anyone who reaches it: reserve it
+for yourself.
 
-Limites :
+Limits:
 
-- **Place** : environ **3,2 Go** par navigateur (la Complete Collection entière moins les
-  programmes), stockés dans le profil du navigateur. Firefox et Chrome l'acceptent sur un disque qui
-  a la place ; la page demande le stockage persistant (`navigator.storage.persist`) pour que le
-  navigateur ne l'efface pas en cas de manque de place.
-- **Un import par navigateur** (et par adresse du site, comme les sauvegardes) : un autre
-  navigateur, un autre appareil, une autre adresse (domaine, port) demandent un nouvel import.
-- L'import prend quelques minutes (copie locale de 3 Go). Interrompu (onglet fermé, bouton
-  **Stop**), il reprend là où il s'était arrêté en sélectionnant de nouveau le dossier : les
-  fichiers déjà copiés, de même taille et même date, ne sont pas recopiés. Sous Chrome / Edge, le
-  sélecteur de dossier (File System Access API) garde le dossier, et un bouton **Resume** reprend
-  sans le resélectionner.
-- Le dossier sélectionné n'est que lu. Les sauvegardes d'origine qu'il contient (`UserData*`) sont
-  copiées comme le reste ; les sauvegardes du joueur les masquent ensuite, comme en mode
-  `SAVES=client`.
-- **Remove the game files** efface l'import (les sauvegardes restent) ; **Import again…** refait
-  un import (seuls les fichiers changés sont recopiés, ceux qui ont disparu du dossier sont retirés).
-- Le jeu tourne alors entièrement dans le navigateur : une fois l'import fait, il démarre sans
-  connexion si le service worker est actif (HTTPS ou localhost, voir plus bas).
+- **Space**: about **3.2 GB** per browser (the whole Complete Collection minus the
+  programs), stored in the browser profile. Firefox and Chrome accept it on a disk that
+  has the room; the page requests persistent storage (`navigator.storage.persist`) so that the
+  browser does not clear it when space runs low.
+- **One import per browser** (and per site address, like saves): another
+  browser, another device, another address (domain, port) requires a new import.
+- The import takes a few minutes (a local copy of 3 GB). If interrupted (tab closed, **Stop**
+  button), it resumes where it stopped when the folder is selected again: files
+  already copied, with the same size and date, are not copied again. In Chrome / Edge, the
+  folder picker (File System Access API) keeps the folder, and a **Resume** button resumes
+  without selecting it again.
+- The selected folder is only read. The original saves it contains (`UserData*`) are
+  copied like the rest; the player's saves then hide them, as in
+  `SAVES=client` mode.
+- **Remove the game files** erases the import (saves stay); **Import again...** redoes
+  an import (only changed files are copied again, those that disappeared from the folder are removed).
+- The game then runs entirely in the browser: once the import is done, it starts without a
+  connection if the service worker is active (HTTPS or localhost, see below).
 
-Hors Docker : `GAME_FILES=client pnpm start` (ou `GAME_FILES=client npx tsx src/index.ts` dans
+Outside Docker: `GAME_FILES=client pnpm start` (or `GAME_FILES=client npx tsx src/index.ts` in
 `server/`).
 
-## Téléchargement des fichiers à l'avance
+## Downloading files in advance
 
-Plus de variable serveur (l'ancienne `THESIMSWEB_PRELOAD` / `PRELOAD` est ignorée) : chaque joueur
-peut, depuis la page d'accueil (panneau « Fichiers du jeu »), télécharger à l'avance les fichiers
-que presque toutes les parties utilisent (environ 340 Mo : les objets que tout terrain charge, les
-murs et les sols, les corps et les têtes des Sims ; `client/src/game/preload.ts`), avec une barre de
-progression, un bouton pour arrêter et un bouton pour vider ce qui a été téléchargé. Utile sur une
-connexion lente : un terrain ou la création d'une famille n'attend plus ces fichiers. Sans ce
-téléchargement, le jeu lit les fichiers au moment où il en a besoin. Pas proposé avec
-`THESIMSWEB_GAME_FILES=client` (les fichiers sont déjà dans le navigateur).
+No more server variable (the old `THESIMSWEB_PRELOAD` / `PRELOAD` is ignored): each player
+can, from the landing page ("Game files" panel), download in advance the files
+that almost every game uses (about 340 MB: the objects every lot loads, walls and
+floors, the Sims' bodies and heads; `client/src/game/preload.ts`), with a progress bar,
+a button to stop and a button to clear what has been downloaded. Useful on a slow
+connection: a lot or family creation then no longer waits for these files. Without this
+download, the game reads files at the moment it needs them. Not offered with
+`THESIMSWEB_GAME_FILES=client` (the files are already in the browser).
 
-## Sécurité
+## Security
 
-Le serveur n'a **aucune authentification** : en mode `server`, quiconque l'atteint peut jouer et
-écraser les sauvegardes (`PUT` / `DELETE /api/files/Sims/UserData*/`). En mode `client`, il est en
-lecture seule, mais sert quand même les fichiers du jeu à qui l'atteint, sauf avec
-`THESIMSWEB_GAME_FILES=client` (il ne sert alors plus que l'application). Par défaut le port n'est publié que sur
-`127.0.0.1` ; le mettre derrière un reverse proxy (Caddy, nginx, Traefik) avec authentification et
-HTTPS, ou le garder sur un réseau privé (VPN). `THESIMSWEB_BIND=0.0.0.0` l'expose directement.
+The server has **no authentication**: in `server` mode, anyone who reaches it can play and
+overwrite the saves (`PUT` / `DELETE /api/files/Sims/UserData*/`). In `client` mode, it is
+read-only, but still serves the game files to whoever reaches it, except with
+`THESIMSWEB_GAME_FILES=client` (it then only serves the application). By default the port is only published on
+`127.0.0.1`; put it behind a reverse proxy (Caddy, nginx, Traefik) with authentication and
+HTTPS, or keep it on a private network (VPN). `THESIMSWEB_BIND=0.0.0.0` exposes it directly.
 
-Le reverse proxy doit laisser passer les requêtes `Range` et les corps `PUT` jusqu'à 128 Mo
-(nginx : `client_max_body_size 128m;`). Le mode hors ligne (service worker) exige HTTPS, sauf sur
-`localhost` : derrière un reverse proxy HTTPS il fonctionne, en `http://<ip-du-LAN>` non.
+The reverse proxy must let `Range` requests and `PUT` bodies of up to 128 MB through
+(nginx: `client_max_body_size 128m;`). Offline mode (service worker) requires HTTPS, except on
+`localhost`: behind an HTTPS reverse proxy it works, over `http://<LAN-ip>` it does not.
 
-## Détails de l'image
+## Image details
 
-- Étape `wasm` : `rust:1.95` + `wasm-pack` 0.14 → `crates/wasm-bindings/pkg`.
-- Étape `build` : `pnpm install --frozen-lockfile`, build du client et du serveur, `pnpm deploy`
-  du serveur avec ses seules dépendances de production.
-- Étape finale : `node:22-bookworm-slim`, utilisateur `node`, `HOST=0.0.0.0`, `PORT=3000`,
-  healthcheck sur `/api/health`. Environ 360 Mo.
+- `wasm` stage: `rust:1.95` + `wasm-pack` 0.14 → `crates/wasm-bindings/pkg`.
+- `build` stage: `pnpm install --frozen-lockfile`, client and server build, `pnpm deploy`
+  of the server with only its production dependencies.
+- Final stage: `node:22-bookworm-slim`, `node` user, `HOST=0.0.0.0`, `PORT=3000`,
+  healthcheck on `/api/health`. About 360 MB.

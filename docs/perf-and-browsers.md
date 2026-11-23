@@ -113,7 +113,7 @@ index in IndexedDB.
    time (an unbounded fallback made Chrome drop requests and cache an incomplete index; bounded, it
    is correct).
 3. **Manifest overlay listing cached.** `/api/manifest` walked the save overlay
-   (`server/data/overlay/`, now ~4200 files) on every call: 7..9 s per call over `/mnt/c`, and a
+   (`server/data/overlay/`, now ~4200 files) on every call: 7..9 s per call over the Windows mount, and a
    boot + lot load calls it about ten times. The listing is now cached and invalidated by the
    overlay's PUT / DELETE routes (`?refresh` also re-walks it).
 
@@ -133,7 +133,7 @@ another session was using it, so they are inflated, but each manifest call alone
 
 ## Server restart
 
-The shared dev server (:3000, `tsx watch`) does not see file changes on `/mnt/c`, so it still runs
+The shared dev server (:3000, `tsx watch`) does not see file changes on the Windows mount, so it still runs
 the old routes: no `/api/ranges` (the client falls back, scan ~16 s) and the per-call overlay walk.
 Restart `pnpm dev` to get both. The :5174 / :3001 pair used for the measurements was stopped.
 
@@ -315,7 +315,7 @@ by (type, constructor) with retainer paths for the new nodes.
   identical results but was slower on these small searches (240 ms in all) and was not kept. A steady
   sim-side cost seen in the profile: `SimModule.familyFriendCount` (`cpFamilyFriendCount`, called by
   UpdateCPStateFromWorld every frame) is the top sim function (0.8 % of a 40 s profile).
-- **Cold lot load** (empty browser profile, game folder on a busy /mnt/c): lot view after 33.6 s, 923
+- **Cold lot load** (empty browser profile, game folder on a busy Windows mount): lot view after 33.6 s, 923
   requests, but the main thread was busy only ~4.5 s of it (idle 26.7 s): the load waits on the server.
   Our biggest main-thread cost was IndexedDB: one transaction per get (`engine/idb.ts` `withStore`,
   ~0.9 s). The gets issued in one task (FAR entries, IFF files, ranges, FAR manifests) now share one

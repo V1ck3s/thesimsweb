@@ -1,5 +1,5 @@
 /**
- * cWinDesignCharacter: the "Créer un Sim" screen (first name, biography,
+ * cWinDesignCharacter: the "Create a Sim" screen (first name, biography,
  * adult / child, gender, skin tone, head and body cycling, the 3D preview,
  * the five personality bars with their 25 points and the star sign).
  *

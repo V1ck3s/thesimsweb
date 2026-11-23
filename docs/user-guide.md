@@ -1,239 +1,233 @@
-# Guide d'utilisation
+# User guide
 
-thesimsweb fait tourner **Les Sims (2000, Complete Collection)** dans un navigateur, à partir des
-fichiers d'une installation du jeu. Le projet ne contient **aucun fichier du jeu** : il faut sa
-propre copie installée (le dossier qui contient `GameData/`, `UserData/`, `ExpansionShared/`…) :
-sur le serveur (cas par défaut), ou, sur une instance ouverte à d'autres, importée dans son
-navigateur (§ 3 bis).
+thesimsweb runs **The Sims (2000, Complete Collection)** in a browser, from the files of an
+installed copy of the game. The project contains **no game files**: you need your own installed
+copy (the folder that contains `GameData/`, `UserData/`, `ExpansionShared/`...), either on the
+server (the default), or, on an instance open to other people, imported into your own browser
+(§ 3 bis).
 
 ## 1. Installation
 
-### En local (une machine, un joueur)
+### Locally (one machine, one player)
 
-Outils : Node 22, pnpm 10, Rust + `wasm-pack` (voir `docs/DEVELOPMENT.md`, « Bootstrap d'une nouvelle machine »).
+Tools: Node 22, pnpm 10, Rust + `wasm-pack` (see `docs/DEVELOPMENT.md`).
 
 ```bash
 pnpm install
 mkdir -p server/assets
-ln -s "/chemin/vers/Les Sims" server/assets/Sims   # le dossier d'installation du jeu (lu, jamais modifié)
-pnpm start                                         # construit ce qui manque, puis sert le jeu
+ln -s "/path/to/The Sims" server/assets/Sims   # the game's install folder (read, never modified)
+pnpm start                                     # builds what is missing, then serves the game
 ```
 
-Vérifier l'installation du jeu : `pnpm check-game` (le dossier lié dans `server/assets/Sims`), ou
-`pnpm check-game "/chemin/vers/Les Sims"`. La commande compare le dossier à la liste des fichiers
-d'une installation complète (Complete Collection, `client/public/gamefiles-reference.json` : chemins
-et tailles seulement) et dit ce qui manque, dossier par dossier (`--all` : tout lister). Code de
-sortie 1 s'il manque des fichiers du jeu ; il manque des peaux, musiques ou sons : 0 (le jeu
-tourne, avec moins) ; une taille différente (autre langue ou version, ou copie abîmée) est signalée
-sans erreur. La page d'accueil fait la même vérification (section « Fichiers du jeu »).
+To check the game installation: `pnpm check-game` (the folder linked in `server/assets/Sims`), or
+`pnpm check-game "/path/to/The Sims"`. The command compares the folder with the list of files of a
+complete installation (Complete Collection, `client/public/gamefiles-reference.json`: paths and
+sizes only) and reports what is missing, folder by folder (`--all`: list everything). Exit code 1 if
+game files are missing; if only skins, music or sounds are missing: 0 (the game runs, with less);
+a different size (another language or version, or a damaged copy) is reported without an error.
+The landing page performs the same check (the "Game files" section).
 
-Ouvrir <http://127.0.0.1:3000/>. Options : `pnpm start --port 4000` (ou `PORT=4000`),
-`HOST=0.0.0.0 pnpm start` pour le réseau local, `SAVES=client pnpm start` pour garder les
-sauvegardes dans le navigateur (voir § 3), `GAME_FILES=client pnpm start` pour que chaque joueur
-importe son propre jeu dans son navigateur (§ 3 bis).
+Open <http://127.0.0.1:3000/>. Options: `pnpm start --port 4000` (or `PORT=4000`),
+`HOST=0.0.0.0 pnpm start` for the local network, `SAVES=client pnpm start` to keep saves in the
+browser (see § 3), `GAME_FILES=client pnpm start` so that each player imports their own game into
+their browser (§ 3 bis).
 
-### Sur un serveur (Docker)
+### On a server (Docker)
 
-`cp .env.example .env`, régler `SIMS_DIR` (le dossier du jeu sur le serveur) et
-`THESIMSWEB_SAVES`, puis `docker compose up -d --build`. Détails, sécurité et reverse proxy :
-[`docker.md`](./docker.md). Le serveur n'a pas d'authentification : le mettre derrière un reverse
-proxy avec mot de passe et HTTPS, ou sur un réseau privé.
+`cp .env.example .env`, set `SIMS_DIR` (the game folder on the server) and
+`THESIMSWEB_SAVES`, then `docker compose up -d --build`. Details, security and reverse proxy:
+[`docker.md`](./docker.md). The server has no authentication: put it behind a reverse proxy with a
+password and HTTPS, or on a private network.
 
-## 2. La page d'accueil
+## 2. The landing page
 
-`/` ouvre une page d'accueil (en anglais, hors du jeu) :
+`/` opens a landing page (in English, outside the game):
 
-- **Play** lance le jeu (`/game.html`) ;
-- la section **Game files** : la vérification de l'installation (fichiers manquants, par
-  dossier, et tailles différentes de l'installation de référence) ; sur une instance en mode
-  `GAME_FILES=client`, l'import du dossier du jeu dans le navigateur (§ 3 bis), vérifié une fois
-  importé ; **Play** n'est actif qu'une fois l'import terminé ;
-- le mode de sauvegarde de l'instance, le nombre de fichiers sauvegardés, **Export saves** et
-  **Import saves…** (§ 4) ;
-- l'état du stockage du navigateur (persistant ou non, place occupée) et du mode hors ligne (§ 6) ;
-- la section **Display** : la résolution du jeu, l'interface centrée et le plein écran (ci-dessous).
+- **Play** starts the game (`/game.html`);
+- the **Game files** section: the installation check (missing files, per folder, and sizes that
+  differ from the reference installation); on an instance in `GAME_FILES=client` mode, importing
+  the game folder into the browser (§ 3 bis), checked once imported; **Play** is only enabled once
+  the import is done;
+- the instance's save mode, the number of saved files, **Export saves** and
+  **Import saves...** (§ 4);
+- the state of the browser storage (persistent or not, space used) and of offline mode (§ 6);
+- the **Display** section: the game resolution, the centred interface and fullscreen (below).
 
-### Résolution, interface centrée et plein écran
+### Resolution, centred interface and fullscreen
 
-Le jeu original dessine un pixel de jeu par pixel d'écran : dans un grand mode (l'astuce
-« widescreen » de `Sims.exe`), le quartier et le terrain paraissent tout petits et les panneaux
-minuscules. Le portage garde à toutes les résolutions l'aspect du 1024 × 768 par défaut : même zoom,
-mêmes panneaux, agrandis à la taille de l'écran ; un écran plus large montre davantage de terrain à
-gauche et à droite. Le jeu calcule son image à environ 768 pixels de haut (5120 × 1440 → 2731 × 768),
-si bien qu'une grande résolution coûte à peu près autant qu'un 1024 × 768.
+The original game draws one game pixel per screen pixel: in a large mode (the "widescreen" trick of
+`Sims.exe`), the neighbourhood and the lot look tiny and the panels minuscule. The port keeps the
+look of the default 1024 × 768 at every resolution: same zoom, same panels, scaled up to the size of
+the screen; a wider screen shows more terrain to the left and right. The game renders its image at
+about 768 pixels high (5120 × 1440 → 2731 × 768), so a high resolution costs about as much as
+1024 × 768.
 
-- **Resolution** : 1024 × 768 par défaut, ou une taille courante de 800 × 600 à 5120 × 2160 (dont
-  5120 × 1440 en 32:9) ; 800 × 600 et 1024 × 768 tournent tels quels, comme dans l'original.
-  - **Fit the window, following its size** : le jeu suit la taille de la fenêtre pendant la partie
-    (les fenêtres se replacent ; le panneau de contrôle est reconstruit en une ou deux secondes,
-    l'ancien reste affiché en attendant ; pendant la création d'une famille ou d'un Sim, le
-    changement attend la fermeture de l'écran).
-  - **Fit the window when the game starts** : la taille de la fenêtre au lancement, gardée ensuite.
-- Hors interface centrée, un écran plus large que 1024 prend les mises en page « 800 » des pages du
-  panneau Vie (personnes, cadeaux, centres d'intérêt, relations), comme l'original : le jeu ne prévoit
-  ses pages larges qu'à exactement 1024 de large.
-- **Keep the interface centred on very wide screens** (option du portage, absente de l'original,
-  désactivée par défaut) : le panneau de contrôle, la commande de vue (le disque en bas à gauche) et
-  l'incrustation sont placés dans une bande centrée de 1024 de large, exactement l'interface du
-  1024 × 768 (avec ses pages Vie larges) ; le terrain occupe tout l'écran, y compris à côté du panneau.
-- **Fullscreen** (option du portage, désactivée par défaut) : au premier clic, le jeu demande au
-  navigateur un vrai plein écran (la barre du navigateur ne réapparaît pas en haut de l'écran,
-  contrairement à F11), et le redemande au clic suivant si on l'a quitté.
-- **Alt+Entrée**, en jeu, active ou quitte le plein écran à tout moment (raccourci du portage) et
-  garde ce choix comme l'option ci-dessus : après l'avoir quitté ainsi, le jeu ne le redemande plus
-  au clic suivant. Dans Chrome, maintenir Échap le quitte aussi.
-- Les choix autres que « following its size » s'appliquent au prochain lancement (recharger l'onglet
-  du jeu). Dans l'URL : `?res=1920x1080`, `?res=auto` ou `?res=window`, `?hud=centred` ou `?hud=full`,
-  `?fullscreen=1` ou `?fullscreen=0`.
+- **Resolution**: 1024 × 768 by default, or a common size from 800 × 600 to 5120 × 2160 (including
+  5120 × 1440 at 32:9); 800 × 600 and 1024 × 768 run as they are, as in the original.
+  - **Fit the window, following its size**: the game follows the size of the window during play
+    (windows are repositioned; the control panel is rebuilt in a second or two, the old one stays
+    displayed meanwhile; during family or Sim creation, the change waits until the screen is
+    closed).
+  - **Fit the window when the game starts**: the size of the window at launch, kept afterwards.
+- Outside the centred interface, a screen wider than 1024 uses the "800" layouts of the Life panel
+  pages (people, gifts, interests, relationships), as the original does: the game only provides its
+  wide pages at exactly 1024 wide.
+- **Keep the interface centred on very wide screens** (a port option, absent from the original,
+  off by default): the control panel, the view control (the disc at the bottom left) and the
+  overlay are placed in a centred band 1024 wide, exactly the 1024 × 768 interface (with its wide
+  Life pages); the terrain fills the whole screen, including beside the panel.
+- **Fullscreen** (a port option, off by default): on the first click, the game asks the browser for
+  real fullscreen (the browser bar does not reappear at the top of the screen, unlike F11), and
+  asks again on the next click if it was left.
+- **Alt+Enter**, in game, turns fullscreen on or off at any time (a port shortcut) and remembers
+  that choice like the option above: after leaving it this way, the game no longer asks for it on
+  the next click. In Chrome, holding Escape also leaves it.
+- Choices other than "following its size" apply at the next launch (reload the game tab). In the
+  URL: `?res=1920x1080`, `?res=auto` or `?res=window`, `?hud=centred` or `?hud=full`,
+  `?fullscreen=1` or `?fullscreen=0`.
 
-Les adresses directes du jeu restent valables : `/game.html`, et `/` suivi d'une query string
-(`/?house=1` entre directement dans la maison 1, `/?nbhd=UserData2` choisit le quartier). Un
-marque-page sur `/?…` lance donc toujours le jeu.
+Direct game addresses remain valid: `/game.html`, and `/` followed by a query string
+(`/?house=1` goes straight into house 1, `/?nbhd=UserData2` picks the neighbourhood). A
+bookmark on `/?...` therefore always starts the game.
 
-Le premier lancement lit tout le catalogue d'objets ; les fichiers du jeu sont ensuite gardés par
-le navigateur (IndexedDB) et les lancements suivants prennent quelques secondes. Sur une connexion
-lente, le panneau « Fichiers du jeu » de la page d'accueil permet de télécharger à l'avance, avec une
-barre de progression, les fichiers que presque toutes les parties utilisent (environ 340 Mo : les
-objets que tout terrain charge, les murs et les sols, les corps et les têtes des Sims) : entrer dans
-un terrain ou créer une famille ne les attend plus ensuite. « Arrêter » garde ce qui a été
-téléchargé ; « Vider les fichiers téléchargés » retire du navigateur les fichiers du jeu gardés
-(pas les sauvegardes) : le jeu les retélécharge au besoin et son lancement suivant relit le
-catalogue d'objets. Ne jouer que dans un seul onglet à la fois.
+The first launch reads the whole object catalogue; the game files are then kept by the browser
+(IndexedDB) and later launches take a few seconds. On a slow connection, the "Game files" panel of
+the landing page lets you download in advance, with a progress bar, the files that almost every
+game uses (about 340 MB: the objects every lot loads, walls and floors, the Sims' bodies and
+heads): entering a lot or creating a family then no longer waits for them. "Stop" keeps what has
+been downloaded; "Clear downloaded files" removes the kept game files from the browser (not the
+saves): the game downloads them again as needed and its next launch re-reads the object catalogue.
+Play in only one tab at a time.
 
-## 3. Les deux modes de sauvegarde
+## 3. The two save modes
 
-Le mode est choisi par instance, au lancement du serveur (variable `SAVES`, ou
-`THESIMSWEB_SAVES` avec Docker). La page d'accueil l'affiche.
+The mode is chosen per instance, when the server starts (the `SAVES` variable, or
+`THESIMSWEB_SAVES` with Docker). The landing page displays it.
 
-- **`server`** (par défaut) : une seule série de sauvegardes, sur le serveur
-  (`server/data/overlay/`, ou le volume `saves` avec Docker). On la retrouve depuis n'importe quel
-  navigateur ; tous ceux qui jouent sur l'instance partagent les mêmes quartiers.
-- **`client`** : chaque navigateur garde ses propres sauvegardes (IndexedDB) et part des quartiers
-  d'origine du dossier du jeu ; le serveur est en lecture seule. Les sauvegardes sont liées au
-  navigateur, à l'appareil et à l'adresse du site (domaine + port) : changer l'un des trois, ou
-  effacer les données du site, les fait disparaître. **Exporter régulièrement** (§ 4) et accepter le
-  stockage persistant (bouton « Keep this site's data » de la page d'accueil, ou la demande du
-  navigateur).
+- **`server`** (default): a single set of saves, on the server
+  (`server/data/overlay/`, or the `saves` volume with Docker). It can be reached from any browser;
+  everyone who plays on the instance shares the same neighbourhoods.
+- **`client`**: each browser keeps its own saves (IndexedDB) and starts from the original
+  neighbourhoods of the game folder; the server is read-only. Saves are tied to the browser, the
+  device and the site address (domain + port): changing any of the three, or clearing the site
+  data, makes them disappear. **Export regularly** (§ 4) and accept persistent storage ("Keep this
+  site's data" button on the landing page, or the browser's prompt).
 
-Changer de mode ne convertit rien ; pour passer d'un mode à l'autre, exporter puis importer.
+Changing mode converts nothing; to switch from one mode to the other, export then import.
 
-## 3 bis. Importer son propre jeu dans le navigateur (`GAME_FILES=client`)
+## 3 bis. Importing your own game into the browser (`GAME_FILES=client`)
 
-Une instance peut être lancée sans aucun fichier du jeu sur le serveur (variable `GAME_FILES=client`,
-ou `THESIMSWEB_GAME_FILES=client` avec Docker, voir [`docker.md`](./docker.md)). C'est le mode pour
-ouvrir une instance à d'autres personnes : le serveur n'héberge que le code du portage et ne
-distribue **jamais** les fichiers du jeu, protégés par le droit d'auteur de Maxis / Electronic Arts.
-Chaque joueur utilise **sa propre copie** du jeu :
+An instance can be started without any game file on the server (the `GAME_FILES=client` variable,
+or `THESIMSWEB_GAME_FILES=client` with Docker, see [`docker.md`](./docker.md)). This is the mode
+for opening an instance to other people: the server only hosts the port's code and **never**
+distributes the game files, which are protected by Maxis / Electronic Arts copyright. Each player
+uses **their own copy** of the game:
 
-1. Ouvrir la page d'accueil, section **Game files**, puis **Select the game folder…**.
-2. Choisir le dossier d'installation de The Sims (Complete Collection) sur son ordinateur : celui
-   qui contient `GameData`, `ExpansionShared`, `ExpansionPack` … `ExpansionPack7`, `UserData`… (un
-   dossier au-dessus convient aussi). Firefox et Chrome demandent de confirmer l'accès au dossier.
-3. La page vérifie que le dossier est complet (sinon elle dit quels fichiers manquent), puis copie
-   dans le navigateur les fichiers que le jeu lit (environ **3,2 Go**, quelques minutes ; ni les
-   programmes `.exe` / `.dll`, ni les journaux, ni le dossier `support`). Rien n'est envoyé au
-   serveur. Une barre de progression suit la copie.
-4. **Play** devient actif. Le dossier d'origine n'est jamais modifié et n'est plus nécessaire
-   ensuite.
+1. Open the landing page, **Game files** section, then **Select the game folder...**.
+2. Choose The Sims (Complete Collection) install folder on your computer: the one that contains
+   `GameData`, `ExpansionShared`, `ExpansionPack` ... `ExpansionPack7`, `UserData`... (a folder one
+   level above also works). Firefox and Chrome ask you to confirm access to the folder.
+3. The page checks that the folder is complete (otherwise it says which files are missing), then
+   copies into the browser the files the game reads (about **3.2 GB**, a few minutes; not the
+   `.exe` / `.dll` programs, the logs, or the `support` folder). Nothing is sent to the server. A
+   progress bar follows the copy.
+4. **Play** becomes enabled. The original folder is never modified and is no longer needed
+   afterwards.
 
-Bon à savoir :
+Good to know:
 
-- **Un import par navigateur** : un autre navigateur, un autre appareil ou une autre adresse du
-  site demandent un nouvel import. Prévoir ~3,2 Go de place libre sur le disque du navigateur ;
-  accepter le stockage persistant si le navigateur le demande.
-- **Interrompu** (onglet fermé, bouton **Stop**, manque de place) : resélectionner le même dossier
-  reprend la copie là où elle s'était arrêtée. Sous Chrome / Edge, le bouton **Resume** reprend sans
-  resélectionner le dossier.
-- **Import again…** met à jour l'import (après un patch du jeu, par exemple) : seuls les fichiers
-  changés sont recopiés.
-- **Remove the game files** libère la place ; les sauvegardes, elles, restent.
-- Les sauvegardes restent dans le navigateur (comme le mode `SAVES=client`, § 3) : exporter
-  régulièrement (§ 4).
-- Une fois l'import fait, le jeu n'a plus besoin du serveur pour ses fichiers : il fonctionne hors
-  ligne (§ 6), musiques comprises.
+- **One import per browser**: another browser, another device or another site address
+  requires a new import. Plan for ~3.2 GB of free space on the browser's disk; accept persistent
+  storage if the browser asks.
+- **Interrupted** (tab closed, **Stop** button, out of space): selecting the same folder again
+  resumes the copy where it stopped. In Chrome / Edge, the **Resume** button resumes without
+  selecting the folder again.
+- **Import again...** updates the import (after a game patch, for example): only changed files
+  are copied again.
+- **Remove the game files** frees the space; the saves stay.
+- Saves stay in the browser (like the `SAVES=client` mode, § 3): export regularly (§ 4).
+- Once the import is done, the game no longer needs the server for its files: it works offline
+  (§ 6), music included.
 
-## 4. Exporter et importer les sauvegardes
+## 4. Exporting and importing saves
 
-**Export saves (.zip)** télécharge une archive ZIP `thesims-saves-AAAA-MM-JJ.zip` de tous les
-fichiers écrits par le jeu, avec leur chemin dans le dossier du jeu
-(`Sims/UserData2/Houses/House01.iff`, `Sims/UserData/Characters/User00012.iff`…) :
+**Export saves (.zip)** downloads a ZIP archive `thesims-saves-YYYY-MM-DD.zip` of all the files
+written by the game, with their path in the game folder
+(`Sims/UserData2/Houses/House01.iff`, `Sims/UserData/Characters/User00012.iff`...):
 
-- en mode `client`, les fichiers sauvegardés dans ce navigateur ;
-- en mode `server`, les fichiers sauvegardés sur le serveur (les originaux du dossier du jeu, jamais
-  modifiés, n'y sont pas).
+- in `client` mode, the files saved in this browser;
+- in `server` mode, the files saved on the server (the originals of the game folder, never
+  modified, are not included).
 
-**Import saves…** remplace **toutes** les sauvegardes de l'instance par le contenu d'une archive,
-après confirmation : les sauvegardes absentes de l'archive sont supprimées (les fichiers d'origine
-du jeu réapparaissent), celles de l'archive sont écrites. En mode `server`, cela touche tous les
-joueurs de l'instance. Fermer les onglets du jeu avant d'importer. L'opération n'est pas
-annulable : exporter d'abord en cas de doute.
+**Import saves...** replaces **all** the instance's saves with the contents of an archive, after
+confirmation: saves absent from the archive are deleted (the game's original files reappear), those
+in the archive are written. In `server` mode, this affects all the instance's players. Close the
+game tabs before importing. The operation cannot be undone: export first if in doubt.
 
-L'import accepte aussi une archive faite à la main (ZIP stocké ou compressé « deflate », comme le
-font Windows, macOS et `zip`) : seuls les fichiers sous un dossier `UserData`, `UserData2`… sont
-pris, quel que soit le dossier au-dessus (`sauvegarde/UserData2/…`, `Sims/UserData2/…`,
-`UserData2/…`). On peut donc reprendre les sauvegardes du jeu original sous Windows en zippant ses
-dossiers `UserData*` (attention : l'archive remplace tout, quartiers d'origine compris si elle les
-contient). Une archive sans aucun fichier `UserData*` est refusée sans rien changer.
+The import also accepts a hand-made archive (stored or "deflate"-compressed ZIP, as produced by
+Windows, macOS and `zip`): only files under a `UserData`, `UserData2`... folder are taken,
+whatever the folder above (`backup/UserData2/...`, `Sims/UserData2/...`, `UserData2/...`). You can
+therefore bring over the saves of the original game on Windows by zipping its `UserData*` folders
+(note: the archive replaces everything, original neighbourhoods included if it contains them). An
+archive with no `UserData*` file at all is rejected without changing anything.
 
-En mode `server` on peut aussi copier les fichiers directement (voir [`docker.md`](./docker.md)).
+In `server` mode you can also copy the files directly (see [`docker.md`](./docker.md)).
 
-## 5. Navigateurs
+## 5. Browsers
 
-- **Firefox** et **Chrome / Edge** (ordinateur de bureau) : pris en charge.
-- Safari : non testé régulièrement.
-- Le jeu se joue à la souris et au clavier.
+- **Firefox** and **Chrome / Edge** (desktop): supported.
+- Safari: not tested regularly.
+- The game is played with the mouse and keyboard.
 
-## 6. Hors ligne et installation comme application
+## 6. Offline and installing as an app
 
-Le site s'installe comme une application (Chrome / Edge : icône d'installation dans la barre
-d'adresse, ou menu « Installer… » ; Firefox de bureau ne le propose en général pas, mais le mode
-hors ligne y fonctionne).
+The site can be installed as an application (Chrome / Edge: install icon in the address bar, or the
+"Install..." menu; desktop Firefox generally does not offer it, but offline mode works there).
 
-Une fois le jeu lancé une fois sur l'appareil, **il redémarre sans connexion** :
+Once the game has been launched once on the device, **it restarts without a connection**:
 
-- la page d'accueil et le jeu (pages, scripts, moteur WASM) sont gardés par un service worker ;
-- les fichiers du jeu déjà lus le sont dans le cache IndexedDB ;
-- les dernières réponses du serveur (configuration, liste des fichiers, fichiers de quartier et
-  de maison lus) sont gardées par le service worker.
+- the landing page and the game (pages, scripts, WASM engine) are kept by a service worker;
+- the game files already read are kept in the IndexedDB cache;
+- the latest server responses (configuration, file list, neighbourhood and house files that were
+  read) are kept by the service worker.
 
-Limites :
+Limits:
 
-- **HTTPS ou localhost obligatoire** : les navigateurs n'activent pas de service worker sur une
-  adresse `http://` du réseau local (`http://192.168.x.x:3000`). Le jeu y fonctionne, mais pas
-  hors ligne. Utiliser `http://localhost` / `127.0.0.1`, ou HTTPS via un reverse proxy.
-- Hors ligne, seul ce qui a déjà été lu est disponible : un quartier ou un terrain jamais ouvert,
-  une page du catalogue jamais affichée, les musiques (lues en continu, non gardées) demandent le
-  serveur.
-- En mode `server`, le jeu **ne peut pas sauvegarder hors ligne** (les sauvegardes vont au
-  serveur). En mode `client`, il sauvegarde normalement dans le navigateur.
-- Le serveur de développement (`pnpm dev`, port 5173) n'installe pas de service worker : le mode
-  hors ligne ne concerne que les builds (`pnpm start`, Docker).
-- **Pages web des familles en mode `client`** (bouton Internet du quartier, option « exporter en
-  HTML ») : le jeu les écrit dans le navigateur, et seul le service worker les sert
-  (`/webpages/…`). Il faut donc un build ouvert en HTTPS ou sur localhost ; sans service worker
-  (adresse `http://` du réseau local, `pnpm dev`), le lien ouvre les pages d'origine du dossier du
-  jeu (ou une erreur 404), pas celles du joueur. En mode `server`, le serveur les sert toujours.
-- Après une mise à jour du jeu sur le serveur, le nouveau code est chargé au lancement suivant
-  (en ligne) ; l'ancien reste utilisé hors ligne tant que la nouvelle version n'a pas été chargée.
+- **HTTPS or localhost required**: browsers do not enable a service worker on an `http://` address
+  of the local network (`http://192.168.x.x:3000`). The game works there, but not offline. Use
+  `http://localhost` / `127.0.0.1`, or HTTPS via a reverse proxy.
+- Offline, only what has already been read is available: a neighbourhood or lot never opened, a
+  catalogue page never displayed, and the music (streamed, not kept) need the server.
+- In `server` mode, the game **cannot save offline** (saves go to the server). In `client` mode,
+  it saves normally in the browser.
+- The development server (`pnpm dev`, port 5173) does not install a service worker: offline mode
+  only applies to builds (`pnpm start`, Docker).
+- **Family web pages in `client` mode** (the neighbourhood's Internet button, "export as HTML"
+  option): the game writes them in the browser, and only the service worker serves them
+  (`/webpages/...`). A build opened over HTTPS or on localhost is therefore required; without a
+  service worker (`http://` address of the local network, `pnpm dev`), the link opens the original
+  pages of the game folder (or a 404 error), not the player's. In `server` mode, the server always
+  serves them.
+- After a game update on the server, the new code is loaded at the next launch (online); the old
+  one remains in use offline until the new version has been loaded.
 
-## 7. Limites connues
+## 7. Known limitations
 
-- Il faut sa propre copie du jeu, installée sur le serveur, ou importée dans chaque navigateur
-  (§ 3 bis, ~3,2 Go par navigateur).
-- Aucune authentification côté serveur (voir [`docker.md`](./docker.md), « Sécurité »).
-- Les données du navigateur (cache des fichiers du jeu, plusieurs centaines de Mo, et sauvegardes
-  en mode `client`) peuvent être effacées par le navigateur si le disque manque de place, tant que
-  le stockage n'est pas persistant.
-- Un seul onglet du jeu à la fois.
-- La version tactile / mobile est en cours.
-- Le reste (fonctions du jeu manquantes, bugs connus) : [`TODO.md`](./TODO.md).
+- You need your own copy of the game, installed on the server, or imported into each browser
+  (§ 3 bis, ~3.2 GB per browser).
+- No server-side authentication (see [`docker.md`](./docker.md), "Security").
+- Browser data (the game files cache, several hundred MB, and saves in `client` mode) can be
+  cleared by the browser if the disk runs low on space, as long as storage is not persistent.
+- Only one game tab at a time.
+- The touch / mobile version is in progress.
+- The rest (missing game features, known bugs): [`TODO.md`](./TODO.md).
 
-## 8. Dépannage
+## 8. Troubleshooting
 
-- **Le jeu ne démarre pas, ou il manque des objets, des sons, des quartiers** : `pnpm check-game`
-  (ou la section « Fichiers du jeu » de la page d'accueil) dit quels fichiers manquent.
+- **The game does not start, or objects, sounds, neighbourhoods are missing**: `pnpm check-game`
+  (or the "Game files" section of the landing page) says which files are missing.
 
-- **Le jeu ne démarre plus après une mise à jour** : recharger la page (Ctrl+F5) ; au besoin,
-  outils de développement → Application → Service workers → « Unregister », puis recharger.
-- **Repartir de zéro** (perd les sauvegardes en mode `client` : exporter d'abord) : effacer les
-  données du site dans les réglages du navigateur.
+- **The game no longer starts after an update**: reload the page (Ctrl+F5); if needed,
+  developer tools → Application → Service workers → "Unregister", then reload.
+- **Starting from scratch** (loses saves in `client` mode: export first): clear the site data in
+  the browser settings.

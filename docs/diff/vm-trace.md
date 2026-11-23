@@ -75,7 +75,7 @@ just diff-vm  # convenience recipe (TODO)
 ./scripts/diff/vm.sh \
   --object samples/iff/AlarmClock.iff \
   --event 1 \
-  --globals-far "/mnt/c/Program Files (x86)/Maxis/Les Sims/GameData/Global/Global.far" \
+  --globals-far "<game folder>/GameData/Global/Global.far" \
   --oracle oracle/AlarmClock-event1.jsonl
 ```
 
@@ -107,7 +107,7 @@ cargo run --release -p simantics --example trace_json -- \
 
 ### FreeSO oracle — **abandoned**
 
-Decision recorded in `PLAN.md` §11 (2026-05-04). Building a FreeSO-side
+Decision recorded in the project journal (2026-05-04). Building a FreeSO-side
 oracle requires migrating their project off .NET Framework 4.5 + MonoGame
 XNA, extracting the VM core out of the NetPlay / Drivers / LotView /
 Marshals tangle (30+ namespaces in `VM.cs` alone), and instrumenting the

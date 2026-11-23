@@ -15,7 +15,7 @@ positions, sizes, resource ids, colors, fonts and behaviors come from the code.
 | Mac PPC asm with bytes (ground truth when Ghidra drops arguments) | `~/simsweb-build/decomp/sims1_mac_decomp/asm/code/*.s` |
 | Windows pseudo-C (virtual methods named) | `~/simsweb-build/decomp/win-pseudoc/_global.c` |
 | Windows named functions (address → name) | `~/simsweb-build/decomp/win/symbols.tsv` |
-| UI resource tables | `/mnt/c/Program Files (x86)/Maxis/Les Sims/UIGraphics/Res_*.h|.RT` (also inside UIGraphics.far) |
+| UI resource tables | `<game folder>/UIGraphics/Res_*.h|.RT` (also inside UIGraphics.far) |
 | Game strings | `GameData/UIText.iff`, `Live.iff`, `Build.iff`, ... (STR# chunks) |
 
 ## Reading the pseudo-C
@@ -99,8 +99,8 @@ Rules:
   `http://localhost:5173/game.html?test=<name>` for a test page you add as
   `client/src/game/dev/tests/<name>.ts` exporting
   `export async function mount(ctx: GameContext, mgr: WinMgr): Promise<void>`.
-- Screenshots: `node tools/interact.mjs <url> <out-dir>/<prefix> wait:8000 shot:a click:100,700 wait:300 shot:b`
+- Screenshots: `a Playwright driver script taking `<url> <out-dir>/<prefix>` and steps such as `wait:8000 shot:a click:100,700 wait:300 shot:b``
   (coordinates in game pixels, 1024x768), then look at the PNGs.
 - Typecheck: `cd client && npx tsc -p . --noEmit`.
-- Vite watches /mnt/c with polling; if a change does not show up, check that
+- Vite watches the project (on a Windows mount) with polling; if a change does not show up, check that
   `curl localhost:5173/src/game/<file>.ts` serves the new code.

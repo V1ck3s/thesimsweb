@@ -21,8 +21,8 @@ class Backdrop extends TSWin {
 }
 
 const TEXT =
-  "Bonjour ! Je suis votre nouveau voisin. Je passais simplement par là pour vous souhaiter la bienvenue dans le quartier. " +
-  "Voulez-vous que je vous présente aux autres habitants de la rue ? Ils sont tous très sympathiques, enfin presque tous.";
+  "Hello! I'm your new neighbor. I was just passing by to welcome you to the neighborhood. " +
+  "Would you like me to introduce you to the other people on the street? They are all very friendly, well, almost all of them.";
 
 export async function mount(ctx: GameContext, mgr: WinMgr): Promise<void> {
   const root = new Backdrop();
@@ -35,7 +35,7 @@ export async function mount(ctx: GameContext, mgr: WinMgr): Promise<void> {
   const picture = await ctx.res.image(Number(params.get("pic") ?? 5305)).catch(() => null);
   for (;;) {
     const d = new WinPictureDialog(ctx);
-    d.setTitle("Visite d'un voisin");
+    d.setTitle("A neighbor's visit");
     d.setImage(picture);
     d.addText(TEXT);
     d.addButton(ctx.strings.get("UIText", 152, 2), IDYES);

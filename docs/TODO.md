@@ -1,126 +1,127 @@
-# Reste à faire
+# Remaining work
 
-Liste unique de ce qui reste ouvert, vérifiée contre le code le 2026-11-05. Les notes « not
-ported » des documents de portage (`docs/decomp/*-port.md`) et les tableaux « Remaining » de
-`docs/decomp/playtest.md` sont l'historique ; cette liste est la référence. Quand un point est
-fait, le retirer d'ici et noter le correctif dans `playtest.md` / le journal de `PLAN.md`.
+Single list of what is still open, checked against the code on 2026-11-05. The "not ported" notes
+in the porting documents (`docs/decomp/*-port.md`) and the "Remaining" tables in
+`docs/decomp/playtest.md` are history; this list is the reference. When an item is done, remove it
+from here and record the fix in `playtest.md` / the git history.
 
-Entre parenthèses : la classe ou fonction d'origine, puis le fichier du port concerné (chemins
-sous `client/src/game/`).
+In parentheses: the original class or function, then the relevant port file (paths under
+`client/src/game/`).
 
-## 1. Bugs observés
+## 1. Observed bugs
 
-- **Animaux bloqués en « Action - Chase Tail »** plus de 8 heures de jeu : non reproduit (une
-  action dure 30 à 60 min ; l'animal la choisit sans doute de nouveau, pub fun 20).
-- **Erreur 62 dans « do new adult idle »** : Breakpoint des données (nœud 29 de l'arbre 8330),
-  aussi dans l'original ; qui pousse « Wait » sur une personne qui porte quelque chose : non trouvé.
-- **« user00177 »** : corrigé (ordre d'écriture du fichier personnage de l'original : nom avant la
-  sauvegarde du quartier, à l'import comme dans Créer un Sim). Les fichiers orphelins
-  `UserData/Characters/User00177.iff` et `User00178.iff` de l'utilisateur (Créer un Sim interrompu
-  par un rechargement) sont laissés tels quels.
+- **Pets stuck in "Action - Chase Tail"** for more than 8 game hours: not reproduced (an action
+  lasts 30 to 60 min; the pet probably picks it again, fun ad 20).
+- **Error 62 in "do new adult idle"**: Breakpoint in the data (node 29 of tree 8330), also in the
+  original; what pushes "Wait" on a person who is carrying something: not found.
+- **"user00177"**: fixed (write order of the original's character file: name before the
+  neighborhood save, on import as in Create a Sim). The user's orphan files
+  `UserData/Characters/User00177.iff` and `User00178.iff` (Create a Sim interrupted by a
+  reload) are left as they are.
 
-## 2. Fonctionnalités manquantes (visibles en jeu)
+## 2. Missing features (visible in game)
 
 Live
-- **Popups des besoins des animaux** : portés, non vérifiés. Page célébrité : niveaux 0 et
-  0x11..0x13 non vérifiés.
-- **PIP** : composition BoboVision exacte (table AlphaBlend_565_P5, ~0,7 ms par image). Fenêtre zoom
-  vivante sans relecture GPU (2026-11-09), jugée fluide dans Firefox par l'utilisateur.
-- **Annuler une suppression de mur** : porté (la porte est ramassée puis replacée, sans Init, comme
-  l'original) ; à vérifier en jeu.
-- **Pizza** : appel, arrivée, accueil et dialogue vus ; paiement et remise de la boîte non observés.
+- **Pet needs popups**: ported, not verified. Celebrity page: levels 0 and
+  0x11..0x13 not verified.
+- **PIP**: exact BoboVision composition (AlphaBlend_565_P5 table, ~0.7 ms per frame). Live zoom
+  window with no GPU readback (2026-11-09), judged smooth in Firefox by the user.
+- **Undo a wall deletion**: ported (the door is picked up then put back, without Init, like the
+  original); to be checked in game.
+- **Pizza**: call, arrival, greeting and dialog seen; payment and handing over the box not observed.
 
-Quartier / sauvegarde
-- **Pages web** : album avec photos non testé ; en SAVES=client les pages ne sont servies que par
-  le service worker (documenté dans le guide). `ObjectFolder` suit l'ordre de l'original
-  (`data/dirimage.ts`) ; restent par nom : plugins sols / murs, textures des skins, MatchFolderScanner.
-- **Langue** : 14 langues proposées (dont polonais, CJK et thaï) ; IME et capacité en octets
-  portés. Non proposés : russe et hébreu (l'installation n'a que des copies des textes anglais).
-  800x600 : le port tourne toujours en 1024x768 (l'original choisit le plus grand mode) ;
-  SetMiniUI non porté. Texte « Paused » de cDDDSimsView porté : à confirmer face au jeu.
-- **Ville magique** : décodeurs alpha de la version Windows portés (seuils 8 / 0xf7, profondeur
-  écrite) et vignettes sans alpha ; non comparé au jeu. Risque : la vitre d'une fenêtre écrit la
-  profondeur et peut cacher un Sim derrière (contraire à la note U44 de playtest.md) : à vérifier.
-  `objecticon.ts`, `buildcatalog.ts` et l'export web gardent l'ancienne règle.
-- **Créer un Sim** : House00 chargé derrière le quartier, case de départ de l'original, voisin
-  visible du simulateur, drapeau de suppression ; le simulateur de House00 ne tourne que pendant
-  le dialogue (rien à simuler sinon).
-- **Import Unleashed** : porté et testé (copie des fichiers manquants, import une seule fois).
-  Il importe 6 familles dans les quartiers livrés en version 0x3f (dont UserData3) à leur
-  prochaine ouverture, comme l'original.
+Neighborhood / save
+- **Web pages**: album with photos not tested; with SAVES=client the pages are served only by
+  the service worker (documented in the guide). `ObjectFolder` follows the original's order
+  (`data/dirimage.ts`); still by name: floor / wall plugins, skin textures, MatchFolderScanner.
+- **Language**: 14 languages offered (including Polish, CJK and Thai); IME and byte capacity
+  ported. Not offered: Russian and Hebrew (the install only has copies of the English texts).
+  800x600: the port still runs at 1024x768 (the original picks the largest mode);
+  SetMiniUI not ported. cDDDSimsView's "Paused" text ported: to be confirmed against the game.
+- **Magic Town**: the Windows version's alpha decoders ported (thresholds 8 / 0xf7, depth
+  written) and thumbnails without alpha; not compared with the game. Risk: a window's glass writes
+  depth and may hide a Sim behind it (contrary to note U44 in playtest.md): to be checked.
+  `objecticon.ts`, `buildcatalog.ts` and the web export keep the old rule.
+- **Create a Sim**: House00 loaded behind the neighborhood, the original's starting tile, neighbor
+  visible to the simulator, deletion flag; House00's simulator only runs during the dialog
+  (nothing to simulate otherwise).
+- **Unleashed import**: ported and tested (copy of missing files, import only once).
+  It imports 6 families into the neighborhoods shipped in version 0x3f (including UserData3) the
+  next time they are opened, like the original.
 
-Construction
-- **Porte tenue et découpe des murs** : le code suit l'original (aucun écart trouvé) ; à comparer
-  avec le jeu. Découpe des murs en diagonale corrigée (Wall::ComputeCutaway), à voir sur House02.
+Building
+- **Held door and wall cutaway**: the code follows the original (no discrepancy found); to be
+  compared with the game. Diagonal wall cutaway fixed (Wall::ComputeCutaway), to be checked on
+  House02.
 
-Interface / triches
-- **Triches** : toutes portées et testées sauf celles sans équivalent : ReportMissingTextures
-  (boîte jamais montrée par l'original ; EditPerson::ValidateTextures non porté), damagelist et
-  sweep (pas de rectangles de dommages ni de profileur ici), draw_routes (aucun code de dessin).
+Interface / cheats
+- **Cheats**: all ported and tested except those with no equivalent: ReportMissingTextures
+  (box never shown by the original; EditPerson::ValidateTextures not ported), damagelist and
+  sweep (no damage rectangles or profiler here), draw_routes (no drawing code).
 
-## 2bis. Écarts restants de l'audit du 2026-11 (code décompilé contre port)
+## 2bis. Remaining discrepancies from the 2026-11 audit (decompiled code vs port)
 
-Les écarts confirmés par l'audit complet sont tous traités (journal de `PLAN.md`, 2026-11-08).
+The discrepancies confirmed by the full audit have all been dealt with (git history, 2026-11-08).
 
-- **Constats « faibles »** de l'audit : listés dans
-  [`docs/decomp/audit-2026-11-low.md`](decomp/audit-2026-11-low.md). Tous vérifiés (2026-11-08 et
-  2026-11-09) et les écarts réels corrigés. Restent, annotés : écarts voulus, faux ou incertains ; le
-  veto des animaux sans Unleashed (#67, #104) ; la réconciliation de Neighborhood::Load avec le
-  dossier Characters (#125) ; l'horloge plafonnée de la boucle de trames (#135).
+- **"Low" findings** from the audit: listed in
+  [`docs/decomp/audit-2026-11-low.md`](decomp/audit-2026-11-low.md). All verified (2026-11-08 and
+  2026-11-09) and the real discrepancies fixed. Remaining, annotated: intended discrepancies, false
+  or uncertain ones; the pet veto without Unleashed (#67, #104); reconciling Neighborhood::Load
+  with the Characters folder (#125); the capped clock of the frame loop (#135).
 
-## 3. Son
+## 3. Sound
 
-- Événements kSndob* 4..10 : vérifié, aucun fichier .hot livré ne les utilise (rien à porter).
+- kSndob* events 4..10: verified, no shipped .hot file uses them (nothing to port).
 
 ## 4. Animation
 
-- Correction de mouvement racine du moteur de marche (désactivée dans l'original aussi).
+- Root motion correction of the walk engine (disabled in the original too).
 
 ## 5. Performance
 
-- **Chargement d'un lot** : à froid, lot à l'écran en 9,3 s (13,7 avant les lectures en
-  parallèle), ~135 POST /api/ranges ; à chaud ~5 s. Restent : lectures dépendantes par nature
-  (CMX puis maillages puis textures), scan du catalogue d'achat ~25 s après un chargement à froid,
-  portraits rendus sur le thread principal au premier chargement.
-- **Mémoire** : `entryCache` borné, TryUnloadSkills / TryUnloadSuits / TryUnloadAll portés (le
-  passage des costumes ne libère rien, comme l'original : horloge partagée avec les compétences).
-- **Pics de tick** : restent les recherches de route et l'interprétation des BHAV (travail de
-  l'original) ; familyFriendCount mis en cache comme l'original.
-- **Grandes résolutions** : le jeu tourne à ~768 de haut puis est agrandi, une grande résolution
-  coûte donc à peu près un 1024x768 (17,8 i/s en 5120x1440 contre 19,6 en 1024x768 sur l'hôte WSL
-  chargé ; le rendu du lot, ~25 ms par image ici, est la limite). Le défilement ne redessine plus
-  tout le terrain (bandes découvertes et bords seulement, voir perf-and-browsers.md) ; le
-  défilement en diagonale reste ~2x moins cher seulement (bandes des bords). Pistes restantes :
-  afficher le canvas WebGL du lot comme calque sous un canvas UI transparent (supprime la copie
-  WebGL → 2D) ; mesurer sur un navigateur Windows natif (ici le GPU passe par WSLg).
-- **Serveur sur /mnt/c** : inventaire du jeu gardé sur disque (`server/data/manifest-cache.json`) ;
-  dossiers parcourus en parallèle : `/api/saves` ~10 s au premier appel après un démarrage
-  (~2 min avant, 5 000 fichiers), `?refresh` 0,2 s.
+- **Loading a lot**: cold, lot on screen in 9.3 s (13.7 before the parallel reads), ~135
+  POST /api/ranges; warm ~5 s. Remaining: reads that are dependent by nature
+  (CMX then meshes then textures), buy catalog scan ~25 s after a cold load,
+  portraits rendered on the main thread at first load.
+- **Memory**: `entryCache` bounded, TryUnloadSkills / TryUnloadSuits / TryUnloadAll ported (the
+  switch of outfits frees nothing, like the original: clock shared with skills).
+- **Tick spikes**: remaining are route searches and BHAV interpretation (the original's work);
+  familyFriendCount cached like the original.
+- **Large resolutions**: the game runs at ~768 high then is scaled up, so a large resolution
+  costs about as much as 1024x768 (17.8 fps at 5120x1440 vs 19.6 at 1024x768 on the loaded WSL
+  host; the lot rendering, ~25 ms per frame here, is the limit). Scrolling no longer redraws
+  the whole terrain (uncovered strips and edges only, see perf-and-browsers.md); diagonal
+  scrolling is still only ~2x cheaper (edge strips). Remaining leads:
+  show the lot's WebGL canvas as a layer under a transparent UI canvas (removes the copy
+  WebGL → 2D); measure on a native Windows browser (here the GPU goes through WSLg).
+- **Server on /mnt/c**: game inventory kept on disk (`server/data/manifest-cache.json`);
+  folders walked in parallel: `/api/saves` ~10 s on the first call after a start
+  (~2 min before, 5,000 files), `?refresh` 0.2 s.
 
-## 6. À vérifier (comparaison avec l'original à faire)
+## 6. To verify (comparison with the original still to do)
 
-- Suivi de caméra, emménagement sans boîte aux lettres, popups des besoins des animaux et page
-  célébrité : conformes au code décompilé, non vus en jeu.
-- U50 (objet invisible) : le cas exact de l'utilisateur n'a pas été reproduit.
-- Page d'accueil : vue dans Chrome seulement (pas Firefox) ; traductions écrites par le portage
-  (termes du jeu repris de UIText quand ils existent), à relire par des locuteurs natifs.
-- Résolutions ≠ 1024x768 : non vues aux villes, pages d'options, catégories du catalogue ouvertes,
-  écran de transit ; langues double octet non vues. Mode « following its size » : non vu sur les
-  villes, en mode caméra, ni avec l'incrustation ouverte.
-- Version tactile : testée en émulation Chrome seulement (pas d'appareil réel, pas de Firefox Android).
+- Camera follow, moving in without a mailbox, pet needs popups and celebrity
+  page: consistent with the decompiled code, not seen in game.
+- U50 (invisible object): the user's exact case was not reproduced.
+- Landing page: seen in Chrome only (not Firefox); translations written by the port
+  (game terms taken from UIText when they exist), to be reviewed by native speakers.
+- Resolutions other than 1024x768: not seen in the towns, options pages, opened catalog categories,
+  transit screen; double-byte languages not seen. "following its size" mode: not seen on the
+  towns, in camera mode, or with the overlay open.
+- Touch version: tested in Chrome emulation only (no real device, no Firefox Android).
 
-## 7. Action de l'utilisateur
+## 7. User action
 
-- **U56, porte d'entrée des Charmant** : la sauvegarde `UserData/Houses/House69.iff` date d'avant le
-  correctif U50. Reprendre la porte d'entrée et la porte « Wood 2 » du couloir / salle de bain avec
-  la main, les reposer au même endroit, puis sauvegarder.
+- **U56, the Charmant family's front door**: the save `UserData/Houses/House69.iff` predates the
+  U50 fix. Take the front door and the "Wood 2" door of the hallway / bathroom again by
+  hand, put them back in the same place, then save.
 
-## 8. Finition et distribution
+## 8. Polish and distribution
 
-Fait : page d'accueil, export / import des sauvegardes, PWA hors ligne, guide utilisateur
-(`docs/user-guide.md`), version tactile, mode `GAME_FILES=client` (chaque joueur importe son dossier).
-Cible : usage personnel d'abord (un joueur par serveur), mode public en option.
+Done: landing page, save export / import, offline PWA, user guide
+(`docs/user-guide.md`), touch version, `GAME_FILES=client` mode (each player imports their folder).
+Target: personal use first (one player per server), public mode as an option.
 
-## 9. Outils de développement (faible priorité)
+## 9. Development tools (low priority)
 
-Voir §2 « Interface / triches ».
+See §2 "Interface / cheats".

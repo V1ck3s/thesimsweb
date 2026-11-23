@@ -62,7 +62,7 @@ async function walk(dir: string, base = dir): Promise<ManifestEntry[]> {
       let isDir = ent.isDirectory();
       let isFile = ent.isFile();
       if (ent.isSymbolicLink()) {
-        // Resolve the symlink target so users can `ln -s "/mnt/c/.../Les Sims" server/assets/Sims`
+        // Resolve the symlink target so users can `ln -s "/path/to/The Sims" server/assets/Sims`
         // and have the manifest find the install.
         const s = await stat(full).catch(() => null);
         if (!s) return [];

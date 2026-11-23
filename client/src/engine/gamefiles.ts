@@ -173,7 +173,7 @@ export async function localGameRange(path: string, start: number, end: number): 
 
 /** A file of the folder the player selected. */
 export interface SourceFile {
-  /** Path inside the selection, "/"-separated ("Les Sims/GameData/Behavior.iff"). */
+  /** Path inside the selection, "/"-separated ("The Sims/GameData/Behavior.iff"). */
   rel: string;
   size: number;
   mtime: number;
@@ -220,7 +220,7 @@ function isGameFile(rel: string): boolean {
 }
 
 export interface ImportPlan {
-  /** The install folder's name ("Les Sims"). */
+  /** The install folder's name ("The Sims"). */
   source: string;
   /** The files to store, path relative to /assets/ ("Sims/GameData/Behavior.iff"). */
   files: Array<{ path: string; size: number; mtime: number; file: () => Promise<File> }>;

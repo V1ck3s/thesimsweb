@@ -1,5 +1,5 @@
 /**
- * cWinPickFamily: "Sélectionner une famille", the families without a house
+ * cWinPickFamily: "Select a Family", the families without a house
  * (Move In from the neighborhood), with cPickFamilyList / cPickFamilyItem.
  *
  * From the decompiled classes (WinPickFamily.cpp, PickFamilyList.cpp,
@@ -40,7 +40,7 @@
  *    top row and offsets the items by the remainder (TileItems +0x100);
  *  - first-run hint: Init subscribes a 500 ms timer once per session when
  *    cOptionsMgr::GetRunCount() < 2; TSOnTimerMsg shows MessageDialog(entry
- *    14, title 13) ("Créer une famille ?").
+ *    14, title 13) ("Create a family?").
  *
  *  - Shift smiley: cPickFamilyItem::Init loads kPickFamilySmiley into the
  *    shared lbl_105BAB68 when Shift is down (GetKeyState(VK_SHIFT) < 0) and

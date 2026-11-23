@@ -1,6 +1,6 @@
 /**
  * cPickFamilyPersonInfo: the tooltip window of a family member's portrait
- * in the family picker (cPickFamilyItemMember) and in "Créer une famille"
+ * in the family picker (cPickFamilyItemMember) and in "Create a Family"
  * (cWinDesignFamPeopleBtn): name, five personality bars and the biography.
  *
  * From the decompiled class (PickFamilyPersonInfo.cpp):

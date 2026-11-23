@@ -2,7 +2,7 @@
 
 ## Context
 
-See `PLAN.md` §4 for the framing. Two approaches stayed on the table:
+Two approaches stayed on the table:
 
 - **A** — Clean-room reimplementation in TypeScript + Rust/WASM (Simitone-like).
 - **D** — Run the original `Sims.exe` inside an emulator compiled to WebAssembly.
@@ -59,7 +59,7 @@ No further benchmark needed: if AoE is unplayable, Sims is hopeless.
 
 ❌ The freeze is reproducible specifically when a CD is attached at cold boot. Most likely cause: Plug-and-Play detects the previously-unseen CD-ROM hardware and **blocks on driver installation** (Win98 wants to install an ATAPI driver from `.cab` files that aren't present in the copy.sh image — first-boot install dialog hung off-screen or waiting on user input).
 
-## Pass criteria (from PLAN.md §0bis)
+## Pass criteria (phase 0bis)
 
 - ≥ 25 FPS sustained on a furnished lot — **never reached the game**
 - Audio without major glitches — **never tested**
@@ -83,7 +83,7 @@ All three paths leave us with the same downstream uncertainties around DirectX 6
 
 **Approach D is rejected.** **Approach A** (clean-room reimplementation in TypeScript + Rust/WASM, Simitone-like) is retained as the project direction.
 
-Authenticity guarantees stay as defined in PLAN.md §4.4:
+Authenticity guarantees:
 
 1. Niotso wiki specs as primary reference.
 2. Simitone / FreeSO / SneakyLib code read for understanding (clean-room — no copying).

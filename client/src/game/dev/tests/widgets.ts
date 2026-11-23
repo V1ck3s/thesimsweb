@@ -130,7 +130,7 @@ export async function mount(ctx: GameContext, mgr: WinMgr): Promise<void> {
   ok.moveTo(40, 340);
   ok.tooltip = "Opens an MB_OK message box";
   ok.onClick = () => {
-    void TSWinMsgBox.show(ctx, "Une boîte de message, avec un texte assez long pour passer sur plusieurs lignes.", "Les Sims", MB_OK).then(
+    void TSWinMsgBox.show(ctx, "A message box, with a text long enough to wrap over several lines.", "The Sims", MB_OK).then(
       (r) => log(`msgbox -> ${RESULT_NAMES[r] ?? r}`),
     );
   };
@@ -140,7 +140,7 @@ export async function mount(ctx: GameContext, mgr: WinMgr): Promise<void> {
   ync.moveTo(160, 340);
   ync.tooltip = "MB_YESNOCANCEL, default button 1 after 5 s";
   ync.onClick = () => {
-    void TSWinMsgBox.show(ctx, "Sauvegarder la partie ?", "Quitter", MB_YESNOCANCEL, 1, 5000).then((r) =>
+    void TSWinMsgBox.show(ctx, "Save the game?", "Quit", MB_YESNOCANCEL, 1, 5000).then((r) =>
       log(`msgbox -> ${RESULT_NAMES[r] ?? r}`),
     );
   };

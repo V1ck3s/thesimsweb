@@ -1,4 +1,4 @@
-# Dépendances
+# Dependencies
 node_modules/
 .pnpm-store/
 target/
@@ -14,7 +14,7 @@ crates/wasm-bindings/pkg/
 .pnpm-debug.log
 pnpm-lock.yaml.bak
 
-# Environnement
+# Environment
 .env
 .env.local
 .env.*.local
@@ -42,8 +42,8 @@ coverage/
 # WSL / Windows
 *.lnk
 
-# IMPORTANT — assets du jeu (jamais commiter)
-# Ne jamais committer de fichier provenant de l'installation Maxis.
+# IMPORTANT — game assets (never commit them)
+# Never commit any file from the Maxis installation.
 samples/
 assets/raw/
 server/assets/

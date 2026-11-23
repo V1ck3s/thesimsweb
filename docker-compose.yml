@@ -1,7 +1,7 @@
 # The Sims web port on a server. Settings come from the environment or a
 # `.env` file next to this one (see .env.example):
 #
-#   SIMS_DIR=/srv/sims/Les Sims   # the install folder of The Sims (required with THESIMSWEB_GAME_FILES=server)
+#   SIMS_DIR=/srv/sims/TheSims   # the install folder of The Sims (required with THESIMSWEB_GAME_FILES=server)
 #   THESIMSWEB_PORT=3000          # published port
 #   THESIMSWEB_BIND=127.0.0.1     # 0.0.0.0 to expose it without a reverse proxy
 #   THESIMSWEB_SAVES=server       # server: one shared set of saves on the server

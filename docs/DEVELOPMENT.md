@@ -6,7 +6,7 @@
 - Rust stable 1.85+ with `wasm32-unknown-unknown` target.
 - `wasm-pack` 0.14+.
 
-See the README for the full bootstrap script.
+Bootstrap: install the tools above, then `pnpm install` and `wasm-pack build --target web --scope thesimsweb crates/wasm-bindings`.
 
 ## Layout
 

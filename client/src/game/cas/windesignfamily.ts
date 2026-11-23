@@ -1,5 +1,5 @@
 /**
- * cWinDesignFamily: the "Créer une famille" screen (family name, up to 8
+ * cWinDesignFamily: the "Create a Family" screen (family name, up to 8
  * members, add / delete / edit, Done / Cancel), and its member buttons
  * (cWinDesignFamPeopleBtn).
  *

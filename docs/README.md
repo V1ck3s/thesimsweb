@@ -1,7 +1,7 @@
 # docs/
 
 Living documentation for the project. Everything more permanent than a
-journal entry in `PLAN.md` lives here.
+journal entry lives here.
 
 ## Index
 

@@ -2,6 +2,7 @@
   "name": "thesimsweb",
   "version": "0.0.0",
   "private": true,
+  "license": "GPL-3.0-or-later",
   "description": "Web reimplementation of The Sims (2000) Complete Edition",
   "type": "module",
   "engines": {

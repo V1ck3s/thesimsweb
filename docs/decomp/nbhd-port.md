@@ -212,8 +212,8 @@ SetCol). Test pages: `game.html?test=cas&screen=credits`,
 - As in the game, portraits only take the mouse once their family is selected,
   so the tooltip only appears on the selected row.
 - Unresolved: the name format `lbl_105BAB74` is built by a static initializer
-  from a code address. The name is shown as is (STR# 128 entry 12 "Personnalité
-  de %s" is not referenced by any code we read).
+  from a code address. The name is shown as is (STR# 128 entry 12 "Personality
+  of %s" is not referenced by any code we read).
 
 ### cPickFamilyList scroll ramp
 
@@ -239,7 +239,7 @@ SetCol). Test pages: `game.html?test=cas&screen=credits`,
 - Once per session (`lbl_105C14AA`), if cOptionsMgr::GetRunCount() < 2:
   - Init subscribes a 500 ms timer;
   - TSOnTimerMsg unsubscribes it and shows MessageDialog(text = entry 14,
-    title = entry 13) ("Créer une famille ?"). StringSetBase::GetString is
+    title = entry 13) ("Create a Family?"). StringSetBase::GetString is
     1-based, so 0xe and 0xf are these entries.
 - The Makin' Magic variant (GetRunPAFMagicCount < 6, entries 18/19) is not
   ported, because there is no coins column.

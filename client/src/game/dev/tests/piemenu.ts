@@ -12,9 +12,9 @@ import { TSWinText, WTF_MULTILINE } from "../../ui/text.js";
 import { Gfx, TSWin } from "../../ui/tswin.js";
 import type { WinMgr } from "../../ui/winmgr.js";
 
-const MANY = ["Parler", "Embrasser", "Chatouiller", "Câliner", "Complimenter", "Taquiner", "Danser", "Serrer la main", "Raconter une blague", "Se vanter"];
-const FEW = ["Aller ici", "Courir ici", "Appeler ici"];
-const SUB = ["Météo", "Sport", "Argent"];
+const MANY = ["Talk", "Kiss", "Tickle", "Hug", "Compliment", "Tease", "Dance", "Shake Hands", "Tell Joke", "Brag"];
+const FEW = ["Go Here", "Run Here", "Call Here"];
+const SUB = ["Weather", "Sports", "Money"];
 
 class Lot extends TSWin {
   constructor(private readonly onClick: (x: number, y: number, right: boolean) => void) {
@@ -53,7 +53,7 @@ export async function mount(ctx: GameContext, mgr: WinMgr): Promise<void> {
 
   const lot = new Lot((x, y, right) => {
     const items = shift ? SUB : right ? FEW : MANY;
-    pie.title = shift ? "Parler" : "";
+    pie.title = shift ? "Talk" : "";
     pie.show(x, y, items, (i) => {
       const s = i < 0 ? "cancelled" : `picked ${i}: ${items[i]}`;
       status.setCaption(s);

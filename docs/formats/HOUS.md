@@ -1,11 +1,11 @@
 # HOUS / FLRm / WALm / Arry — house file chunks
 
 > Sources:
-> - Empirical hexdump of `/mnt/c/Program Files (x86)/Maxis/Les Sims/TemplateMagictown/House90.iff`
+> - Empirical hexdump of `<game folder>/TemplateMagictown/House90.iff`
 >   (255 396 B — full lot save).
 > - Niotso wiki page [`IFF`](http://wiki.niotso.org/IFF) — listed in the
 >   chunk-type table but layout is **not** documented.
-> - FreeSO/Simitone has decoders we have not copied (lecture-référence only).
+> - FreeSO/Simitone has decoders we have not copied (read-only reference).
 
 A **House.iff** holds an entire lot save: lot metadata (`HOUS`),
 floor/wall material refs (`FLRm` / `WALm`), tile arrays (`Arry`), placed

@@ -810,8 +810,8 @@ impl TtabHeader {
 ///
 /// Implementation cross-checked against
 /// `Other/tools/Iffinator/Iffinator/Flash/FieldReader.cs` in the FreeSO
-/// repository (BSD-style licence, lecture-référence only — algorithm copied,
-/// not code).
+/// repository (read as a reference only — the algorithm is reimplemented,
+/// not the code).
 struct FieldReader<'a> {
     data: &'a [u8],
     /// Bit offset from the MSB of `data[0]`, i.e. position 0 = MSB of byte 0.
@@ -1237,8 +1237,8 @@ pub struct FlrmEntry {
 /// for second story in TS1 templates).
 ///
 /// Algorithm copied from
-/// `TSOClient/tso.files/Formats/IFF/Chunks/WALm.cs` in FreeSO (BSD-style
-/// licence, lecture-référence only).
+/// `TSOClient/tso.files/Formats/IFF/Chunks/WALm.cs` in FreeSO (read as a
+/// reference only; the algorithm is reimplemented, not the code).
 #[derive(Debug, Clone)]
 pub struct Flrm {
     pub version: u32,

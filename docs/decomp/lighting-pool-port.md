@@ -67,7 +67,7 @@ lazily in memory.
 
 ### Verified
 
-These screenshots are in the local scratch folder `shots/`: `l*-day/night`,
+Screenshots taken during the check (not kept in the repository): `l*-day/night`,
 `lamp29_20-*`, `lamp30_26-*`, `down-*`.
 
 - House01 at night, walls down (`state.setWallState(2)`): floor pools with
@@ -195,7 +195,7 @@ entry code - 1):
   money the same way. When the tool is selected, they write into the tool's
   `preview` / `original` instead of the world (lbl_105BA580 / lbl_105BA5BC).
 
-### Verified on House01 (eval scripts in a local scratch folder)
+### Verified on House01 (throwaway eval scripts)
 
 All of these work: pool add, deck, inner corners, refunds, undo / redo,
 delete, commit on deselect, and undo after deselect. The same goes for water
