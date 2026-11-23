@@ -23,6 +23,50 @@ files of your own legal installation of the game.
 - Emulation (v86 / Boxedwine) was tried first and rejected: see
   [`docs/decision-A-vs-D.md`](./docs/decision-A-vs-D.md).
 
+## Screenshots
+
+| | |
+|---|---|
+| ![Neighborhood](docs/screenshots/neighborhood.jpg) | ![Live mode](docs/screenshots/live-mode.jpg) |
+| Neighborhood | Live mode |
+| ![Buy mode](docs/screenshots/buy-mode.jpg) | ![Create a Sim](docs/screenshots/create-a-sim.jpg) |
+| Buy mode | Create a Sim |
+
+![Landing page](docs/screenshots/landing-page.jpg)
+
+*The landing page: play, game language, display, game files and saves.*
+
+## What the port adds
+
+The game itself is kept as close to the original as possible. Around it, the
+port adds what a browser game needs:
+
+- **Nothing to install for the player**: the game runs in Firefox or a
+  Chromium-based browser, on desktop and Android (touch controls, still being
+  polished). It can be installed as an app (PWA).
+- **Any screen size**: from 800 × 600 up to 5120 × 2160 (32:9 included), keeping
+  the look of the original 1024 × 768 (same zoom, same panels, scaled up) instead of
+  shrinking everything. The game can follow the window size while you play.
+- **Centred interface** on very wide screens (optional) and **real fullscreen**
+  (optional, or Alt+Enter at any time).
+- **Game language** picked on the landing page, among every language the game
+  files hold, without reinstalling.
+- **Two save modes**: one shared set of saves on the server, or each browser
+  keeps its own (IndexedDB). Saves can be **exported and imported** as a ZIP
+  archive.
+- **Bring your own game**: an instance can serve no game file at all; each
+  player then imports their own copy of the game into their browser.
+- **Installation check**: the landing page (and `pnpm check-game`) compares
+  the game folder with a complete installation and lists what is missing.
+- **Offline play**: once launched, the game restarts without a connection
+  (service worker + IndexedDB cache). The game files most sessions need
+  (about 340 MB) can be **downloaded ahead of time** from the landing page, with
+  a progress bar, and cleared again.
+- **Streamed game files**: they are fetched on demand with
+  HTTP Range requests and cached in the browser, so later launches take a few
+  seconds.
+- **Docker image** for self-hosting, built by GitHub Actions.
+
 ## Getting started with Docker
 
 The easiest way to run it on a server or a home machine. You need Docker with
